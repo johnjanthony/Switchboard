@@ -1,7 +1,11 @@
 # Switchboard — Design Specification
 
+> **⚠️ SUPERSEDED — do not implement from this document.**
+>
+> This spec proposed a three-surface gateway (web UI + ntfy + Telegram). On reflection the developer concluded that at-desk interaction already happens in the VS Code chat, so the only surface actually needed is Telegram (away-mode only). The current canonical design is [`2026-04-19-switchboard-design.md`](2026-04-19-switchboard-design.md). This file is retained for historical context only.
+
 **Project:** Switchboard — Human-in-the-Loop MCP Gateway for Claude Code
-**Status:** Design approved; pre-implementation
+**Status:** Superseded by `docs/superpowers/specs/2026-04-19-switchboard-design.md`
 **Date:** 2026-04-18
 **Supersedes:** `docs/claude-gateway-design-spec.md` (original two-option design)
 

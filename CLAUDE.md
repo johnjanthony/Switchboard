@@ -1,56 +1,60 @@
 # Switchboard — Agent Orientation
 
-Switchboard is a local MCP gateway that lets Claude Code agents pause mid-task and request human input from the developer. Responses come back from one of three surfaces: a pinned-tab web UI at desk, ntfy toast action buttons at desk, or Telegram on mobile.
+Switchboard is a local MCP gateway that lets Claude Code agents pause mid-task and request human input from the developer. Responses come back from Telegram on mobile. The gateway exists to support *away mode* — at-desk interaction continues to use the normal VS Code chat UI.
 
 This file is the quick-orient doc for any Claude Code agent working **on Switchboard itself**. Agents that merely *consume* Switchboard don't need this — they just call `ask_human` / `notify_human`.
 
 ## Canonical design
 
-- Current design spec: [`docs/superpowers/specs/2026-04-18-switchboard-design.md`](docs/superpowers/specs/2026-04-18-switchboard-design.md)
-- Original two-option exploration (kept for history): [`docs/claude-gateway-design-spec.md`](docs/claude-gateway-design-spec.md)
+- **Current design spec:** [`docs/superpowers/specs/2026-04-19-switchboard-design.md`](docs/superpowers/specs/2026-04-19-switchboard-design.md)
+- Earlier iterations retained for history only (do not implement from these):
+  - [`docs/design-spec-v2.1.md`](docs/design-spec-v2.1.md) — redirect stub; content moved to the 2026-04-19 superpowers spec
+  - [`docs/superpowers/specs/2026-04-18-switchboard-design.md`](docs/superpowers/specs/2026-04-18-switchboard-design.md) — superseded; proposed web UI + ntfy, later dropped
+  - [`docs/claude-gateway-design-spec.md`](docs/claude-gateway-design-spec.md) — original two-option exploration
 
-If the two disagree, the superpowers spec wins — the original was pre-decision.
+If any of these disagree with the 2026-04-19 spec, the 2026-04-19 spec wins.
 
 ## Project shape
 
-Single Python process, one asyncio event loop, Starlette + uvicorn, FastMCP for the MCP transport. HTTP/SSE MCP endpoint for agents at `/mcp/sse`; the same server also hosts the web UI, the SSE event stream for the UI, and the `/respond` endpoint used by both the web UI and ntfy action buttons. Telegram bot and ntfy client run as tasks in the same loop.
+Single Python process, one asyncio event loop, MCP HTTP/SSE server on `localhost:9876`, Telegram bot as the only response surface. No web UI, no ntfy.
 
-Registry is in-memory (`dict[request_id, PendingRequest]`). Restart = pending requests are lost and waiting agents time out.
+Switchboard exists specifically for **away mode** — when the developer has stepped away and the VS Code chat UI is no longer being watched. At-desk interaction uses the normal VS Code chat channel.
+
+Registry is in-memory (`dict[request_id, asyncio.Future]`). Restart = pending requests are lost and waiting agents time out.
 
 ## Layout
 
+```text
+server/
+  main.py              MCP server entry point
+  gateway.py           Pending request management
+  telegram.py          Telegram bot integration
+  logging_jsonl.py     JSONL audit log
+logs/
+  switchboard.jsonl
 ```
-src/switchboard/
-  __main__.py          python -m switchboard
-  config.py            env-var parsing (dotenv-aware)
-  registry.py          PendingRequest + Registry
-  gateway.py           FastMCP + Starlette wiring, ask_human/notify_human
-  web.py               /, /events SSE, /pending, /respond
-  telegram_bot.py      python-telegram-bot integration
-  ntfy.py              ntfy POST client
-  logging_jsonl.py
-static/index.html      single-page UI, vanilla JS, no build step
-tests/                 pytest, pytest-asyncio, Starlette TestClient
-```
+
+(See v2.1 spec §Project Structure for the authoritative tree.)
 
 ## Running locally
 
-```
+```bash
 pip install -e ".[dev]"
-cp .env.example .env   # then fill in TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, NTFY_URL, NTFY_TOPIC
-python -m switchboard
+# Either set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID as OS env vars,
+# or create a .env file from .env.example and fill in the values.
+python -m server.main
 ```
 
-Gateway comes up on `http://127.0.0.1:9876`. Point a Claude Code agent at `http://localhost:9876/mcp/sse`. Open the same URL root in a browser for the web UI.
+Gateway comes up on `http://127.0.0.1:9876`. Point a Claude Code agent at `http://localhost:9876/sse`.
 
 ## Testing
 
-```
+```bash
 pytest                 # all tests
 pytest tests/test_registry.py -v
 ```
 
-Integration tests start the Starlette app in-process via `TestClient`; no external services required. Telegram and ntfy are mocked.
+Integration tests run in-process; no external services required. The Telegram client is mocked.
 
 ## Conventions
 
