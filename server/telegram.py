@@ -81,7 +81,10 @@ class TelegramBackend(MessengerBackend):
 			f"[{agent_id} | {request_id}] {question}\n\n"
 			"Reply to this message to answer."
 		)
-		result = await self._post_send_message({"text": text})
+		result = await self._post_send_message({
+			"text": text,
+			"reply_markup": {"force_reply": True},
+		})
 		return int(result["message_id"])
 
 	async def send_notification(self, agent_id: str, message: str) -> None:

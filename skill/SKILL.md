@@ -50,6 +50,20 @@ Use `notify_human` to record the pause if it is helpful context for later: `noti
 
 If `ask_human` returns a string starting with `"ERROR:"`, the gateway itself failed (e.g., Telegram unreachable). Treat this the same as a timeout — pause, do not guess.
 
+## Staying alive in away mode
+
+While in away mode, after completing a discrete task **that the developer handed to you** (not merely an intermediate step within that task — not running tests, not reading files, not committing), call:
+
+```
+ask_human("Task done: <one-line summary>. What's next?", agent_id)
+```
+
+instead of ending your turn. This keeps the session alive so the developer can queue additional work from their phone without needing to re-spawn you.
+
+Treat `"__TIMEOUT__"` as permission to end the session gracefully.
+
+The "discrete task the developer handed to you" phrasing is load-bearing — do not ping between internal subtasks.
+
 ## What not to use it for
 
 - Do not call `ask_human` for decisions you can make yourself with the information in front of you. Away mode is not permission to defer judgment calls that do not require human input.

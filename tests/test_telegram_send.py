@@ -36,6 +36,7 @@ async def test_send_question_posts_sendmessage_and_returns_message_id(backend):
 	assert "IR2" in body
 	assert "a3f1" in body
 	assert CHAT_ID in body
+	assert "force_reply" in body
 
 
 @respx.mock
