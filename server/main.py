@@ -13,10 +13,12 @@ from mcp.server.fastmcp import FastMCP
 from server.config import Config, load_config
 from server.gateway import (
 	build_tool_handlers,
+	dispatch_commands,
 	dispatch_responses,
 )
 from server.logging_jsonl import JsonlLogger
 from server.registry import Registry
+from server.spawn import SpawnHandler
 from server.telegram import TelegramBackend
 
 
@@ -71,6 +73,11 @@ async def _run(config: Config) -> None:
 		dispatch_responses(registry, backend, logger)
 	)
 
+	spawn_handler = SpawnHandler(config, backend, logger)
+	spawn_task = asyncio.create_task(
+		dispatch_commands(spawn_handler, backend, logger)
+	)
+
 	loop = asyncio.get_running_loop()
 
 	def _request_stop() -> None:
@@ -89,8 +96,11 @@ async def _run(config: Config) -> None:
 		await server.serve()
 	finally:
 		dispatch_task.cancel()
+		spawn_task.cancel()
 		with contextlib.suppress(asyncio.CancelledError):
 			await dispatch_task
+		with contextlib.suppress(asyncio.CancelledError):
+			await spawn_task
 		await backend.aclose()
 
 

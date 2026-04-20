@@ -12,7 +12,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, Coroutine
+from typing import Any, Callable, Coroutine
 
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
@@ -142,3 +142,17 @@ async def dispatch_responses(
 		except Exception as exc:
 			logger.surface_error(f"dispatch_loop_crashed: {exc}")
 			await asyncio.sleep(1.0)
+
+
+async def dispatch_commands(
+	spawn_handler: Any,
+	backend: Any,
+	logger: JsonlLogger,
+) -> None:
+	async for raw in backend.poll_commands():
+		try:
+			await spawn_handler.handle(raw)
+		except asyncio.CancelledError:
+			raise
+		except Exception as exc:
+			logger.surface_error(f"dispatch_commands_error: {exc}")

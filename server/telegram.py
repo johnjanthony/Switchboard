@@ -43,6 +43,7 @@ class TelegramBackend(MessengerBackend):
 		self._owns_client = http_client is None
 		self._offset: int | None = None
 		self._logger = logger
+		self._command_queue: asyncio.Queue[str] = asyncio.Queue()
 
 	@property
 	def _base(self) -> str:
@@ -154,12 +155,17 @@ class TelegramBackend(MessengerBackend):
 					msg = update.get("message")
 					if not msg:
 						continue
+					text_val = msg.get("text", "")
+					if text_val and (text_val == "/spawn" or text_val.startswith("/spawn ")):
+						if str(msg.get("chat", {}).get("id")) == self._chat_id:
+							await self._command_queue.put(text_val)
+						continue
 					reply = msg.get("reply_to_message")
 					if not reply:
 						continue
 					yield IncomingResponse(
 						correlation=int(reply["message_id"]),
-						text=msg.get("text", ""),
+						text=text_val,
 					)
 			except asyncio.CancelledError:
 				raise
@@ -169,3 +175,25 @@ class TelegramBackend(MessengerBackend):
 						f"telegram_poll_error: {self._sanitize(exc)}"
 					)
 				await asyncio.sleep(2.0)
+
+	async def poll_commands(self) -> AsyncIterator[str]:
+		while True:
+			yield await self._command_queue.get()
+
+	async def send_spawn_ack(
+		self, project_key: str, prompt_preview: str | None
+	) -> None:
+		if prompt_preview is None:
+			text = (
+				f"Spawning {project_key} \u2014 agent will ask what to work on. "
+				"Check Windows Terminal."
+			)
+		else:
+			truncated = (
+				(prompt_preview[:47] + "...") if len(prompt_preview) > 47 else prompt_preview
+			)
+			text = f"Spawning {project_key} with task '{truncated}'. Check Windows Terminal."
+		await self._post_send_message({"text": text})
+
+	async def send_text(self, text: str) -> None:
+		await self._post_send_message({"text": text})

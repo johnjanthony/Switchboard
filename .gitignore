@@ -17,3 +17,6 @@ logs/
 .vscode/
 .idea/
 .claude/*
+
+# Superpowers implementation plans (scaffolding, not history-worthy)
+docs/superpowers/plans/
