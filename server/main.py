@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import signal
 
 import uvicorn
@@ -38,6 +39,9 @@ def _build_fastmcp(handlers) -> FastMCP:
 
 
 async def _run(config: Config) -> None:
+	# Silence httpx per-request INFO logs — they embed the bot token in the URL.
+	logging.getLogger("httpx").setLevel(logging.WARNING)
+
 	logger = JsonlLogger(config.log_path)
 	registry = Registry()
 	backend = TelegramBackend(

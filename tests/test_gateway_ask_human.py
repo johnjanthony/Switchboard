@@ -214,3 +214,41 @@ async def test_dispatch_loop_restarts_after_iterator_crash(cfg, logger, tmp_path
 	assert backend._calls >= 2
 	log_text = (tmp_path / "log.jsonl").read_text()
 	assert "dispatch_loop_crashed" in log_text
+
+
+@pytest.mark.asyncio
+async def test_concurrent_ask_human_calls_resolve_independently(cfg, logger):
+	"""Two concurrent ask_human calls, resolved out of order via the
+	dispatch loop, each return their own reply."""
+	registry = Registry()
+	backend = YieldingBackend([
+		IncomingResponse(correlation=1001, text="answer-to-second"),
+		IncomingResponse(correlation=1000, text="answer-to-first"),
+	])
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	# Fire two ask_human calls. RecordingBackend assigns correlation 1000
+	# to the first call and 1001 to the second.
+	first = asyncio.create_task(handlers.ask_human("q1", "AgentA"))
+	await asyncio.sleep(0)
+	second = asyncio.create_task(handlers.ask_human("q2", "AgentB"))
+	await asyncio.sleep(0)
+
+	# Start the dispatch loop; it yields the second response first,
+	# then the first.
+	dispatch_task = asyncio.create_task(
+		dispatch_responses(registry, backend, logger)
+	)
+
+	try:
+		r1, r2 = await asyncio.wait_for(
+			asyncio.gather(first, second), timeout=1.0
+		)
+		assert r1 == "answer-to-first"
+		assert r2 == "answer-to-second"
+	finally:
+		dispatch_task.cancel()
+		try:
+			await dispatch_task
+		except asyncio.CancelledError:
+			pass

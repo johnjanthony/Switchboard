@@ -26,15 +26,22 @@ Registry is in-memory (`dict[request_id, asyncio.Future]`). Restart = pending re
 
 ```text
 server/
-  main.py              MCP server entry point
-  gateway.py           Pending request management
-  telegram.py          Telegram bot integration
+  __init__.py          Package marker
+  __main__.py          Enables `python -m server`
+  main.py              Entry point — wires config, registry, backend, MCP, uvicorn
+  config.py            Env-based Config loader (dotenv fallback)
+  registry.py          PendingRequest + Registry (in-memory, correlation index)
+  messenger.py         MessengerBackend ABC + IncomingResponse
+  telegram.py          Telegram MessengerBackend implementation (httpx)
+  gateway.py           Tool handlers (ask_human, notify_human) + dispatch loop
   logging_jsonl.py     JSONL audit log
+skill/
+  SKILL.md             Installed into ~/.claude/skills/switchboard/
 logs/
-  switchboard.jsonl
+  switchboard.jsonl    Runtime audit log (gitignored)
 ```
 
-(See v2.1 spec §Project Structure for the authoritative tree.)
+(See the canonical spec §11 for the authoritative tree including tests.)
 
 ## Running locally
 
@@ -42,7 +49,7 @@ logs/
 pip install -e ".[dev]"
 # Either set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID as OS env vars,
 # or create a .env file from .env.example and fill in the values.
-python -m server.main
+python -m server
 ```
 
 Gateway comes up on `http://127.0.0.1:9876`. Point a Claude Code agent at `http://localhost:9876/sse`.
