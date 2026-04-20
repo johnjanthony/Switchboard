@@ -35,6 +35,10 @@ nssm set      $ServiceName AppRotateOnline 1
 nssm set      $ServiceName Description    "Switchboard MCP gateway for Claude Code agents"
 nssm set      $ServiceName Start          SERVICE_AUTO_START
 
+# Grant interactive users start/stop rights without requiring admin for restarts.
+# Full rights for BA+SY are included so WRITE_DAC is preserved for future sdset calls.
+sc.exe sdset $ServiceName "D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWLOCRRC;;;AU)(A;;CCLCSWRPWPCR;;;IU)"
+
 Write-Host "Starting $ServiceName..."
 nssm start $ServiceName
 Start-Sleep -Seconds 3

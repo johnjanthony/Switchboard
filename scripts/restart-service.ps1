@@ -1,4 +1,3 @@
-#Requires -RunAsAdministrator
 param()
 $ErrorActionPreference = "Stop"
 
@@ -13,7 +12,7 @@ Push-Location $AppDir
 try {
 	& ".venv\Scripts\python.exe" -m pytest -q
 	if ($LASTEXITCODE -ne 0) {
-		Write-Error "Tests failed — $ServiceName NOT restarted. Fix the failures and re-run this script."
+		Write-Error "Tests failed - $ServiceName NOT restarted. Fix the failures and re-run this script."
 		exit 1
 	}
 } finally {
