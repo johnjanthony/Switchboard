@@ -72,6 +72,29 @@ Integration tests run in-process; no external services required. The Telegram cl
 - **Line endings: CRLF** (per developer's global convention). Verify with `file <path>` after editing.
 - **Comments sparingly.** Explain why, not what. See the top-level `CLAUDE.md` in the developer's home if you need the full protocol.
 
+## Service management (Windows service via NSSM)
+
+The server runs as a Windows service so it starts automatically and survives VS Code being closed.
+
+```powershell
+# One-time install (elevated PowerShell):
+choco install nssm          # install NSSM via Chocolatey
+.\scripts\install-service.ps1
+
+# Check status:
+nssm status switchboard
+
+# Restart after code changes — stops service, runs pytest gate, restarts:
+.\scripts\restart-service.ps1    # elevated PowerShell
+
+# Remove the service:
+.\scripts\uninstall-service.ps1  # elevated PowerShell
+```
+
+Logs: `logs\switchboard.jsonl` (JSONL audit), `logs\nssm-stdout.log` / `nssm-stderr.log` (uvicorn console).
+
+NSSM sets `AppDirectory=C:\Work\Switchboard` so `config.py`'s `.env` fallback resolves correctly — credentials stay in `.env`, not the registry.
+
 ## What belongs in CLAUDE-JOURNAL.md
 
 Any session that produces a decision, a spec revision, or a non-trivial implementation step logs an entry. Format: `## YYYY-MM-DD — short title`, then bullets for: what changed, why, files touched, open follow-ups. Keep entries terse — this is an audit trail, not prose.
