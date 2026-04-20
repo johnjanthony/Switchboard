@@ -1,0 +1,69 @@
+"""Tests for the JSONL audit logger."""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from server.logging_jsonl import JsonlLogger
+
+
+def read_events(path: Path) -> list[dict]:
+	return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+
+def test_request_created_writes_expected_fields(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.request_created("a3f1", "IR2", "Overwrite foo.java?")
+	events = read_events(tmp_path / "log.jsonl")
+	assert len(events) == 1
+	ev = events[0]
+	assert ev["event"] == "request_created"
+	assert ev["request_id"] == "a3f1"
+	assert ev["agent_id"] == "IR2"
+	assert ev["question_preview"].startswith("Overwrite foo.java?")
+	assert "ts" in ev
+
+
+def test_request_resolved_records_duration_and_source(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.request_resolved(
+		"a3f1", "IR2", response_text="yes", source="telegram", duration_ms=123
+	)
+	ev = read_events(tmp_path / "log.jsonl")[0]
+	assert ev["event"] == "request_resolved"
+	assert ev["response_preview"] == "yes"
+	assert ev["source"] == "telegram"
+	assert ev["duration_ms"] == 123
+
+
+def test_timeout_event(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.timeout("a3f1", "IR2", timeout_seconds=86400)
+	ev = read_events(tmp_path / "log.jsonl")[0]
+	assert ev["event"] == "timeout"
+	assert ev["timeout_seconds"] == 86400
+
+
+def test_notify_sent_truncates_long_message(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	long_msg = "x" * 500
+	logger.notify_sent("IR2", long_msg)
+	ev = read_events(tmp_path / "log.jsonl")[0]
+	assert ev["event"] == "notify_sent"
+	assert len(ev["message_preview"]) == 100
+
+
+def test_tool_error_event(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.tool_error("a3f1", "IR2", "boom")
+	ev = read_events(tmp_path / "log.jsonl")[0]
+	assert ev["event"] == "tool_error"
+	assert ev["error"] == "boom"
+
+
+def test_creates_parent_directory(tmp_path):
+	path = tmp_path / "logs" / "nested" / "log.jsonl"
+	logger = JsonlLogger(path)
+	logger.request_created("a3f1", "IR2", "q")
+	assert path.exists()
