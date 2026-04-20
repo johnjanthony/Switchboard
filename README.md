@@ -18,21 +18,33 @@ pip install -e ".[dev]"
 
 ## Configure
 
-Set the required environment variables (OS env vars preferred; a `.env` file is loaded as a fallback if present):
+Switchboard reads its configuration from OS env vars. A `.env` file is loaded as a fallback if present — OS env wins.
+
+Copy the template and fill in the two required values:
+
+```bash
+cp .env.example .env
+# edit .env: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
+```
+
+Or set them as OS env vars:
 
 ```bash
 export TELEGRAM_BOT_TOKEN="<token from @BotFather>"
 export TELEGRAM_CHAT_ID="<your numeric chat id>"
 ```
 
-To find your chat ID: message your bot any text, then open `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser. The value at `result[-1].message.chat.id` is your chat ID.
+**To find your chat ID:** message [@userinfobot](https://t.me/userinfobot) on Telegram — it replies with your numeric ID.
 
-Optional tuning:
+**Before your bot can message you:** open your bot in Telegram (search for its @username) and tap **Start** once. Telegram blocks bots from initiating conversations until the user opts in.
+
+Optional tuning (defaults shown):
 
 ```bash
-export SWITCHBOARD_PORT=9876            # default 9876
-export SWITCHBOARD_TIMEOUT_SECONDS=86400 # default 24 hours
-export SWITCHBOARD_LOG_PATH=./logs/switchboard.jsonl
+SWITCHBOARD_HOST=127.0.0.1
+SWITCHBOARD_PORT=9876
+SWITCHBOARD_TIMEOUT_SECONDS=86400      # 24 hours
+SWITCHBOARD_LOG_PATH=./logs/switchboard.jsonl
 ```
 
 ## Run
@@ -41,11 +53,17 @@ export SWITCHBOARD_LOG_PATH=./logs/switchboard.jsonl
 python -m server
 ```
 
-The gateway binds to `127.0.0.1:9876` by default.
+The gateway binds to `127.0.0.1:9876` by default and exposes MCP over SSE at `/sse`.
 
-## Wire an agent to it
+## Wire Claude Code to it
 
-Add to the agent's MCP config (per-project or global):
+Use the Claude Code CLI (recommended — registers at user scope):
+
+```bash
+claude mcp add switchboard --scope user --transport sse http://localhost:9876/sse
+```
+
+Or add it manually to your MCP config:
 
 ```json
 {
@@ -60,7 +78,7 @@ Add to the agent's MCP config (per-project or global):
 
 ## Install the skill
 
-Copy the skill file into your Claude Code skills directory:
+The skill teaches the agent when and how to use `ask_human` / `notify_human`:
 
 ```bash
 mkdir -p ~/.claude/skills/switchboard
@@ -72,10 +90,10 @@ cp skill/SKILL.md ~/.claude/skills/switchboard/SKILL.md
 With the server running and an agent wired up:
 
 1. In a Claude Code session, say: *"I'm stepping away — use ask_human for any decisions. Label yourself SmokeTest."*
-2. Ask the agent to do something that should trigger a question, e.g. *"Delete the oldest file in logs/."*
-3. Watch your phone: you should receive a Telegram message `[SmokeTest | xxxxxxxx] ...`.
-4. Reply to that message with "yes" or similar.
-5. The agent's `ask_human` tool call should unblock with your reply text.
+2. Ask the agent to do something that should trigger a question, e.g. *"Delete the oldest file in `logs/`."*
+3. Watch your phone: you should receive a Telegram message of the form `[SmokeTest | <request_id>] <question>`.
+4. **Long-press the message and tap Reply**, then type your answer (e.g. "yes"). A plain new message will not work — correlation requires Telegram's reply-to gesture so the bot can see `reply_to_message.message_id`.
+5. The agent's `ask_human` tool call unblocks with your reply text.
 6. Check `logs/switchboard.jsonl` — you should see `request_created` and `request_resolved` events.
 
 ## Tests
@@ -84,8 +102,8 @@ With the server running and an agent wired up:
 pytest
 ```
 
-All unit tests are offline (no Telegram creds required).
+All unit tests are offline; no Telegram creds required.
 
 ## Project layout
 
-See the design spec §11 for the canonical project layout.
+See [`CLAUDE.md`](CLAUDE.md) for the agent-oriented project tour, or design spec §11 for the canonical tree.
