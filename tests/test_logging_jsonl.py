@@ -67,3 +67,29 @@ def test_creates_parent_directory(tmp_path):
 	logger = JsonlLogger(path)
 	logger.request_created("a3f1", "IR2", "q")
 	assert path.exists()
+
+
+def test_spawn_started_writes_expected_fields(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.spawn_started("a1b2c3d4", "rpdm/next-gen", "/Work/rpdm/next-gen", "fix migration")
+	events = read_events(tmp_path / "log.jsonl")
+	assert len(events) == 1
+	ev = events[0]
+	assert ev["event"] == "spawn_started"
+	assert ev["spawn_id"] == "a1b2c3d4"
+	assert ev["project_key"] == "rpdm/next-gen"
+	assert ev["project_path"] == "/Work/rpdm/next-gen"
+	assert ev["prompt_preview"] == "fix migration"
+	assert "ts" in ev
+
+
+def test_spawn_invalid_path_writes_expected_fields(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.spawn_invalid_path("../evil", "/Work/../evil")
+	events = read_events(tmp_path / "log.jsonl")
+	assert len(events) == 1
+	ev = events[0]
+	assert ev["event"] == "spawn_invalid_path"
+	assert ev["project_key"] == "../evil"
+	assert ev["resolved_path"] == "/Work/../evil"
+	assert "ts" in ev

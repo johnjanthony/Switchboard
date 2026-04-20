@@ -96,3 +96,25 @@ class JsonlLogger:
 			"detail": detail,
 			"correlation": correlation,
 		})
+
+	def spawn_started(
+		self,
+		spawn_id: str,
+		project_key: str,
+		project_path: str,
+		prompt_preview: str,
+	) -> None:
+		self._write({
+			"event": "spawn_started",
+			"spawn_id": spawn_id,
+			"project_key": project_key,
+			"project_path": project_path,
+			"prompt_preview": prompt_preview,
+		})
+
+	def spawn_invalid_path(self, project_key: str, resolved_path: str) -> None:
+		self._write({
+			"event": "spawn_invalid_path",
+			"project_key": project_key,
+			"resolved_path": resolved_path,
+		})
