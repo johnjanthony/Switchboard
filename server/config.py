@@ -26,6 +26,7 @@ class Config:
 	port: int
 	timeout_seconds: int
 	log_path: str
+	spawn_root: Path | None = None
 
 
 def _require(name: str) -> str:
@@ -42,6 +43,8 @@ def load_config(dotenv_path: str | Path | None = None) -> Config:
 	if dotenv_path.exists():
 		load_dotenv(dotenv_path, override=False)
 
+	spawn_root_raw = os.environ.get("SWITCHBOARD_SPAWN_ROOT")
+
 	return Config(
 		telegram_bot_token=_require("TELEGRAM_BOT_TOKEN"),
 		telegram_chat_id=_require("TELEGRAM_CHAT_ID"),
@@ -53,4 +56,5 @@ def load_config(dotenv_path: str | Path | None = None) -> Config:
 		log_path=os.environ.get(
 			"SWITCHBOARD_LOG_PATH", "./logs/switchboard.jsonl"
 		),
+		spawn_root=Path(spawn_root_raw) if spawn_root_raw else None,
 	)

@@ -16,6 +16,7 @@ def _clear_env(monkeypatch):
 		"SWITCHBOARD_PORT",
 		"SWITCHBOARD_TIMEOUT_SECONDS",
 		"SWITCHBOARD_LOG_PATH",
+		"SWITCHBOARD_SPAWN_ROOT",
 	]:
 		monkeypatch.delenv(key, raising=False)
 
@@ -71,3 +72,20 @@ def test_os_env_wins_over_dotenv(monkeypatch, tmp_path):
 	cfg = load_config(dotenv_path=env_file)
 	assert cfg.telegram_bot_token == "os-wins"
 	assert cfg.telegram_chat_id == "999"
+
+
+def test_spawn_root_defaults_to_none(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+	monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.spawn_root is None
+
+
+def test_spawn_root_loaded_from_env(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+	monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+	monkeypatch.setenv("SWITCHBOARD_SPAWN_ROOT", str(tmp_path))
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.spawn_root == tmp_path
