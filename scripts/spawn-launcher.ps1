@@ -1,4 +1,4 @@
-﻿param()
+param()
 $pendingFile = "C:\Work\Switchboard\logs\spawn-pending.json"
 if (-not (Test-Path $pendingFile)) { exit 0 }
 $params = Get-Content $pendingFile -Raw | ConvertFrom-Json

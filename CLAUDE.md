@@ -33,12 +33,20 @@ server/
   registry.py          PendingRequest + Registry (in-memory, correlation index)
   messenger.py         MessengerBackend ABC + IncomingResponse
   telegram.py          Telegram MessengerBackend implementation (httpx)
-  gateway.py           Tool handlers (ask_human, notify_human) + dispatch loop
+  gateway.py           Tool handlers (ask_human, notify_human) + dispatch loops
+  spawn.py             Telegram-triggered Claude Code session spawner
   logging_jsonl.py     JSONL audit log
+scripts/
+  install-service.ps1        One-time NSSM service install
+  uninstall-service.ps1      Remove the service
+  restart-service.ps1        Stop + pytest gate + start
+  register-spawn-task.ps1    Re-register SwitchboardSpawn scheduled task
+  spawn-launcher.ps1         Runs in user session to open a new wt tab
 skill/
   SKILL.md             Installed into ~/.claude/skills/switchboard/
 logs/
   switchboard.jsonl    Runtime audit log (gitignored)
+  sessions/            Per-agent ask_human conversation logs (gitignored)
 ```
 
 (See the canonical spec §11 for the authoritative tree including tests.)
@@ -85,7 +93,10 @@ choco install nssm          # install NSSM via Chocolatey
 nssm status switchboard
 
 # Restart after code changes — stops service, runs pytest gate, restarts:
-.\scripts\restart-service.ps1    # elevated PowerShell
+.\scripts\restart-service.ps1          # elevated PowerShell (do not run while in away mode)
+
+# Re-register the SwitchboardSpawn scheduled task (if missing or after re-install):
+.\scripts\register-spawn-task.ps1      # elevated PowerShell
 
 # Remove the service:
 .\scripts\uninstall-service.ps1  # elevated PowerShell
@@ -97,9 +108,22 @@ NSSM sets `AppDirectory=C:\Work\Switchboard` so `config.py`'s `.env` fallback re
 
 ## Away mode protocol
 
-When John steps away and says to use `ask_human`, **chat is no longer an output channel**. Every response — acknowledgments, status updates, follow-up questions, task-done pings — goes through `ask_human`. This applies after receiving a reply too: the next output is another `ask_human` call, not a chat message. The only exit from away mode is John explicitly saying he's back at his desk.
+Away mode activates whenever John says he is stepping away — any phrasing like "I'm stepping away" or "stepping away" is sufficient. No explicit "use ask_human" instruction is required.
 
-**Service restarts break the MCP connection.** Restarting Switchboard (via `restart-service.ps1`) tears down the SSE connection — `ask_human` and `notify_human` stop working immediately after. In away mode, treat a service restart as a session-terminating event: call `notify_human` to say the session is ending and why, then restart. Do not attempt further `ask_human` calls after restarting.
+**When away mode activates, do not produce any text response in the terminal.** Make a tool call immediately:
+
+- If idle or between tasks: `ask_human` to confirm you have entered away mode and ask what's next.
+- If mid-task: `notify_human` to report current status, followed by `ask_human` to confirm next steps.
+
+There is no valid reason to type a chat acknowledgment first. "Got it" in the terminal is a failure. The tool call is the acknowledgment. Every subsequent output — status updates, questions, task-done pings — continues through `ask_human` or `notify_human`.
+
+**Receiving a reply to `ask_human` does not exit away mode.** Do not respond to a Telegram reply in the terminal. Your next output after receiving any reply must also be via `ask_human` or `notify_human` — even if the reply indicates the task is done or the session was a test.
+
+The only exit from away mode is John explicitly saying he's back at his desk.
+
+Use `notify_human` only for true fire-and-forget updates: progress reports, confirmations of non-blocking steps, "starting X now" pings. It must not be used as a substitute for `ask_human` when a response is needed, and must not be the final output of a session — there must always be at least one `ask_human` to follow. When in doubt, use `ask_human`.
+
+**Do not restart Switchboard while in away mode.** Restarting tears down the SSE connection — `ask_human` and `notify_human` stop working immediately. Return to desk before restarting.
 
 ## What belongs in CLAUDE-JOURNAL.md
 

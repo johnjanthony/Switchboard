@@ -78,19 +78,15 @@ If agents mis-calibrate task boundaries in practice, mitigation is a gateway-sid
 
 ---
 
-## Telegram-triggered headless Claude Code spawn
+## SHIPPED: Telegram-triggered Claude Code spawn
 
-Developer sends a command to the bot; Switchboard spawns a new `claude -p "<prompt>" --dangerously-skip-permissions` subprocess already in away-mode so the developer can kick off new work from the phone without returning to the laptop. Natural extension of the "keep working while I'm away" premise; lets the developer queue independent work streams.
+**Delivered 2026-04-21.** Developer sends `/spawn [project-key] [prompt]` to the bot; Switchboard writes a `spawn-pending.json` file and triggers the `SwitchboardSpawn` Windows Scheduled Task, which runs `spawn-launcher.ps1` in the user's interactive desktop session (Session 1) — where `wt.exe` is available. The launcher opens a new Windows Terminal tab running `claude -p "<prompt>" --dangerously-skip-permissions`.
 
-**Security surface is real and distinct from anything v1 exposes.** v1 is a human-input gateway — an attacker with the bot token can answer questions posed to the developer, but cannot originate new work. Adding spawn changes that to arbitrary code execution via Telegram. Requires:
+**Implementation vs original spec:** The shared-secret prefix (`SWITCHBOARD_SPAWN_TOKEN`) and per-project allowlist (`SWITCHBOARD_SPAWN_PROJECTS`) were simplified to a single `SWITCHBOARD_SPAWN_ROOT` directory. Sub-directory traversal is prevented by resolving paths against `spawn_root` and rejecting escapes. The bot token itself is the auth boundary. A 60-second rate limit is enforced per spawn.
 
-1. **Shared-secret prefix.** Command shape: `/spawn <SWITCHBOARD_SPAWN_TOKEN> <project-key> <prompt>`. `SWITCHBOARD_SPAWN_TOKEN` is a second env var distinct from the bot token, set at service-install time.
-2. **Allowlist of project directories** via `SWITCHBOARD_SPAWN_PROJECTS="key1=/abs/path,key2=/abs/path"`. `<project-key>` resolves into it; unknown keys rejected.
-3. **Mandatory audit-log entry** per spawn: timestamp, resolved working directory, full argv, PID post-spawn.
-4. **Per-60-seconds rate limit** to slow down abuse.
-5. **Acknowledgment reply** back to Telegram: `Spawning <project-key> with task '<prompt preview>'. PID: <n>.`
+**Session 0 isolation:** Windows services run in Session 0 with no access to the user desktop. The scheduled task (`SwitchboardSpawn`, `LogonType Interactive`, `RunLevel Limited`) crosses into Session 1 where `wt.exe` resolves naturally.
 
-**Scope decision (confirmed 2026-04-20):** keep spawning inside Switchboard. Sibling-tool alternative rejected.
+**Spawn-resume (abandoned 2026-04-21):** An attempt was made to add a `-Spawn` flag to `restart-service.ps1` that would restart the service AND spawn a `claude -c` session to resume the interrupted away-mode session. After investigation, no mechanism exists to make Claude Code proactively call `ask_human` at session start without a user turn — `-p`, positional args, `additionalContext` hooks, and transcript injection all either cause headless mode or fail to trigger inference. Decision: do not restart Switchboard while in away mode. See abandoned spec/plan in `docs/superpowers/specs/2026-04-20-spawn-resume-design.md`.
 
 ---
 
@@ -99,8 +95,6 @@ Developer sends a command to the bot; Switchboard spawns a new `claude -p "<prom
 **Delivered 2026-04-20.** The NSSM service runs as SYSTEM, which lives in Windows Session 0 and has no access to the user's interactive desktop or app execution aliases. Any path-based workaround (injecting `AppData\Local\Microsoft\WindowsApps` into `AppEnvironmentExtra`, or hardcoding the versioned `Program Files\WindowsApps\wt.exe` path) is either fragile or breaks across Windows Terminal updates.
 
 **Fix:** `install-service.ps1` now sets the service logon account to the installing user (`.\%USERNAME%`) via `nssm set switchboard ObjectName`. NSSM prompts for the account password at install time. Running as the user gives the service the correct PATH, app execution aliases, and desktop session — `wt.exe` resolves naturally.
-
-The `SWITCHBOARD_WT_PATH` config field (added to `server/config.py`, `server/spawn.py`, `.env.example`) is retained as an escape hatch for non-standard setups, but is not needed for the normal install path.
 
 **Tradeoff to know:** The service won't start if the account password changes (NSSM stores it at install time). Run `uninstall-service.ps1` + `install-service.ps1` to re-register with the new password.
 

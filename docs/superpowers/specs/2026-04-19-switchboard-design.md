@@ -245,7 +245,6 @@ Human-readable lines are also emitted to stderr at INFO level for live tailing d
 
 ```text
 switchboard/
-├── README.md
 ├── CLAUDE.md
 ├── CLAUDE-JOURNAL.md
 ├── .env.example
@@ -254,24 +253,43 @@ switchboard/
 ├── docs/
 │   ├── superpowers/specs/2026-04-19-switchboard-design.md   # this spec (canonical)
 │   └── ... (earlier specs, retained as history)
+├── scripts/
+│   ├── install-service.ps1         # one-time NSSM service install
+│   ├── uninstall-service.ps1       # remove the service
+│   ├── restart-service.ps1         # stop + pytest gate + start
+│   ├── register-spawn-task.ps1     # re-register SwitchboardSpawn scheduled task
+│   └── spawn-launcher.ps1          # runs in user session, opens wt tab for spawn
 ├── server/
 │   ├── __init__.py
-│   ├── main.py                 # entry point (python -m server)
+│   ├── __main__.py             # enables python -m server
+│   ├── main.py                 # entry point — wires all components
 │   ├── config.py               # env-var parsing (dotenv-aware)
-│   ├── gateway.py              # FastMCP tool handlers + pending registry
+│   ├── gateway.py              # FastMCP tool handlers + dispatch loops
 │   ├── registry.py             # PendingRequest dataclass + Registry
-│   ├── messenger.py            # MessengerBackend ABC + factory
+│   ├── messenger.py            # MessengerBackend ABC + IncomingResponse
 │   ├── telegram.py             # Telegram MessengerBackend implementation
+│   ├── spawn.py                # Telegram-triggered Claude Code session spawner
 │   └── logging_jsonl.py        # JSONL audit log
 ├── skill/
 │   └── SKILL.md                # installed into ~/.claude/skills/switchboard/
 ├── tests/
-│   ├── test_registry.py
+│   ├── conftest.py
+│   ├── test_config.py
 │   ├── test_gateway_ask_human.py
-│   ├── test_telegram_correlation.py
-│   └── test_timeout.py
+│   ├── test_gateway_dispatch_commands.py
+│   ├── test_gateway_notify_human.py
+│   ├── test_gateway_timeout.py
+│   ├── test_logging_jsonl.py
+│   ├── test_mcp_integration.py
+│   ├── test_messenger_contract.py
+│   ├── test_registry.py
+│   ├── test_spawn_handler.py
+│   ├── test_telegram_commands.py
+│   ├── test_telegram_poll.py
+│   └── test_telegram_send.py
 └── logs/
-    └── switchboard.jsonl
+    ├── switchboard.jsonl
+    └── sessions/               # per-agent ask_human conversation logs
 ```
 
 ---

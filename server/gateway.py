@@ -12,6 +12,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Coroutine
 
 from server.config import Config
@@ -21,9 +22,19 @@ from server.registry import Registry
 
 TIMEOUT_SENTINEL = "__TIMEOUT__"
 
+_SESSION_START = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
 
 def _new_request_id() -> str:
 	return uuid.uuid4().hex[:8]
+
+
+def _append_session_log(log_path: str, agent_id: str, direction: str, text: str) -> None:
+	path = Path(log_path).parent / "sessions" / f"{agent_id}_{_SESSION_START}.log"
+	path.parent.mkdir(exist_ok=True)
+	ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+	with path.open("a", encoding="utf-8") as f:
+		f.write(f"{ts} {direction} {text}\n")
 
 
 @dataclass
@@ -57,6 +68,7 @@ def build_tool_handlers(
 			)
 			future = registry.add(request_id, agent_id, correlation)
 			logger.request_created(request_id, agent_id, question)
+			_append_session_log(config.log_path, agent_id, "→", question)
 		except Exception as exc:
 			logger.tool_error(request_id, agent_id, str(exc))
 			return f"ERROR: {exc}"
@@ -89,6 +101,7 @@ def build_tool_handlers(
 			registry.remove(request_id)
 			return f"ERROR: {exc}"
 
+		_append_session_log(config.log_path, agent_id, "←", result)
 		duration_ms = int(
 			(datetime.now(timezone.utc) - started).total_seconds() * 1000
 		)

@@ -49,7 +49,7 @@ nssm set $ServiceName ObjectName $cred.UserName $cred.GetNetworkCredential().Pas
 # session where wt.exe is available. The service triggers it via schtasks /run.
 Write-Host "Registering SwitchboardSpawn scheduled task..."
 $action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NonInteractive -File `"$AppDir\scripts\spawn-launcher.ps1`"" -WorkingDirectory $AppDir
-$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 $settings  = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
 Register-ScheduledTask -TaskName "SwitchboardSpawn" -Action $action -Principal $principal -Settings $settings -Force | Out-Null
 

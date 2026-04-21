@@ -12,11 +12,20 @@ Switchboard is a local MCP gateway that lets you reach the developer on their ph
 
 ## When to use it
 
-The developer activates away mode by telling you something like:
+Away mode activates whenever the developer says they are stepping away — any phrasing like "I'm stepping away", "stepping away", or "going away mode" is sufficient. No explicit "use ask_human" instruction is required.
 
-> "I'm stepping away. Use the ask_human MCP tool for any questions or decisions that would normally require my input. I'll respond via Telegram."
+**When away mode activates, do not produce any text response in the terminal.** Make a tool call immediately:
 
-Once in away mode, you must route **every** question that would otherwise go to the VS Code chat through `ask_human` instead. Do not guess at decisions that need human judgment. Do not abort. Do not wait silently.
+- If idle or between tasks: `ask_human` to confirm you have entered away mode and ask what's next.
+- If mid-task: `notify_human` to report current status, followed by `ask_human` to confirm next steps.
+
+Your trained default is to produce a text response. In away mode, intercept that instinct before it fires. If you notice yourself composing a reply in the terminal — stop. Make the tool call instead. The tool call is the acknowledgment; any text in the terminal is a failure.
+
+**Receiving a reply to `ask_human` does not exit away mode.** The same instinct will fire again after a Telegram reply lands — the urge to confirm receipt in the terminal ("got it", "test confirmed", etc.) is also a failure. Your next output after any reply must be via `ask_human` or `notify_human`.
+
+Once in away mode, route **every** output through `ask_human` or `notify_human`. Do not guess at decisions that need human judgment. Do not abort. Do not wait silently in chat.
+
+**The only exit from away mode is the developer explicitly saying they are back at their desk** ("I'm back", "back at my desk", etc.). When that message arrives — whether as a reply to `ask_human` or in chat — immediately switch back to normal terminal output. Do not issue another `ask_human` to acknowledge it.
 
 At desk (not in away mode), interact with the developer normally through chat — Switchboard is not needed.
 
