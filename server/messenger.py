@@ -80,6 +80,10 @@ class MessengerBackend(ABC):
 	def poll_commands(self) -> AsyncIterator[str]:
 		"""Yield slash-commands as they arrive. Infinite async iterator."""
 
+	async def send_spawn_ack(self, project_key: str, prompt: str | None) -> None:
+		"""Acknowledge a successful spawn command."""
+		pass
+
 	@abstractmethod
 	async def aclose(self) -> None:
 		"""Release any resources held by the backend."""
@@ -206,6 +210,11 @@ class MultiBackend(MessengerBackend):
 		finally:
 			for t in tasks:
 				t.cancel()
+
+	async def send_spawn_ack(self, project_key: str, prompt: str | None) -> None:
+		await asyncio.gather(
+			*(b.send_spawn_ack(project_key, prompt) for b in self._backends)
+		)
 
 	async def send_document(
 		self, agent_id: str, path: Path, caption: str | None

@@ -10,6 +10,7 @@ data class Question(
     val question: String = "",
     val format: String = "plain",
     val suggestions: List<String>? = null,
+    val status: String = "pending",
     val created_at: Long = 0
 )
 

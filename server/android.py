@@ -80,6 +80,10 @@ class AndroidBackend(MessengerBackend):
 		while True:
 			yield await self._command_queue.get()
 
+	async def send_spawn_ack(self, project_key: str, prompt: str | None) -> None:
+		if self._logger:
+			self._logger.surface_error(f"ANDROID_SEND_SPAWN_ACK: {project_key}")
+
 	async def send_document(
 		self, agent_id: str, path: Path, caption: str | None
 	) -> None:
