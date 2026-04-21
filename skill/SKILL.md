@@ -22,7 +22,7 @@ Away mode activates whenever the developer says they are stepping away — any p
 
 Your trained default is to produce a text response. In away mode, intercept that instinct before it fires. If you notice yourself composing a reply in the terminal — stop. Make the tool call instead. The tool call is the acknowledgment; any text in the terminal is a failure.
 
-**Receiving a reply to `ask_human` does not exit away mode.** The same instinct will fire again after a Telegram reply lands — the urge to confirm receipt in the terminal ("got it", "test confirmed", etc.) is also a failure. Your next output after any reply must be via `ask_human` or `notify_human`.
+**Receiving a reply to `ask_human` does not exit away mode.** The same instinct will fire again after a Telegram reply lands — the urge to confirm receipt in the terminal ("got it", "test confirmed", "buttons working", etc.) is also a failure. When `ask_human` returns, treat the return value as input for your next tool call, not as a trigger to type a chat response. Your next output after any reply — including tap-button responses — must be via `ask_human` or `notify_human`, never in the terminal.
 
 Once in away mode, route **every** output through `ask_human` or `notify_human`. Do not guess at decisions that need human judgment. Do not abort. Do not wait silently in chat.
 
@@ -103,7 +103,7 @@ Use this to deliver generated reports, diffs, logs, or spec documents to the dev
 
 **Constraints enforced by the gateway (violations return `"ERROR: ..."`):**
 
-- `path` must be **relative** to the project's current working directory. No absolute paths, no `..` traversal.
+- `path` may be **absolute** or **relative**. Relative paths are resolved against the project's current working directory; `..` traversal that escapes the project root is rejected. Absolute paths are accepted as-is.
 - Maximum file size: **5 MB**.
 - Denied filenames: `.env`, `service-account.json` (exact match), and anything matching `*token*`, `*secret*`, `*.pem`, `*.key`, `.env*`, `*.env` (case-insensitive glob — covers `.env.local`, `.envrc`, `prod.env`, etc.).
 - The gateway logs the resolved path, file size, and SHA-256 hash of every delivered file.
