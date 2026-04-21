@@ -278,3 +278,18 @@ async def test_send_document_raises_telegram_error_on_failure(backend, tmp_path)
 		await backend.send_document("IR2", f, caption=None)
 	assert "tok" not in str(excinfo.value)
 	assert "<REDACTED>" in str(excinfo.value)
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_document_raises_telegram_error_on_ok_false(backend, tmp_path):
+	respx.post(f"{BASE}/sendDocument").mock(
+		return_value=httpx.Response(
+			200, json={"ok": False, "description": "Bot was blocked by the user"}
+		)
+	)
+	from server.telegram import TelegramError
+	f = tmp_path / "report.txt"
+	f.write_text("hello")
+	with pytest.raises(TelegramError, match="Bot was blocked by the user"):
+		await backend.send_document("IR2", f, caption=None)

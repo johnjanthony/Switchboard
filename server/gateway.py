@@ -47,15 +47,14 @@ def _validate_path(path_str: str, cwd: Path | None = None) -> Path:
 	"""Return the resolved Path if safe; raise ValueError otherwise."""
 	p = Path(path_str)
 	if p.is_absolute():
-		raise ValueError(f"Absolute paths are not allowed: {path_str}")
-
-	_cwd = (cwd or Path.cwd()).resolve()
-	resolved = (_cwd / p).resolve()
-
-	try:
-		resolved.relative_to(_cwd)
-	except ValueError:
-		raise ValueError(f"Path escapes project directory: {path_str}")
+		resolved = p.resolve()
+	else:
+		_cwd = (cwd or Path.cwd()).resolve()
+		resolved = (_cwd / p).resolve()
+		try:
+			resolved.relative_to(_cwd)
+		except ValueError:
+			raise ValueError(f"Path escapes project directory: {path_str}")
 
 	if not resolved.exists():
 		raise ValueError(f"File not found: {path_str}")
@@ -103,6 +102,7 @@ def build_tool_handlers(
 		try:
 			await backend.send_notification(agent_id, message, format)
 			logger.notify_sent(agent_id, message)
+			_append_session_log(config.log_path, agent_id, "→", message)
 			return "ok"
 		except Exception as exc:
 			logger.tool_error(None, agent_id, str(exc))
@@ -199,6 +199,8 @@ def build_tool_handlers(
 			logger.document_sent(agent_id, str(resolved), size_bytes, sha256, caption)
 		except Exception as exc:
 			logger.surface_error(f"document_audit_failed: {exc}")
+		entry = f"[document: {resolved.name}] {caption}" if caption else f"[document: {resolved.name}]"
+		_append_session_log(config.log_path, agent_id, "→", entry)
 		return "ok"
 
 	return ToolHandlers(

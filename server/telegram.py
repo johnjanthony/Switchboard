@@ -262,6 +262,11 @@ class TelegramBackend(MessengerBackend):
 				files={"document": (path.name, path.read_bytes(), "application/octet-stream")},
 			)
 			resp.raise_for_status()
+			body = resp.json()
+			if not body.get("ok"):
+				raise TelegramError(
+					f"sendDocument failed: {body.get('description', 'unknown error')}"
+				)
 		except httpx.HTTPError as exc:
 			raise TelegramError(self._sanitize(exc)) from None
 

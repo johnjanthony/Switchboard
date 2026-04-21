@@ -71,7 +71,7 @@ def logger(cfg, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_notify_human_calls_backend_and_returns_ok(cfg, logger):
+async def test_notify_human_calls_backend_and_returns_ok(cfg, logger, tmp_path):
 	backend = RecordingBackend()
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
@@ -80,6 +80,11 @@ async def test_notify_human_calls_backend_and_returns_ok(cfg, logger):
 
 	assert result == "ok"
 	assert backend.sent_notifications == [("IR2", "starting migration")]
+
+	sessions_dir = tmp_path / "sessions"
+	session_files = list(sessions_dir.glob("IR2_*.log"))
+	assert len(session_files) == 1
+	assert "starting migration" in session_files[0].read_text()
 
 
 class BrokenNotifyBackend(RecordingBackend):

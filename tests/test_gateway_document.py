@@ -33,10 +33,17 @@ def test_validate_path_accepts_file_in_subdirectory(tmp_path):
 	assert resolved == f.resolve()
 
 
-def test_validate_path_rejects_absolute_path(tmp_path):
+def test_validate_path_accepts_absolute_path(tmp_path):
 	f = tmp_path / "report.txt"
 	f.write_text("hello")
-	with pytest.raises(ValueError, match="Absolute paths"):
+	resolved = _validate_path(str(f), cwd=tmp_path)
+	assert resolved == f.resolve()
+
+
+def test_validate_path_rejects_absolute_path_denylist(tmp_path):
+	f = tmp_path / ".env"
+	f.write_text("SECRET=very_secret")
+	with pytest.raises(ValueError, match="deny list"):
 		_validate_path(str(f), cwd=tmp_path)
 
 
@@ -142,6 +149,14 @@ async def test_send_document_human_success(cfg, logger, tmp_path):
 	assert ev["size_bytes"] == len(b"hello world")
 	assert len(ev["sha256"]) == 64  # SHA-256 hex is always 64 chars
 	assert ev["caption_preview"] == "Here's the report"
+
+	# Session log must record the delivery.
+	sessions_dir = tmp_path / "sessions"
+	session_files = list(sessions_dir.glob("IR2_*.log"))
+	assert len(session_files) == 1
+	session_text = session_files[0].read_text()
+	assert "[document: report.txt]" in session_text
+	assert "Here's the report" in session_text
 
 
 @pytest.mark.asyncio
