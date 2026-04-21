@@ -17,9 +17,12 @@ if TYPE_CHECKING:
 
 RATE_LIMIT_SECONDS = 60
 _TASK_NAME = "SwitchboardSpawn"
+_BASE_INSTRUCTION = (
+	"The developer is currently away. All communications MUST go through the "
+	"switchboard using the ask_human tool with agent_id='{project_key}'."
+)
 _DEFAULT_PROMPT = (
-	"You've been spawned in {project_key}. Use ask_human to ask the developer "
-	"what they'd like you to work on, with agent_id='{project_key}'."
+	"Ask the developer what they'd like you to work on."
 )
 
 
@@ -78,7 +81,9 @@ class SpawnHandler:
 			await self._backend.send_text(f"Unknown project: {project_key}.")
 			return
 
-		effective_prompt = prompt or _DEFAULT_PROMPT.format(project_key=project_key)
+		base = _BASE_INSTRUCTION.format(project_key=project_key)
+		user_prompt = prompt or _DEFAULT_PROMPT
+		effective_prompt = f"{base} {user_prompt}"
 		prompt_preview = prompt
 
 		pending = {"prompt": effective_prompt, "project_path": str(project_path)}

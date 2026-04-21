@@ -29,6 +29,7 @@ class Config:
 	enable_android: bool = False
 	firebase_service_account_json: str | None = None
 	firebase_database_url: str | None = None
+	firebase_storage_bucket: str | None = None
 	spawn_root: Path | None = None
 
 
@@ -62,5 +63,6 @@ def load_config(dotenv_path: str | Path | None = None) -> Config:
 		enable_android=os.environ.get("SWITCHBOARD_ENABLE_ANDROID", "false").lower() == "true",
 		firebase_service_account_json=os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON"),
 		firebase_database_url=os.environ.get("FIREBASE_DATABASE_URL"),
+		firebase_storage_bucket=os.environ.get("FIREBASE_STORAGE_BUCKET"),
 		spawn_root=Path(spawn_root_raw) if spawn_root_raw else None,
 	)

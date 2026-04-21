@@ -95,6 +95,7 @@ async def _run(config: Config) -> None:
 		firebase_backend = FirebaseBackend(
 			service_account_json=config.firebase_service_account_json,
 			database_url=config.firebase_database_url,
+			storage_bucket=config.firebase_storage_bucket,
 			logger=logger
 		)
 		backends.append(firebase_backend)
