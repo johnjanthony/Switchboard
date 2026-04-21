@@ -133,3 +133,22 @@ class JsonlLogger:
 			"argv": argv,
 			"error": error,
 		})
+
+	def document_sent(
+		self,
+		agent_id: str,
+		resolved_path: str,
+		size_bytes: int,
+		sha256_hex: str,
+		caption: str | None,
+	) -> None:
+		event: dict = {
+			"event": "document_sent",
+			"agent_id": agent_id,
+			"path": resolved_path,
+			"size_bytes": size_bytes,
+			"sha256": sha256_hex,
+		}
+		if caption is not None:
+			event["caption_preview"] = _preview(caption)
+		self._write(event)

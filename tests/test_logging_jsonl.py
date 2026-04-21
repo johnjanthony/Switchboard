@@ -93,3 +93,33 @@ def test_spawn_invalid_path_writes_expected_fields(tmp_path):
 	assert ev["project_key"] == "../evil"
 	assert ev["resolved_path"] == "/Work/../evil"
 	assert "ts" in ev
+
+
+def test_document_sent_writes_required_fields(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.document_sent(
+		"IR2", "/work/report.txt", 1024, "abc123def456", caption="Here's the report"
+	)
+	ev = read_events(tmp_path / "log.jsonl")[0]
+	assert ev["event"] == "document_sent"
+	assert ev["agent_id"] == "IR2"
+	assert ev["path"] == "/work/report.txt"
+	assert ev["size_bytes"] == 1024
+	assert ev["sha256"] == "abc123def456"
+	assert ev["caption_preview"] == "Here's the report"
+	assert "ts" in ev
+
+
+def test_document_sent_omits_caption_preview_when_none(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.document_sent("IR2", "/work/report.txt", 512, "deadbeef", caption=None)
+	ev = read_events(tmp_path / "log.jsonl")[0]
+	assert "caption_preview" not in ev
+
+
+def test_document_sent_truncates_long_caption(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	long_caption = "c" * 500
+	logger.document_sent("IR2", "/work/report.txt", 512, "deadbeef", caption=long_caption)
+	ev = read_events(tmp_path / "log.jsonl")[0]
+	assert len(ev["caption_preview"]) == 100

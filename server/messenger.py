@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 CorrelationToken = Any
@@ -62,3 +63,9 @@ class MessengerBackend(ABC):
 	def poll_responses(self) -> AsyncIterator[IncomingResponse]:
 		"""Yield IncomingResponse as replies arrive. Infinite async
 		iterator; the caller cancels the task to stop polling."""
+
+	@abstractmethod
+	async def send_document(
+		self, agent_id: str, path: Path, caption: str | None
+	) -> None:
+		"""Deliver a file to the developer. Fire-and-forget; no reply tracking."""

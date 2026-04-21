@@ -25,6 +25,7 @@ def test_messenger_backend_declares_required_methods():
 		"send_timeout_followup",
 		"send_resolution_confirmation",
 		"poll_responses",
+		"send_document",
 	}
 	declared = {
 		name

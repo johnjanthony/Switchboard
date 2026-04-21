@@ -41,6 +41,16 @@ def _build_fastmcp(handlers) -> FastMCP:
 		the caller is responsible for well-formed HTML in the message body."""
 		return await handlers.notify_human(message, agent_id, format)
 
+	@mcp.tool()
+	async def send_document_human(
+		path: str, agent_id: str, caption: str | None = None
+	) -> str:
+		"""Deliver a file to the developer on Telegram. Non-blocking.
+		path must be relative to the project working directory (no absolute
+		paths, no .. traversal). Max 5 MB. Sensitive filenames (.env, *.pem,
+		*token*, *secret*, *.key, service-account.json) are rejected."""
+		return await handlers.send_document_human(path, agent_id, caption)
+
 	return mcp
 
 

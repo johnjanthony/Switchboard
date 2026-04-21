@@ -20,6 +20,7 @@ class RecordingBackend(MessengerBackend):
 		self.sent_notifications: list[tuple[str, str]] = []
 		self.sent_timeouts: list[tuple[str, str, int, Any]] = []
 		self.sent_confirmations: list[tuple[str, str, Any]] = []
+		self.sent_documents: list[tuple[str, str, Any]] = []
 		self._next_correlation = 1000
 
 	async def send_question(self, request_id, agent_id, question, format="plain"):
@@ -42,6 +43,9 @@ class RecordingBackend(MessengerBackend):
 		self, request_id, agent_id, correlation
 	):
 		self.sent_confirmations.append((request_id, agent_id, correlation))
+
+	async def send_document(self, agent_id, path, caption=None):
+		self.sent_documents.append((agent_id, str(path), caption))
 
 	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
 		if False:

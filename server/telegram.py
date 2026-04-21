@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import AsyncIterator
 
 import httpx
@@ -207,6 +208,22 @@ class TelegramBackend(MessengerBackend):
 			)
 			text = f"Spawning {project_key} with task '{truncated}'. Check Windows Terminal."
 		await self._post_send_message({"text": text})
+
+	async def send_document(
+		self, agent_id: str, path: Path, caption: str | None
+	) -> None:
+		data: dict = {"chat_id": self._chat_id}
+		if caption is not None:
+			data["caption"] = caption
+		try:
+			resp = await self._client.post(
+				f"{self._base}/sendDocument",
+				data=data,
+				files={"document": (path.name, path.read_bytes(), "application/octet-stream")},
+			)
+			resp.raise_for_status()
+		except httpx.HTTPError as exc:
+			raise TelegramError(self._sanitize(exc)) from None
 
 	async def send_text(self, text: str) -> None:
 		await self._post_send_message({"text": text})

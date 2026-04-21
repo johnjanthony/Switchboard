@@ -199,3 +199,51 @@ async def test_preflight_raises_telegram_error_with_redacted_token(backend):
 		await backend.preflight()
 	assert "tok" not in str(excinfo.value)
 	assert "<REDACTED>" in str(excinfo.value)
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_document_posts_to_send_document_endpoint(backend, tmp_path):
+	route = respx.post(f"{BASE}/sendDocument").mock(
+		return_value=httpx.Response(
+			200, json={"ok": True, "result": {"message_id": 5}}
+		)
+	)
+	f = tmp_path / "report.txt"
+	f.write_text("hello world")
+	await backend.send_document("IR2", f, caption=None)
+	assert route.called
+	body = route.calls.last.request.read()
+	assert b"report.txt" in body
+	assert b"hello world" in body
+	assert CHAT_ID.encode() in body
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_document_includes_caption_when_provided(backend, tmp_path):
+	route = respx.post(f"{BASE}/sendDocument").mock(
+		return_value=httpx.Response(
+			200, json={"ok": True, "result": {"message_id": 6}}
+		)
+	)
+	f = tmp_path / "data.csv"
+	f.write_text("a,b,c")
+	await backend.send_document("IR2", f, caption="Monthly report")
+	body = route.calls.last.request.read()
+	assert b"Monthly report" in body
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_document_raises_telegram_error_on_failure(backend, tmp_path):
+	respx.post(f"{BASE}/sendDocument").mock(
+		return_value=httpx.Response(500, text="boom")
+	)
+	from server.telegram import TelegramError
+	f = tmp_path / "report.txt"
+	f.write_text("hello")
+	with pytest.raises(TelegramError) as excinfo:
+		await backend.send_document("IR2", f, caption=None)
+	assert "tok" not in str(excinfo.value)
+	assert "<REDACTED>" in str(excinfo.value)

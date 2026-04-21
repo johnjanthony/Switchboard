@@ -85,6 +85,54 @@ mkdir -p ~/.claude/skills/switchboard
 cp skill/SKILL.md ~/.claude/skills/switchboard/SKILL.md
 ```
 
+## Using
+
+### Away mode
+
+Away mode activates when you tell your agent you're stepping away — any phrasing like *"I'm stepping away"* is sufficient. The agent immediately routes all output through `ask_human` or `notify_human` instead of the terminal.
+
+- **`ask_human(question, agent_id)`** — blocks until you reply; returns your reply text, or `"__TIMEOUT__"` after 24 hours.
+- **`notify_human(message, agent_id)`** — fire-and-forget status update; returns `"ok"` immediately.
+
+To exit away mode, reply *"I'm back"* or equivalent. The agent switches back to normal terminal output.
+
+### Replying to messages
+
+Switchboard correlates your reply to the waiting `ask_human` call using Telegram's reply-to chain. **Long-press the bot's message and tap Reply** before typing your answer. A standalone message (not a reply) will not be correlated and the agent will not unblock.
+
+### Spawning a new Claude Code session from Telegram
+
+With `SWITCHBOARD_SPAWN_ROOT` configured, you can open a new Windows Terminal tab running a fresh Claude Code session directly from your phone:
+
+```text
+/spawn <project-key> <prompt>
+```
+
+`<project-key>` is a subdirectory name under `SWITCHBOARD_SPAWN_ROOT`. For example, if `SWITCHBOARD_SPAWN_ROOT=C:\Work` and you send `/spawn Switchboard review the test suite`, Switchboard opens a new tab running:
+
+```powershell
+claude -p "review the test suite" --dangerously-skip-permissions
+```
+
+in `C:\Work\Switchboard`.
+
+**Prerequisites:**
+
+- Set `SWITCHBOARD_SPAWN_ROOT` in `.env` and restart the service.
+- Register the `SwitchboardSpawn` scheduled task (one-time, elevated PowerShell):
+
+  ```powershell
+  .\scripts\register-spawn-task.ps1
+  ```
+
+- The task fires in your interactive desktop session so Windows Terminal is reachable.
+
+A 60-second rate limit prevents accidental double-spawns. The spawn is audit-logged to `logs/switchboard.jsonl`.
+
+### Formatting Telegram messages
+
+`ask_human` and `notify_human` accept an optional `format` parameter. The default is `"plain"`. Pass `format="html"` to send Telegram HTML-formatted messages — supported tags are `<b>`, `<i>`, `<code>`, `<pre>`, and `<a href="...">`. The agent_id prefix is auto-escaped; the message body is passed through as-is, so the agent is responsible for well-formed HTML.
+
 ## Manual smoke test
 
 With the server running and an agent wired up:

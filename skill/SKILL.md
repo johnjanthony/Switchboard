@@ -5,10 +5,11 @@ description: Use the ask_human and notify_human MCP tools to interact with the d
 
 # Switchboard
 
-Switchboard is a local MCP gateway that lets you reach the developer on their phone while they are away from the desk. It exposes two tools:
+Switchboard is a local MCP gateway that lets you reach the developer on their phone while they are away from the desk. It exposes three tools:
 
 - **`ask_human(question, agent_id)`** — blocks until the developer replies. Returns the reply text, or the sentinel string `"__TIMEOUT__"` if no reply arrives within the server's timeout window (default 24h).
 - **`notify_human(message, agent_id)`** — fire-and-forget status update. Returns `"ok"` immediately.
+- **`send_document_human(path, agent_id, caption?)`** — deliver a file to the developer on Telegram. Fire-and-forget. Returns `"ok"` or `"ERROR: ..."`. See constraints below.
 
 ## When to use it
 
@@ -84,6 +85,24 @@ instead of ending your turn. This keeps the session alive so the developer can q
 Treat `"__TIMEOUT__"` as permission to end the session gracefully.
 
 The "discrete task the developer handed to you" phrasing is load-bearing — do not ping between internal subtasks.
+
+## Sending files with `send_document_human`
+
+Use this to deliver generated reports, diffs, logs, or spec documents to the developer's phone for review. It is fire-and-forget — the agent does not block waiting for a reply. Per the "never end on fire-and-forget" rule, there must always be at least one `ask_human` after any `send_document_human` call.
+
+**Constraints enforced by the gateway (violations return `"ERROR: ..."`):**
+
+- `path` must be **relative** to the project's current working directory. No absolute paths, no `..` traversal.
+- Maximum file size: **5 MB**.
+- Denied filenames: `.env`, `service-account.json` (exact match), and anything matching `*token*`, `*secret*`, `*.pem`, `*.key`, `.env*`, `*.env` (case-insensitive glob — covers `.env.local`, `.envrc`, `prod.env`, etc.).
+- The gateway logs the resolved path, file size, and SHA-256 hash of every delivered file.
+
+**`caption`** is optional (max 1024 characters). Use it to give the developer context: `"Migration diff — 47 tables affected"`.
+
+**Example:**
+```
+send_document_human("logs/migration-diff.txt", "DBMigrate", "Schema diff for review")
+```
 
 ## What not to use it for
 
