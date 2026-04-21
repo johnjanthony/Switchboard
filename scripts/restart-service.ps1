@@ -1,4 +1,4 @@
-param()
+﻿param()
 $ErrorActionPreference = "Stop"
 
 $ServiceName = "switchboard"
@@ -24,3 +24,6 @@ nssm start $ServiceName
 Start-Sleep -Seconds 3
 nssm status $ServiceName
 Write-Host "Done. MCP endpoint: http://localhost:9876/sse"
+Write-Host ""
+Write-Host "WARNING: The MCP connection in any active Claude Code session is now stale."
+Write-Host "Reload the VS Code window (Ctrl+Shift+P > Developer: Reload Window) before stepping away."

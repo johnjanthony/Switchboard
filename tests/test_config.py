@@ -89,3 +89,5 @@ def test_spawn_root_loaded_from_env(monkeypatch, tmp_path):
 	monkeypatch.setenv("SWITCHBOARD_SPAWN_ROOT", str(tmp_path))
 	cfg = load_config(dotenv_path=tmp_path / "no.env")
 	assert cfg.spawn_root == tmp_path
+
+

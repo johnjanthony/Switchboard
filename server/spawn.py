@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from server.config import Config
@@ -14,6 +16,7 @@ if TYPE_CHECKING:
 	from server.telegram import TelegramBackend
 
 RATE_LIMIT_SECONDS = 60
+_TASK_NAME = "SwitchboardSpawn"
 _DEFAULT_PROMPT = (
 	"You've been spawned in {project_key}. Use ask_human to ask the developer "
 	"what they'd like you to work on, with agent_id='{project_key}'."
@@ -25,6 +28,7 @@ class SpawnHandler:
 		self, config: Config, backend: "TelegramBackend", logger: JsonlLogger
 	) -> None:
 		self._spawn_root = config.spawn_root
+		self._pending_path = Path(config.log_path).parent / "spawn-pending.json"
 		self._backend = backend
 		self._logger = logger
 		self._last_spawn_time: datetime | None = None
@@ -77,16 +81,18 @@ class SpawnHandler:
 		effective_prompt = prompt or _DEFAULT_PROMPT.format(project_key=project_key)
 		prompt_preview = prompt
 
+		pending = {"prompt": effective_prompt, "project_path": str(project_path)}
 		try:
-			subprocess.Popen(
-				[
-					"wt", "new-tab", "--",
-					"claude", "-p", effective_prompt,
-					"--dangerously-skip-permissions",
-				],
-				cwd=str(project_path),
+			self._pending_path.write_text(json.dumps(pending), encoding="utf-8")
+			subprocess.run(
+				["schtasks", "/run", "/tn", _TASK_NAME],
+				check=True, capture_output=True,
 			)
 		except Exception as exc:
+			self._pending_path.unlink(missing_ok=True)
+			self._logger.spawn_failed(
+				project_key, str(project_path), [_TASK_NAME], str(exc)
+			)
 			await self._backend.send_text(f"Failed to spawn: {exc}.")
 			return
 

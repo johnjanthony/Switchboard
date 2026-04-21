@@ -95,6 +95,12 @@ Logs: `logs\switchboard.jsonl` (JSONL audit), `logs\nssm-stdout.log` / `nssm-std
 
 NSSM sets `AppDirectory=C:\Work\Switchboard` so `config.py`'s `.env` fallback resolves correctly — credentials stay in `.env`, not the registry.
 
+## Away mode protocol
+
+When John steps away and says to use `ask_human`, **chat is no longer an output channel**. Every response — acknowledgments, status updates, follow-up questions, task-done pings — goes through `ask_human`. This applies after receiving a reply too: the next output is another `ask_human` call, not a chat message. The only exit from away mode is John explicitly saying he's back at his desk.
+
+**Service restarts break the MCP connection.** Restarting Switchboard (via `restart-service.ps1`) tears down the SSE connection — `ask_human` and `notify_human` stop working immediately after. In away mode, treat a service restart as a session-terminating event: call `notify_human` to say the session is ending and why, then restart. Do not attempt further `ask_human` calls after restarting.
+
 ## What belongs in CLAUDE-JOURNAL.md
 
 Any session that produces a decision, a spec revision, or a non-trivial implementation step logs an entry. Format: `## YYYY-MM-DD — short title`, then bullets for: what changed, why, files touched, open follow-ups. Keep entries terse — this is an audit trail, not prose.

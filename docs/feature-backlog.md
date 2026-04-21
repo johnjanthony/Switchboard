@@ -94,6 +94,18 @@ Developer sends a command to the bot; Switchboard spawns a new `claude -p "<prom
 
 ---
 
+## SHIPPED: Run service as user account for spawn support
+
+**Delivered 2026-04-20.** The NSSM service runs as SYSTEM, which lives in Windows Session 0 and has no access to the user's interactive desktop or app execution aliases. Any path-based workaround (injecting `AppData\Local\Microsoft\WindowsApps` into `AppEnvironmentExtra`, or hardcoding the versioned `Program Files\WindowsApps\wt.exe` path) is either fragile or breaks across Windows Terminal updates.
+
+**Fix:** `install-service.ps1` now sets the service logon account to the installing user (`.\%USERNAME%`) via `nssm set switchboard ObjectName`. NSSM prompts for the account password at install time. Running as the user gives the service the correct PATH, app execution aliases, and desktop session — `wt.exe` resolves naturally.
+
+The `SWITCHBOARD_WT_PATH` config field (added to `server/config.py`, `server/spawn.py`, `.env.example`) is retained as an escape hatch for non-standard setups, but is not needed for the normal install path.
+
+**Tradeoff to know:** The service won't start if the account password changes (NSSM stores it at install time). Run `uninstall-service.ps1` + `install-service.ps1` to re-register with the new password.
+
+---
+
 ## Explicitly deferred / not recommended
 
 - **Webhook instead of long-polling getUpdates.** More efficient at scale, but requires exposing a public HTTPS endpoint (or a tunnel). Not worth the infra for a single-user tool.

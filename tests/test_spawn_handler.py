@@ -1,4 +1,4 @@
-"""Tests for SpawnHandler argument parsing, rate limiting, and subprocess launch."""
+"""Tests for SpawnHandler argument parsing, rate limiting, and task scheduler launch."""
 
 from __future__ import annotations
 
@@ -38,6 +38,10 @@ def spawn_dirs(tmp_path):
 	return tmp_path
 
 
+def _pending_path(cfg: Config) -> Path:
+	return Path(cfg.log_path).parent / "spawn-pending.json"
+
+
 # --- spawn not configured ---
 
 @pytest.mark.asyncio
@@ -51,21 +55,21 @@ async def test_spawn_not_configured_sends_error(tmp_path):
 	backend.send_spawn_ack.assert_not_called()
 
 
-# --- four parsing forms ---
+# --- four parsing forms (assert pending JSON content + schtasks call) ---
 
 @pytest.mark.asyncio
 async def test_form1_no_args_uses_spawn_root_and_default_prompt(spawn_dirs):
 	from server.spawn import SpawnHandler, _DEFAULT_PROMPT
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.Popen") as mock_popen:
+	with patch("server.spawn.subprocess.run") as mock_run:
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
 		await handler.handle("/spawn")
-	expected_prompt = _DEFAULT_PROMPT.format(project_key=spawn_dirs.name)
-	mock_popen.assert_called_once_with(
-		["wt", "new-tab", "--", "claude", "-p", expected_prompt, "--dangerously-skip-permissions"],
-		cwd=str(spawn_dirs),
-	)
+	pending = json.loads(_pending_path(cfg).read_text())
+	assert pending["prompt"] == _DEFAULT_PROMPT.format(project_key=spawn_dirs.name)
+	assert pending["project_path"] == str(spawn_dirs)
+	mock_run.assert_called_once()
+	assert mock_run.call_args[0][0] == ["schtasks", "/run", "/tn", "SwitchboardSpawn"]
 	backend.send_spawn_ack.assert_called_once_with(spawn_dirs.name, None)
 
 
@@ -74,14 +78,12 @@ async def test_form2_subdir_no_prompt(spawn_dirs):
 	from server.spawn import SpawnHandler, _DEFAULT_PROMPT
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.Popen") as mock_popen:
+	with patch("server.spawn.subprocess.run"):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
 		await handler.handle("/spawn rpdm/next-gen")
-	expected_prompt = _DEFAULT_PROMPT.format(project_key="rpdm/next-gen")
-	mock_popen.assert_called_once_with(
-		["wt", "new-tab", "--", "claude", "-p", expected_prompt, "--dangerously-skip-permissions"],
-		cwd=str(spawn_dirs / "rpdm" / "next-gen"),
-	)
+	pending = json.loads(_pending_path(cfg).read_text())
+	assert pending["prompt"] == _DEFAULT_PROMPT.format(project_key="rpdm/next-gen")
+	assert pending["project_path"] == str(spawn_dirs / "rpdm" / "next-gen")
 	backend.send_spawn_ack.assert_called_once_with("rpdm/next-gen", None)
 
 
@@ -90,13 +92,12 @@ async def test_form3_no_path_with_prompt(spawn_dirs):
 	from server.spawn import SpawnHandler
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.Popen") as mock_popen:
+	with patch("server.spawn.subprocess.run"):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
 		await handler.handle("/spawn fix the migration")
-	mock_popen.assert_called_once_with(
-		["wt", "new-tab", "--", "claude", "-p", "fix the migration", "--dangerously-skip-permissions"],
-		cwd=str(spawn_dirs),
-	)
+	pending = json.loads(_pending_path(cfg).read_text())
+	assert pending["prompt"] == "fix the migration"
+	assert pending["project_path"] == str(spawn_dirs)
 	backend.send_spawn_ack.assert_called_once_with(spawn_dirs.name, "fix the migration")
 
 
@@ -105,13 +106,12 @@ async def test_form4_subdir_with_prompt(spawn_dirs):
 	from server.spawn import SpawnHandler
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.Popen") as mock_popen:
+	with patch("server.spawn.subprocess.run"):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
 		await handler.handle("/spawn rpdm/next-gen fix the migration")
-	mock_popen.assert_called_once_with(
-		["wt", "new-tab", "--", "claude", "-p", "fix the migration", "--dangerously-skip-permissions"],
-		cwd=str(spawn_dirs / "rpdm" / "next-gen"),
-	)
+	pending = json.loads(_pending_path(cfg).read_text())
+	assert pending["prompt"] == "fix the migration"
+	assert pending["project_path"] == str(spawn_dirs / "rpdm" / "next-gen")
 	backend.send_spawn_ack.assert_called_once_with("rpdm/next-gen", "fix the migration")
 
 
@@ -120,7 +120,6 @@ async def test_form4_subdir_with_prompt(spawn_dirs):
 @pytest.mark.asyncio
 async def test_path_traversal_rejected(tmp_path):
 	from server.spawn import SpawnHandler
-	# Create spawn_root and a sibling dir OUTSIDE spawn_root
 	spawn_root = tmp_path / "projects"
 	spawn_root.mkdir()
 	outside = tmp_path / "outside"
@@ -135,13 +134,11 @@ async def test_path_traversal_rejected(tmp_path):
 		spawn_root=spawn_root,
 	)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.Popen") as mock_popen:
+	with patch("server.spawn.subprocess.run") as mock_run:
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
-		# "../outside" as first token: spawn_root / "../outside" = tmp_path/outside which IS a dir
-		# This passes candidate.is_dir() → case 2 → project_path = spawn_root/"../outside"
-		# resolve() gives tmp_path/outside, which is NOT under spawn_root → ValueError
+		# "../outside" resolves to tmp_path/outside which is outside spawn_root
 		await handler.handle("/spawn ../outside do stuff")
-	mock_popen.assert_not_called()
+	mock_run.assert_not_called()
 	backend.send_text.assert_called_once()
 	assert "Unknown project" in backend.send_text.call_args[0][0]
 
@@ -153,7 +150,7 @@ async def test_rate_limit_blocks_immediate_second_spawn(spawn_dirs):
 	from server.spawn import SpawnHandler
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.Popen"):
+	with patch("server.spawn.subprocess.run"):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
 		await handler.handle("/spawn")
 		backend.send_spawn_ack.reset_mock()
@@ -168,7 +165,7 @@ async def test_rate_limit_clears_after_60_seconds(spawn_dirs):
 	from server.spawn import SpawnHandler, RATE_LIMIT_SECONDS
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.Popen"):
+	with patch("server.spawn.subprocess.run"):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
 		await handler.handle("/spawn")
 		handler._last_spawn_time = handler._last_spawn_time - timedelta(
@@ -180,19 +177,20 @@ async def test_rate_limit_clears_after_60_seconds(spawn_dirs):
 	backend.send_text.assert_not_called()
 
 
-# --- subprocess failure ---
+# --- schtasks failure ---
 
 @pytest.mark.asyncio
-async def test_popen_failure_sends_error(spawn_dirs):
+async def test_schtasks_failure_sends_error_and_cleans_pending(spawn_dirs):
 	from server.spawn import SpawnHandler
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.Popen", side_effect=FileNotFoundError("wt not found")):
+	with patch("server.spawn.subprocess.run", side_effect=FileNotFoundError("schtasks not found")):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
 		await handler.handle("/spawn")
 	backend.send_text.assert_called_once()
 	assert "Failed to spawn" in backend.send_text.call_args[0][0]
 	backend.send_spawn_ack.assert_not_called()
+	assert not _pending_path(cfg).exists()
 
 
 # --- audit log ---
@@ -211,7 +209,7 @@ async def test_spawn_started_logged_on_success(spawn_dirs):
 		spawn_root=spawn_dirs,
 	)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.Popen"):
+	with patch("server.spawn.subprocess.run"):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(str(log_path)))
 		await handler.handle("/spawn")
 	events = [json.loads(line) for line in log_path.read_text().splitlines() if line]

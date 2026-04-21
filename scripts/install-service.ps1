@@ -1,5 +1,7 @@
-#Requires -RunAsAdministrator
-param()
+﻿#Requires -RunAsAdministrator
+param(
+	[string]$ServiceUser = ".$env:USERNAME"
+)
 $ErrorActionPreference = "Stop"
 
 $ServiceName = "switchboard"
@@ -34,6 +36,22 @@ nssm set      $ServiceName AppRotateBytes  5242880
 nssm set      $ServiceName AppRotateOnline 1
 nssm set      $ServiceName Description    "Switchboard MCP gateway for Claude Code agents"
 nssm set      $ServiceName Start          SERVICE_AUTO_START
+
+# Run as the interactive user so the SwitchboardSpawn scheduled task runs in the
+# user desktop session (Session 1) rather than the service Session 0.
+Write-Host "Setting service logon account to '$ServiceUser'..."
+Write-Host "You will be prompted for the account password."
+$cred = Get-Credential -UserName $ServiceUser -Message "Password for Switchboard service account"
+nssm set $ServiceName ObjectName $cred.UserName $cred.GetNetworkCredential().Password
+
+# Register the SwitchboardSpawn scheduled task. The task runs spawn-launcher.ps1
+# as the interactive user (LogonType Interactive) so it executes in the user desktop
+# session where wt.exe is available. The service triggers it via schtasks /run.
+Write-Host "Registering SwitchboardSpawn scheduled task..."
+$action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NonInteractive -File `"$AppDir\scripts\spawn-launcher.ps1`"" -WorkingDirectory $AppDir
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
+$settings  = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+Register-ScheduledTask -TaskName "SwitchboardSpawn" -Action $action -Principal $principal -Settings $settings -Force | Out-Null
 
 # Grant interactive users start/stop rights without requiring admin for restarts.
 # Full rights for BA+SY are included so WRITE_DAC is preserved for future sdset calls.

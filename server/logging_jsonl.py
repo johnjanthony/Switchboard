@@ -118,3 +118,18 @@ class JsonlLogger:
 			"project_key": project_key,
 			"resolved_path": resolved_path,
 		})
+
+	def spawn_failed(
+		self,
+		project_key: str,
+		project_path: str,
+		argv: list[str],
+		error: str,
+	) -> None:
+		self._write({
+			"event": "spawn_failed",
+			"project_key": project_key,
+			"project_path": project_path,
+			"argv": argv,
+			"error": error,
+		})
