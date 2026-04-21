@@ -22,13 +22,13 @@ class RecordingBackend(MessengerBackend):
 		self.sent_confirmations: list[tuple[str, str, Any]] = []
 		self._next_correlation = 1000
 
-	async def send_question(self, request_id, agent_id, question):
+	async def send_question(self, request_id, agent_id, question, format="plain"):
 		correlation = self._next_correlation
 		self._next_correlation += 1
 		self.sent_questions.append((request_id, agent_id, question))
 		return correlation
 
-	async def send_notification(self, agent_id, message):
+	async def send_notification(self, agent_id, message, format="plain"):
 		self.sent_notifications.append((agent_id, message))
 
 	async def send_timeout_followup(
@@ -79,7 +79,7 @@ async def test_notify_human_calls_backend_and_returns_ok(cfg, logger):
 
 
 class BrokenNotifyBackend(RecordingBackend):
-	async def send_notification(self, agent_id, message):
+	async def send_notification(self, agent_id, message, format="plain"):
 		raise RuntimeError("notify boom")
 
 

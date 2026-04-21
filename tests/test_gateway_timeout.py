@@ -43,7 +43,7 @@ async def test_ask_human_returns_sentinel_on_timeout(cfg, logger):
 
 
 class BrokenBackend(RecordingBackend):
-	async def send_question(self, request_id, agent_id, question):
+	async def send_question(self, request_id, agent_id, question, format="plain"):
 		raise RuntimeError("boom")
 
 

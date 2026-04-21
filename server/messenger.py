@@ -30,13 +30,13 @@ class IncomingResponse:
 class MessengerBackend(ABC):
 	@abstractmethod
 	async def send_question(
-		self, request_id: str, agent_id: str, question: str
+		self, request_id: str, agent_id: str, question: str, format: str = "plain"
 	) -> CorrelationToken:
 		"""Deliver the question. Return a backend-specific token that
 		will be matched against `IncomingResponse.correlation` later."""
 
 	@abstractmethod
-	async def send_notification(self, agent_id: str, message: str) -> None:
+	async def send_notification(self, agent_id: str, message: str, format: str = "plain") -> None:
 		"""Fire-and-forget status update; no reply tracking."""
 
 	@abstractmethod

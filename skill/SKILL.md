@@ -45,6 +45,18 @@ Keep the label stable across calls within a session. The developer should be abl
 - Suggest a default when there is one: "Overwrite foo.java with the refactored version? (default: yes)".
 - For multi-choice, put the options in the question: "Use ActiveMQ or Kafka for the new event bus?"
 
+## Formatting messages
+
+Both tools accept an optional `format` parameter: `"plain"` (default) or `"html"`.
+
+When `format="html"`, Telegram renders the message with rich formatting. Use HTML tags — **not** Markdown syntax. Supported tags: `<b>bold</b>`, `<i>italic</i>`, `<code>inline code</code>`, `<pre>code block</pre>`, `<a href="url">link</a>`.
+
+You are responsible for well-formed HTML when using `format="html"`. The gateway escapes the agent_id and request_id prefix automatically, but the message body is passed through as-is — malformed tags will cause Telegram to reject the message.
+
+Use `format="html"` when the message contains structure that benefits from formatting: numbered lists with bold headers, code snippets, file paths. Keep plain-text messages as `format="plain"` (the default) — don't wrap simple one-liners in HTML.
+
+**Never use Markdown syntax** (`**bold**`, `_italic_`, backtick code fences) — Switchboard does not support Markdown or MarkdownV2. Markdown characters sent in plain mode appear as literal characters in Telegram.
+
 ## Handling `"__TIMEOUT__"`
 
 If `ask_human` returns `"__TIMEOUT__"`, the developer did not reply within the window. Do not guess and continue. Instead:

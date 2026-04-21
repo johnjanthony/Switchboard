@@ -39,8 +39,8 @@ def _append_session_log(log_path: str, agent_id: str, direction: str, text: str)
 
 @dataclass
 class ToolHandlers:
-	ask_human: Callable[[str, str], Coroutine[None, None, str]]
-	notify_human: Callable[[str, str], Coroutine[None, None, str]]
+	ask_human: Callable[[str, str, str], Coroutine[None, None, str]]
+	notify_human: Callable[[str, str, str], Coroutine[None, None, str]]
 
 
 def build_tool_handlers(
@@ -49,22 +49,22 @@ def build_tool_handlers(
 	backend: MessengerBackend,
 	logger: JsonlLogger,
 ) -> ToolHandlers:
-	async def notify_human(message: str, agent_id: str) -> str:
+	async def notify_human(message: str, agent_id: str, format: str = "plain") -> str:
 		try:
-			await backend.send_notification(agent_id, message)
+			await backend.send_notification(agent_id, message, format)
 			logger.notify_sent(agent_id, message)
 			return "ok"
 		except Exception as exc:
 			logger.tool_error(None, agent_id, str(exc))
 			return f"ERROR: {exc}"
 
-	async def ask_human(question: str, agent_id: str) -> str:
+	async def ask_human(question: str, agent_id: str, format: str = "plain") -> str:
 		request_id = _new_request_id()
 		started = datetime.now(timezone.utc)
 		correlation = None
 		try:
 			correlation = await backend.send_question(
-				request_id, agent_id, question
+				request_id, agent_id, question, format
 			)
 			future = registry.add(request_id, agent_id, correlation)
 			logger.request_created(request_id, agent_id, question)

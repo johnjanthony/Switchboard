@@ -103,6 +103,79 @@ async def test_send_resolution_confirmation_uses_reply_to(backend):
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_send_question_html_format_includes_parse_mode(backend):
+	route = respx.post(f"{BASE}/sendMessage").mock(
+		return_value=httpx.Response(
+			200, json={"ok": True, "result": {"message_id": 888}}
+		)
+	)
+	correlation = await backend.send_question(
+		"b2c3", "IR2", "<b>Overwrite</b> foo.java?", format="html"
+	)
+	assert correlation == 888
+	body = route.calls.last.request.read().decode()
+	assert "parse_mode" in body
+	assert "HTML" in body
+	assert "<b>Overwrite</b>" in body
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_question_html_format_escapes_agent_id(backend):
+	route = respx.post(f"{BASE}/sendMessage").mock(
+		return_value=httpx.Response(
+			200, json={"ok": True, "result": {"message_id": 889}}
+		)
+	)
+	await backend.send_question("c3d4", "<evil>", "q", format="html")
+	body = route.calls.last.request.read().decode()
+	assert "&lt;evil&gt;" in body
+	assert "<evil>" not in body
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_question_plain_format_omits_parse_mode(backend):
+	route = respx.post(f"{BASE}/sendMessage").mock(
+		return_value=httpx.Response(
+			200, json={"ok": True, "result": {"message_id": 890}}
+		)
+	)
+	await backend.send_question("d4e5", "IR2", "plain q")
+	body = route.calls.last.request.read().decode()
+	assert "parse_mode" not in body
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_notification_html_format_includes_parse_mode(backend):
+	route = respx.post(f"{BASE}/sendMessage").mock(
+		return_value=httpx.Response(
+			200, json={"ok": True, "result": {"message_id": 891}}
+		)
+	)
+	await backend.send_notification("IR2", "<b>done</b>", format="html")
+	body = route.calls.last.request.read().decode()
+	assert "parse_mode" in body
+	assert "HTML" in body
+	assert "<b>done</b>" in body
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_notification_plain_format_omits_parse_mode(backend):
+	route = respx.post(f"{BASE}/sendMessage").mock(
+		return_value=httpx.Response(
+			200, json={"ok": True, "result": {"message_id": 892}}
+		)
+	)
+	await backend.send_notification("IR2", "plain note")
+	body = route.calls.last.request.read().decode()
+	assert "parse_mode" not in body
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_preflight_succeeds_on_valid_token(backend):
 	respx.get(f"{BASE}/getMe").mock(
 		return_value=httpx.Response(

@@ -25,6 +25,10 @@ def _redact_token(text: str, token: str) -> str:
 	return text.replace(f"bot{token}", "bot<REDACTED>")
 
 
+def _html_escape(text: str) -> str:
+	return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 class TelegramBackend(MessengerBackend):
 	BASE_URL = "https://api.telegram.org"
 
@@ -76,21 +80,30 @@ class TelegramBackend(MessengerBackend):
 			raise TelegramError(self._sanitize(exc)) from None
 
 	async def send_question(
-		self, request_id: str, agent_id: str, question: str
+		self, request_id: str, agent_id: str, question: str, format: str = "plain"
 	) -> CorrelationToken:
-		text = (
-			f"[{agent_id} | {request_id}] {question}\n\n"
-			"Reply to this message to answer."
-		)
-		result = await self._post_send_message({
-			"text": text,
-			"reply_markup": {"force_reply": True},
-		})
+		if format == "html":
+			text = (
+				f"[{_html_escape(agent_id)} | {_html_escape(request_id)}] {question}\n\n"
+				"Reply to this message to answer."
+			)
+			payload: dict = {"text": text, "reply_markup": {"force_reply": True}, "parse_mode": "HTML"}
+		else:
+			text = (
+				f"[{agent_id} | {request_id}] {question}\n\n"
+				"Reply to this message to answer."
+			)
+			payload = {"text": text, "reply_markup": {"force_reply": True}}
+		result = await self._post_send_message(payload)
 		return int(result["message_id"])
 
-	async def send_notification(self, agent_id: str, message: str) -> None:
-		text = f"ℹ️ [{agent_id}] {message}"
-		await self._post_send_message({"text": text})
+	async def send_notification(self, agent_id: str, message: str, format: str = "plain") -> None:
+		if format == "html":
+			text = f"ℹ️ [{_html_escape(agent_id)}] {message}"
+			await self._post_send_message({"text": text, "parse_mode": "HTML"})
+		else:
+			text = f"ℹ️ [{agent_id}] {message}"
+			await self._post_send_message({"text": text})
 
 	async def send_timeout_followup(
 		self,

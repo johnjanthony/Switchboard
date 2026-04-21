@@ -26,16 +26,20 @@ def _build_fastmcp(handlers) -> FastMCP:
 	mcp = FastMCP("switchboard")
 
 	@mcp.tool()
-	async def ask_human(question: str, agent_id: str) -> str:
+	async def ask_human(question: str, agent_id: str, format: str = "plain") -> str:
 		"""Block until the developer responds from their phone. Returns
 		the response text, or the sentinel '__TIMEOUT__' if the timeout
-		window elapses."""
-		return await handlers.ask_human(question, agent_id)
+		window elapses. Set format='html' to send the question with Telegram
+		HTML formatting; the caller is responsible for well-formed HTML in
+		the question body."""
+		return await handlers.ask_human(question, agent_id, format)
 
 	@mcp.tool()
-	async def notify_human(message: str, agent_id: str) -> str:
-		"""Fire a status message to the developer. Non-blocking."""
-		return await handlers.notify_human(message, agent_id)
+	async def notify_human(message: str, agent_id: str, format: str = "plain") -> str:
+		"""Fire a status message to the developer. Non-blocking.
+		Set format='html' to send the message with Telegram HTML formatting;
+		the caller is responsible for well-formed HTML in the message body."""
+		return await handlers.notify_human(message, agent_id, format)
 
 	return mcp
 
