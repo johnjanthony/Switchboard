@@ -90,11 +90,15 @@ Security boundary enforced gateway-side:
 
 ---
 
-## Inline keyboard with suggestion buttons
+## SHIPPED: Inline keyboard with suggestion buttons
 
-Resurrect the `suggestions: list[str]` parameter on `ask_human` (was in the original design, cut for scope). Agent passes `["yes","no","abort"]`; Telegram renders tap-able buttons; tapping generates a `callback_query` update instead of a `message`. `TelegramBackend.poll_responses` currently only handles `message.reply_to_message` — it would need to also handle `callback_query` (including answering the callback with `answerCallbackQuery` so the Telegram UI stops showing a spinner). The callback's `data` field carries the chosen suggestion; correlation comes from `callback_query.message.message_id`. Substantive but contained.
+**Delivered 2026-04-21.** `ask_human` now accepts `suggestions: list[str] | None = None`. When provided, Telegram renders tap-able inline buttons; the tapped label is returned as the response. Typed free-text replies still work via Telegram's manual reply gesture.
 
-Deferred until a real yes/no/abort pattern shows up frequently in usage.
+Implementation: `poll_responses` now handles both `message.reply_to_message` (typed replies) and `callback_query` (button taps). Button taps are acknowledged immediately via `answerCallbackQuery` to dismiss Telegram's spinner. Chat-ID filtering applied to callback_query updates (same as messages). `_answer_callback_query` failures are non-fatal — logged as surface_error, response still resolved.
+
+When suggestions are provided, `send_question` sends `inline_keyboard` reply_markup instead of `force_reply`. The two are mutually exclusive in Telegram's API.
+
+5 new tests (108 total). `skill/SKILL.md` updated with usage docs and 64-char label constraint.
 
 ---
 

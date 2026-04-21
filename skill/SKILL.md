@@ -7,8 +7,8 @@ description: Use the ask_human and notify_human MCP tools to interact with the d
 
 Switchboard is a local MCP gateway that lets you reach the developer on their phone while they are away from the desk. It exposes three tools:
 
-- **`ask_human(question, agent_id)`** — blocks until the developer replies. Returns the reply text, or the sentinel string `"__TIMEOUT__"` if no reply arrives within the server's timeout window (default 24h).
-- **`notify_human(message, agent_id)`** — fire-and-forget status update. Returns `"ok"` immediately.
+- **`ask_human(question, agent_id, format?, suggestions?)`** — blocks until the developer replies. Returns the reply text, or the sentinel string `"__TIMEOUT__"` if no reply arrives within the server's timeout window (default 24h).
+- **`notify_human(message, agent_id, format?)`** — fire-and-forget status update. Returns `"ok"` immediately.
 - **`send_document_human(path, agent_id, caption?)`** — deliver a file to the developer on Telegram. Fire-and-forget. Returns `"ok"` or `"ERROR: ..."`. See constraints below.
 
 ## When to use it
@@ -45,6 +45,17 @@ Keep the label stable across calls within a session. The developer should be abl
 - Include enough context that the developer can decide without opening their laptop. Include file paths, commit IDs, or the specific ambiguity you need resolved.
 - Suggest a default when there is one: "Overwrite foo.java with the refactored version? (default: yes)".
 - For multi-choice, put the options in the question: "Use ActiveMQ or Kafka for the new event bus?"
+
+## Suggestion buttons
+
+`ask_human` accepts an optional `suggestions` list. When provided, Telegram renders tap-able inline buttons below the question — the developer taps a button and its label is returned as the response string.
+
+```
+ask_human("Overwrite foo.java?", agent_id, suggestions=["yes", "no", "abort"])
+# → returns "yes", "no", or "abort", or a typed free-text reply
+```
+
+Use suggestions for binary or small-choice decisions where tapping beats typing on mobile. Keep suggestion labels short (under 64 characters each). When suggestions are present, the reply-to gesture is not forced — but the developer can still type a free-text reply using Telegram's manual reply gesture if they want to say something other than the suggestions.
 
 ## Formatting messages
 

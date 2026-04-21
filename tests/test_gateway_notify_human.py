@@ -23,7 +23,7 @@ class RecordingBackend(MessengerBackend):
 		self.sent_documents: list[tuple[str, str, Any]] = []
 		self._next_correlation = 1000
 
-	async def send_question(self, request_id, agent_id, question, format="plain"):
+	async def send_question(self, request_id, agent_id, question, format="plain", suggestions=None):
 		correlation = self._next_correlation
 		self._next_correlation += 1
 		self.sent_questions.append((request_id, agent_id, question))

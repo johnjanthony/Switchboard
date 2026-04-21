@@ -203,6 +203,37 @@ async def test_preflight_raises_telegram_error_with_redacted_token(backend):
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_send_question_with_suggestions_uses_inline_keyboard(backend):
+	route = respx.post(f"{BASE}/sendMessage").mock(
+		return_value=httpx.Response(
+			200, json={"ok": True, "result": {"message_id": 900}}
+		)
+	)
+	await backend.send_question("e5f6", "IR2", "Proceed?", suggestions=["yes", "no", "abort"])
+	body = route.calls.last.request.read().decode()
+	assert "inline_keyboard" in body
+	assert "yes" in body
+	assert "no" in body
+	assert "abort" in body
+	assert "force_reply" not in body
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_question_without_suggestions_uses_force_reply(backend):
+	route = respx.post(f"{BASE}/sendMessage").mock(
+		return_value=httpx.Response(
+			200, json={"ok": True, "result": {"message_id": 901}}
+		)
+	)
+	await backend.send_question("f6g7", "IR2", "Overwrite?")
+	body = route.calls.last.request.read().decode()
+	assert "force_reply" in body
+	assert "inline_keyboard" not in body
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_send_document_posts_to_send_document_endpoint(backend, tmp_path):
 	route = respx.post(f"{BASE}/sendDocument").mock(
 		return_value=httpx.Response(

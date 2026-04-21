@@ -80,21 +80,47 @@ class TelegramBackend(MessengerBackend):
 		except httpx.HTTPError as exc:
 			raise TelegramError(self._sanitize(exc)) from None
 
+	async def _answer_callback_query(self, callback_query_id: str) -> None:
+		try:
+			resp = await self._client.post(
+				f"{self._base}/answerCallbackQuery",
+				json={"callback_query_id": callback_query_id},
+			)
+			resp.raise_for_status()
+		except httpx.HTTPError as exc:
+			if self._logger is not None:
+				self._logger.surface_error(
+					f"answer_callback_query_failed: {self._sanitize(exc)}"
+				)
+
 	async def send_question(
-		self, request_id: str, agent_id: str, question: str, format: str = "plain"
+		self,
+		request_id: str,
+		agent_id: str,
+		question: str,
+		format: str = "plain",
+		suggestions: list[str] | None = None,
 	) -> CorrelationToken:
 		if format == "html":
 			text = (
 				f"[{_html_escape(agent_id)} | {_html_escape(request_id)}] {question}\n\n"
 				"Reply to this message to answer."
 			)
-			payload: dict = {"text": text, "reply_markup": {"force_reply": True}, "parse_mode": "HTML"}
+			payload: dict = {"text": text, "parse_mode": "HTML"}
 		else:
 			text = (
 				f"[{agent_id} | {request_id}] {question}\n\n"
 				"Reply to this message to answer."
 			)
-			payload = {"text": text, "reply_markup": {"force_reply": True}}
+			payload = {"text": text}
+
+		if suggestions:
+			payload["reply_markup"] = {
+				"inline_keyboard": [[{"text": s, "callback_data": s} for s in suggestions]]
+			}
+		else:
+			payload["reply_markup"] = {"force_reply": True}
+
 		result = await self._post_send_message(payload)
 		return int(result["message_id"])
 
@@ -166,6 +192,20 @@ class TelegramBackend(MessengerBackend):
 				data = resp.json()
 				for update in data.get("result", []):
 					self._offset = int(update["update_id"]) + 1
+
+					cq = update.get("callback_query")
+					if cq:
+						cq_chat_id = str(
+							cq.get("message", {}).get("chat", {}).get("id", "")
+						)
+						if cq_chat_id == self._chat_id:
+							await self._answer_callback_query(cq["id"])
+							yield IncomingResponse(
+								correlation=int(cq["message"]["message_id"]),
+								text=cq.get("data", ""),
+							)
+						continue
+
 					msg = update.get("message")
 					if not msg:
 						continue

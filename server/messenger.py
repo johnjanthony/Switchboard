@@ -31,7 +31,12 @@ class IncomingResponse:
 class MessengerBackend(ABC):
 	@abstractmethod
 	async def send_question(
-		self, request_id: str, agent_id: str, question: str, format: str = "plain"
+		self,
+		request_id: str,
+		agent_id: str,
+		question: str,
+		format: str = "plain",
+		suggestions: list[str] | None = None,
 	) -> CorrelationToken:
 		"""Deliver the question. Return a backend-specific token that
 		will be matched against `IncomingResponse.correlation` later."""
