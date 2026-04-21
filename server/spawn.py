@@ -19,7 +19,7 @@ RATE_LIMIT_SECONDS = 60
 _TASK_NAME = "SwitchboardSpawn"
 _BASE_INSTRUCTION = (
 	"The developer is currently away. All communications MUST go through the "
-	"switchboard using the ask_human tool with agent_id='{project_key}'."
+	"switchboard using one or more of it's tools with agent_id='{project_key}'."
 )
 _DEFAULT_PROMPT = (
 	"Ask the developer what they'd like you to work on."
