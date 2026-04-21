@@ -41,7 +41,13 @@ class Registry:
 			correlation=correlation,
 			future=future,
 		)
-		self._by_correlation[correlation] = request_id
+
+		if isinstance(correlation, dict):
+			for b, c in correlation.items():
+				self._by_correlation[(b, c)] = request_id
+		else:
+			self._by_correlation[correlation] = request_id
+
 		return future
 
 	def get(self, request_id: str) -> PendingRequest | None:
@@ -53,9 +59,19 @@ class Registry:
 		request_id = self._by_correlation.pop(correlation, None)
 		if request_id is None:
 			return None
+
 		record = self._pending.pop(request_id, None)
 		if record is None:
 			return None
+
+		# If it was a multi-correlation, clean up the other backends
+		if isinstance(record.correlation, dict):
+			for b, c in record.correlation.items():
+				self._by_correlation.pop((b, c), None)
+		else:
+			# Just in case there were other mappings to this request_id (not expected in current design but for robustness)
+			pass
+
 		if not record.future.done():
 			record.future.set_result(text)
 		return request_id
@@ -63,4 +79,8 @@ class Registry:
 	def remove(self, request_id: str) -> None:
 		record = self._pending.pop(request_id, None)
 		if record is not None:
-			self._by_correlation.pop(record.correlation, None)
+			if isinstance(record.correlation, dict):
+				for b, c in record.correlation.items():
+					self._by_correlation.pop((b, c), None)
+			else:
+				self._by_correlation.pop(record.correlation, None)

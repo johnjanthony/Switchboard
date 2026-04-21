@@ -52,6 +52,14 @@ class RecordingBackend(MessengerBackend):
 			yield  # pragma: no cover
 		return
 
+	async def poll_commands(self) -> AsyncIterator[str]:
+		if False:
+			yield  # pragma: no cover
+		return
+
+	async def aclose(self) -> None:
+		pass
+
 
 @pytest.fixture
 def cfg(tmp_path):

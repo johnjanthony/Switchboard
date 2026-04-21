@@ -9,6 +9,8 @@ import signal
 
 import uvicorn
 from mcp.server.fastmcp import FastMCP
+from starlette.responses import JSONResponse
+from starlette.requests import Request
 
 from server.config import Config, load_config
 from server.gateway import (
@@ -17,9 +19,12 @@ from server.gateway import (
 	dispatch_responses,
 )
 from server.logging_jsonl import JsonlLogger
+from server.messenger import MultiBackend
 from server.registry import Registry
 from server.spawn import SpawnHandler
 from server.telegram import TelegramBackend
+from server.android import AndroidBackend
+from server.firebase import FirebaseBackend
 
 
 def _build_fastmcp(handlers) -> FastMCP:
@@ -66,23 +71,63 @@ async def _run(config: Config) -> None:
 
 	logger = JsonlLogger(config.log_path)
 	registry = Registry()
-	backend = TelegramBackend(
+
+	backends = []
+
+	telegram_backend = TelegramBackend(
 		token=config.telegram_bot_token,
 		chat_id=config.telegram_chat_id,
 		logger=logger,
 	)
+	backends.append(telegram_backend)
 
 	# Preflight: verify token via getMe. Non-fatal per spec §7 — log and continue.
 	try:
-		await backend.preflight()
+		await telegram_backend.preflight()
 	except Exception as exc:
 		logger.surface_error(f"telegram_preflight_failed: {exc}")
+
+	if config.enable_android:
+		android_backend = AndroidBackend(logger=logger)
+		backends.append(android_backend)
+
+	if config.firebase_service_account_json and config.firebase_database_url:
+		firebase_backend = FirebaseBackend(
+			service_account_json=config.firebase_service_account_json,
+			database_url=config.firebase_database_url,
+			logger=logger
+		)
+		backends.append(firebase_backend)
+
+	if len(backends) == 1:
+		backend = backends[0]
+	else:
+		backend = MultiBackend(backends)
 
 	handlers = build_tool_handlers(config, registry, backend, logger)
 	mcp = _build_fastmcp(handlers)
 
+	app = mcp.sse_app()
+
+	if config.enable_android:
+		@app.route("/android/questions", methods=["GET"])
+		async def get_questions(request: Request):
+			return JSONResponse(android_backend.get_pending_questions())
+
+		@app.route("/android/reply", methods=["POST"])
+		async def post_reply(request: Request):
+			data = await request.json()
+			request_id = data.get("request_id")
+			text = data.get("text")
+			if not request_id or text is None:
+				return JSONResponse({"error": "missing fields"}, status_code=400)
+
+			correlation = f"android_{request_id}"
+			await android_backend.simulate_response(correlation, text)
+			return JSONResponse({"status": "ok"})
+
 	uv_config = uvicorn.Config(
-		mcp.sse_app(),
+		app,
 		host=config.host,
 		port=config.port,
 		log_level="info",

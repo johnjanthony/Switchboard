@@ -12,11 +12,19 @@ dist/
 # Secrets and runtime
 .env
 logs/
+serviceAccountKey.json
+google-services.json
 
 # IDE
 .vscode/
 .idea/
 .claude/*
+
+# Gradle
+.gradle/
+**/build/
+local.properties
+*.hprof
 
 # Superpowers implementation plans (scaffolding, not history-worthy)
 docs/superpowers/plans/

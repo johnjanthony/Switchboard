@@ -1,0 +1,91 @@
+"""Android MessengerBackend implementation (Placeholder for development)."""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import AsyncIterator
+
+from server.logging_jsonl import JsonlLogger
+from server.messenger import CorrelationToken, IncomingResponse, MessengerBackend
+
+
+class AndroidBackend(MessengerBackend):
+	def __init__(
+		self,
+		logger: JsonlLogger | None = None,
+	) -> None:
+		self._logger = logger
+		self._response_queue: asyncio.Queue[IncomingResponse] = asyncio.Queue()
+		self._command_queue: asyncio.Queue[str] = asyncio.Queue()
+		self._pending_questions: dict[str, dict] = {}
+
+	async def aclose(self) -> None:
+		pass
+
+	def get_pending_questions(self) -> list[dict]:
+		return list(self._pending_questions.values())
+
+	async def send_question(
+		self,
+		request_id: str,
+		agent_id: str,
+		question: str,
+		format: str = "plain",
+		suggestions: list[str] | None = None,
+	) -> CorrelationToken:
+		correlation = f"android_{request_id}"
+		self._pending_questions[request_id] = {
+			"request_id": request_id,
+			"agent_id": agent_id,
+			"question": question,
+			"format": format,
+			"suggestions": suggestions,
+		}
+		if self._logger:
+			self._logger.surface_error(f"ANDROID_SEND_QUESTION: [{agent_id} | {request_id}] {question}")
+		return correlation
+
+	async def send_notification(self, agent_id: str, message: str, format: str = "plain") -> None:
+		# For now, we don't store notifications, but a real app might want them
+		if self._logger:
+			self._logger.surface_error(f"ANDROID_SEND_NOTIFICATION: [{agent_id}] {message}")
+
+	async def send_timeout_followup(
+		self,
+		request_id: str,
+		agent_id: str,
+		timeout_seconds: int,
+		correlation: CorrelationToken,
+	) -> None:
+		self._pending_questions.pop(request_id, None)
+		if self._logger:
+			self._logger.surface_error(f"ANDROID_SEND_TIMEOUT: [{agent_id} | {request_id}]")
+
+	async def send_resolution_confirmation(
+		self,
+		request_id: str,
+		agent_id: str,
+		correlation: CorrelationToken,
+	) -> None:
+		self._pending_questions.pop(request_id, None)
+		if self._logger:
+			self._logger.surface_error(f"ANDROID_SEND_CONFIRMATION: [{agent_id} | {request_id}]")
+
+	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
+		while True:
+			yield await self._response_queue.get()
+
+	async def poll_commands(self) -> AsyncIterator[str]:
+		while True:
+			yield await self._command_queue.get()
+
+	async def send_document(
+		self, agent_id: str, path: Path, caption: str | None
+	) -> None:
+		if self._logger:
+			self._logger.surface_error(f"ANDROID_SEND_DOCUMENT: [{agent_id}] {path.name}")
+
+	# Method for testing/development to simulate a response from the Android app
+	async def simulate_response(self, correlation: CorrelationToken, text: str) -> None:
+		await self._response_queue.put(IncomingResponse(correlation=correlation, text=text))

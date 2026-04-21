@@ -2,7 +2,7 @@
 
 > A human-in-the-loop input gateway for Claude Code agents.
 
-Switchboard is a locally-hosted MCP server that lets Claude Code agents pause mid-task and ask the developer a question via Telegram. Designed for away-from-desk workflows where the developer has stepped away but wants their agents to continue working unsupervised until they hit a decision that genuinely requires human input.
+Switchboard is a locally-hosted MCP server that lets Claude Code agents pause mid-task and ask the developer a question via Telegram or a native Android app. Designed for away-from-desk workflows where the developer has stepped away but wants their agents to continue working unsupervised until they hit a decision that genuinely requires human input.
 
 See [`docs/superpowers/specs/2026-04-19-switchboard-design.md`](docs/superpowers/specs/2026-04-19-switchboard-design.md) for the full design.
 
@@ -20,7 +20,9 @@ pip install -e ".[dev]"
 
 Switchboard reads its configuration from OS env vars. A `.env` file is loaded as a fallback if present — OS env wins.
 
-Copy the template and fill in the two required values:
+### Core Configuration (Telegram)
+
+Copy the template and fill in the values:
 
 ```bash
 cp .env.example .env
@@ -38,7 +40,27 @@ export TELEGRAM_CHAT_ID="<your numeric chat id>"
 
 **Before your bot can message you:** open your bot in Telegram (search for its @username) and tap **Start** once. Telegram blocks bots from initiating conversations until the user opts in.
 
-Optional tuning (defaults shown):
+### Remote Configuration (Android + Firebase)
+
+To use the Android app remotely (outside your local network) without opening ports, configure Firebase:
+
+1.  **Firebase Project**: Create a project at [console.firebase.google.com](https://console.firebase.google.com/).
+2.  **Realtime Database**: Enable it in "Test Mode" and copy the URL.
+3.  **Service Account**: Generate a key (Project Settings > Service Accounts) and save it as `serviceAccountKey.json`.
+4.  **Environment Variables**:
+    ```bash
+    FIREBASE_DATABASE_URL="https://<your-project>.firebaseio.com/"
+    FIREBASE_SERVICE_ACCOUNT_JSON="C:\Work\Switchboard\serviceAccountKey.json"
+    SWITCHBOARD_ENABLE_ANDROID=true
+    ```
+
+| Variable | Purpose |
+| :--- | :--- |
+| `FIREBASE_DATABASE_URL` | The URL of your Firebase Realtime Database instance. |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | Absolute path to your Firebase service account JSON file. |
+| `SWITCHBOARD_ENABLE_ANDROID` | Set to `true` to enable the Firebase backend and Android integration. |
+
+### Optional tuning (defaults shown)
 
 ```bash
 SWITCHBOARD_HOST=127.0.0.1
@@ -84,6 +106,17 @@ The skill teaches the agent when and how to use `ask_human` / `notify_human`:
 mkdir -p ~/.claude/skills/switchboard
 cp skill/SKILL.md ~/.claude/skills/switchboard/SKILL.md
 ```
+
+## Android App
+
+The project includes a native Android app in the `android/` directory.
+
+### Build and Install
+1.  **Credentials**: Download `google-services.json` from your Firebase project and place it in `android/app/`.
+2.  **Open in Android Studio**: Open the root `Switchboard` folder.
+3.  **Sync & Run**: Click the "Sync Project with Gradle Files" icon, then hit the **Run** button to install on your phone or emulator.
+
+The app uses Firebase Cloud Messaging (FCM) for instant push notifications and Realtime Database for two-way communication with your agents.
 
 ## Using
 

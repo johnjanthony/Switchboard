@@ -160,11 +160,27 @@ def build_tool_handlers(
 		duration_ms = int(
 			(datetime.now(timezone.utc) - started).total_seconds() * 1000
 		)
+
+		# Resolve source for logging
+		source = "unknown"
+		if isinstance(correlation, dict):
+			# Search for the backend that resolved it
+			for b, c in correlation.items():
+				# We don't easily know which one resolved here without more plumbing
+				# but we can at least show it was Multi
+				source = "multi"
+		elif isinstance(correlation, int):
+			source = "telegram"
+		elif str(correlation).startswith("firebase_"):
+			source = "firebase"
+		elif str(correlation).startswith("android_"):
+			source = "android_rest"
+
 		logger.request_resolved(
 			request_id,
 			agent_id,
 			response_text=result,
-			source="telegram",
+			source=source,
 			duration_ms=duration_ms,
 		)
 		try:

@@ -26,6 +26,9 @@ class Config:
 	port: int
 	timeout_seconds: int
 	log_path: str
+	enable_android: bool = False
+	firebase_service_account_json: str | None = None
+	firebase_database_url: str | None = None
 	spawn_root: Path | None = None
 
 
@@ -56,5 +59,8 @@ def load_config(dotenv_path: str | Path | None = None) -> Config:
 		log_path=os.environ.get(
 			"SWITCHBOARD_LOG_PATH", "./logs/switchboard.jsonl"
 		),
+		enable_android=os.environ.get("SWITCHBOARD_ENABLE_ANDROID", "false").lower() == "true",
+		firebase_service_account_json=os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON"),
+		firebase_database_url=os.environ.get("FIREBASE_DATABASE_URL"),
 		spawn_root=Path(spawn_root_raw) if spawn_root_raw else None,
 	)
