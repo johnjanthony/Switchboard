@@ -40,34 +40,26 @@ export TELEGRAM_CHAT_ID="<your numeric chat id>"
 
 **Before your bot can message you:** open your bot in Telegram (search for its @username) and tap **Start** once. Telegram blocks bots from initiating conversations until the user opts in.
 
-### Remote Configuration (Android + Firebase)
+### Environment Variables
 
-To use the Android app remotely (outside your local network) without opening ports, configure Firebase:
-
-1.  **Firebase Project**: Create a project at [console.firebase.google.com](https://console.firebase.google.com/).
-2.  **Realtime Database**: Enable it in "Test Mode" and copy the URL.
-3.  **Service Account**: Generate a key (Project Settings > Service Accounts) and save it as `serviceAccountKey.json`.
-4.  **Environment Variables**:
-    ```bash
-    FIREBASE_DATABASE_URL="https://<your-project>.firebaseio.com/"
-    FIREBASE_SERVICE_ACCOUNT_JSON="C:\Work\Switchboard\serviceAccountKey.json"
-    SWITCHBOARD_ENABLE_ANDROID=true
-    ```
-
-| Variable | Purpose |
-| :--- | :--- |
-| `FIREBASE_DATABASE_URL` | The URL of your Firebase Realtime Database instance. |
-| `FIREBASE_SERVICE_ACCOUNT_JSON` | Absolute path to your Firebase service account JSON file. |
-| `SWITCHBOARD_ENABLE_ANDROID` | Set to `true` to enable the Firebase backend and Android integration. |
-
-### Optional tuning (defaults shown)
-
-```bash
-SWITCHBOARD_HOST=127.0.0.1
-SWITCHBOARD_PORT=9876
-SWITCHBOARD_TIMEOUT_SECONDS=86400      # 24 hours
-SWITCHBOARD_LOG_PATH=./logs/switchboard.jsonl
-```
+| Variable | Required | Default | Purpose |
+| :--- | :--- | :--- | :--- |
+| **Server Settings** | | | |
+| `SWITCHBOARD_HOST` | No | `127.0.0.1` | Local bind address for the SSE/SSE server. |
+| `SWITCHBOARD_PORT` | No | `9876` | Local port for the SSE/SSE server. |
+| `SWITCHBOARD_TIMEOUT_SECONDS` | No | `86400` | How long `ask_human` blocks before returning `__TIMEOUT__`. |
+| `SWITCHBOARD_LOG_PATH` | No | `./logs/switchboard.jsonl` | Path to the event audit log. |
+| **Telegram Channel** | | | |
+| `SWITCHBOARD_ENABLE_TELEGRAM` | No | `false` | Set to `true` to enable the Telegram bot backend. |
+| `TELEGRAM_BOT_TOKEN` | If enabled | | Your bot token from [@BotFather](https://t.me/botfather). |
+| `TELEGRAM_CHAT_ID` | If enabled | | Your numeric chat ID from [@userinfobot](https://t.me/userinfobot). |
+| **Android & Firebase** | | | |
+| `SWITCHBOARD_ENABLE_ANDROID` | No | `false` | Set to `true` to enable the Firebase backend and Android integration. |
+| `FIREBASE_DATABASE_URL` | If enabled | | The URL of your Firebase Realtime Database (e.g. `https://proj.firebaseio.com/`). |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | If enabled | | Absolute path to your Firebase service account key JSON file. |
+| `FIREBASE_STORAGE_BUCKET` | No | | Hostname of your Firebase Storage bucket (for document attachments). |
+| **Session Spawning** | | | |
+| `SWITCHBOARD_SPAWN_ROOT` | No | | Absolute path to the directory containing your project folders for `/spawn`. |
 
 ## Run
 

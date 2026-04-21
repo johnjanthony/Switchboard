@@ -74,18 +74,19 @@ async def _run(config: Config) -> None:
 
 	backends = []
 
-	telegram_backend = TelegramBackend(
-		token=config.telegram_bot_token,
-		chat_id=config.telegram_chat_id,
-		logger=logger,
-	)
-	backends.append(telegram_backend)
+	if config.enable_telegram and config.telegram_bot_token and config.telegram_chat_id:
+		telegram_backend = TelegramBackend(
+			token=config.telegram_bot_token,
+			chat_id=config.telegram_chat_id,
+			logger=logger,
+		)
+		backends.append(telegram_backend)
 
-	# Preflight: verify token via getMe. Non-fatal per spec §7 — log and continue.
-	try:
-		await telegram_backend.preflight()
-	except Exception as exc:
-		logger.surface_error(f"telegram_preflight_failed: {exc}")
+		# Preflight: verify token via getMe. Non-fatal per spec §7 — log and continue.
+		try:
+			await telegram_backend.preflight()
+		except Exception as exc:
+			logger.surface_error(f"telegram_preflight_failed: {exc}")
 
 	if config.enable_android:
 		android_backend = AndroidBackend(logger=logger)
