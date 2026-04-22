@@ -1,15 +1,21 @@
 package io.github.johnjanthony.switchboard
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.text.method.LinkMovementMethod
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.text.HtmlCompat
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
+import io.github.johnjanthony.switchboard.fcm.SwitchboardFirebaseMessagingService
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -31,12 +37,39 @@ import io.github.johnjanthony.switchboard.ui.theme.SwitchboardTheme
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
 
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* permission granted or denied — notifications work either way if already granted */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestNotificationPermission()
+        handleNotificationIntent(intent)
         setContent {
             SwitchboardTheme {
                 MainScreen(viewModel)
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleNotificationIntent(intent)
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
+    private fun handleNotificationIntent(intent: Intent?) {
+        intent?.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_AGENT_ID)?.let { agentId ->
+            viewModel.selectAgent(agentId)
         }
     }
 }

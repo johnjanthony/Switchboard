@@ -10,47 +10,67 @@ import androidx.core.app.NotificationCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import io.github.johnjanthony.switchboard.MainActivity
-import io.github.johnjanthony.switchboard.R
+import java.util.concurrent.atomic.AtomicInteger
 
 class SwitchboardFirebaseMessagingService : FirebaseMessagingService() {
 
-    override fun onMessageReceived(remoteMessage: RemoteMessage) {
-        remoteMessage.notification?.let {
-            sendNotification(it.title ?: "Switchboard", it.body ?: "")
-        }
-    }
+	companion object {
+		const val CHANNEL_QUESTIONS = "switchboard_questions"
+		const val CHANNEL_UPDATES = "switchboard_updates"
+		const val EXTRA_AGENT_ID = "agent_id"
+		private val notificationId = AtomicInteger(1)
+	}
 
-    override fun onNewToken(token: String) {
-        // Topic-based messaging is used, so we don't need to send the token to the server
-    }
+	override fun onMessageReceived(remoteMessage: RemoteMessage) {
+		val title = remoteMessage.notification?.title ?: "Switchboard"
+		val body = remoteMessage.notification?.body ?: return
+		val agentId = remoteMessage.data["agent_id"]
+		val isQuestion = remoteMessage.data.containsKey("request_id")
+		showNotification(title, body, agentId, isQuestion)
+	}
 
-    private fun sendNotification(title: String, messageBody: String) {
-        val intent = Intent(this, MainActivity::class.java)
-        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent,
-            PendingIntent.FLAG_IMMUTABLE
-        )
+	override fun onNewToken(token: String) {
+		// Topic-based messaging — token not needed by server
+	}
 
-        val channelId = "switchboard_channel"
-        val notificationBuilder = NotificationCompat.Builder(this, channelId)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(title)
-            .setContentText(messageBody)
-            .setAutoCancel(true)
-            .setContentIntent(pendingIntent)
+	private fun showNotification(title: String, body: String, agentId: String?, isQuestion: Boolean) {
+		val intent = Intent(this, MainActivity::class.java).apply {
+			addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+			if (agentId != null) putExtra(EXTRA_AGENT_ID, agentId)
+		}
+		val pendingIntent = PendingIntent.getActivity(
+			this, notificationId.get(), intent,
+			PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+		)
 
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+		val channelId = if (isQuestion) CHANNEL_QUESTIONS else CHANNEL_UPDATES
+		val notification = NotificationCompat.Builder(this, channelId)
+			.setSmallIcon(android.R.drawable.ic_dialog_info)
+			.setContentTitle(title)
+			.setContentText(body)
+			.setStyle(NotificationCompat.BigTextStyle().bigText(body))
+			.setAutoCancel(true)
+			.setPriority(if (isQuestion) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
+			.setContentIntent(pendingIntent)
+			.build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                channelId,
-                "Switchboard Notifications",
-                NotificationManager.IMPORTANCE_DEFAULT
-            )
-            notificationManager.createNotificationChannel(channel)
-        }
+		val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+		ensureChannels(manager)
+		manager.notify(notificationId.getAndIncrement(), notification)
+	}
 
-        notificationManager.notify(0, notificationBuilder.build())
-    }
+	private fun ensureChannels(manager: NotificationManager) {
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+			manager.createNotificationChannel(
+				NotificationChannel(CHANNEL_QUESTIONS, "Questions", NotificationManager.IMPORTANCE_HIGH).apply {
+					description = "Agent questions requiring a response"
+				}
+			)
+			manager.createNotificationChannel(
+				NotificationChannel(CHANNEL_UPDATES, "Updates", NotificationManager.IMPORTANCE_DEFAULT).apply {
+					description = "Agent status updates and documents"
+				}
+			)
+		}
+	}
 }
