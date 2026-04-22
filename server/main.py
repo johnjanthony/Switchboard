@@ -28,7 +28,7 @@ from server.firebase import FirebaseBackend
 
 
 def _build_fastmcp(handlers) -> FastMCP:
-	mcp = FastMCP("switchboard")
+	mcp = FastMCP("switchboard", stateless_http=True)
 
 	@mcp.tool()
 	async def ask_human(
@@ -73,6 +73,7 @@ async def _run(config: Config) -> None:
 	registry = Registry()
 
 	backends = []
+	preflight_ok = False
 
 	if config.enable_telegram and config.telegram_bot_token and config.telegram_chat_id:
 		telegram_backend = TelegramBackend(
@@ -85,6 +86,7 @@ async def _run(config: Config) -> None:
 		# Preflight: verify token via getMe. Non-fatal per spec §7 — log and continue.
 		try:
 			await telegram_backend.preflight()
+			preflight_ok = True
 		except Exception as exc:
 			logger.surface_error(f"telegram_preflight_failed: {exc}")
 
@@ -109,14 +111,22 @@ async def _run(config: Config) -> None:
 	handlers = build_tool_handlers(config, registry, backend, logger)
 	mcp = _build_fastmcp(handlers)
 
-	app = mcp.sse_app()
+	app = mcp.streamable_http_app()
+
+	async def healthz(request: Request):
+		return JSONResponse({
+			"pending_count": registry.pending_count,
+			"oldest_pending_age_seconds": registry.oldest_pending_age_seconds,
+			"total_answered": registry.total_answered,
+			"preflight_ok": preflight_ok,
+		})
+
+	app.add_route("/healthz", healthz, methods=["GET"])
 
 	if config.enable_android:
-		@app.route("/android/questions", methods=["GET"])
 		async def get_questions(request: Request):
 			return JSONResponse(android_backend.get_pending_questions())
 
-		@app.route("/android/reply", methods=["POST"])
 		async def post_reply(request: Request):
 			data = await request.json()
 			request_id = data.get("request_id")
@@ -127,6 +137,9 @@ async def _run(config: Config) -> None:
 			correlation = f"android_{request_id}"
 			await android_backend.simulate_response(correlation, text)
 			return JSONResponse({"status": "ok"})
+
+		app.add_route("/android/questions", get_questions, methods=["GET"])
+		app.add_route("/android/reply", post_reply, methods=["POST"])
 
 	uv_config = uvicorn.Config(
 		app,

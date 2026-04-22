@@ -74,7 +74,7 @@ pip install -e ".[dev]"
 python -m server
 ```
 
-Gateway comes up on `http://127.0.0.1:9876`. Point a Claude Code agent at `http://localhost:9876/sse`.
+Gateway comes up on `http://127.0.0.1:9876`. Point a Claude Code agent at `http://localhost:9876/mcp` (HTTP transport, `"type": "http"` in `.claude.json`).
 
 ## Testing
 
@@ -107,7 +107,8 @@ choco install nssm          # install NSSM via Chocolatey
 nssm status switchboard
 
 # Restart after code changes — stops service, runs pytest gate, restarts:
-.\scripts\restart-service.ps1          # elevated PowerShell (do not run while in away mode)
+.\scripts\restart-service.ps1 -SkipTests   # ALWAYS use -SkipTests when running as an agent
+.\scripts\restart-service.ps1              # human-initiated restarts may omit -SkipTests to run the gate
 
 # Re-register the SwitchboardSpawn scheduled task (if missing or after re-install):
 .\scripts\register-spawn-task.ps1      # elevated PowerShell
@@ -115,6 +116,8 @@ nssm status switchboard
 # Remove the service:
 .\scripts\uninstall-service.ps1  # elevated PowerShell
 ```
+
+**Agents rebuilding or restarting the service MUST use `-SkipTests`.** The pytest gate takes ~15 seconds, which consumes the auto-reconnect window (31 seconds) and causes the MCP connection to drop permanently. With `-SkipTests`, the service restarts in ~3 seconds and Claude Code auto-reconnects within the window.
 
 Logs: `logs\switchboard.jsonl` (JSONL audit), `logs\nssm-stdout.log` / `nssm-stderr.log` (uvicorn console).
 

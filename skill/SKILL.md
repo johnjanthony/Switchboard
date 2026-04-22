@@ -3,21 +3,14 @@ name: switchboard
 description: Use the ask_human and notify_human MCP tools to interact with John while he's away from his desk. Invoke ask_human whenever a decision would otherwise stall the task (file overwrite, migration, ambiguous intent, permission to proceed). Invoke notify_human for non-blocking status updates.
 ---
 
-# Switchboard
-
-Switchboard is a local MCP gateway that lets you reach John on his phone while he's away from his desk. It exposes three tools:
-
-- **`ask_human(question, agent_id, format?, suggestions?)`** — blocks until John replies. Returns the reply text, or the sentinel string `"__TIMEOUT__"` if no reply arrives within the server's timeout window (default 24h). Pass `format="markdown"` for rich formatting.
-- **`notify_human(message, agent_id, format?)`** — fire-and-forget status update. Returns `"ok"` immediately. Pass `format="markdown"` for rich formatting.
-- **`send_document_human(path, agent_id, caption?)`** — deliver a file to John. Fire-and-forget. Returns `"ok"` or `"ERROR: ..."`. See constraints below.
-
-## When to use it
+# Away mode — read this first
 
 Away mode activates whenever John says he is stepping away — any phrasing like "I'm stepping away", "stepping away", or "going away mode" is sufficient. No explicit "use ask_human" instruction is required.
 
 **When away mode activates, do not produce any text response in the terminal.** Make a tool call immediately:
 
-- If idle or between tasks: `ask_human` to confirm you have entered away mode and ask what's next.
+- If John gave you tasks before stepping away: `notify_human` to confirm you have entered away mode and are starting work, then proceed. No `ask_human` needed for entry — you don't need a response.
+- If idle (no queued tasks): `ask_human` to confirm you have entered away mode and ask what's next.
 - If mid-task: `notify_human` to report current status, followed by `ask_human` to confirm next steps.
 
 Your trained default is to produce a text response. In away mode, intercept that instinct before it fires. If you notice yourself composing a reply in the terminal — stop. Make the tool call instead. The tool call is the acknowledgment; any text in the terminal is a failure.
@@ -29,6 +22,14 @@ Once in away mode, route **every** output through `ask_human` or `notify_human`.
 **The only exit from away mode is John explicitly saying he is back at his desk** ("I'm back", "back at my desk", etc.). When that message arrives — whether as a reply to `ask_human` or in chat — immediately switch back to normal terminal output. Do not issue another `ask_human` to acknowledge it.
 
 At desk (not in away mode), interact with John normally through chat — Switchboard is not needed.
+
+# Switchboard
+
+Switchboard is a local MCP gateway that lets you reach John on his phone while he's away from his desk. It exposes three tools:
+
+- **`ask_human(question, agent_id, format?, suggestions?)`** — blocks until John replies. Returns the reply text, or the sentinel string `"__TIMEOUT__"` if no reply arrives within the server's timeout window (default 24h). Pass `format="markdown"` for rich formatting.
+- **`notify_human(message, agent_id, format?)`** — fire-and-forget status update. Returns `"ok"` immediately. Pass `format="markdown"` for rich formatting.
+- **`send_document_human(path, agent_id, caption?)`** — deliver a file to John. Fire-and-forget. Returns `"ok"` or `"ERROR: ..."`. See constraints below.
 
 ## Choosing an `agent_id`
 

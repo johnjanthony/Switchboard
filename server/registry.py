@@ -29,6 +29,19 @@ class Registry:
 	def __init__(self) -> None:
 		self._pending: dict[str, PendingRequest] = {}
 		self._by_correlation: dict[Any, str] = {}
+		self.total_answered: int = 0
+
+	@property
+	def pending_count(self) -> int:
+		return len(self._pending)
+
+	@property
+	def oldest_pending_age_seconds(self) -> float | None:
+		if not self._pending:
+			return None
+		now = datetime.now(timezone.utc)
+		oldest = min(r.created_at for r in self._pending.values())
+		return (now - oldest).total_seconds()
 
 	def add(
 		self, request_id: str, agent_id: str, correlation: Any
@@ -74,6 +87,7 @@ class Registry:
 
 		if not record.future.done():
 			record.future.set_result(text)
+		self.total_answered += 1
 		return request_id
 
 	def remove(self, request_id: str) -> None:
