@@ -112,6 +112,12 @@ When suggestions are provided, `send_question` sends `inline_keyboard` reply_mar
 
 ---
 
+## Maintenance & Housekeeping
+
+- **Database ageout sweep.** Periodically clean up old questions, responses, and documents from Firebase (e.g., delete entries older than 30 days). This prevents the Realtime Database and Storage from growing indefinitely and keeps the Android app's history retrieval performant.
+
+---
+
 ## Explicitly deferred / not recommended
 
 - **Webhook instead of long-polling getUpdates.** More efficient at scale, but requires exposing a public HTTPS endpoint (or a tunnel). Not worth the infra for a single-user tool.

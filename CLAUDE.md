@@ -1,6 +1,6 @@
 # Switchboard — Agent Orientation
 
-Switchboard is a local MCP gateway that lets Claude Code agents pause mid-task and request human input from the developer. Responses come back from Telegram on mobile. The gateway exists to support *away mode* — at-desk interaction continues to use the normal VS Code chat UI.
+Switchboard is a local MCP gateway that lets Claude Code agents pause mid-task and request human input from John. Responses come back from his phone. The gateway exists to support *away mode* — at-desk interaction continues to use the normal VS Code chat UI.
 
 This file is the quick-orient doc for any Claude Code agent working **on Switchboard itself**. Agents that merely *consume* Switchboard don't need this — they just call `ask_human` / `notify_human`.
 
@@ -16,9 +16,9 @@ If any of these disagree with the 2026-04-19 spec, the 2026-04-19 spec wins.
 
 ## Project shape
 
-Single Python process, one asyncio event loop, MCP HTTP/SSE server on `localhost:9876`, Telegram bot as the only response surface. No web UI, no ntfy.
+Single Python process, one asyncio event loop, MCP HTTP/SSE server on `localhost:9876`, with pluggable backends (Android/Firebase, Telegram). No web UI, no ntfy.
 
-Switchboard exists specifically for **away mode** — when the developer has stepped away and the VS Code chat UI is no longer being watched. At-desk interaction uses the normal VS Code chat channel.
+Switchboard exists specifically for **away mode** — when John has stepped away and the VS Code chat UI is no longer being watched. At-desk interaction uses the normal VS Code chat channel.
 
 Registry is in-memory (`dict[request_id, asyncio.Future]`). Restart = pending requests are lost and waiting agents time out.
 
@@ -33,6 +33,8 @@ server/
   registry.py          PendingRequest + Registry (in-memory, correlation index)
   messenger.py         MessengerBackend ABC + IncomingResponse
   telegram.py          Telegram MessengerBackend implementation (httpx)
+  android.py           Android/Firebase MessengerBackend implementation
+  firebase.py          Firebase admin logic for Android/Telegram backend
   gateway.py           Tool handlers (ask_human, notify_human) + dispatch loops
   spawn.py             Telegram-triggered Claude Code session spawner
   logging_jsonl.py     JSONL audit log
@@ -69,7 +71,7 @@ pytest                 # all tests
 pytest tests/test_registry.py -v
 ```
 
-Integration tests run in-process; no external services required. The Telegram client is mocked.
+Integration tests run in-process; no external services required. The backends (Telegram, Firebase) are mocked.
 
 ## Conventions
 
@@ -77,8 +79,8 @@ Integration tests run in-process; no external services required. The Telegram cl
 - **Tool handlers stay thin.** `ask_human` in `gateway.py` should create the pending record, broadcast it to surfaces, and `await future` — nothing else. Complexity lives in the per-surface modules.
 - **Surfaces are independently degradable.** Missing env vars disable a surface but the gateway still starts. Tests cover the degraded-startup paths.
 - **No DB, no persistence.** Stick to the in-memory design unless the spec is formally revised.
-- **Line endings: CRLF** (per developer's global convention). Verify with `file <path>` after editing.
-- **Comments sparingly.** Explain why, not what. See the top-level `CLAUDE.md` in the developer's home if you need the full protocol.
+- **Line endings: CRLF** (per John's global convention). Verify with `file <path>` after editing.
+- **Comments sparingly.** Explain why, not what. See the top-level `CLAUDE.md` in John's home if you need the full protocol.
 
 ## Service management (Windows service via NSSM)
 

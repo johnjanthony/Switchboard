@@ -2,7 +2,7 @@
 
 > A human-in-the-loop input gateway for Claude Code agents.
 
-Switchboard is a locally-hosted MCP server that lets Claude Code agents pause mid-task and ask the developer a question via Telegram or a native Android app. Designed for away-from-desk workflows where the developer has stepped away but wants their agents to continue working unsupervised until they hit a decision that genuinely requires human input.
+Switchboard is a locally-hosted MCP server that lets Claude Code agents pause mid-task and ask John a question via a native Android app or Telegram. Designed for away-from-desk workflows where John has stepped away but wants his agents to continue working unsupervised until they hit a decision that genuinely requires human input.
 
 See [`docs/superpowers/specs/2026-04-19-switchboard-design.md`](docs/superpowers/specs/2026-04-19-switchboard-design.md) for the full design.
 
@@ -116,14 +116,17 @@ The app uses Firebase Cloud Messaging (FCM) for instant push notifications and R
 
 Away mode activates when you tell your agent you're stepping away — any phrasing like *"I'm stepping away"* is sufficient. The agent immediately routes all output through `ask_human` or `notify_human` instead of the terminal.
 
-- **`ask_human(question, agent_id)`** — blocks until you reply; returns your reply text, or `"__TIMEOUT__"` after 24 hours.
+- **`ask_human(question, agent_id)`** — blocks until John replies; returns the reply text, or `"__TIMEOUT__"` after 24 hours.
 - **`notify_human(message, agent_id)`** — fire-and-forget status update; returns `"ok"` immediately.
 
 To exit away mode, reply *"I'm back"* or equivalent. The agent switches back to normal terminal output.
 
 ### Replying to messages
 
-Switchboard correlates your reply to the waiting `ask_human` call using Telegram's reply-to chain. **Long-press the bot's message and tap Reply** before typing your answer. A standalone message (not a reply) will not be correlated and the agent will not unblock.
+Switchboard correlates your reply to the waiting `ask_human` call using the client's reply gesture. 
+
+- **Telegram**: **Long-press the bot's message and tap Reply** before typing your answer. A standalone message (not a reply) will not be correlated and the agent will not unblock.
+- **Android App**: Use the reply field at the bottom of the agent's chat tab.
 
 ### Spawning a new Claude Code session from Telegram
 
