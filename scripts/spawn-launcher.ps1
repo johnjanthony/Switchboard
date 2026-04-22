@@ -8,7 +8,7 @@ if ($params.PSObject.Properties.Name -contains 'agents') {
 	# Collab spawn: open one tab per agent
 	foreach ($agent in $params.agents) {
 		$escapedPath   = $agent.project_path.Replace("'", "''")
-		$escapedPrompt = $agent.prompt.Replace("'", "''")
+		$escapedPrompt = $agent.prompt.Replace("'", "''").Replace('"', '\"')
 		$command = "Set-Location '$escapedPath'; claude '$escapedPrompt' --dangerously-skip-permissions"
 		$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 		Start-Process -FilePath "wt" -ArgumentList "new-tab", "--", "powershell.exe", "-EncodedCommand", $encoded
@@ -17,7 +17,7 @@ if ($params.PSObject.Properties.Name -contains 'agents') {
 } else {
 	# Single-agent spawn: existing behaviour
 	$escapedPath   = $params.project_path.Replace("'", "''")
-	$escapedPrompt = $params.prompt.Replace("'", "''")
+	$escapedPrompt = $params.prompt.Replace("'", "''").Replace('"', '\"')
 	$command = "Set-Location '$escapedPath'; claude '$escapedPrompt' --dangerously-skip-permissions"
 	$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 	Start-Process -FilePath "wt" -ArgumentList "new-tab", "--", "powershell.exe", "-EncodedCommand", $encoded
