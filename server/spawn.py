@@ -18,11 +18,11 @@ if TYPE_CHECKING:
 RATE_LIMIT_SECONDS = 60
 _TASK_NAME = "SwitchboardSpawn"
 _BASE_INSTRUCTION = (
-	"The developer is currently away. All communications MUST go through the "
+	"John is currently away. All communications MUST go through the "
 	"switchboard using one or more of it's tools with agent_id='{project_key}'."
 )
 _DEFAULT_PROMPT = (
-	"Ask the developer what they'd like you to work on."
+	"Ask John what he'd like you to work on."
 )
 
 
