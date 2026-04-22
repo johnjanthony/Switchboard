@@ -283,7 +283,8 @@ async def test_message_and_await_agent_relay_calls_write_session_message(tmp_pat
 	task = asyncio.create_task(
 		handlers.message_and_await_agent("proj-abc1", "proj-abc1-1", "relay this")
 	)
-	await asyncio.sleep(0)
+	await asyncio.sleep(0)  # let message_and_await_agent run and create relay task
+	await asyncio.sleep(0)  # let relay task execute
 	assert len(backend.session_messages) == 1
 	assert backend.session_messages[0] == ("proj-abc1", "proj-abc1-1", "collab", "relay this")
 	task.cancel()
