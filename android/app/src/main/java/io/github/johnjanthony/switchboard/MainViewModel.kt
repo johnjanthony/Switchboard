@@ -29,7 +29,8 @@ data class Message(
     val isQuestion: Boolean = false,
     val suggestions: List<String>? = null,
     val documentUrl: String? = null,
-    val fileName: String? = null
+    val fileName: String? = null,
+    val format: String = "plain"
 )
 
 class MainViewModel : ViewModel() {
@@ -39,6 +40,9 @@ class MainViewModel : ViewModel() {
     // Group history by agent_id
     private val _history = mutableStateOf<Map<String, List<Message>>>(emptyMap())
     val history: State<Map<String, List<Message>>> = _history
+
+    private val _waitingAgents = mutableStateOf<Set<String>>(emptySet())
+    val waitingAgents: State<Set<String>> = _waitingAgents
 
     private val _selectedAgentId = mutableStateOf<String?>(null)
     val selectedAgentId: State<String?> = _selectedAgentId
@@ -51,6 +55,7 @@ class MainViewModel : ViewModel() {
     private val responsesRef = database.getReference("responses")
     private val commandsRef = database.getReference("commands")
     private val documentsRef = database.getReference("documents")
+    private val notificationsRef = database.getReference("notifications")
     private val sessionsRef = database.getReference("sessions")
 
     init {
@@ -72,6 +77,8 @@ class MainViewModel : ViewModel() {
         }
 
         questionsRef.addValueEventListener(dbListener)
+        responsesRef.addValueEventListener(dbListener)
+        notificationsRef.addValueEventListener(dbListener)
         documentsRef.addValueEventListener(dbListener)
         sessionsRef.addValueEventListener(dbListener)
     }
@@ -80,8 +87,18 @@ class MainViewModel : ViewModel() {
         // Fetch all relevant nodes and merge them
         sessionsRef.get().addOnSuccessListener { sessionSnapshot ->
             questionsRef.get().addOnSuccessListener { questionSnapshot ->
-                documentsRef.get().addOnSuccessListener { documentSnapshot ->
-                    processUpdates(sessionSnapshot, questionSnapshot, documentSnapshot)
+                responsesRef.get().addOnSuccessListener { responseSnapshot ->
+                    notificationsRef.get().addOnSuccessListener { notificationSnapshot ->
+                        documentsRef.get().addOnSuccessListener { documentSnapshot ->
+                            processUpdates(
+                                sessionSnapshot,
+                                questionSnapshot,
+                                responseSnapshot,
+                                notificationSnapshot,
+                                documentSnapshot
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -90,6 +107,8 @@ class MainViewModel : ViewModel() {
     private fun processUpdates(
         sessionSnapshot: DataSnapshot,
         questionSnapshot: DataSnapshot,
+        responseSnapshot: DataSnapshot,
+        notificationSnapshot: DataSnapshot,
         documentSnapshot: DataSnapshot
     ) {
         val openSessions = mutableMapOf<String, Long>() // agent_id -> last_activity
@@ -103,21 +122,27 @@ class MainViewModel : ViewModel() {
 
         val newQuestions = mutableListOf<Question>()
         val updatedHistory = mutableMapOf<String, List<Message>>()
+        val waitingAgentsSet = mutableSetOf<String>()
         var autoSelectTarget: String? = null
 
         // Group messages by agent for open sessions
         val historyMap = mutableMapOf<String, MutableList<Message>>()
+        
+        // Track request_id -> agent_id to correctly place responses
+        val requestToAgent = mutableMapOf<String, String>()
 
         // Process Questions
         for (child in questionSnapshot.children) {
             val q = child.getValue(Question::class.java) ?: continue
+            requestToAgent[q.request_id] = q.agent_id
             
             // Track active questions for the UI (red dots, input fields)
             if (q.status == "pending") {
                 newQuestions.add(q)
+                waitingAgentsSet.add(q.agent_id)
             }
 
-            // Only add to history and potentially auto-select if session is open
+            // Only add to history if session is open
             if (openSessions.containsKey(q.agent_id)) {
                 val isNew = !processedRequestIds.contains(q.request_id)
                 if (isNew && q.status == "pending") {
@@ -133,9 +158,68 @@ class MainViewModel : ViewModel() {
                         sender = q.agent_id,
                         timestamp = q.created_at,
                         isQuestion = true,
-                        suggestions = q.suggestions
+                        suggestions = q.suggestions,
+                        format = q.format
                     )
                 )
+            }
+        }
+
+        // Process Responses (Replies to questions)
+        for (child in responseSnapshot.children) {
+            val requestId = child.key ?: continue
+            val text = child.child("text").getValue(String::class.java) ?: ""
+            val timestamp = child.child("timestamp").getValue(Long::class.java) ?: 0L
+            val agentId = requestToAgent[requestId] ?: child.child("agent_id").getValue(String::class.java) ?: continue
+
+            if (openSessions.containsKey(agentId)) {
+                val agentMessages = historyMap.getOrPut(agentId) { mutableListOf() }
+                // Avoid duplicates if we just added it locally
+                if (agentMessages.none { it.id == "resp_$requestId" }) {
+                    agentMessages.add(
+                        Message(
+                            id = "resp_$requestId",
+                            text = text,
+                            sender = "Me",
+                            timestamp = timestamp,
+                            isQuestion = false
+                        )
+                    )
+                }
+            }
+        }
+
+        // Process Notifications (System or agent updates)
+        for (child in notificationSnapshot.children) {
+            val id = child.key ?: continue
+            val agentId = child.child("agent_id").getValue(String::class.java) ?: ""
+            val message = child.child("message").getValue(String::class.java) ?: ""
+            val format = child.child("format").getValue(String::class.java) ?: "plain"
+            val timestamp = child.child("timestamp").getValue(Long::class.java) ?: 0L
+            val status = child.child("status").getValue(String::class.java) ?: "read"
+
+            if (openSessions.containsKey(agentId)) {
+                val isNew = !processedRequestIds.contains(id)
+                if (isNew && status == "unread") {
+                    processedRequestIds.add(id)
+                    // We don't auto-select for notifications usually, but we could
+                }
+
+                val agentMessages = historyMap.getOrPut(agentId) { mutableListOf() }
+                agentMessages.add(
+                    Message(
+                        id = id,
+                        text = message,
+                        sender = agentId,
+                        timestamp = timestamp,
+                        isQuestion = false,
+                        format = format
+                    )
+                )
+                
+                if (status == "unread") {
+                    waitingAgentsSet.add(agentId)
+                }
             }
         }
 
@@ -154,6 +238,10 @@ class MainViewModel : ViewModel() {
                 if (isNew && status == "unread") {
                     processedRequestIds.add(id)
                     autoSelectTarget = agentId
+                }
+
+                if (status == "unread") {
+                    waitingAgentsSet.add(agentId)
                 }
 
                 val agentMessages = historyMap.getOrPut(agentId) { mutableListOf() }
@@ -186,6 +274,7 @@ class MainViewModel : ViewModel() {
 
         _questions.value = newQuestions
         _history.value = updatedHistory
+        _waitingAgents.value = waitingAgentsSet
 
         if (autoSelectTarget != null && !isUserTyping) {
             _selectedAgentId.value = autoSelectTarget
@@ -200,6 +289,28 @@ class MainViewModel : ViewModel() {
 
     fun selectAgent(agentId: String) {
         _selectedAgentId.value = agentId
+        
+        // Mark notifications as read for this agent
+        notificationsRef.get().addOnSuccessListener { snapshot ->
+            for (child in snapshot.children) {
+                if (child.child("agent_id").getValue(String::class.java) == agentId &&
+                    child.child("status").getValue(String::class.java) == "unread"
+                ) {
+                    child.ref.child("status").setValue("read")
+                }
+            }
+        }
+        
+        // Mark documents as read for this agent
+        documentsRef.get().addOnSuccessListener { snapshot ->
+            for (child in snapshot.children) {
+                if (child.child("agent_id").getValue(String::class.java) == agentId &&
+                    child.child("status").getValue(String::class.java) == "unread"
+                ) {
+                    child.ref.child("status").setValue("read")
+                }
+            }
+        }
     }
 
     fun closeSession(agentId: String) {
@@ -223,9 +334,11 @@ class MainViewModel : ViewModel() {
     }
 
     fun answerQuestion(requestId: String, agentId: String, text: String) {
+        val timestamp = System.currentTimeMillis()
         val response = mapOf(
             "text" to text,
-            "timestamp" to System.currentTimeMillis()
+            "agent_id" to agentId,
+            "timestamp" to timestamp
         )
         
         // Update local history immediately for snappy UI
@@ -237,7 +350,7 @@ class MainViewModel : ViewModel() {
                     id = "resp_$requestId",
                     text = text,
                     sender = "Me",
-                    timestamp = System.currentTimeMillis(),
+                    timestamp = timestamp,
                     isQuestion = false
                 )
             )

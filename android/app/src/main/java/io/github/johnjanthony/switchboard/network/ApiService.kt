@@ -5,13 +5,13 @@ import retrofit2.http.GET
 import retrofit2.http.POST
 
 data class Question(
-    val request_id: String = "",
-    val agent_id: String = "",
-    val question: String = "",
-    val format: String = "plain",
-    val suggestions: List<String>? = null,
-    val status: String = "pending",
-    val created_at: Long = 0
+    var request_id: String = "",
+    var agent_id: String = "",
+    var question: String = "",
+    var format: String = "plain",
+    var suggestions: List<String>? = null,
+    var status: String = "pending",
+    var created_at: Long = 0
 )
 
 data class ReplyRequest(

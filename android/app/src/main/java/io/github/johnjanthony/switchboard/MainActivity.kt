@@ -1,20 +1,23 @@
 package io.github.johnjanthony.switchboard
 
 import android.os.Bundle
+import android.text.method.LinkMovementMethod
+import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.text.HtmlCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Email
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -44,6 +47,7 @@ fun MainScreen(viewModel: MainViewModel) {
     val questions by viewModel.questions
     val history by viewModel.history
     val selectedAgentId by viewModel.selectedAgentId
+    val waitingAgents by viewModel.waitingAgents
     var showSpawnDialog by remember { mutableStateOf(false) }
     var closeTargetAgentId by remember { mutableStateOf<String?>(null) }
 
@@ -68,7 +72,7 @@ fun MainScreen(viewModel: MainViewModel) {
                         contentColor = MaterialTheme.colorScheme.primary
                     ) {
                         agents.forEach { agentId ->
-                            val isWaiting = questions.any { it.agent_id == agentId }
+                            val isWaiting = waitingAgents.contains(agentId)
                             Tab(
                                 selected = selectedAgentId == agentId,
                                 onClick = { viewModel.selectAgent(agentId) },
@@ -184,7 +188,7 @@ fun ChatView(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        Box(modifier = Modifier.weight(1f)) {
+        Box(modifier = Modifier.weight(1f).background(MaterialTheme.colorScheme.surfaceVariant)) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
@@ -216,8 +220,8 @@ fun MessageBubble(
 ) {
     val isMe = message.sender == "Me"
     val alignment = if (isMe) Alignment.End else Alignment.Start
-    val color = if (isMe) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
-    val textColor = if (isMe) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+    val color = if (isMe) MaterialTheme.colorScheme.primaryContainer else androidx.compose.ui.graphics.Color.Black
+    val textColor = if (isMe) MaterialTheme.colorScheme.onPrimaryContainer else androidx.compose.ui.graphics.Color.White
 
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalAlignment = alignment) {
         Surface(
@@ -252,6 +256,31 @@ fun MessageBubble(
                     ) {
                         Text("Open")
                     }
+                } else if (message.format == "markdown" || message.format == "html") {
+                    AndroidView(
+                        factory = { ctx ->
+                            val markwon = io.noties.markwon.Markwon.builder(ctx)
+                                .usePlugin(io.noties.markwon.html.HtmlPlugin.create())
+                                .usePlugin(object : io.noties.markwon.AbstractMarkwonPlugin() {
+                                    override fun configureTheme(builder: io.noties.markwon.core.MarkwonTheme.Builder) {
+                                        builder
+                                            .codeTextColor(android.graphics.Color.argb(255, 0x4D, 0xD0, 0xE1))
+                                            .codeBackgroundColor(android.graphics.Color.argb(255, 0x2D, 0x2D, 0x2D))
+                                    }
+                                })
+                                .build()
+                            TextView(ctx).apply {
+                                textSize = 16f
+                                movementMethod = LinkMovementMethod.getInstance()
+                                tag = markwon
+                            }
+                        },
+                        update = { tv ->
+                            val markwon = tv.tag as io.noties.markwon.Markwon
+                            markwon.setMarkdown(tv, message.text)
+                            tv.setTextColor(textColor.toArgb())
+                        }
+                    )
                 } else {
                     Text(
                         text = message.text,
@@ -277,6 +306,7 @@ fun ChatInput(
     onTyping: (Boolean) -> Unit
 ) {
     var replyText by remember { mutableStateOf("") }
+    var showSuggestions by remember { mutableStateOf(true) }
 
     LaunchedEffect(replyText) {
         onTyping(replyText.isNotBlank())
@@ -286,30 +316,49 @@ fun ChatInput(
         tonalElevation = 8.dp,
         shadowElevation = 8.dp
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            if (question.suggestions != null) {
-                Text(
-                    "Suggestions:",
-                    style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
-                Column(
-                    modifier = Modifier.padding(bottom = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+        Column(modifier = Modifier.padding(bottom = 16.dp, start = 16.dp, end = 16.dp, top = 8.dp)) {
+            val suggestions = question.suggestions
+            if (suggestions != null && suggestions.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    question.suggestions.chunked(3).forEach { rowSuggestions ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            rowSuggestions.forEach { suggestion ->
-                                AssistChip(
-                                    onClick = { onAnswer(question.request_id, suggestion) },
-                                    label = { Text(suggestion) }
+                    Text(
+                        "Suggestions",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    IconButton(
+                        onClick = { showSuggestions = !showSuggestions },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            if (showSuggestions) Icons.Default.ArrowDropDown else Icons.Default.ArrowDropDown,
+                            contentDescription = "Toggle Suggestions"
+                        )
+                    }
+                }
+
+                if (showSuggestions) {
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(vertical = 4.dp).fillMaxWidth()
+                    ) {
+                        items(suggestions) { suggestion ->
+                            AssistChip(
+                                onClick = { onAnswer(question.request_id, suggestion) },
+                                label = { Text(suggestion) },
+                                colors = AssistChipDefaults.assistChipColors(
+                                    containerColor = MaterialTheme.colorScheme.secondaryContainer
                                 )
-                            }
+                            )
                         }
                     }
                 }
-                Spacer(modifier = Modifier.height(16.dp))
             }
+
+            Spacer(modifier = Modifier.height(4.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
@@ -430,12 +479,12 @@ fun MainScreenPreview() {
                                 MessageBubble(Message("1", "Hello?", "Agent1", 0L, true), { _, _ -> })
                             }
                             item {
-                                MessageBubble(Message("2", "Hi!", "Me", 0L, false), { _, _ -> })
+                                MessageBubble(Message("2", "I answered this previously", "Me", 0L, false), { _, _ -> })
                             }
                         }
                     }
                     ChatInput(
-                        question = Question(request_id = "1", agent_id = "Agent1", question = "How are you?", suggestions = listOf("Good", "Busy")),
+                        question = Question(request_id = "1", agent_id = "Agent1", question = "How are you?", suggestions = listOf("Good", "Busy", "Tired", "Excited")),
                         onAnswer = { _, _ -> },
                         onTyping = {}
                     )

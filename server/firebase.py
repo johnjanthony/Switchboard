@@ -44,6 +44,7 @@ class FirebaseBackend(MessengerBackend):
 
 		self._db_ref = db.reference('questions')
 		self._resp_ref = db.reference('responses')
+		self._notification_ref = db.reference('notifications')
 		self._cmd_ref = db.reference('commands')
 		self._doc_ref = db.reference('documents')
 		self._session_ref = db.reference('sessions')
@@ -92,12 +93,8 @@ class FirebaseBackend(MessengerBackend):
 		asyncio.create_task(self._response_queue.put(
 			IncomingResponse(correlation=f"firebase_{request_id}", text=text)
 		))
-		# Clean up the response from DB after picking it up
-		def _cleanup():
-			self._resp_ref.child(request_id).delete()
-
-		# Run cleanup in executor since it's blocking
-		self._loop.run_in_executor(None, _cleanup)
+		# We no longer delete the response from DB to allow history reconstruction
+		# in the Android app. It will be marked as answered via the question status.
 
 	def _enqueue_command(self, command_id: str, text: str):
 		asyncio.create_task(self._command_queue.put(text))
@@ -169,6 +166,19 @@ class FirebaseBackend(MessengerBackend):
 		return f"firebase_{request_id}"
 
 	async def send_notification(self, agent_id: str, message: str, format: str = "plain") -> None:
+		# Persist notification
+		timestamp = int(time.time() * 1000)
+		notif_data = {
+			"agent_id": agent_id,
+			"message": message,
+			"format": format,
+			"status": "unread",
+			"timestamp": timestamp
+		}
+		await self._loop.run_in_executor(
+			None, lambda: self._notification_ref.push().set(notif_data)
+		)
+
 		# Just push a notification
 		notification = messaging.Notification(
 			title=f"Update from {agent_id}",
@@ -193,9 +203,9 @@ class FirebaseBackend(MessengerBackend):
 		timeout_seconds: int,
 		correlation: CorrelationToken,
 	) -> None:
-		# Remove from DB
+		# Update status instead of deleting
 		await self._loop.run_in_executor(
-			None, lambda: self._db_ref.child(request_id).delete()
+			None, lambda: self._db_ref.child(request_id).update({"status": "timed_out"})
 		)
 
 	async def send_resolution_confirmation(
@@ -204,9 +214,9 @@ class FirebaseBackend(MessengerBackend):
 		agent_id: str,
 		correlation: CorrelationToken,
 	) -> None:
-		# Remove from DB
+		# Update status instead of deleting
 		await self._loop.run_in_executor(
-			None, lambda: self._db_ref.child(request_id).delete()
+			None, lambda: self._db_ref.child(request_id).update({"status": "answered"})
 		)
 
 	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
