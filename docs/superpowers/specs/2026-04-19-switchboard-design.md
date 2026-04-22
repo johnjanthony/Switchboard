@@ -81,12 +81,17 @@ All agents connect to a single shared Switchboard instance. Each pending request
 
 | Tool | Parameters | Returns | Blocking |
 |---|---|---|---|
-| `ask_human` | `question: str`, `agent_id: str` | `str` (the response) | Yes |
-| `notify_human` | `message: str`, `agent_id: str` | `"ok"` | No |
+| `ask_human` | `question: str`, `agent_id: str`, `format: str = "plain"`, `suggestions: list[str] \| None = None` | `str` (the response) | Yes |
+| `notify_human` | `message: str`, `agent_id: str`, `format: str = "plain"` | `"ok"` | No |
+| `send_document_human` | `path: str`, `agent_id: str`, `caption: str \| None = None` | `"ok"` or `"ERROR: ..."` | No |
 
-**`ask_human`** — blocks the calling agent until John responds via the messenger backend. The agent should use this for any decision that requires human input.
+**`ask_human`** — blocks the calling agent until John responds via the messenger backend. The agent should use this for any decision that requires human input. Pass `format="markdown"` for rich formatting; `suggestions` renders tap-able reply buttons on the Android client.
 
-**`notify_human`** — fires a backend message and returns immediately. The agent should use this for status updates that don't require a response (e.g. "starting migration", "task complete").
+**`notify_human`** — fires a backend message and returns immediately. The agent should use this for status updates that don't require a response (e.g. "starting migration", "task complete"). Pass `format="markdown"` for rich formatting.
+
+**`send_document_human`** — delivers a file to John's phone. Fire-and-forget. `path` must resolve within the project directory (no `..` traversal); max 5 MB; sensitive filenames (`.env`, `*.pem`, `*token*`, etc.) are rejected.
+
+**`format` parameter:** `"plain"` (default) passes text through as-is. `"markdown"` renders the message body using standard Markdown syntax on the Android client (bold, italic, inline code, code blocks, links). Note: the Telegram backend only handles `format="html"` — if Telegram is re-enabled, `telegram.py` will need updating to recognise `"markdown"`.
 
 ### 5.3 Messenger Backend
 
@@ -125,14 +130,15 @@ class MessengerBackend(ABC):
 
 ### 6.2 Android + Firebase
 
-- **Surface:** Native Android app (Kotlin/Compose).
+**Shipped.** Native Android app (Kotlin/Compose) is the active primary backend.
+
 - **Transport:** Firebase Realtime Database.
-- **Logic:**
-    - Server writes questions to `/questions/$request_id`.
-    - Android app listens to `/questions` and renders them in a tabbed view.
-    - User types response in the app; app writes to `/responses/$request_id`.
-    - Server listens to `/responses` and resolves the local future.
-- **FCM:** Server sends Firebase Cloud Messages for instant push notifications on Android.
+- **UI:** Scrollable tab strip — one tab per `agent_id`. Tabs are created automatically when a new agent sends its first message. Dark theme: black message bubbles, grey background. Markdown rendering via Markwon (bold, italic, cyan inline code, code blocks with preserved line breaks).
+- **Question flow:** Server writes to `/questions/$request_id`. App listens, renders question in the agent's tab with an inline reply field and optional suggestion buttons. User types or taps a suggestion; app writes to `/responses/$request_id`. Server resolves the waiting future.
+- **Notifications:** Server sends FCM push notifications for questions (IMPORTANCE_HIGH — heads-up banner with sound), status updates, and documents (IMPORTANCE_DEFAULT). Tapping a notification opens the app directly to the correct agent tab. `POST_NOTIFICATIONS` permission requested at first launch.
+- **Documents:** `send_document_human` uploads the file to Firebase Storage and writes metadata to `/documents`. App renders a document bubble with an Open button.
+- **Session management:** Sessions are tracked in `/sessions/$agent_id`. The app only displays agents with `state: "open"`. Closing a tab marks the session closed and answers any pending questions with a "back at desk" message.
+- **Spawn:** The `+` button in the app writes a `/spawn` command to `/commands`, which the server picks up and executes via the `SwitchboardSpawn` scheduled task.
 
 ---
 
@@ -161,6 +167,7 @@ Every tool call and resolution is logged to a local JSONL file (`logs/switchboar
 - `request_resolved`: Short ID, response text, duration, source.
 - `request_timed_out`: Short ID, duration.
 - `notification_sent`: Agent ID, message text.
+- `document_sent`: Agent ID, resolved path, size_bytes, sha256, caption.
 
 ---
 
@@ -203,10 +210,27 @@ server/
   telegram.py      # Telegram implementation
   android.py       # Android/Firebase implementation
   firebase.py      # Firebase admin logic
-  gateway.py       # Tool handlers (ask_human, notify_human) + dispatch loops
+  gateway.py       # Tool handlers (ask_human, notify_human, send_document_human) + dispatch loops
+  spawn.py         # Telegram/Firebase-triggered Claude Code session spawner
   logging_jsonl.py # JSONL audit log
 skill/
   SKILL.md         # MCP skill instructions for the agent
+android/
+  app/src/main/
+    AndroidManifest.xml
+    java/io/github/johnjanthony/switchboard/
+      MainActivity.kt        # Compose UI — tabs, chat view, message bubbles, spawn dialog
+      MainViewModel.kt       # Firebase listeners, question/notification/document state
+      fcm/
+        SwitchboardFirebaseMessagingService.kt  # Push notifications
+      network/
+        ApiService.kt        # Question data class
+scripts/
+  install-service.ps1        # NSSM service install
+  uninstall-service.ps1
+  restart-service.ps1        # Stop + pytest gate + start
+  register-spawn-task.ps1
+  spawn-launcher.ps1
 tests/             # Pytest suite
   test_config.py
   test_registry.py

@@ -46,6 +46,18 @@ scripts/
   spawn-launcher.ps1         Runs in user session to open a new wt tab
 skill/
   SKILL.md             Installed into ~/.claude/skills/switchboard/
+android/
+  app/src/main/
+    AndroidManifest.xml
+    java/io/github/johnjanthony/switchboard/
+      MainActivity.kt        Compose UI — tabs, chat view, message bubbles, spawn dialog
+      MainViewModel.kt       Firebase listeners, question/notification/document state
+      fcm/
+        SwitchboardFirebaseMessagingService.kt  Push notifications (two channels, tap-to-tab)
+      network/
+        ApiService.kt        Question data class (Firebase deserialization)
+      ui/theme/              Material3 dark theme
+  app/build.gradle           Markwon, Firebase, Compose dependencies
 logs/
   switchboard.jsonl    Runtime audit log (gitignored)
   sessions/            Per-agent ask_human conversation logs (gitignored)

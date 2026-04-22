@@ -102,6 +102,38 @@ When suggestions are provided, `send_question` sends `inline_keyboard` reply_mar
 
 ---
 
+## SHIPPED: Android app UI, Markdown rendering, and push notifications
+
+**Delivered 2026-04-21.**
+
+**Markdown rendering:** `format="html"` replaced by `format="markdown"` across the server tool API, skill doc, and Android client. The Android app renders messages via Markwon (with HtmlPlugin), replacing `HtmlCompat.fromHtml()`. Code spans (`\`backtick\``) render as cyan (`#4DD0E1`) monospace on a dark grey (`#2D2D2D`) background via Markwon's theme API. Code blocks preserve line breaks. Bold, italic, and links render natively.
+
+**Dark theme:** Agent message bubbles use a black background; the chat area behind bubbles uses `surfaceVariant` (grey). "My" reply bubbles retain the Material3 `primaryContainer` colour.
+
+**Notification format fix:** `notify_human` messages were not passing the `format` field through to the rendered `Message` object in `MainViewModel`. The `format` field is now read from the Firebase notification snapshot and passed correctly.
+
+**Firebase deserialization fix:** `Question` data class fields changed from `val` to `var` to ensure Firebase Realtime Database can set all fields during deserialization. (The specific field affected was `format`; other fields appeared to work due to Firebase SDK version behaviour.)
+
+**Push notifications:** `POST_NOTIFICATIONS` permission added to the manifest with a runtime request on first launch (Android 13+). Two notification channels: `switchboard_questions` (`IMPORTANCE_HIGH` — heads-up banner with sound) for `ask_human` calls, and `switchboard_updates` (`IMPORTANCE_DEFAULT`) for `notify_human` and documents. Notifications use unique IDs (AtomicInteger counter) so they stack rather than replace each other. Tapping a notification opens the app to the correct agent tab via `agent_id` extra on the `PendingIntent`.
+
+**Known gap: Telegram + `format="markdown"`:** `telegram.py` checks `if format == "html":` to set `parse_mode=HTML`. If Telegram is re-enabled, agents using `format="markdown"` will get plain-text rendering on Telegram. Since Telegram is not in active use, this is deferred. Fix would require adding a `format == "markdown"` branch to `telegram.py` (using `parse_mode=MarkdownV2` with proper escaping, or mapping Markdown to HTML before sending).
+
+---
+
+## Android: suggestion buttons as notification actions
+
+When `ask_human` is called with suggestions, render them as tappable action buttons on the notification banner so the developer can reply without opening the app.
+
+**What it takes:**
+- **Server (`firebase.py`)** — include suggestions as a JSON-encoded string in the FCM data payload alongside `request_id` and `agent_id`
+- **New `NotificationReplyReceiver`** — a `BroadcastReceiver` that fires silently when an action button is tapped, writes the answer directly to Firebase `responses/{request_id}`, and dismisses the notification
+- **FCM service** — parse suggestions from data payload, add up to 3 `addAction()` calls to the notification builder
+- **Manifest** — register the receiver
+
+**Constraint:** action buttons appear on the *expanded* notification, not the collapsed heads-up banner — the user swipes down on the banner to reveal them. Still faster than opening the app.
+
+---
+
 ## Observability + reliability
 
 - **`/healthz` extension.** Return JSON `{pending_count, oldest_pending_age_seconds, total_answered, preflight_ok}`. Check from phone before a deep-work session to confirm the gateway is sane.
