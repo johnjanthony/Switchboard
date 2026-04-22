@@ -7,18 +7,19 @@ This file is the quick-orient doc for any Claude Code agent working **on Switchb
 ## Canonical design
 
 - **Current design specs:**
+  - [`docs/superpowers/specs/2026-04-22-unified-channel-routing-design.md`](docs/superpowers/specs/2026-04-22-unified-channel-routing-design.md) — unified channel routing (channel_id + sender), implemented
   - [`docs/superpowers/specs/2026-04-19-switchboard-design.md`](docs/superpowers/specs/2026-04-19-switchboard-design.md) — core gateway design
-  - [`docs/superpowers/specs/2026-04-21-collab-sessions-design.md`](docs/superpowers/specs/2026-04-21-collab-sessions-design.md) — collab sessions (not yet implemented)
+  - [`docs/superpowers/specs/2026-04-21-collab-sessions-design.md`](docs/superpowers/specs/2026-04-21-collab-sessions-design.md) — collab sessions (implemented; routing superseded by 2026-04-22)
 - Earlier iterations retained for history only (do not implement from these):
   - [`docs/design-spec-v2.1.md`](docs/design-spec-v2.1.md) — redirect stub; content moved to the 2026-04-19 superpowers spec
   - [`docs/superpowers/specs/2026-04-18-switchboard-design.md`](docs/superpowers/specs/2026-04-18-switchboard-design.md) — superseded; proposed web UI + ntfy, later dropped
   - [`docs/claude-gateway-design-spec.md`](docs/claude-gateway-design-spec.md) — original two-option exploration
 
-If any of these disagree with the 2026-04-19 spec, the 2026-04-19 spec wins.
+If any of these disagree, the 2026-04-22 spec wins for routing; the 2026-04-19 spec wins for everything else.
 
 ## Project shape
 
-Single Python process, one asyncio event loop, MCP HTTP/SSE server on `localhost:9876`, with pluggable backends (Android/Firebase, Telegram). No web UI, no ntfy.
+Single Python process, one asyncio event loop, MCP HTTP server on `localhost:9876`, with pluggable backends (Android/Firebase; Telegram is present but being phased out). No web UI, no ntfy.
 
 Switchboard exists specifically for **away mode** — when John has stepped away and the VS Code chat UI is no longer being watched. At-desk interaction uses the normal VS Code chat channel.
 
@@ -38,8 +39,8 @@ server/
   android.py           Android/Firebase MessengerBackend implementation
   firebase.py          Firebase admin logic for Android/Telegram backend
   gateway.py           Tool handlers (ask_human, notify_human) + dispatch loops
-  spawn.py             Telegram-triggered Claude Code session spawner
-  collab.py            CollabSession dataclass + session registry (see 2026-04-21 spec)
+  spawn.py             Claude Code session spawner (triggered from Android app or Telegram)
+  collab.py            CollabSession dataclass + session registry (see 2026-04-22 spec)
   logging_jsonl.py     JSONL audit log
 scripts/
   install-service.ps1        One-time NSSM service install
@@ -63,7 +64,7 @@ android/
   app/build.gradle           Markwon, Firebase, Compose dependencies
 logs/
   switchboard.jsonl    Runtime audit log (gitignored)
-  sessions/            Per-agent ask_human conversation logs (gitignored)
+  sessions/            Per-channel conversation logs keyed by channel_id (gitignored)
 ```
 
 (See the canonical spec §11 for the authoritative tree including tests.)
@@ -86,7 +87,7 @@ pytest                 # all tests
 pytest tests/test_registry.py -v
 ```
 
-Integration tests run in-process; no external services required. The backends (Telegram, Firebase) are mocked.
+Integration tests run in-process; no external services required. The backends (Firebase, etc.) are mocked.
 
 ## Conventions
 
@@ -137,7 +138,7 @@ Away mode activates whenever John says he is stepping away — any phrasing like
 
 There is no valid reason to type a chat acknowledgment first. "Got it" in the terminal is a failure. The tool call is the acknowledgment. Every subsequent output — status updates, questions, task-done pings — continues through `ask_human` or `notify_human`.
 
-**Receiving a reply to `ask_human` does not exit away mode.** Do not respond to a Telegram reply in the terminal. Your next output after receiving any reply must also be via `ask_human` or `notify_human` — even if the reply indicates the task is done or the session was a test.
+**Receiving a reply to `ask_human` does not exit away mode.** Do not respond to a reply in the terminal. Your next output after receiving any reply must also be via `ask_human` or `notify_human` — even if the reply indicates the task is done or the session was a test.
 
 The only exit from away mode is John explicitly saying he's back at his desk.
 
@@ -146,7 +147,7 @@ Use `notify_human` only for true fire-and-forget updates: progress reports, conf
 **Restart behaviour differs by session type:**
 
 - **Single-agent away mode:** restarting with `-SkipTests` is safe. The service restarts in ~3 seconds and Claude Code auto-reconnects within the 31-second window. Any pending `ask_human` is lost from the registry, but the agent times out and re-asks. Do not restart without `-SkipTests` — the pytest gate takes ~15 seconds and the connection drops permanently.
-- **Collab sessions (once implemented):** never restart while a collab session is active. The in-memory `CollabSession` state is permanently lost on restart — the connection may recover but the session cannot. Both agents will receive `"ERROR: session not found"` and the collaboration ends.
+- **Collab sessions:** never restart while a collab session is active. The in-memory `CollabSession` state is permanently lost on restart — the connection may recover but the session cannot. Both agents will receive `"ERROR: session not found"` and the collaboration ends.
 
 ## What belongs in CLAUDE-JOURNAL.md
 

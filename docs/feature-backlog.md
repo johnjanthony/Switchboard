@@ -120,6 +120,20 @@ When suggestions are provided, `send_question` sends `inline_keyboard` reply_mar
 
 ---
 
+## SHIPPED: Unified channel routing
+
+**Delivered 2026-04-22.** Replaced `agent_id` with two orthogonal concepts: `channel_id` (routing key, spawn-time stable, format `{project_key}-{YYYYMMDD}-{HHmmSS}`) and `sender` (display label, e.g. `"Claude"`, `"Agent 1"`). All four MCP tools now use `channel_id` + `sender`.
+
+All messages write to `sessions/{channel_id}/messages/{msg_id}` in Firebase — a single unified path for all message types (`question`, `notify`, `agent`, `document`) — eliminating the 3-tab collab problem. Session meta is written at spawn time so the Android tab appears immediately.
+
+`--agents=N --relay` spawn flags replaced by `--collab`. Android spawn dialog: agents stepper + relay checkbox replaced by a single **Collab mode** checkbox. Collab sessions are limited to exactly 2 agents.
+
+Android data model unified: `ChannelMessage` + `Channel` replace the four legacy types. Single `setupChannelsListener()` and `ChannelView` composable handle both single-agent and collab channels.
+
+`logging_jsonl.py` fields renamed from `agent_id` to `channel_id` throughout.
+
+---
+
 ## Android: suggestion buttons as notification actions
 
 When `ask_human` is called with suggestions, render them as tappable action buttons on the notification banner so the developer can reply without opening the app.

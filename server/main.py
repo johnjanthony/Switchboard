@@ -30,10 +30,7 @@ from server.android import AndroidBackend
 from server.firebase import FirebaseBackend
 
 
-async def _notify_lost_collab_sessions(
-	sidecar_path: _Path, backend
-) -> None:
-	"""On startup, report any collab sessions from the previous run that were lost."""
+async def _notify_lost_collab_sessions(sidecar_path: _Path, backend) -> None:
 	if not sidecar_path.exists():
 		return
 	try:
@@ -43,12 +40,12 @@ async def _notify_lost_collab_sessions(
 		return
 	try:
 		for entry in entries:
-			sid = entry.get("session_id", "unknown")
+			channel_id = entry.get("channel_id", "unknown")
 			try:
-				await backend.send_notification(
-					"system",
-					f"Switchboard restarted. Collab session `{sid}` was lost — agents will time out.",
-					"markdown",
+				await backend.write_channel_message(
+					channel_id, "system", "notify",
+					f"Switchboard restarted. Collab session `{channel_id}` was lost — agents will time out.",
+					format="markdown",
 				)
 			except Exception:
 				pass
@@ -62,44 +59,38 @@ def _build_fastmcp(handlers) -> FastMCP:
 	@mcp.tool()
 	async def ask_human(
 		question: str,
-		agent_id: str,
+		channel_id: str,
+		sender: str = "Claude",
 		format: str = "plain",
 		suggestions: list[str] | None = None,
 	) -> str:
-		"""Block until the developer responds from their phone. Returns
-		the response text, or the sentinel '__TIMEOUT__' if the timeout
-		window elapses. Set format='markdown' to render the message with
-		rich formatting (bold, italic, inline code, code blocks). Use
-		standard Markdown syntax. Pass suggestions=['yes','no'] to render
-		tap-able inline buttons; the tapped label is returned as the response."""
-		return await handlers.ask_human(question, agent_id, format, suggestions)
+		"""Block until the developer responds from their phone. Returns the response
+		text, or '__TIMEOUT__' if the timeout window elapses. Set format='markdown'
+		for rich formatting. Pass suggestions=['yes','no'] for tap-able inline buttons."""
+		return await handlers.ask_human(question, channel_id, sender, format, suggestions)
 
 	@mcp.tool()
-	async def notify_human(message: str, agent_id: str, format: str = "plain") -> str:
+	async def notify_human(message: str, channel_id: str, sender: str = "Claude", format: str = "plain") -> str:
 		"""Fire a status message to the developer. Non-blocking.
-		Set format='markdown' to render the message with rich formatting
-		(bold, italic, inline code, code blocks). Use standard Markdown syntax."""
-		return await handlers.notify_human(message, agent_id, format)
+		Set format='markdown' for rich formatting."""
+		return await handlers.notify_human(message, channel_id, sender, format)
 
 	@mcp.tool()
 	async def send_document_human(
-		path: str, agent_id: str, caption: str | None = None
+		path: str, channel_id: str, sender: str = "Claude", caption: str | None = None
 	) -> str:
-		"""Deliver a file to the developer on Telegram. Non-blocking.
-		path must be relative to the project working directory (no absolute
-		paths, no .. traversal). Max 5 MB. Sensitive filenames (.env, *.pem,
-		*token*, *secret*, *.key, service-account.json) are rejected."""
-		return await handlers.send_document_human(path, agent_id, caption)
+		"""Deliver a file to the developer. Non-blocking.
+		path must be relative to the project working directory. Max 5 MB."""
+		return await handlers.send_document_human(path, channel_id, sender, caption)
 
 	@mcp.tool()
 	async def message_and_await_agent(
-		session_id: str, agent_id: str, message: str | None = None
+		channel_id: str, sender: str, message: str | None = None
 	) -> str:
 		"""Send a message to your collaboration partner and block until they reply.
-		Both session_id and agent_id are provided in your spawn prompt.
-		Omit message on your first call if you are Agent 2 (listen-only start).
-		Returns the partner's reply text, or '__TIMEOUT__' after 24h with no reply."""
-		return await handlers.message_and_await_agent(session_id, agent_id, message)
+		channel_id and sender are provided in your spawn prompt.
+		Omit message on your first call if you are Agent 2."""
+		return await handlers.message_and_await_agent(channel_id, sender, message)
 
 	return mcp
 

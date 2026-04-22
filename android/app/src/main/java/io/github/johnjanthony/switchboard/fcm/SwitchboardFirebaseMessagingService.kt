@@ -24,27 +24,27 @@ class SwitchboardFirebaseMessagingService : FirebaseMessagingService() {
 	override fun onMessageReceived(remoteMessage: RemoteMessage) {
 		val title = remoteMessage.notification?.title ?: "Switchboard"
 		val body = remoteMessage.notification?.body ?: return
-		val agentId = remoteMessage.data["agent_id"]
+		val channelId = remoteMessage.data["channel_id"]
 		val isQuestion = remoteMessage.data.containsKey("request_id")
-		showNotification(title, body, agentId, isQuestion)
+		showNotification(title, body, channelId, isQuestion)
 	}
 
 	override fun onNewToken(token: String) {
 		// Topic-based messaging — token not needed by server
 	}
 
-	private fun showNotification(title: String, body: String, agentId: String?, isQuestion: Boolean) {
+	private fun showNotification(title: String, body: String, channelId: String?, isQuestion: Boolean) {
 		val intent = Intent(this, MainActivity::class.java).apply {
 			addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-			if (agentId != null) putExtra(EXTRA_AGENT_ID, agentId)
+			if (channelId != null) putExtra(EXTRA_AGENT_ID, channelId)
 		}
 		val pendingIntent = PendingIntent.getActivity(
 			this, notificationId.get(), intent,
 			PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
 		)
 
-		val channelId = if (isQuestion) CHANNEL_QUESTIONS else CHANNEL_UPDATES
-		val notification = NotificationCompat.Builder(this, channelId)
+		val notificationChannelId = if (isQuestion) CHANNEL_QUESTIONS else CHANNEL_UPDATES
+		val notification = NotificationCompat.Builder(this, notificationChannelId)
 			.setSmallIcon(android.R.drawable.ic_dialog_info)
 			.setContentTitle(title)
 			.setContentText(body)

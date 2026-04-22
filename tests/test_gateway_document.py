@@ -129,30 +129,28 @@ async def test_send_document_human_success(cfg, logger, tmp_path):
 	f.write_text("hello world")
 
 	result = await handlers.send_document_human(
-		"report.txt", "IR2", "Here's the report", cwd=tmp_path
+		"report.txt", "my-chan-001", caption="Here's the report", cwd=tmp_path
 	)
 
 	assert result == "ok"
 	assert len(backend.sent_documents) == 1
-	agent_id, sent_path, sent_caption = backend.sent_documents[0]
-	assert agent_id == "IR2"
-	assert Path(sent_path) == f.resolve()
-	assert sent_caption == "Here's the report"
+	channel_id, sent_content, sent_url = backend.sent_documents[0]
+	assert channel_id == "my-chan-001"
+	assert Path(sent_url) == f.resolve()
+	assert sent_content == "Here's the report"
 
-	# Audit log must record the delivery.
 	log_text = (tmp_path / "log.jsonl").read_text()
 	events = [json.loads(line) for line in log_text.splitlines() if line]
 	doc_events = [ev for ev in events if ev.get("event") == "document_sent"]
 	assert len(doc_events) == 1
 	ev = doc_events[0]
-	assert ev["agent_id"] == "IR2"
+	assert ev["channel_id"] == "my-chan-001"
 	assert ev["size_bytes"] == len(b"hello world")
-	assert len(ev["sha256"]) == 64  # SHA-256 hex is always 64 chars
+	assert len(ev["sha256"]) == 64
 	assert ev["caption_preview"] == "Here's the report"
 
-	# Session log must record the delivery.
 	sessions_dir = tmp_path / "sessions"
-	session_files = list(sessions_dir.glob("IR2_*.log"))
+	session_files = list(sessions_dir.glob("my-chan-001_*.log"))
 	assert len(session_files) == 1
 	session_text = session_files[0].read_text()
 	assert "[document: report.txt]" in session_text
@@ -164,14 +162,11 @@ async def test_send_document_human_no_caption(cfg, logger, tmp_path):
 	backend = RecordingBackend()
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
-
 	f = tmp_path / "report.txt"
 	f.write_text("hello")
-
-	result = await handlers.send_document_human("report.txt", "IR2", cwd=tmp_path)
-
+	result = await handlers.send_document_human("report.txt", "my-chan-001", cwd=tmp_path)
 	assert result == "ok"
-	assert backend.sent_documents[0][2] is None
+	assert backend.sent_documents[0][1] == "report.txt"  # filename used as content
 
 
 @pytest.mark.asyncio
@@ -179,11 +174,7 @@ async def test_send_document_human_path_error_returns_error_string(cfg, logger, 
 	backend = RecordingBackend()
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
-
-	result = await handlers.send_document_human(
-		"nonexistent.txt", "IR2", cwd=tmp_path
-	)
-
+	result = await handlers.send_document_human("nonexistent.txt", "my-chan-001", cwd=tmp_path)
 	assert result.startswith("ERROR:")
 	assert backend.sent_documents == []
 
@@ -193,12 +184,9 @@ async def test_send_document_human_denylist_returns_error_string(cfg, logger, tm
 	backend = RecordingBackend()
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
-
 	f = tmp_path / ".env"
 	f.write_text("SECRET=very_secret")
-
-	result = await handlers.send_document_human(".env", "IR2", cwd=tmp_path)
-
+	result = await handlers.send_document_human(".env", "my-chan-001", cwd=tmp_path)
 	assert result.startswith("ERROR:")
 	assert backend.sent_documents == []
 
@@ -206,17 +194,16 @@ async def test_send_document_human_denylist_returns_error_string(cfg, logger, tm
 @pytest.mark.asyncio
 async def test_send_document_human_backend_error_returns_error_string(cfg, logger, tmp_path):
 	class BrokenDocBackend(RecordingBackend):
-		async def send_document(self, agent_id, path, caption=None):
-			raise RuntimeError("telegram boom")
+		async def write_channel_message(self, channel_id, sender, message_type, content, **kwargs):
+			if message_type == "document":
+				raise RuntimeError("telegram boom")
+			return await super().write_channel_message(channel_id, sender, message_type, content, **kwargs)
 
 	backend = BrokenDocBackend()
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
-
 	f = tmp_path / "report.txt"
 	f.write_text("hello")
-
-	result = await handlers.send_document_human("report.txt", "IR2", cwd=tmp_path)
-
+	result = await handlers.send_document_human("report.txt", "my-chan-001", cwd=tmp_path)
 	assert result.startswith("ERROR:")
 	assert "telegram boom" in result

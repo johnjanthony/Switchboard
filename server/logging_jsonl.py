@@ -37,19 +37,19 @@ class JsonlLogger:
 		_stderr_logger.info(line)
 
 	def request_created(
-		self, request_id: str, agent_id: str, question: str
+		self, request_id: str, channel_id: str, question: str
 	) -> None:
 		self._write({
 			"event": "request_created",
 			"request_id": request_id,
-			"agent_id": agent_id,
+			"channel_id": channel_id,
 			"question_preview": _preview(question),
 		})
 
 	def request_resolved(
 		self,
 		request_id: str,
-		agent_id: str,
+		channel_id: str,
 		response_text: str,
 		source: str,
 		duration_ms: int,
@@ -57,36 +57,36 @@ class JsonlLogger:
 		self._write({
 			"event": "request_resolved",
 			"request_id": request_id,
-			"agent_id": agent_id,
+			"channel_id": channel_id,
 			"response_preview": _preview(response_text),
 			"source": source,
 			"duration_ms": duration_ms,
 		})
 
-	def notify_sent(self, agent_id: str, message: str) -> None:
+	def notify_sent(self, channel_id: str, message: str) -> None:
 		self._write({
 			"event": "notify_sent",
-			"agent_id": agent_id,
+			"channel_id": channel_id,
 			"message_preview": _preview(message),
 		})
 
 	def timeout(
-		self, request_id: str, agent_id: str, timeout_seconds: int
+		self, request_id: str, channel_id: str, timeout_seconds: int
 	) -> None:
 		self._write({
 			"event": "timeout",
 			"request_id": request_id,
-			"agent_id": agent_id,
+			"channel_id": channel_id,
 			"timeout_seconds": timeout_seconds,
 		})
 
 	def tool_error(
-		self, request_id: str | None, agent_id: str | None, error: str
+		self, request_id: str | None, channel_id: str | None, error: str
 	) -> None:
 		self._write({
 			"event": "tool_error",
 			"request_id": request_id,
-			"agent_id": agent_id,
+			"channel_id": channel_id,
 			"error": error,
 		})
 
@@ -134,25 +134,25 @@ class JsonlLogger:
 			"error": error,
 		})
 
-	def collab_message_sent(self, session_id: str, agent_id: str, message: str) -> None:
+	def collab_message_sent(self, channel_id: str, sender: str, message: str) -> None:
 		self._write({
 			"event": "collab_message_sent",
-			"session_id": session_id,
-			"agent_id": agent_id,
+			"channel_id": channel_id,
+			"sender": sender,
 			"message_preview": _preview(message),
 		})
 
-	def collab_message_received(self, session_id: str, agent_id: str, result: str) -> None:
+	def collab_message_received(self, channel_id: str, sender: str, result: str) -> None:
 		self._write({
 			"event": "collab_message_received",
-			"session_id": session_id,
-			"agent_id": agent_id,
+			"channel_id": channel_id,
+			"sender": sender,
 			"response_preview": _preview(result),
 		})
 
 	def document_sent(
 		self,
-		agent_id: str,
+		channel_id: str,
 		resolved_path: str,
 		size_bytes: int,
 		sha256_hex: str,
@@ -160,7 +160,7 @@ class JsonlLogger:
 	) -> None:
 		event: dict = {
 			"event": "document_sent",
-			"agent_id": agent_id,
+			"channel_id": channel_id,
 			"path": resolved_path,
 			"size_bytes": size_bytes,
 			"sha256": sha256_hex,

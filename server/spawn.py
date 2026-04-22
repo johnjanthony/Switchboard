@@ -16,13 +16,14 @@ from server.registry import Registry
 
 RATE_LIMIT_SECONDS = 60
 _TASK_NAME = "SwitchboardSpawn"
+
 _BASE_INSTRUCTION = (
-	"John is currently away. All communications MUST go through the "
-	"switchboard using one or more of its tools with agent_id='{project_key}'."
+	"John is currently away. All communications MUST go through the switchboard "
+	"using one or more of its tools. Your channel_id is '{channel_id}'. Use it "
+	"for every tool call — ask_human, notify_human, send_document_human. "
+	"sender defaults to 'Claude' unless you were given a different name."
 )
-_DEFAULT_PROMPT = (
-	"Ask John what he'd like you to work on."
-)
+_DEFAULT_PROMPT = "Ask John what he'd like you to work on."
 _DEFAULT_COLLAB_PROMPT = (
 	"Perform a comprehensive technical review of this codebase. Identify architectural "
 	"weaknesses, potential bugs, and high-to-medium priority areas for improvement. Debate "
@@ -31,18 +32,18 @@ _DEFAULT_COLLAB_PROMPT = (
 )
 _COLLAB_INSTRUCTION = (
 	"John is currently away. All communications MUST go through the switchboard "
-	"using one or more of its tools with agent_id='{agent_id}'.\n\n"
-	"You are Agent {agent_num} in a two-agent collaborative session.\n"
-	"Session ID: {session_id}\n"
-	"Your agent ID: {agent_id}\n\n"
+	"using one or more of its tools. Your channel_id is '{channel_id}'. Your sender "
+	"is '{sender}'. Use both for every tool call — ask_human, notify_human, "
+	"send_document_human, and message_and_await_agent.\n\n"
+	"You are {sender} in a two-agent collaborative session.\n\n"
 	"COLLABORATION RULES:\n"
-	"1. Use message_and_await_agent(session_id=\"{session_id}\", agent_id=\"{agent_id}\", message=\"...\") "
-	"to communicate with your partner. Always pass your own agent_id.\n"
+	"1. Use message_and_await_agent(channel_id=\"{channel_id}\", sender=\"{sender}\", message=\"...\") "
+	"to communicate with your partner. Always pass your own sender.\n"
 	"2. Speak only to your partner — not to John — unless using ask_human or notify_human.\n"
 	"3. No meta-commentary. Respond with content directly.\n"
 	"4. Critically review your partner's proposals. Be specific.\n"
 	"5. Your goal is to reach consensus. When you believe consensus is reached, call "
-	"ask_human(question, agent_id=\"{agent_id}\") to confirm with John before proceeding.\n"
+	"ask_human(question, channel_id=\"{channel_id}\", sender=\"{sender}\") to confirm with John.\n"
 	"6. If debate becomes unproductive, call ask_human to report the deadlock.\n"
 	"7. After making changes, verify them with appropriate tools before claiming completion.\n"
 	"8. If message_and_await_agent returns \"__TIMEOUT__\", call ask_human to check in with John.\n"
@@ -53,25 +54,29 @@ _COLLAB_INSTRUCTION = (
 )
 _LISTENER_NOTE = (
 	"\nYour partner will send the first message. Begin by calling "
-	"`message_and_await_agent(session_id=\"{session_id}\", agent_id=\"{agent_id}\")` "
+	"`message_and_await_agent(channel_id=\"{channel_id}\", sender=\"{sender}\")` "
 	"with no message argument to listen.\n"
 )
 
 
-def _parse_spawn_flags(text: str) -> tuple[str, int, bool]:
-	"""Extract --agents=N and --relay flags; return remaining text and parsed values."""
-	agents = 1
-	relay = False
+def _make_channel_id(project_key: str) -> str:
+	return f"{project_key}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+
+
+def _parse_spawn_flags(text: str) -> tuple[str, bool]:
+	"""Extract --collab flag; return (remaining_text, collab). Raises ValueError for obsolete flags."""
+	collab = False
 	parts: list[str] = []
 	for part in text.split():
-		m = re.match(r"--agents=(\d+)$", part)
-		if m:
-			agents = int(m.group(1))
+		if part == "--collab":
+			collab = True
+		elif re.match(r"--agents=\d+$", part):
+			raise ValueError("--agents is no longer supported; use --collab for a two-agent session")
 		elif part == "--relay":
-			relay = True
+			raise ValueError("--relay is no longer supported; use --collab for a two-agent session with relay")
 		else:
 			parts.append(part)
-	return " ".join(parts), agents, relay
+	return " ".join(parts), collab
 
 
 class SpawnHandler:
@@ -103,7 +108,12 @@ class SpawnHandler:
 				await self._backend.send_text(f"Rate limited. Try again in {remaining}s.")
 				return
 
-		remaining_text, agents, relay = _parse_spawn_flags(text)
+		try:
+			remaining_text, collab = _parse_spawn_flags(text)
+		except ValueError as exc:
+			await self._backend.send_text(str(exc))
+			return
+
 		tokens = remaining_text.split(None, 1)
 		if not tokens:
 			project_path = self._spawn_root
@@ -132,21 +142,24 @@ class SpawnHandler:
 			await self._backend.send_text(f"Unknown project: {project_key}.")
 			return
 
-		if agents == 2:
-			await self._handle_collab_spawn(project_path, project_key, relay, prompt)
-		elif agents == 1:
-			await self._handle_single_spawn(project_path, project_key, prompt)
+		if collab:
+			await self._handle_collab_spawn(project_path, project_key, prompt)
 		else:
-			await self._backend.send_text(f"Unsupported --agents={agents}. Only --agents=2 is supported.")
+			await self._handle_single_spawn(project_path, project_key, prompt)
 
 	async def _handle_single_spawn(
 		self, project_path: Path, project_key: str, prompt: str | None
 	) -> None:
-		base = _BASE_INSTRUCTION.format(project_key=project_key)
+		channel_id = _make_channel_id(project_key)
+		base = _BASE_INSTRUCTION.format(channel_id=channel_id)
 		user_prompt = prompt or _DEFAULT_PROMPT
 		effective_prompt = f"{base} {user_prompt}"
 
-		pending = {"prompt": effective_prompt, "project_path": str(project_path)}
+		pending = {
+			"channel_id": channel_id,
+			"prompt": effective_prompt,
+			"project_path": str(project_path),
+		}
 		try:
 			self._pending_path.write_text(json.dumps(pending), encoding="utf-8")
 			subprocess.run(
@@ -155,46 +168,49 @@ class SpawnHandler:
 			)
 		except Exception as exc:
 			self._pending_path.unlink(missing_ok=True)
-			self._logger.spawn_failed(
-				project_key, str(project_path), [_TASK_NAME], str(exc)
-			)
+			self._logger.spawn_failed(project_key, str(project_path), [_TASK_NAME], str(exc))
 			await self._backend.send_text(f"Failed to spawn: {exc}.")
 			return
 
 		self._last_spawn_time = datetime.now(timezone.utc)
+
+		try:
+			await self._backend.write_session_meta(
+				channel_id, "single", project_key,
+			)
+		except Exception as exc:
+			self._logger.surface_error(f"single_meta_write_error: {exc}")
+
 		spawn_id = secrets.token_hex(4)
 		self._logger.spawn_started(
 			spawn_id, project_key, str(project_path),
 			prompt if prompt is not None else "(ask on start)",
 		)
-		await self._backend.send_spawn_ack(project_key, prompt)
+		await self._backend.send_spawn_ack(channel_id, prompt)
 
 	async def _handle_collab_spawn(
-		self, project_path: Path, project_key: str, relay: bool, prompt: str | None
+		self, project_path: Path, project_key: str, prompt: str | None
 	) -> None:
 		from server.collab import CollabSession
 		task = prompt or _DEFAULT_COLLAB_PROMPT
-		session_id = f"{project_key}-{secrets.token_hex(4)}"
-		agent_1_id = f"{session_id}-1"
-		agent_2_id = f"{session_id}-2"
+		channel_id = _make_channel_id(project_key)
+		agent_senders = ["Agent 1", "Agent 2"]
 
-		def _make_prompt(agent_num: int, agent_id: str, listener: bool) -> str:
-			note = _LISTENER_NOTE.format(session_id=session_id, agent_id=agent_id) if listener else ""
+		def _make_prompt(sender: str, listener: bool) -> str:
+			note = _LISTENER_NOTE.format(channel_id=channel_id, sender=sender) if listener else ""
 			return _COLLAB_INSTRUCTION.format(
-				agent_num=agent_num,
-				session_id=session_id,
-				agent_id=agent_id,
+				channel_id=channel_id,
+				sender=sender,
 				listener_note=note,
 				task=task,
 			)
 
 		pending = {
-			"session_id": session_id,
-			"relay": relay,
+			"channel_id": channel_id,
 			"agents": [
-				{"agent_id": agent_1_id, "prompt": _make_prompt(1, agent_1_id, False),
+				{"sender": "Agent 1", "prompt": _make_prompt("Agent 1", False),
 				 "project_path": str(project_path)},
-				{"agent_id": agent_2_id, "prompt": _make_prompt(2, agent_2_id, True),
+				{"sender": "Agent 2", "prompt": _make_prompt("Agent 2", True),
 				 "project_path": str(project_path)},
 			],
 		}
@@ -206,8 +222,8 @@ class SpawnHandler:
 			except Exception as exc:
 				self._logger.surface_error(f"collab_sidecar_read_error: {exc}")
 		existing.append({
-			"session_id": session_id,
-			"agent_ids": [agent_1_id, agent_2_id],
+			"channel_id": channel_id,
+			"agent_senders": agent_senders,
 			"task": task,
 			"created_at": datetime.now(timezone.utc).isoformat(),
 		})
@@ -225,23 +241,25 @@ class SpawnHandler:
 		self._last_spawn_time = datetime.now(timezone.utc)
 
 		session = CollabSession(
-			session_id=session_id,
-			agent_ids=(agent_1_id, agent_2_id),
+			session_id=channel_id,
+			agent_senders=("Agent 1", "Agent 2"),
 			task=task,
-			relay=relay,
 		)
 		self._registry.add_session(session)
 
 		try:
-			await self._backend.write_session_meta(session_id, [agent_1_id, agent_2_id], task)
+			await self._backend.write_session_meta(
+				channel_id, "collab", project_key,
+				agent_senders=agent_senders, task=task,
+			)
 		except Exception as exc:
 			self._logger.surface_error(f"collab_meta_write_error: {exc}")
 
 		try:
-			await self._backend.start_inject_listener(session_id)
+			await self._backend.start_inject_listener(channel_id)
 		except Exception as exc:
 			self._logger.surface_error(f"collab_inject_listener_error: {exc}")
 
 		spawn_id = secrets.token_hex(4)
 		self._logger.spawn_started(spawn_id, project_key, str(project_path), f"[collab] {task[:60]}")
-		await self._backend.send_spawn_ack(project_key, f"[collab] {task[:60]}")
+		await self._backend.send_spawn_ack(channel_id, f"[collab] {task[:60]}")

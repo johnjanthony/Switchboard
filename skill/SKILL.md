@@ -25,20 +25,20 @@ At desk (not in away mode), interact with John normally through chat — Switchb
 
 # Switchboard
 
-Switchboard is a local MCP gateway that lets you reach John on his phone while he's away from his desk. It exposes three tools:
+Switchboard is a local MCP gateway that lets you reach John on his phone while he's away from his desk. It exposes four tools:
 
-- **`ask_human(question, agent_id, format?, suggestions?)`** — blocks until John replies. Returns the reply text, or the sentinel string `"__TIMEOUT__"` if no reply arrives within the server's timeout window (default 24h). Pass `format="markdown"` for rich formatting.
-- **`notify_human(message, agent_id, format?)`** — fire-and-forget status update. Returns `"ok"` immediately. Pass `format="markdown"` for rich formatting.
-- **`send_document_human(path, agent_id, caption?)`** — deliver a file to John. Fire-and-forget. Returns `"ok"` or `"ERROR: ..."`. See constraints below.
+- **`ask_human(question, channel_id, sender?, format?, suggestions?)`** — blocks until John replies. Returns reply text or `"__TIMEOUT__"`.
+- **`notify_human(message, channel_id, sender?, format?)`** — fire-and-forget. Returns `"ok"`.
+- **`send_document_human(path, channel_id, sender?, caption?)`** — deliver a file. Fire-and-forget. Returns `"ok"` or `"ERROR: ..."`.
+- **`message_and_await_agent(channel_id, sender, message?)`** — collab sessions only. Send to partner and block.
 
-## Choosing an `agent_id`
+## Choosing a `channel_id`
 
-The `agent_id` is a short human-meaningful label that appears in every message so John knows which agent is asking. In order of preference:
+`channel_id` is provided in your spawn prompt. Use it for **every** tool call — `ask_human`, `notify_human`, `send_document_human`, and `message_and_await_agent`. Do not derive or vary it.
 
-1. **Use a label John gave you.** If he said "call yourself IR2" or "label these as migration-work", use that label for every call during the session.
-2. **Otherwise derive one from the current task.** A short 1-3 word label based on what you are working on: `DMXRefactor`, `IR2Migration`, `DocGen`. Pick it the first time you call `ask_human`, then reuse it for every subsequent call in the same session.
+## Choosing a `sender`
 
-Keep the label stable across calls within a session. John should be able to tell at a glance that two messages are from the same agent.
+`sender` is your display name in the conversation. It appears in the chat bubble on John's phone. Defaults to `"Claude"`. In collab sessions you are told your sender (`"Agent 1"` or `"Agent 2"`) in your spawn prompt.
 
 ## Response conventions
 
@@ -52,7 +52,7 @@ Keep the label stable across calls within a session. John should be able to tell
 `ask_human` accepts an optional `suggestions` list. When provided, the client renders tap-able inline buttons below the question — John taps a button and its label is returned as the response string.
 
 ```
-ask_human("Overwrite foo.java?", agent_id, suggestions=["yes", "no", "abort"])
+ask_human("Overwrite foo.java?", channel_id="switchboard-20260422-143052", suggestions=["yes", "no", "abort"])
 # → returns "yes", "no", or "abort", or a typed free-text reply
 ```
 
@@ -79,7 +79,7 @@ ask_human(
   "Processed `CustomerMapper.java` — 3 methods rewritten.\n\n"
   "```\nPASS  CustomerMapperTest (4/4)\nPASS  IntegrationTest (12/12)\n```\n\n"
   "Ready to commit. Proceed?",
-  agent_id,
+  channel_id="switchboard-20260422-143052",
   format="markdown",
   suggestions=["yes", "no"]
 )
@@ -95,7 +95,7 @@ If `ask_human` returns `"__TIMEOUT__"`, John did not reply within the window. Do
 2. Pause the current work stream. Do not take irreversible actions.
 3. When John returns, resume from where you paused.
 
-Use `notify_human` to record the pause if it is helpful context for later: `notify_human("Paused DMXRefactor — timed out waiting on approval to overwrite CustomerMapper.java", "DMXRefactor")`.
+Use `notify_human` to record the pause if it is helpful context for later: `notify_human("Paused DMXRefactor — timed out waiting on approval to overwrite CustomerMapper.java", channel_id="switchboard-20260422-143052")`.
 
 ## Handling `"ERROR: ..."`
 
@@ -106,7 +106,7 @@ If `ask_human` returns a string starting with `"ERROR:"`, the gateway itself fai
 While in away mode, after completing a discrete task **that John handed to you** (not merely an intermediate step within that task — not running tests, not reading files, not committing), call:
 
 ```
-ask_human("Task done: <one-line summary>. What's next?", agent_id)
+ask_human("Task done: <one-line summary>. What's next?", channel_id="switchboard-20260422-143052")
 ```
 
 instead of ending your turn. This keeps the session alive so John can queue additional work from his phone without needing to re-spawn you.
@@ -130,34 +130,29 @@ Use this to deliver generated reports, diffs, logs, or spec documents to John's 
 
 **Example:**
 ```
-send_document_human("logs/migration-diff.txt", "DBMigrate", "Schema diff for review")
+send_document_human("logs/migration-diff.txt", channel_id="switchboard-20260422-143052", caption="Schema diff for review")
 ```
 
 ## Collab sessions
 
-If you were spawned as part of a collab session, your spawn prompt contains a **Session ID** and your **agent ID**. Use these with `message_and_await_agent` to communicate with your partner.
-
-### `message_and_await_agent(session_id, agent_id, message?)`
+### `message_and_await_agent(channel_id, sender, message?)`
 
 Sends `message` to your partner (if provided), then blocks until your partner replies or a human injects a message.
 
-- **`session_id`** — from your spawn prompt (e.g. `myproject-abc123`)
-- **`agent_id`** — your own agent ID from your spawn prompt (e.g. `myproject-abc123-1`)
-- **`message`** — optional outbound text; omit on your very first call if you are Agent 2
-
-Returns the incoming message text, or `"__TIMEOUT__"` after 24h with no reply.
+- **`channel_id`** — from your spawn prompt (e.g. `myproject-20260422-143052`)
+- **`sender`** — your own sender from your spawn prompt (`"Agent 1"` or `"Agent 2"`)
+- **`message`** — optional outbound text; omit on your first call if you are Agent 2
 
 **If `message_and_await_agent` returns `"__TIMEOUT__"`:** call `ask_human` to check in with John. Do not silently exit.
-
 **If `message_and_await_agent` returns an error string (starts with `"ERROR:"`):** call `ask_human` immediately.
 
 ### Collab protocol
 
-1. Agent 1: work on the task, then call `message_and_await_agent` with your initial findings.
-2. Agent 2: call `message_and_await_agent` with no message on startup to receive Agent 1's first message. Then reply and alternate.
-3. When consensus is reached: call `ask_human` to confirm with John. Do not declare consensus in the terminal.
+1. Agent 1: work on the task, then call `message_and_await_agent(channel_id=..., sender="Agent 1", message=...)`.
+2. Agent 2: call `message_and_await_agent(channel_id=..., sender="Agent 2")` with no message on startup to listen.
+3. When consensus is reached: call `ask_human(question, channel_id=..., sender="Agent 1")` to confirm with John.
 4. If debate is unproductive: call `ask_human` to report the deadlock.
-5. Use `ask_human` and `notify_human` for all human communication — same rules as standard away mode apply.
+5. Use `ask_human` and `notify_human` for all human communication with the same `channel_id` and `sender` — same rules as standard away mode apply.
 
 ## What not to use it for
 

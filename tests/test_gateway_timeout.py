@@ -32,19 +32,21 @@ async def test_ask_human_returns_sentinel_on_timeout(cfg, logger):
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.ask_human("Overwrite foo?", "IR2")
+	result = await handlers.ask_human("Overwrite foo?", "ir2-chan-001")
 
 	assert result == TIMEOUT_SENTINEL
 	# Backend was asked to send a timeout follow-up.
 	assert len(backend.sent_timeouts) == 1
-	assert backend.sent_timeouts[0][0] == backend.sent_questions[0][0]
+	assert backend.sent_timeouts[0][0] == backend.sent_questions[0][0]  # request_id matches
 	# Registry entry is cleaned up.
 	assert registry.resolve_by_correlation(1000, "late") is None
 
 
 class BrokenBackend(RecordingBackend):
-	async def send_question(self, request_id, agent_id, question, format="plain", suggestions=None):
-		raise RuntimeError("boom")
+	async def write_channel_message(self, channel_id, sender, message_type, content, **kwargs):
+		if message_type == "question":
+			raise RuntimeError("boom")
+		return await super().write_channel_message(channel_id, sender, message_type, content, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -53,7 +55,7 @@ async def test_ask_human_returns_error_sentinel_on_backend_failure(cfg, logger):
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.ask_human("q", "IR2")
+	result = await handlers.ask_human("q", "ir2-chan-001")
 
 	assert result.startswith("ERROR:")
 	assert "boom" in result

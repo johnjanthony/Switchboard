@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
+from pathlib import Path
 
 import pytest
 
@@ -16,49 +17,64 @@ from server.registry import Registry
 
 class RecordingBackend(MessengerBackend):
 	def __init__(self) -> None:
-		self.sent_questions: list[tuple[str, str, str]] = []
-		self.sent_notifications: list[tuple[str, str]] = []
-		self.sent_timeouts: list[tuple[str, str, int, Any]] = []
-		self.sent_confirmations: list[tuple[str, str, Any]] = []
-		self.sent_documents: list[tuple[str, str, Any]] = []
+		self.channel_messages: list[dict] = []
+		self.sent_timeouts: list[tuple] = []
+		self.sent_confirmations: list[tuple] = []
 		self._next_correlation = 1000
 
-	async def send_question(self, request_id, agent_id, question, format="plain", suggestions=None):
-		correlation = self._next_correlation
-		self._next_correlation += 1
-		self.sent_questions.append((request_id, agent_id, question))
-		return correlation
-
-	async def send_notification(self, agent_id, message, format="plain"):
-		self.sent_notifications.append((agent_id, message))
-
-	async def send_timeout_followup(
-		self, request_id, agent_id, timeout_seconds, correlation
+	async def write_channel_message(
+		self, channel_id, sender, message_type, content,
+		*, request_id=None, url=None, format="plain", suggestions=None,
 	):
-		self.sent_timeouts.append(
-			(request_id, agent_id, timeout_seconds, correlation)
-		)
+		data = {
+			"channel_id": channel_id,
+			"sender": sender,
+			"message_type": message_type,
+			"content": content,
+			"request_id": request_id,
+			"url": url,
+			"format": format,
+			"suggestions": suggestions,
+		}
+		self.channel_messages.append(data)
+		if message_type == "question":
+			correlation = self._next_correlation
+			self._next_correlation += 1
+			return correlation
+		return None
 
-	async def send_resolution_confirmation(
-		self, request_id, agent_id, correlation
-	):
-		self.sent_confirmations.append((request_id, agent_id, correlation))
+	async def send_timeout_followup(self, request_id, channel_id, timeout_seconds, correlation):
+		self.sent_timeouts.append((request_id, channel_id, timeout_seconds, correlation))
 
-	async def send_document(self, agent_id, path, caption=None):
-		self.sent_documents.append((agent_id, str(path), caption))
+	async def send_resolution_confirmation(self, request_id, channel_id, correlation):
+		self.sent_confirmations.append((request_id, channel_id, correlation))
 
 	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
 		if False:
-			yield  # pragma: no cover
+			yield
 		return
 
 	async def poll_commands(self) -> AsyncIterator[str]:
 		if False:
-			yield  # pragma: no cover
+			yield
 		return
 
 	async def aclose(self) -> None:
 		pass
+
+	# Helpers for assertions in existing tests
+	@property
+	def sent_questions(self):
+		return [(m["request_id"], m["channel_id"], m["content"]) for m in self.channel_messages if m["message_type"] == "question"]
+
+	@property
+	def sent_notifications(self):
+		return [(m["sender"], m["content"]) for m in self.channel_messages if m["message_type"] == "notify"]
+
+	@property
+	def sent_documents(self):
+		# (channel_id, content/caption, url) for document messages
+		return [(m["channel_id"], m["content"], m["url"]) for m in self.channel_messages if m["message_type"] == "document"]
 
 
 @pytest.fixture
@@ -84,20 +100,22 @@ async def test_notify_human_calls_backend_and_returns_ok(cfg, logger, tmp_path):
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.notify_human("starting migration", "IR2")
+	result = await handlers.notify_human("starting migration", "chan-test-001")
 
 	assert result == "ok"
-	assert backend.sent_notifications == [("IR2", "starting migration")]
+	assert backend.sent_notifications == [("Claude", "starting migration")]
 
 	sessions_dir = tmp_path / "sessions"
-	session_files = list(sessions_dir.glob("IR2_*.log"))
+	session_files = list(sessions_dir.glob("chan-test-001_*.log"))
 	assert len(session_files) == 1
 	assert "starting migration" in session_files[0].read_text()
 
 
 class BrokenNotifyBackend(RecordingBackend):
-	async def send_notification(self, agent_id, message, format="plain"):
-		raise RuntimeError("notify boom")
+	async def write_channel_message(self, channel_id, sender, message_type, content, **kwargs):
+		if message_type == "notify":
+			raise RuntimeError("notify boom")
+		return await super().write_channel_message(channel_id, sender, message_type, content, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -106,7 +124,7 @@ async def test_notify_human_returns_error_sentinel_on_backend_failure(cfg, logge
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.notify_human("starting", "IR2")
+	result = await handlers.notify_human("starting", "chan-test-001")
 
 	assert result.startswith("ERROR:")
 	assert "notify boom" in result

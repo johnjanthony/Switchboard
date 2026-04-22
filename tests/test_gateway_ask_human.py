@@ -34,19 +34,14 @@ async def test_ask_human_returns_response_when_resolved(cfg, logger):
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	# Fire ask_human as a task; resolve it after a moment.
-	task = asyncio.create_task(handlers.ask_human("Overwrite foo?", "IR2"))
-	# Give the handler a tick to register the pending request.
+	task = asyncio.create_task(handlers.ask_human("Overwrite foo?", "ir2-chan-001"))
 	await asyncio.sleep(0)
-	# RecordingBackend assigns correlation 1000 to the first question.
 	resolved = registry.resolve_by_correlation(1000, "yes")
 	assert resolved is not None
 	result = await asyncio.wait_for(task, timeout=1.0)
 	assert result == "yes"
-	# Backend was asked to send the question and the confirmation.
 	assert len(backend.sent_questions) == 1
 	assert len(backend.sent_confirmations) == 1
-	# Confirmation carries the same correlation.
 	_, _, correlation = backend.sent_confirmations[0]
 	assert correlation == 1000
 
@@ -63,7 +58,6 @@ class YieldingBackend(RecordingBackend):
 	async def poll_responses(self):
 		for r in self._responses:
 			yield r
-		# Then hang so the dispatch task does not exit on its own.
 		await asyncio.Event().wait()
 
 
@@ -73,7 +67,7 @@ async def test_dispatch_loop_routes_responses_to_registry(cfg, logger):
 	backend = YieldingBackend([IncomingResponse(correlation=1000, text="yes")])
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	ask_task = asyncio.create_task(handlers.ask_human("q", "IR2"))
+	ask_task = asyncio.create_task(handlers.ask_human("q", "ir2-chan-001"))
 	await asyncio.sleep(0)  # let ask_human register
 	dispatch_task = asyncio.create_task(
 		dispatch_responses(registry, backend, logger)
@@ -227,15 +221,11 @@ async def test_concurrent_ask_human_calls_resolve_independently(cfg, logger):
 	])
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	# Fire two ask_human calls. RecordingBackend assigns correlation 1000
-	# to the first call and 1001 to the second.
-	first = asyncio.create_task(handlers.ask_human("q1", "AgentA"))
+	first = asyncio.create_task(handlers.ask_human("q1", "chan-a"))
 	await asyncio.sleep(0)
-	second = asyncio.create_task(handlers.ask_human("q2", "AgentB"))
+	second = asyncio.create_task(handlers.ask_human("q2", "chan-b"))
 	await asyncio.sleep(0)
 
-	# Start the dispatch loop; it yields the second response first,
-	# then the first.
 	dispatch_task = asyncio.create_task(
 		dispatch_responses(registry, backend, logger)
 	)

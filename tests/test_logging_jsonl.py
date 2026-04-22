@@ -20,7 +20,7 @@ def test_request_created_writes_expected_fields(tmp_path):
 	ev = events[0]
 	assert ev["event"] == "request_created"
 	assert ev["request_id"] == "a3f1"
-	assert ev["agent_id"] == "IR2"
+	assert ev["channel_id"] == "IR2"
 	assert ev["question_preview"].startswith("Overwrite foo.java?")
 	assert "ts" in ev
 
@@ -102,7 +102,7 @@ def test_document_sent_writes_required_fields(tmp_path):
 	)
 	ev = read_events(tmp_path / "log.jsonl")[0]
 	assert ev["event"] == "document_sent"
-	assert ev["agent_id"] == "IR2"
+	assert ev["channel_id"] == "IR2"
 	assert ev["path"] == "/work/report.txt"
 	assert ev["size_bytes"] == 1024
 	assert ev["sha256"] == "abc123def456"

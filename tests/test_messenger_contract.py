@@ -20,12 +20,12 @@ def test_messenger_backend_is_abstract():
 
 def test_messenger_backend_declares_required_methods():
 	expected = {
-		"send_question",
-		"send_notification",
+		"write_channel_message",
 		"send_timeout_followup",
 		"send_resolution_confirmation",
 		"poll_responses",
-		"send_document",
+		"poll_commands",
+		"aclose",
 	}
 	declared = {
 		name

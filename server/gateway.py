@@ -77,8 +77,8 @@ def _validate_path(path_str: str, cwd: Path | None = None) -> Path:
 	return resolved
 
 
-async def _append_session_log(log_path: str, agent_id: str, direction: str, text: str) -> None:
-	path = Path(log_path).parent / "sessions" / f"{agent_id}_{_SESSION_START}.log"
+async def _append_session_log(log_path: str, channel_id: str, direction: str, text: str) -> None:
+	path = Path(log_path).parent / "sessions" / f"{channel_id}_{_SESSION_START}.log"
 	ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 	line = f"{ts} {direction} {text}\n"
 
@@ -104,19 +104,20 @@ def build_tool_handlers(
 	backend: MessengerBackend,
 	logger: JsonlLogger,
 ) -> ToolHandlers:
-	async def notify_human(message: str, agent_id: str, format: str = "plain") -> str:
+	async def notify_human(message: str, channel_id: str, sender: str = "Claude", format: str = "plain") -> str:
 		try:
-			await backend.send_notification(agent_id, message, format)
-			logger.notify_sent(agent_id, message)
-			await _append_session_log(config.log_path, agent_id, "→", message)
+			await backend.write_channel_message(channel_id, sender, "notify", message, format=format)
+			logger.notify_sent(channel_id, message)
+			await _append_session_log(config.log_path, channel_id, "→", message)
 			return "ok"
 		except Exception as exc:
-			logger.tool_error(None, agent_id, str(exc))
+			logger.tool_error(None, channel_id, str(exc))
 			return f"ERROR: {exc}"
 
 	async def ask_human(
 		question: str,
-		agent_id: str,
+		channel_id: str,
+		sender: str = "Claude",
 		format: str = "plain",
 		suggestions: list[str] | None = None,
 	) -> str:
@@ -124,173 +125,138 @@ def build_tool_handlers(
 		started = datetime.now(timezone.utc)
 		correlation = None
 		try:
-			correlation = await backend.send_question(
-				request_id, agent_id, question, format, suggestions
+			correlation = await backend.write_channel_message(
+				channel_id, sender, "question", question,
+				request_id=request_id, format=format, suggestions=suggestions,
 			)
-			collab_session = registry.get_session_for_agent(agent_id)
-			if collab_session is not None:
-				try:
-					await backend.write_session_message(
-						collab_session.session_id,
-						agent_id,
-						"ask_human",
-						question,
-						request_id=request_id,
-					)
-				except Exception as exc:
-					logger.surface_error(f"collab_ask_human_write_error: {exc}")
-			future = registry.add(request_id, agent_id, correlation)
-			logger.request_created(request_id, agent_id, question)
-			await _append_session_log(config.log_path, agent_id, "→", question)
+			future = registry.add(request_id, channel_id, correlation)
+			logger.request_created(request_id, channel_id, question)
+			await _append_session_log(config.log_path, channel_id, "→", question)
 		except asyncio.CancelledError:
 			registry.remove(request_id)
 			raise
 		except Exception as exc:
-			logger.tool_error(request_id, agent_id, str(exc))
+			logger.tool_error(request_id, channel_id, str(exc))
 			return f"ERROR: {exc}"
 
 		try:
-			result = await asyncio.wait_for(
-				future, timeout=config.timeout_seconds
-			)
+			result = await asyncio.wait_for(future, timeout=config.timeout_seconds)
 		except asyncio.TimeoutError:
-			logger.timeout(request_id, agent_id, config.timeout_seconds)
+			logger.timeout(request_id, channel_id, config.timeout_seconds)
 			registry.remove(request_id)
 			try:
 				await backend.send_timeout_followup(
-					request_id,
-					agent_id,
-					config.timeout_seconds,
-					correlation,
+					request_id, channel_id, config.timeout_seconds, correlation,
 				)
 			except Exception as exc:
-				logger.surface_error(
-					f"timeout_followup_failed: {exc}",
-					correlation=str(correlation),
-				)
+				logger.surface_error(f"timeout_followup_failed: {exc}", correlation=str(correlation))
 			return TIMEOUT_SENTINEL
 		except asyncio.CancelledError:
 			registry.remove(request_id)
 			raise
 		except Exception as exc:
-			logger.tool_error(request_id, agent_id, str(exc))
+			logger.tool_error(request_id, channel_id, str(exc))
 			registry.remove(request_id)
 			return f"ERROR: {exc}"
 
-		await _append_session_log(config.log_path, agent_id, "←", result)
-		duration_ms = int(
-			(datetime.now(timezone.utc) - started).total_seconds() * 1000
-		)
-
-		# Resolve source for logging
+		await _append_session_log(config.log_path, channel_id, "←", result)
+		duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
 		source = "unknown"
 		if isinstance(correlation, dict):
-			# Search for the backend that resolved it
-			for b, c in correlation.items():
-				# We don't easily know which one resolved here without more plumbing
-				# but we can at least show it was Multi
-				source = "multi"
+			source = "multi"
 		elif isinstance(correlation, int):
 			source = "telegram"
 		elif str(correlation).startswith("firebase_"):
 			source = "firebase"
 		elif str(correlation).startswith("android_"):
 			source = "android_rest"
-
-		logger.request_resolved(
-			request_id,
-			agent_id,
-			response_text=result,
-			source=source,
-			duration_ms=duration_ms,
-		)
+		logger.request_resolved(request_id, channel_id, response_text=result, source=source, duration_ms=duration_ms)
 		try:
-			await backend.send_resolution_confirmation(
-				request_id, agent_id, correlation
-			)
+			await backend.send_resolution_confirmation(request_id, channel_id, correlation)
 		except Exception as exc:
-			logger.surface_error(
-				f"resolution_confirmation_failed: {exc}",
-				correlation=str(correlation),
-			)
+			logger.surface_error(f"resolution_confirmation_failed: {exc}", correlation=str(correlation))
 		return result
 
 	async def send_document_human(
-		path: str, agent_id: str, caption: str | None = None, *, cwd: Path | None = None
+		path: str, channel_id: str, sender: str = "Claude",
+		caption: str | None = None, *, cwd: Path | None = None
 	) -> str:
 		try:
 			resolved = _validate_path(path, cwd=cwd)
 		except ValueError as exc:
-			logger.tool_error(None, agent_id, str(exc))
+			logger.tool_error(None, channel_id, str(exc))
 			return f"ERROR: {exc}"
 
 		try:
 			size_bytes = resolved.stat().st_size
 			sha256 = _sha256_hex(resolved)
-			await backend.send_document(agent_id, resolved, caption)
+			await backend.write_channel_message(
+				channel_id, sender, "document",
+				caption or resolved.name,
+				url=str(resolved),
+			)
 		except Exception as exc:
-			logger.tool_error(None, agent_id, str(exc))
+			logger.tool_error(None, channel_id, str(exc))
 			return f"ERROR: {exc}"
 
 		try:
-			logger.document_sent(agent_id, str(resolved), size_bytes, sha256, caption)
+			logger.document_sent(channel_id, str(resolved), size_bytes, sha256, caption)
 		except Exception as exc:
 			logger.surface_error(f"document_audit_failed: {exc}")
 		entry = f"[document: {resolved.name}] {caption}" if caption else f"[document: {resolved.name}]"
-		await _append_session_log(config.log_path, agent_id, "→", entry)
+		await _append_session_log(config.log_path, channel_id, "→", entry)
 		return "ok"
 
 	async def message_and_await_agent(
-		session_id: str, agent_id: str, message: str | None = None
+		channel_id: str, sender: str, message: str | None = None
 	) -> str:
-		session = registry.get_session(session_id)
-		if session is None or agent_id not in session.agent_ids:
+		session = registry.get_session(channel_id)
+		if session is None or sender not in session.agent_senders:
 			return "ERROR: session not found"
 
 		try:
 			if message is not None:
 				entry = {
-					"speaker": agent_id,
+					"speaker": sender,
 					"message": message,
 					"timestamp": datetime.now(timezone.utc).isoformat(),
 				}
 				session.transcript.append(entry)
-				if session.relay:
-					async def _relay(sid=session_id, aid=agent_id, msg=message) -> None:
-						try:
-							await backend.write_session_message(sid, aid, "collab", msg)
-						except Exception as exc:
-							logger.surface_error(f"collab_relay_error: {exc}")
-					asyncio.create_task(_relay())
-				other = session.other_agent(agent_id)
+				async def _relay(cid=channel_id, s=sender, msg=message) -> None:
+					try:
+						await backend.write_channel_message(cid, s, "agent", msg)
+					except Exception as exc:
+						logger.surface_error(f"collab_relay_error: {exc}")
+				asyncio.create_task(_relay())
+				other = session.other_sender(sender)
 				session.deliver(other, message)
-				logger.collab_message_sent(session_id, agent_id, message)
-				await _append_session_log(config.log_path, session_id, "→", f"{agent_id}: {message}")
+				logger.collab_message_sent(channel_id, sender, message)
+				await _append_session_log(config.log_path, channel_id, "→", f"{sender}: {message}")
 
-			future = session.start_waiting(agent_id)
+			future = session.start_waiting(sender)
 		except Exception as exc:
-			logger.tool_error(None, agent_id, str(exc))
+			logger.tool_error(None, sender, str(exc))
 			return f"ERROR: {exc}"
 
 		try:
 			result = await asyncio.wait_for(future, timeout=config.timeout_seconds)
-			logger.collab_message_received(session_id, agent_id, result)
-			await _append_session_log(config.log_path, session_id, "←", f"{agent_id}: {result}")
+			logger.collab_message_received(channel_id, sender, result)
+			await _append_session_log(config.log_path, channel_id, "←", f"{sender}: {result}")
 			return result
 		except asyncio.TimeoutError:
-			session.cancel_waiting(agent_id)
-			logger.surface_error(f"collab_timeout: session={session_id} agent={agent_id}")
+			session.cancel_waiting(sender)
+			logger.surface_error(f"collab_timeout: channel={channel_id} sender={sender}")
 			try:
-				await backend.send_notification(
-					"system",
-					f"Collab session `{session_id}` — `{agent_id}` timed out after 24h.",
-					"markdown",
+				await backend.write_channel_message(
+					channel_id, "system", "notify",
+					f"Collab session `{channel_id}` — `{sender}` timed out after 24h.",
+					format="markdown",
 				)
 			except Exception as exc:
 				logger.surface_error(f"collab_timeout_notify_error: {exc}")
 			return TIMEOUT_SENTINEL
 		except asyncio.CancelledError:
-			session.cancel_waiting(agent_id)
+			session.cancel_waiting(sender)
 			raise
 
 	return ToolHandlers(

@@ -31,28 +31,28 @@ class IncomingResponse:
 
 class MessengerBackend(ABC):
 	@abstractmethod
-	async def send_question(
+	async def write_channel_message(
 		self,
-		request_id: str,
-		agent_id: str,
-		question: str,
+		channel_id: str,
+		sender: str,
+		message_type: str,
+		content: str,
+		*,
+		request_id: str | None = None,
+		url: str | None = None,
 		format: str = "plain",
 		suggestions: list[str] | None = None,
-	) -> CorrelationToken:
-		"""Deliver the question. Return a backend-specific token that
-		will be matched against `IncomingResponse.correlation` later."""
-
-	@abstractmethod
-	async def send_notification(self, agent_id: str, message: str, format: str = "plain") -> None:
-		"""Fire-and-forget status update; no reply tracking."""
+	) -> "CorrelationToken | None":
+		"""Write a message to the channel. Returns a correlation token for
+		message_type='question' (used to match incoming responses), None otherwise."""
 
 	@abstractmethod
 	async def send_timeout_followup(
 		self,
 		request_id: str,
-		agent_id: str,
+		channel_id: str,
 		timeout_seconds: int,
-		correlation: CorrelationToken,
+		correlation: "CorrelationToken",
 	) -> None:
 		"""Inform the developer a pending question has timed out."""
 
@@ -60,50 +60,41 @@ class MessengerBackend(ABC):
 	async def send_resolution_confirmation(
 		self,
 		request_id: str,
-		agent_id: str,
-		correlation: CorrelationToken,
+		channel_id: str,
+		correlation: "CorrelationToken",
 	) -> None:
 		"""Confirm to the developer that their response was received."""
 
 	@abstractmethod
-	def poll_responses(self) -> AsyncIterator[IncomingResponse]:
-		"""Yield IncomingResponse as replies arrive. Infinite async
-		iterator; the caller cancels the task to stop polling."""
+	def poll_responses(self) -> "AsyncIterator[IncomingResponse]":
+		"""Yield IncomingResponse as replies arrive. Infinite async iterator."""
 
 	@abstractmethod
-	async def send_document(
-		self, agent_id: str, path: Path, caption: str | None
-	) -> None:
-		"""Deliver a file to the developer. Fire-and-forget; no reply tracking."""
-
-	@abstractmethod
-	def poll_commands(self) -> AsyncIterator[str]:
+	def poll_commands(self) -> "AsyncIterator[str]":
 		"""Yield slash-commands as they arrive. Infinite async iterator."""
 
-	async def send_spawn_ack(self, project_key: str, prompt: str | None) -> None:
-		"""Acknowledge a successful spawn command."""
+	async def send_spawn_ack(self, channel_id: str, prompt: str | None) -> None:
+		"""Acknowledge a successful spawn command. No-op by default."""
 		pass
 
-	async def write_session_message(
-		self,
-		session_id: str,
-		agent_id: str,
-		msg_type: str,
-		content: str,
-		request_id: str | None = None,
-	) -> None:
-		"""Write a message to the session's Firebase transcript. No-op by default."""
-
 	async def write_session_meta(
-		self, session_id: str, agent_ids: list[str], task: str
+		self,
+		channel_id: str,
+		type: str,
+		project_key: str,
+		*,
+		agent_senders: list[str] | None = None,
+		task: str | None = None,
 	) -> None:
 		"""Write session metadata to Firebase on session creation. No-op by default."""
+		pass
 
 	async def start_inject_listener(self, session_id: str) -> None:
-		"""Start listening for human inject messages for this session. No-op by default."""
+		"""Start listening for human inject messages. No-op by default."""
+		pass
 
 	async def poll_inject_messages(self):
-		"""Yield (session_id, inject_id, text) tuples as human injections arrive."""
+		"""Yield (session_id, inject_id, text) tuples. Empty by default."""
 		if False:
 			yield
 
@@ -113,114 +104,72 @@ class MessengerBackend(ABC):
 
 
 class MultiBackend(MessengerBackend):
-	"""A composite backend that broadcasts to multiple child backends.
-
-	Responses from any child backend resolve the request.
-	"""
-
 	def __init__(self, backends: list[MessengerBackend]) -> None:
 		self._backends = backends
 
-	async def send_question(
-		self,
-		request_id: str,
-		agent_id: str,
-		question: str,
-		format: str = "plain",
-		suggestions: list[str] | None = None,
-	) -> CorrelationToken:
-		# For MultiBackend, the correlation token is a dict mapping backend to its token
-		correlations = {}
-		for b in self._backends:
-			correlations[b] = await b.send_question(
-				request_id, agent_id, question, format, suggestions
+	async def write_channel_message(
+		self, channel_id, sender, message_type, content,
+		*, request_id=None, url=None, format="plain", suggestions=None,
+	) -> "CorrelationToken | None":
+		results = await asyncio.gather(*(
+			b.write_channel_message(
+				channel_id, sender, message_type, content,
+				request_id=request_id, url=url, format=format, suggestions=suggestions,
 			)
-		return correlations
-
-	async def send_notification(self, agent_id: str, message: str, format: str = "plain") -> None:
-		await asyncio.gather(
-			*(b.send_notification(agent_id, message, format) for b in self._backends)
-		)
+			for b in self._backends
+		))
+		if message_type == "question":
+			return {b: r for b, r in zip(self._backends, results)}
+		return None
 
 	async def send_timeout_followup(
-		self,
-		request_id: str,
-		agent_id: str,
-		timeout_seconds: int,
-		correlation: CorrelationToken,
+		self, request_id, channel_id, timeout_seconds, correlation
 	) -> None:
-		# correlation is a dict[MessengerBackend, CorrelationToken]
-		await asyncio.gather(
-			*(
-				b.send_timeout_followup(
-					request_id, agent_id, timeout_seconds, correlation[b]
-				)
+		if isinstance(correlation, dict):
+			await asyncio.gather(*(
+				b.send_timeout_followup(request_id, channel_id, timeout_seconds, correlation[b])
+				for b in self._backends if b in correlation
+			))
+		else:
+			await asyncio.gather(*(
+				b.send_timeout_followup(request_id, channel_id, timeout_seconds, correlation)
 				for b in self._backends
-				if b in correlation
-			)
-		)
+			))
 
 	async def send_resolution_confirmation(
-		self,
-		request_id: str,
-		agent_id: str,
-		correlation: CorrelationToken,
+		self, request_id, channel_id, correlation
 	) -> None:
-		await asyncio.gather(
-			*(
-				b.send_resolution_confirmation(request_id, agent_id, correlation[b])
+		if isinstance(correlation, dict):
+			await asyncio.gather(*(
+				b.send_resolution_confirmation(request_id, channel_id, correlation[b])
+				for b in self._backends if b in correlation
+			))
+		else:
+			await asyncio.gather(*(
+				b.send_resolution_confirmation(request_id, channel_id, correlation)
 				for b in self._backends
-				if b in correlation
-			)
-		)
+			))
 
-	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
-		async def _poll(b: MessengerBackend):
+	async def poll_responses(self) -> "AsyncIterator[IncomingResponse]":
+		combined: asyncio.Queue = asyncio.Queue()
+
+		async def _forward(b: MessengerBackend):
 			async for resp in b.poll_responses():
-				# We yield a response where correlation is a tuple of (backend, backend_correlation)
-				# so that MultiBackend can be nested or simply tracked.
-				# Actually, the Registry needs to know how to resolve it.
-				yield (b, resp)
+				await combined.put((b, resp))
 
-		# Merge streams from all backends
-		queues: list[asyncio.Queue] = [asyncio.Queue() for _ in self._backends]
-
-		async def _forward(b: MessengerBackend, q: asyncio.Queue):
-			async for resp in b.poll_responses():
-				await q.put((b, resp))
-
-		tasks = [
-			asyncio.create_task(_forward(b, q))
-			for b, q in zip(self._backends, queues)
-		]
-
+		tasks = [asyncio.create_task(_forward(b)) for b in self._backends]
 		try:
-			# Use a combined queue to yield from
-			combined = asyncio.Queue()
-
-			async def _to_combined(q: asyncio.Queue):
-				while True:
-					item = await q.get()
-					await combined.put(item)
-
-			forward_tasks = [
-				asyncio.create_task(_to_combined(q)) for q in queues
-			]
-
 			while True:
 				backend, resp = await combined.get()
-				# Return a correlation that Registry can use.
-				# If Registry is updated to handle dict correlations, we need to be careful.
-				# Here we just yield a correlation that matches what we expect in resolve_by_correlation.
 				yield IncomingResponse(
 					correlation=(backend, resp.correlation), text=resp.text
 				)
 		finally:
-			for t in tasks + forward_tasks:
+			for t in tasks:
 				t.cancel()
 
-	async def poll_commands(self) -> AsyncIterator[str]:
-		combined = asyncio.Queue()
+	async def poll_commands(self) -> "AsyncIterator[str]":
+		combined: asyncio.Queue = asyncio.Queue()
 
 		async def _forward(b: MessengerBackend):
 			async for cmd in b.poll_commands():
@@ -234,35 +183,19 @@ class MultiBackend(MessengerBackend):
 			for t in tasks:
 				t.cancel()
 
-	async def send_spawn_ack(self, project_key: str, prompt: str | None) -> None:
-		await asyncio.gather(
-			*(b.send_spawn_ack(project_key, prompt) for b in self._backends)
-		)
+	async def send_spawn_ack(self, channel_id: str, prompt: str | None) -> None:
+		await asyncio.gather(*(b.send_spawn_ack(channel_id, prompt) for b in self._backends))
 
-	async def write_session_message(
-		self, session_id, agent_id, msg_type, content, request_id=None
+	async def write_session_meta(
+		self, channel_id, type, project_key, *, agent_senders=None, task=None
 	) -> None:
-		await asyncio.gather(
-			*(b.write_session_message(session_id, agent_id, msg_type, content, request_id)
-			  for b in self._backends)
-		)
-
-	async def write_session_meta(self, session_id, agent_ids, task) -> None:
-		await asyncio.gather(
-			*(b.write_session_meta(session_id, agent_ids, task) for b in self._backends)
-		)
+		await asyncio.gather(*(
+			b.write_session_meta(channel_id, type, project_key, agent_senders=agent_senders, task=task)
+			for b in self._backends
+		))
 
 	async def start_inject_listener(self, session_id) -> None:
-		await asyncio.gather(
-			*(b.start_inject_listener(session_id) for b in self._backends)
-		)
-
-	async def send_document(
-		self, agent_id: str, path: Path, caption: str | None
-	) -> None:
-		await asyncio.gather(
-			*(b.send_document(agent_id, path, caption) for b in self._backends)
-		)
+		await asyncio.gather(*(b.start_inject_listener(session_id) for b in self._backends))
 
 	async def aclose(self) -> None:
 		await asyncio.gather(*(b.aclose() for b in self._backends))

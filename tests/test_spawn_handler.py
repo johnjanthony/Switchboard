@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re as _re
 from datetime import timedelta, timezone, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -30,6 +31,7 @@ def make_backend() -> MagicMock:
 	backend = MagicMock()
 	backend.send_text = AsyncMock()
 	backend.send_spawn_ack = AsyncMock()
+	backend.write_session_meta = AsyncMock()
 	return backend
 
 
@@ -67,12 +69,15 @@ async def test_form1_no_args_uses_spawn_root_and_default_prompt(spawn_dirs):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn")
 	pending = json.loads(_pending_path(cfg).read_text())
-	expected = f"{_BASE_INSTRUCTION.format(project_key=spawn_dirs.name)} {_DEFAULT_PROMPT}"
+	channel_id = pending["channel_id"]
+	assert _re.match(r".+-\d{8}-\d{6}$", channel_id)
+
+	expected = f"{_BASE_INSTRUCTION.format(channel_id=channel_id)} {_DEFAULT_PROMPT}"
 	assert pending["prompt"] == expected
 	assert pending["project_path"] == str(spawn_dirs)
 	mock_run.assert_called_once()
 	assert mock_run.call_args[0][0] == ["schtasks", "/run", "/tn", "SwitchboardSpawn"]
-	backend.send_spawn_ack.assert_called_once_with(spawn_dirs.name, None)
+	backend.send_spawn_ack.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -84,10 +89,11 @@ async def test_form2_subdir_no_prompt(spawn_dirs):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen")
 	pending = json.loads(_pending_path(cfg).read_text())
-	expected = f"{_BASE_INSTRUCTION.format(project_key='rpdm/next-gen')} {_DEFAULT_PROMPT}"
+	channel_id = pending["channel_id"]
+	expected = f"{_BASE_INSTRUCTION.format(channel_id=channel_id)} {_DEFAULT_PROMPT}"
 	assert pending["prompt"] == expected
 	assert pending["project_path"] == str(spawn_dirs / "rpdm" / "next-gen")
-	backend.send_spawn_ack.assert_called_once_with("rpdm/next-gen", None)
+	backend.send_spawn_ack.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -99,10 +105,11 @@ async def test_form3_no_path_with_prompt(spawn_dirs):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn fix the migration")
 	pending = json.loads(_pending_path(cfg).read_text())
-	expected = f"{_BASE_INSTRUCTION.format(project_key=spawn_dirs.name)} fix the migration"
+	channel_id = pending["channel_id"]
+	expected = f"{_BASE_INSTRUCTION.format(channel_id=channel_id)} fix the migration"
 	assert pending["prompt"] == expected
 	assert pending["project_path"] == str(spawn_dirs)
-	backend.send_spawn_ack.assert_called_once_with(spawn_dirs.name, "fix the migration")
+	backend.send_spawn_ack.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -114,10 +121,11 @@ async def test_form4_subdir_with_prompt(spawn_dirs):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen fix the migration")
 	pending = json.loads(_pending_path(cfg).read_text())
-	expected = f"{_BASE_INSTRUCTION.format(project_key='rpdm/next-gen')} fix the migration"
+	channel_id = pending["channel_id"]
+	expected = f"{_BASE_INSTRUCTION.format(channel_id=channel_id)} fix the migration"
 	assert pending["prompt"] == expected
 	assert pending["project_path"] == str(spawn_dirs / "rpdm" / "next-gen")
-	backend.send_spawn_ack.assert_called_once_with("rpdm/next-gen", "fix the migration")
+	backend.send_spawn_ack.assert_called_once()
 
 
 # --- path traversal ---
