@@ -77,12 +77,17 @@ def _validate_path(path_str: str, cwd: Path | None = None) -> Path:
 	return resolved
 
 
-def _append_session_log(log_path: str, agent_id: str, direction: str, text: str) -> None:
+async def _append_session_log(log_path: str, agent_id: str, direction: str, text: str) -> None:
 	path = Path(log_path).parent / "sessions" / f"{agent_id}_{_SESSION_START}.log"
-	path.parent.mkdir(exist_ok=True)
 	ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-	with path.open("a", encoding="utf-8") as f:
-		f.write(f"{ts} {direction} {text}\n")
+	line = f"{ts} {direction} {text}\n"
+
+	def _write() -> None:
+		path.parent.mkdir(exist_ok=True)
+		with path.open("a", encoding="utf-8") as f:
+			f.write(line)
+
+	await asyncio.to_thread(_write)
 
 
 @dataclass
@@ -90,6 +95,7 @@ class ToolHandlers:
 	ask_human: Callable[..., Coroutine[None, None, str]]
 	notify_human: Callable[..., Coroutine[None, None, str]]
 	send_document_human: Callable[..., Coroutine[None, None, str]]
+	message_and_await_agent: Callable[..., Coroutine[None, None, str]]
 
 
 def build_tool_handlers(
@@ -102,7 +108,7 @@ def build_tool_handlers(
 		try:
 			await backend.send_notification(agent_id, message, format)
 			logger.notify_sent(agent_id, message)
-			_append_session_log(config.log_path, agent_id, "→", message)
+			await _append_session_log(config.log_path, agent_id, "→", message)
 			return "ok"
 		except Exception as exc:
 			logger.tool_error(None, agent_id, str(exc))
@@ -121,9 +127,24 @@ def build_tool_handlers(
 			correlation = await backend.send_question(
 				request_id, agent_id, question, format, suggestions
 			)
+			collab_session = registry.get_session_for_agent(agent_id)
+			if collab_session is not None:
+				try:
+					await backend.write_session_message(
+						collab_session.session_id,
+						agent_id,
+						"ask_human",
+						question,
+						request_id=request_id,
+					)
+				except Exception as exc:
+					logger.surface_error(f"collab_ask_human_write_error: {exc}")
 			future = registry.add(request_id, agent_id, correlation)
 			logger.request_created(request_id, agent_id, question)
-			_append_session_log(config.log_path, agent_id, "→", question)
+			await _append_session_log(config.log_path, agent_id, "→", question)
+		except asyncio.CancelledError:
+			registry.remove(request_id)
+			raise
 		except Exception as exc:
 			logger.tool_error(request_id, agent_id, str(exc))
 			return f"ERROR: {exc}"
@@ -156,7 +177,7 @@ def build_tool_handlers(
 			registry.remove(request_id)
 			return f"ERROR: {exc}"
 
-		_append_session_log(config.log_path, agent_id, "←", result)
+		await _append_session_log(config.log_path, agent_id, "←", result)
 		duration_ms = int(
 			(datetime.now(timezone.utc) - started).total_seconds() * 1000
 		)
@@ -216,13 +237,67 @@ def build_tool_handlers(
 		except Exception as exc:
 			logger.surface_error(f"document_audit_failed: {exc}")
 		entry = f"[document: {resolved.name}] {caption}" if caption else f"[document: {resolved.name}]"
-		_append_session_log(config.log_path, agent_id, "→", entry)
+		await _append_session_log(config.log_path, agent_id, "→", entry)
 		return "ok"
+
+	async def message_and_await_agent(
+		session_id: str, agent_id: str, message: str | None = None
+	) -> str:
+		session = registry.get_session(session_id)
+		if session is None or agent_id not in session.agent_ids:
+			return "ERROR: session not found"
+
+		try:
+			if message is not None:
+				entry = {
+					"speaker": agent_id,
+					"message": message,
+					"timestamp": datetime.now(timezone.utc).isoformat(),
+				}
+				session.transcript.append(entry)
+				if session.relay:
+					async def _relay(sid=session_id, aid=agent_id, msg=message) -> None:
+						try:
+							await backend.write_session_message(sid, aid, "collab", msg)
+						except Exception as exc:
+							logger.surface_error(f"collab_relay_error: {exc}")
+					asyncio.create_task(_relay())
+				other = session.other_agent(agent_id)
+				session.deliver(other, message)
+				logger.collab_message_sent(session_id, agent_id, message)
+				await _append_session_log(config.log_path, session_id, "→", f"{agent_id}: {message}")
+
+			future = session.start_waiting(agent_id)
+		except Exception as exc:
+			logger.tool_error(None, agent_id, str(exc))
+			return f"ERROR: {exc}"
+
+		try:
+			result = await asyncio.wait_for(future, timeout=config.timeout_seconds)
+			logger.collab_message_received(session_id, agent_id, result)
+			await _append_session_log(config.log_path, session_id, "←", f"{agent_id}: {result}")
+			return result
+		except asyncio.TimeoutError:
+			session.cancel_waiting(agent_id)
+			logger.surface_error(f"collab_timeout: session={session_id} agent={agent_id}")
+			try:
+				await backend.send_notification(
+					"system",
+					f"Collab session `{session_id}` — `{agent_id}` timed out after 24h.",
+					"markdown",
+				)
+			except Exception as exc:
+				logger.surface_error(f"collab_timeout_notify_error: {exc}")
+			return TIMEOUT_SENTINEL
+		except asyncio.CancelledError:
+			session.cancel_waiting(agent_id)
+			raise
 
 	return ToolHandlers(
 		ask_human=ask_human,
 		notify_human=notify_human,
 		send_document_human=send_document_human,
+		message_and_await_agent=message_and_await_agent,
 	)
 
 
@@ -262,10 +337,46 @@ async def dispatch_commands(
 	backend: Any,
 	logger: JsonlLogger,
 ) -> None:
-	async for raw in backend.poll_commands():
+	while True:
 		try:
-			await spawn_handler.handle(raw)
+			async for raw in backend.poll_commands():
+				try:
+					await spawn_handler.handle(raw)
+				except asyncio.CancelledError:
+					raise
+				except Exception as exc:
+					logger.surface_error(f"dispatch_commands_error: {exc}")
 		except asyncio.CancelledError:
 			raise
 		except Exception as exc:
-			logger.surface_error(f"dispatch_commands_error: {exc}")
+			logger.surface_error(f"dispatch_commands_loop_crashed: {exc}")
+			await asyncio.sleep(1.0)
+
+
+async def dispatch_inject_queue(
+	registry: Registry,
+	backend: Any,
+	logger: JsonlLogger,
+) -> None:
+	"""Deliver human inject messages from the Android compose box to collab sessions."""
+	poll = getattr(backend, "poll_inject_messages", None)
+	if poll is None:
+		return
+	while True:
+		try:
+			async for session_id, inject_id, text in poll():
+				try:
+					session = registry.get_session(session_id)
+					if session is None:
+						logger.surface_error(f"inject_unknown_session: {session_id} inject_id={inject_id}")
+					else:
+						session.deliver_inject(text)
+				except asyncio.CancelledError:
+					raise
+				except Exception as exc:
+					logger.surface_error(f"inject_dispatch_error: inject_id={inject_id} {exc}")
+		except asyncio.CancelledError:
+			raise
+		except Exception as exc:
+			logger.surface_error(f"inject_queue_crashed: {exc}")
+			await asyncio.sleep(1.0)

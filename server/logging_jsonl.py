@@ -134,6 +134,22 @@ class JsonlLogger:
 			"error": error,
 		})
 
+	def collab_message_sent(self, session_id: str, agent_id: str, message: str) -> None:
+		self._write({
+			"event": "collab_message_sent",
+			"session_id": session_id,
+			"agent_id": agent_id,
+			"message_preview": _preview(message),
+		})
+
+	def collab_message_received(self, session_id: str, agent_id: str, result: str) -> None:
+		self._write({
+			"event": "collab_message_received",
+			"session_id": session_id,
+			"agent_id": agent_id,
+			"response_preview": _preview(result),
+		})
+
 	def document_sent(
 		self,
 		agent_id: str,

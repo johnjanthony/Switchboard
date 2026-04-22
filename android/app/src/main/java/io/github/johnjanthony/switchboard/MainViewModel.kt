@@ -9,12 +9,19 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
+import com.google.firebase.database.ChildEventListener
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
 import com.google.firebase.messaging.FirebaseMessaging
+import io.github.johnjanthony.switchboard.network.CollabMessage
+import io.github.johnjanthony.switchboard.network.CollabSession
+import io.github.johnjanthony.switchboard.network.CollabSessionMeta
 import io.github.johnjanthony.switchboard.network.Question
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -47,6 +54,14 @@ class MainViewModel : ViewModel() {
     private val _selectedAgentId = mutableStateOf<String?>(null)
     val selectedAgentId: State<String?> = _selectedAgentId
 
+    // Collab session state
+    private val _collabSessions = MutableStateFlow<Map<String, CollabSession>>(emptyMap())
+    val collabSessions: StateFlow<Map<String, CollabSession>> = _collabSessions.asStateFlow()
+
+    // Pending ask_human queue per session: sessionId -> list of (messageId, CollabMessage)
+    private val _pendingSessionQuestions = MutableStateFlow<Map<String, List<Pair<String, CollabMessage>>>>(emptyMap())
+    val pendingSessionQuestions: StateFlow<Map<String, List<Pair<String, CollabMessage>>>> = _pendingSessionQuestions.asStateFlow()
+
     private var isUserTyping: Boolean = false
     private val processedRequestIds = mutableSetOf<String>()
 
@@ -60,6 +75,7 @@ class MainViewModel : ViewModel() {
 
     init {
         setupFirebase()
+        setupSessionsListener()
     }
 
     private fun setupFirebase() {
@@ -283,6 +299,78 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    private fun setupSessionsListener() {
+        sessionsRef.addChildEventListener(object : ChildEventListener {
+            override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
+                // Only handle collab sessions (have "meta" child); single-agent sessions have "state"
+                if (!snapshot.hasChild("meta")) return
+                val sessionId = snapshot.key ?: return
+                val meta = snapshot.child("meta").getValue(CollabSessionMeta::class.java)
+                    ?: CollabSessionMeta()
+                val session = CollabSession(sessionId = sessionId, meta = meta)
+
+                snapshot.child("messages").children.forEach { msgSnap ->
+                    val msgId = msgSnap.key ?: return@forEach
+                    val msg = msgSnap.getValue(CollabMessage::class.java) ?: return@forEach
+                    session.messages.add(msgId to msg)
+                    if (msg.type == "ask_human") enqueueSessionQuestion(sessionId, msgId, msg)
+                }
+                snapshot.child("messages").ref.addChildEventListener(
+                    object : ChildEventListener {
+                        override fun onChildAdded(snap: DataSnapshot, prev: String?) {
+                            val msgId = snap.key ?: return
+                            val msg = snap.getValue(CollabMessage::class.java) ?: return
+                            addSessionMessage(sessionId, msgId, msg)
+                        }
+                        override fun onChildChanged(snap: DataSnapshot, prev: String?) {}
+                        override fun onChildRemoved(snap: DataSnapshot) {}
+                        override fun onChildMoved(snap: DataSnapshot, prev: String?) {}
+                        override fun onCancelled(error: DatabaseError) {}
+                    }
+                )
+                _collabSessions.value = _collabSessions.value + (sessionId to session)
+            }
+            override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {}
+            override fun onChildRemoved(snapshot: DataSnapshot) {}
+            override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
+            override fun onCancelled(error: DatabaseError) {}
+        })
+    }
+
+    private fun addSessionMessage(sessionId: String, msgId: String, msg: CollabMessage) {
+        val current = _collabSessions.value.toMutableMap()
+        val session = current[sessionId] ?: return
+        if (session.messages.any { it.first == msgId }) return  // already seeded from initial snapshot
+        session.messages.add(msgId to msg)
+        _collabSessions.value = current
+        if (msg.type == "ask_human") enqueueSessionQuestion(sessionId, msgId, msg)
+    }
+
+    private fun enqueueSessionQuestion(sessionId: String, msgId: String, msg: CollabMessage) {
+        val current = _pendingSessionQuestions.value.toMutableMap()
+        val list = (current[sessionId] ?: emptyList()) + (msgId to msg)
+        _pendingSessionQuestions.value = current + (sessionId to list)
+    }
+
+    fun resolveSessionQuestion(sessionId: String, msgId: String) {
+        val current = _pendingSessionQuestions.value.toMutableMap()
+        val list = (current[sessionId] ?: emptyList()).filter { it.first != msgId }
+        _pendingSessionQuestions.value = current + (sessionId to list)
+    }
+
+    fun sendInjectMessage(sessionId: String, text: String) {
+        val injectRef = FirebaseDatabase.getInstance()
+            .getReference("sessions/$sessionId/inject_queue")
+        val entry = mapOf("content" to text, "timestamp" to System.currentTimeMillis())
+        injectRef.push().setValue(entry)
+    }
+
+    fun replyToSessionQuestion(sessionId: String, msgId: String, requestId: String, text: String) {
+        val respRef = FirebaseDatabase.getInstance().getReference("responses/$requestId")
+        respRef.setValue(mapOf("text" to text, "timestamp" to System.currentTimeMillis()))
+        resolveSessionQuestion(sessionId, msgId)
+    }
+
     fun setUserTyping(typing: Boolean) {
         isUserTyping = typing
     }
@@ -370,11 +458,15 @@ class MainViewModel : ViewModel() {
             }
     }
 
-    fun spawnSession(project: String, prompt: String) {
+    fun spawnSession(project: String, prompt: String, agents: Int = 1, relay: Boolean = false) {
+        val flags = buildString {
+            if (agents > 1) append(" --agents=$agents")
+            if (relay) append(" --relay")
+        }
         val command = if (project.isBlank()) {
-            "/spawn $prompt"
+            "/spawn$flags $prompt"
         } else {
-            "/spawn $project $prompt"
+            "/spawn $project$flags $prompt"
         }
         commandsRef.push().setValue(command)
     }

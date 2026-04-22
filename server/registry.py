@@ -11,7 +11,10 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+	from server.collab import CollabSession
 
 
 @dataclass
@@ -30,6 +33,8 @@ class Registry:
 		self._pending: dict[str, PendingRequest] = {}
 		self._by_correlation: dict[Any, str] = {}
 		self.total_answered: int = 0
+		self._sessions: dict[str, "CollabSession"] = {}
+		self._agent_to_session: dict[str, str] = {}
 
 	@property
 	def pending_count(self) -> int:
@@ -98,3 +103,25 @@ class Registry:
 					self._by_correlation.pop((b, c), None)
 			else:
 				self._by_correlation.pop(record.correlation, None)
+
+	def add_session(self, session: "CollabSession") -> None:
+		existing = self._sessions.get(session.session_id)
+		if existing is not None:
+			for agent_id in existing.agent_ids:
+				self._agent_to_session.pop(agent_id, None)
+		self._sessions[session.session_id] = session
+		for agent_id in session.agent_ids:
+			self._agent_to_session[agent_id] = session.session_id
+
+	def get_session(self, session_id: str) -> "CollabSession | None":
+		return self._sessions.get(session_id)
+
+	def get_session_for_agent(self, agent_id: str) -> "CollabSession | None":
+		session_id = self._agent_to_session.get(agent_id)
+		return self._sessions.get(session_id) if session_id else None
+
+	def remove_session(self, session_id: str) -> None:
+		session = self._sessions.pop(session_id, None)
+		if session is not None:
+			for agent_id in session.agent_ids:
+				self._agent_to_session.pop(agent_id, None)

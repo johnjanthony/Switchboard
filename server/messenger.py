@@ -84,6 +84,29 @@ class MessengerBackend(ABC):
 		"""Acknowledge a successful spawn command."""
 		pass
 
+	async def write_session_message(
+		self,
+		session_id: str,
+		agent_id: str,
+		msg_type: str,
+		content: str,
+		request_id: str | None = None,
+	) -> None:
+		"""Write a message to the session's Firebase transcript. No-op by default."""
+
+	async def write_session_meta(
+		self, session_id: str, agent_ids: list[str], task: str
+	) -> None:
+		"""Write session metadata to Firebase on session creation. No-op by default."""
+
+	async def start_inject_listener(self, session_id: str) -> None:
+		"""Start listening for human inject messages for this session. No-op by default."""
+
+	async def poll_inject_messages(self):
+		"""Yield (session_id, inject_id, text) tuples as human injections arrive."""
+		if False:
+			yield
+
 	@abstractmethod
 	async def aclose(self) -> None:
 		"""Release any resources held by the backend."""
@@ -214,6 +237,24 @@ class MultiBackend(MessengerBackend):
 	async def send_spawn_ack(self, project_key: str, prompt: str | None) -> None:
 		await asyncio.gather(
 			*(b.send_spawn_ack(project_key, prompt) for b in self._backends)
+		)
+
+	async def write_session_message(
+		self, session_id, agent_id, msg_type, content, request_id=None
+	) -> None:
+		await asyncio.gather(
+			*(b.write_session_message(session_id, agent_id, msg_type, content, request_id)
+			  for b in self._backends)
+		)
+
+	async def write_session_meta(self, session_id, agent_ids, task) -> None:
+		await asyncio.gather(
+			*(b.write_session_meta(session_id, agent_ids, task) for b in self._backends)
+		)
+
+	async def start_inject_listener(self, session_id) -> None:
+		await asyncio.gather(
+			*(b.start_inject_listener(session_id) for b in self._backends)
 		)
 
 	async def send_document(

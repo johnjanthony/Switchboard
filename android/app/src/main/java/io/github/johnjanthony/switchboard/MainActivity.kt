@@ -15,7 +15,12 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.RoundedCornerShape
 import io.github.johnjanthony.switchboard.fcm.SwitchboardFirebaseMessagingService
+import io.github.johnjanthony.switchboard.network.CollabMessage
+import io.github.johnjanthony.switchboard.network.CollabSession
+import io.github.johnjanthony.switchboard.network.CollabSessionMeta
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -85,6 +90,8 @@ fun MainScreen(viewModel: MainViewModel) {
     var closeTargetAgentId by remember { mutableStateOf<String?>(null) }
 
     val agents = history.keys.toList().sorted()
+    val collabSessions by viewModel.collabSessions.collectAsState()
+    val pendingSessionQuestions by viewModel.pendingSessionQuestions.collectAsState()
 
     Scaffold(
         topBar = {
@@ -97,9 +104,10 @@ fun MainScreen(viewModel: MainViewModel) {
                         }
                     }
                 )
-                if (agents.isNotEmpty()) {
+                val allTabIds = agents + collabSessions.keys.toList().sorted()
+                if (allTabIds.isNotEmpty()) {
                     ScrollableTabRow(
-                        selectedTabIndex = agents.indexOf(selectedAgentId).coerceAtLeast(0),
+                        selectedTabIndex = allTabIds.indexOf(selectedAgentId).coerceAtLeast(0),
                         edgePadding = 16.dp,
                         containerColor = MaterialTheme.colorScheme.surface,
                         contentColor = MaterialTheme.colorScheme.primary
@@ -135,6 +143,16 @@ fun MainScreen(viewModel: MainViewModel) {
                                 }
                             )
                         }
+                        collabSessions.values.sortedBy { it.sessionId }.forEach { session ->
+                            val projectName = session.sessionId.substringBeforeLast("-").let {
+                                if (it.contains("-")) it.substringBefore("-") else it
+                            }
+                            Tab(
+                                selected = selectedAgentId == session.sessionId,
+                                onClick = { viewModel.selectAgent(session.sessionId) },
+                                text = { Text("$projectName [collab]") }
+                            )
+                        }
                     }
                 }
             }
@@ -150,7 +168,19 @@ fun MainScreen(viewModel: MainViewModel) {
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
-            if (selectedAgentId != null) {
+            val selectedSession = collabSessions[selectedAgentId]
+            if (selectedSession != null) {
+                SessionChatView(
+                    session = selectedSession,
+                    pendingQuestions = pendingSessionQuestions[selectedAgentId!!] ?: emptyList(),
+                    onReply = { msgId, requestId, text ->
+                        viewModel.replyToSessionQuestion(selectedAgentId!!, msgId, requestId, text)
+                    },
+                    onInject = { text ->
+                        viewModel.sendInjectMessage(selectedAgentId!!, text)
+                    },
+                )
+            } else if (selectedAgentId != null) {
                 val context = androidx.compose.ui.platform.LocalContext.current
                 ChatView(
                     agentId = selectedAgentId!!,
@@ -171,8 +201,8 @@ fun MainScreen(viewModel: MainViewModel) {
     if (showSpawnDialog) {
         SpawnSessionDialog(
             onDismiss = { showSpawnDialog = false },
-            onSpawn = { project, prompt ->
-                viewModel.spawnSession(project, prompt)
+            onSpawn = { project, prompt, agents, relay ->
+                viewModel.spawnSession(project, prompt, agents, relay)
                 showSpawnDialog = false
             }
         )
@@ -419,10 +449,12 @@ fun ChatInput(
 @Composable
 fun SpawnSessionDialog(
     onDismiss: () -> Unit,
-    onSpawn: (String, String) -> Unit
+    onSpawn: (String, String, Int, Boolean) -> Unit
 ) {
     var project by remember { mutableStateOf("") }
     var prompt by remember { mutableStateOf("") }
+    var agents by remember { mutableStateOf(1) }
+    var relay by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -442,11 +474,52 @@ fun SpawnSessionDialog(
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 3
                 )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("Agents:", style = MaterialTheme.typography.bodyMedium)
+                    IconButton(
+                        onClick = {
+                            if (agents > 1) {
+                                agents--
+                                if (agents == 1) relay = false
+                            }
+                        },
+                        enabled = agents > 1
+                    ) {
+                        Text("−", style = MaterialTheme.typography.titleLarge)
+                    }
+                    Text(
+                        text = agents.toString(),
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.defaultMinSize(minWidth = 24.dp),
+                    )
+                    IconButton(onClick = { agents++ }) {
+                        Text("+", style = MaterialTheme.typography.titleLarge)
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Checkbox(
+                        checked = relay,
+                        onCheckedChange = { if (agents > 1) relay = it },
+                        enabled = agents > 1
+                    )
+                    Text(
+                        text = "Relay messages between agents",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (agents > 1) MaterialTheme.colorScheme.onSurface
+                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
-                onClick = { onSpawn(project, prompt) },
+                onClick = { onSpawn(project, prompt, agents, relay) },
                 enabled = prompt.isNotBlank()
             ) {
                 Text("Spawn")
@@ -458,6 +531,175 @@ fun SpawnSessionDialog(
             }
         }
     )
+}
+
+@Composable
+fun SessionChatView(
+    session: CollabSession,
+    pendingQuestions: List<Pair<String, CollabMessage>>,
+    onReply: (msgId: String, requestId: String, text: String) -> Unit,
+    onInject: (text: String) -> Unit,
+) {
+    val agentLabels = mapOf(
+        session.meta.agent_ids.getOrNull(0) to "Agent 1",
+        session.meta.agent_ids.getOrNull(1) to "Agent 2",
+    )
+    val listState = rememberLazyListState()
+    LaunchedEffect(session.messages.size) {
+        if (session.messages.isNotEmpty()) {
+            listState.animateScrollToItem(session.messages.size - 1)
+        }
+    }
+    Column(Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.weight(1f).background(MaterialTheme.colorScheme.surfaceVariant)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(session.messages, key = { it.first }) { (_, msg) ->
+                    SessionMessageBubble(msg, agentLabels[msg.speaker] ?: msg.speaker)
+                }
+            }
+        }
+        SessionComposeArea(
+            pendingQuestion = pendingQuestions.firstOrNull()?.second,
+            pendingMsgId = pendingQuestions.firstOrNull()?.first,
+            agentLabels = agentLabels,
+            onReply = onReply,
+            onInject = onInject,
+        )
+    }
+}
+
+@Composable
+fun SessionMessageBubble(msg: CollabMessage, speakerLabel: String) {
+    val isHuman = msg.speaker == "human"
+    val isAskHuman = msg.type == "ask_human"
+    val bubbleColor = when {
+        isHuman -> MaterialTheme.colorScheme.primaryContainer
+        isAskHuman -> MaterialTheme.colorScheme.errorContainer
+        else -> androidx.compose.ui.graphics.Color.Black
+    }
+    val borderMod = if (isAskHuman)
+        Modifier.border(2.dp, MaterialTheme.colorScheme.error, RoundedCornerShape(8.dp))
+    else Modifier
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = if (isHuman) Arrangement.End else Arrangement.Start,
+    ) {
+        Column(
+            Modifier
+                .then(borderMod)
+                .background(bubbleColor, RoundedCornerShape(8.dp))
+                .padding(8.dp)
+                .widthIn(max = 280.dp)
+        ) {
+            if (!isHuman) {
+                Text(
+                    speakerLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            Text(
+                msg.content,
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (isHuman) MaterialTheme.colorScheme.onPrimaryContainer
+                        else androidx.compose.ui.graphics.Color.White,
+            )
+        }
+    }
+}
+
+@Composable
+fun SessionComposeArea(
+    pendingQuestion: CollabMessage?,
+    pendingMsgId: String?,
+    agentLabels: Map<String?, String>,
+    onReply: (msgId: String, requestId: String, text: String) -> Unit,
+    onInject: (text: String) -> Unit,
+) {
+    var text by remember { mutableStateOf("") }
+    val isReplying = pendingQuestion != null
+
+    Surface(tonalElevation = 8.dp, shadowElevation = 8.dp) {
+        Column {
+            if (isReplying) {
+                val agentLabel = agentLabels[pendingQuestion!!.speaker] ?: pendingQuestion.speaker
+                Surface(color = MaterialTheme.colorScheme.errorContainer) {
+                    Text(
+                        "$agentLabel is waiting for your reply",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(8.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(4.dp),
+                ) {
+                    Column(Modifier.padding(8.dp)) {
+                        Text(
+                            agentLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(
+                            pendingQuestion.content.take(120) +
+                                if (pendingQuestion.content.length > 120) "…" else "",
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 3,
+                        )
+                    }
+                }
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    placeholder = {
+                        Text(
+                            if (isReplying) {
+                                val agentLabel = agentLabels[pendingQuestion!!.speaker] ?: pendingQuestion.speaker
+                                "Reply to $agentLabel…"
+                            } else "Inject into conversation…"
+                        )
+                    },
+                    modifier = Modifier.weight(1f),
+                    maxLines = 4,
+                )
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        val trimmed = text.trim()
+                        if (trimmed.isNotEmpty()) {
+                            if (isReplying) {
+                                onReply(pendingMsgId!!, pendingQuestion!!.request_id ?: "", trimmed)
+                            } else {
+                                onInject(trimmed)
+                            }
+                            text = ""
+                        }
+                    },
+                ) { Text("Send") }
+            }
+        }
+    }
 }
 
 @Preview

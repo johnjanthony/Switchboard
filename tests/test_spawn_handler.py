@@ -11,6 +11,7 @@ import pytest
 
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
+from server.registry import Registry
 
 
 def make_config(tmp_path: Path, spawn_root=None) -> Config:
@@ -49,7 +50,7 @@ async def test_spawn_not_configured_sends_error(tmp_path):
 	from server.spawn import SpawnHandler
 	cfg = make_config(tmp_path, spawn_root=None)
 	backend = make_backend()
-	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 	await handler.handle("/spawn rpdm/next-gen do stuff")
 	backend.send_text.assert_called_once_with("Spawn not configured.")
 	backend.send_spawn_ack.assert_not_called()
@@ -63,7 +64,7 @@ async def test_form1_no_args_uses_spawn_root_and_default_prompt(spawn_dirs):
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
 	with patch("server.spawn.subprocess.run") as mock_run:
-		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn")
 	pending = json.loads(_pending_path(cfg).read_text())
 	expected = f"{_BASE_INSTRUCTION.format(project_key=spawn_dirs.name)} {_DEFAULT_PROMPT}"
@@ -80,7 +81,7 @@ async def test_form2_subdir_no_prompt(spawn_dirs):
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
 	with patch("server.spawn.subprocess.run"):
-		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen")
 	pending = json.loads(_pending_path(cfg).read_text())
 	expected = f"{_BASE_INSTRUCTION.format(project_key='rpdm/next-gen')} {_DEFAULT_PROMPT}"
@@ -95,7 +96,7 @@ async def test_form3_no_path_with_prompt(spawn_dirs):
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
 	with patch("server.spawn.subprocess.run"):
-		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn fix the migration")
 	pending = json.loads(_pending_path(cfg).read_text())
 	expected = f"{_BASE_INSTRUCTION.format(project_key=spawn_dirs.name)} fix the migration"
@@ -110,7 +111,7 @@ async def test_form4_subdir_with_prompt(spawn_dirs):
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
 	with patch("server.spawn.subprocess.run"):
-		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen fix the migration")
 	pending = json.loads(_pending_path(cfg).read_text())
 	expected = f"{_BASE_INSTRUCTION.format(project_key='rpdm/next-gen')} fix the migration"
@@ -139,7 +140,7 @@ async def test_path_traversal_rejected(tmp_path):
 	)
 	backend = make_backend()
 	with patch("server.spawn.subprocess.run") as mock_run:
-		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		# "../outside" resolves to tmp_path/outside which is outside spawn_root
 		await handler.handle("/spawn ../outside do stuff")
 	mock_run.assert_not_called()
@@ -155,7 +156,7 @@ async def test_rate_limit_blocks_immediate_second_spawn(spawn_dirs):
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
 	with patch("server.spawn.subprocess.run"):
-		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn")
 		backend.send_spawn_ack.reset_mock()
 		await handler.handle("/spawn")
@@ -170,7 +171,7 @@ async def test_rate_limit_clears_after_60_seconds(spawn_dirs):
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
 	with patch("server.spawn.subprocess.run"):
-		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn")
 		handler._last_spawn_time = handler._last_spawn_time - timedelta(
 			seconds=RATE_LIMIT_SECONDS + 1
@@ -189,7 +190,7 @@ async def test_schtasks_failure_sends_error_and_cleans_pending(spawn_dirs):
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
 	with patch("server.spawn.subprocess.run", side_effect=FileNotFoundError("schtasks not found")):
-		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path))
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn")
 	backend.send_text.assert_called_once()
 	assert "Failed to spawn" in backend.send_text.call_args[0][0]
@@ -214,7 +215,7 @@ async def test_spawn_started_logged_on_success(spawn_dirs):
 	)
 	backend = make_backend()
 	with patch("server.spawn.subprocess.run"):
-		handler = SpawnHandler(cfg, backend, JsonlLogger(str(log_path)))
+		handler = SpawnHandler(cfg, backend, JsonlLogger(str(log_path)), Registry())
 		await handler.handle("/spawn")
 	events = [json.loads(line) for line in log_path.read_text().splitlines() if line]
 	spawn_events = [e for e in events if e["event"] == "spawn_started"]

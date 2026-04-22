@@ -42,11 +42,11 @@ async def test_mcp_notify_human_tool_is_registered_and_invocable(cfg):
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 	mcp = _build_fastmcp(handlers)
 
-	# Both tools should be registered.
+	# All four tools should be registered.
 	tools = await mcp.list_tools()
 	tool_names = {t.name for t in tools}
-	assert tool_names == {"ask_human", "notify_human", "send_document_human"}, (
-		f"expected all three tools to be registered, got {tool_names}"
+	assert tool_names == {"ask_human", "notify_human", "send_document_human", "message_and_await_agent"}, (
+		f"expected all four tools to be registered, got {tool_names}"
 	)
 
 	# Invoke notify_human. FastMCP.call_tool returns a tuple:

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json as _json
 import logging
 import signal
+from pathlib import Path as _Path
 
 import uvicorn
 from mcp.server.fastmcp import FastMCP
@@ -16,6 +18,7 @@ from server.config import Config, load_config
 from server.gateway import (
 	build_tool_handlers,
 	dispatch_commands,
+	dispatch_inject_queue,
 	dispatch_responses,
 )
 from server.logging_jsonl import JsonlLogger
@@ -25,6 +28,32 @@ from server.spawn import SpawnHandler
 from server.telegram import TelegramBackend
 from server.android import AndroidBackend
 from server.firebase import FirebaseBackend
+
+
+async def _notify_lost_collab_sessions(
+	sidecar_path: _Path, backend
+) -> None:
+	"""On startup, report any collab sessions from the previous run that were lost."""
+	if not sidecar_path.exists():
+		return
+	try:
+		entries = _json.loads(sidecar_path.read_text(encoding="utf-8"))
+	except Exception:
+		sidecar_path.unlink(missing_ok=True)
+		return
+	try:
+		for entry in entries:
+			sid = entry.get("session_id", "unknown")
+			try:
+				await backend.send_notification(
+					"system",
+					f"Switchboard restarted. Collab session `{sid}` was lost — agents will time out.",
+					"markdown",
+				)
+			except Exception:
+				pass
+	finally:
+		sidecar_path.unlink(missing_ok=True)
 
 
 def _build_fastmcp(handlers) -> FastMCP:
@@ -61,6 +90,16 @@ def _build_fastmcp(handlers) -> FastMCP:
 		paths, no .. traversal). Max 5 MB. Sensitive filenames (.env, *.pem,
 		*token*, *secret*, *.key, service-account.json) are rejected."""
 		return await handlers.send_document_human(path, agent_id, caption)
+
+	@mcp.tool()
+	async def message_and_await_agent(
+		session_id: str, agent_id: str, message: str | None = None
+	) -> str:
+		"""Send a message to your collaboration partner and block until they reply.
+		Both session_id and agent_id are provided in your spawn prompt.
+		Omit message on your first call if you are Agent 2 (listen-only start).
+		Returns the partner's reply text, or '__TIMEOUT__' after 24h with no reply."""
+		return await handlers.message_and_await_agent(session_id, agent_id, message)
 
 	return mcp
 
@@ -108,6 +147,9 @@ async def _run(config: Config) -> None:
 	else:
 		backend = MultiBackend(backends)
 
+	sidecar_path = _Path(config.log_path).parent / "collab-sessions.json"
+	await _notify_lost_collab_sessions(sidecar_path, backend)
+
 	handlers = build_tool_handlers(config, registry, backend, logger)
 	mcp = _build_fastmcp(handlers)
 
@@ -153,9 +195,13 @@ async def _run(config: Config) -> None:
 		dispatch_responses(registry, backend, logger)
 	)
 
-	spawn_handler = SpawnHandler(config, backend, logger)
+	spawn_handler = SpawnHandler(config, backend, logger, registry)
 	spawn_task = asyncio.create_task(
 		dispatch_commands(spawn_handler, backend, logger)
+	)
+
+	inject_task = asyncio.create_task(
+		dispatch_inject_queue(registry, backend, logger)
 	)
 
 	loop = asyncio.get_running_loop()
@@ -177,10 +223,13 @@ async def _run(config: Config) -> None:
 	finally:
 		dispatch_task.cancel()
 		spawn_task.cancel()
+		inject_task.cancel()
 		with contextlib.suppress(asyncio.CancelledError):
 			await dispatch_task
 		with contextlib.suppress(asyncio.CancelledError):
 			await spawn_task
+		with contextlib.suppress(asyncio.CancelledError):
+			await inject_task
 		await backend.aclose()
 
 

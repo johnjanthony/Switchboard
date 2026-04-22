@@ -6,7 +6,9 @@ This file is the quick-orient doc for any Claude Code agent working **on Switchb
 
 ## Canonical design
 
-- **Current design spec:** [`docs/superpowers/specs/2026-04-19-switchboard-design.md`](docs/superpowers/specs/2026-04-19-switchboard-design.md)
+- **Current design specs:**
+  - [`docs/superpowers/specs/2026-04-19-switchboard-design.md`](docs/superpowers/specs/2026-04-19-switchboard-design.md) — core gateway design
+  - [`docs/superpowers/specs/2026-04-21-collab-sessions-design.md`](docs/superpowers/specs/2026-04-21-collab-sessions-design.md) — collab sessions (not yet implemented)
 - Earlier iterations retained for history only (do not implement from these):
   - [`docs/design-spec-v2.1.md`](docs/design-spec-v2.1.md) — redirect stub; content moved to the 2026-04-19 superpowers spec
   - [`docs/superpowers/specs/2026-04-18-switchboard-design.md`](docs/superpowers/specs/2026-04-18-switchboard-design.md) — superseded; proposed web UI + ntfy, later dropped
@@ -37,6 +39,7 @@ server/
   firebase.py          Firebase admin logic for Android/Telegram backend
   gateway.py           Tool handlers (ask_human, notify_human) + dispatch loops
   spawn.py             Telegram-triggered Claude Code session spawner
+  collab.py            CollabSession dataclass + session registry (see 2026-04-21 spec)
   logging_jsonl.py     JSONL audit log
 scripts/
   install-service.ps1        One-time NSSM service install
@@ -140,7 +143,10 @@ The only exit from away mode is John explicitly saying he's back at his desk.
 
 Use `notify_human` only for true fire-and-forget updates: progress reports, confirmations of non-blocking steps, "starting X now" pings. It must not be used as a substitute for `ask_human` when a response is needed, and must not be the final output of a session — there must always be at least one `ask_human` to follow. When in doubt, use `ask_human`.
 
-**Do not restart Switchboard while in away mode.** Restarting tears down the SSE connection — `ask_human` and `notify_human` stop working immediately. Return to desk before restarting.
+**Restart behaviour differs by session type:**
+
+- **Single-agent away mode:** restarting with `-SkipTests` is safe. The service restarts in ~3 seconds and Claude Code auto-reconnects within the 31-second window. Any pending `ask_human` is lost from the registry, but the agent times out and re-asks. Do not restart without `-SkipTests` — the pytest gate takes ~15 seconds and the connection drops permanently.
+- **Collab sessions (once implemented):** never restart while a collab session is active. The in-memory `CollabSession` state is permanently lost on restart — the connection may recover but the session cannot. Both agents will receive `"ERROR: session not found"` and the collaboration ends.
 
 ## What belongs in CLAUDE-JOURNAL.md
 

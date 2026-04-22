@@ -150,6 +150,33 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 
 ---
 
+## Multi-CLI agent orchestration
+
+When the `/spawn --agents=N` collaborative session feature ships (initially Claude-only), extend it to support heterogeneous agent CLIs — Gemini CLI, OpenCode, or any future CLI that can be invoked with a prompt and communicate via MCP.
+
+**What it takes:**
+- **`SWITCHBOARD_AGENT_BACKENDS` config** — ordered list of CLI backends to use per agent slot (e.g., `["claude", "gemini"]`). Falls back to all-Claude if not set.
+- **CLI adapter abstraction in `spawn.py`** — each CLI backend needs its own command construction, session-resume flag, and output parsing (Claude uses `--resume session_id`; Gemini uses different flags).
+- **Per-agent capability negotiation** — different CLIs may have different tool-call syntaxes or permission models. The system prompt injected at spawn time may need to be backend-specific.
+- **Testing** — mock CLI adapters for integration tests so the test suite doesn't depend on external CLI installs.
+
+**Constraint to watch:** Session resume (`--resume session_id`) is Claude-specific. Gemini and others may not have equivalent persistence. Multi-turn conversation state may need to be reconstructed by re-injecting history into the prompt.
+
+---
+
+## Android command-line build + deployment pipeline
+
+Enable Claude Code agents to build the Android app and push it to John's phone without Android Studio.
+
+**What it takes:**
+- **Fix project structure** — the `android/` directory is missing project-level Gradle files (`gradlew`, `gradlew.bat`, `settings.gradle`, top-level `build.gradle`, `gradle/wrapper/`). Android Studio regenerates these; once present, command-line builds work via `./gradlew assembleDebug`.
+- **ADB deployment** — `./gradlew installDebug` pushes the debug APK directly to a connected device over USB or ADB WiFi pairing. Works without any cloud service.
+- **Optional: Firebase App Distribution** — for wireless-only deployment without ADB pairing, Firebase App Distribution can receive an APK upload and push an install prompt to John's phone. Requires adding the Firebase App Distribution Gradle plugin and a service account for CI auth.
+
+**Recommended path:** fix project structure first (gradlew + settings.gradle), confirm `gradlew installDebug` works over ADB WiFi, then decide whether Firebase App Distribution is worth the added complexity.
+
+---
+
 ## Explicitly deferred / not recommended
 
 - **Webhook instead of long-polling getUpdates.** More efficient at scale, but requires exposing a public HTTPS endpoint (or a tunnel). Not worth the infra for a single-user tool.

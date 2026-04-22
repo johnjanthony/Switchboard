@@ -133,6 +133,32 @@ Use this to deliver generated reports, diffs, logs, or spec documents to John's 
 send_document_human("logs/migration-diff.txt", "DBMigrate", "Schema diff for review")
 ```
 
+## Collab sessions
+
+If you were spawned as part of a collab session, your spawn prompt contains a **Session ID** and your **agent ID**. Use these with `message_and_await_agent` to communicate with your partner.
+
+### `message_and_await_agent(session_id, agent_id, message?)`
+
+Sends `message` to your partner (if provided), then blocks until your partner replies or a human injects a message.
+
+- **`session_id`** — from your spawn prompt (e.g. `myproject-abc123`)
+- **`agent_id`** — your own agent ID from your spawn prompt (e.g. `myproject-abc123-1`)
+- **`message`** — optional outbound text; omit on your very first call if you are Agent 2
+
+Returns the incoming message text, or `"__TIMEOUT__"` after 24h with no reply.
+
+**If `message_and_await_agent` returns `"__TIMEOUT__"`:** call `ask_human` to check in with John. Do not silently exit.
+
+**If `message_and_await_agent` returns an error string (starts with `"ERROR:"`):** call `ask_human` immediately.
+
+### Collab protocol
+
+1. Agent 1: work on the task, then call `message_and_await_agent` with your initial findings.
+2. Agent 2: call `message_and_await_agent` with no message on startup to receive Agent 1's first message. Then reply and alternate.
+3. When consensus is reached: call `ask_human` to confirm with John. Do not declare consensus in the terminal.
+4. If debate is unproductive: call `ask_human` to report the deadlock.
+5. Use `ask_human` and `notify_human` for all human communication — same rules as standard away mode apply.
+
 ## What not to use it for
 
 - Do not call `ask_human` for decisions you can make yourself with the information in front of you. Away mode is not permission to defer judgment calls that do not require human input.

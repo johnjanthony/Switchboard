@@ -53,6 +53,8 @@ class FirebaseBackend(MessengerBackend):
 		self._loop = asyncio.get_running_loop()
 		self._resp_listener = None
 		self._cmd_listener = None
+		self._inject_queue_internal: asyncio.Queue[tuple[str, str, str]] = asyncio.Queue()
+		self._inject_listeners: dict[str, object] = {}
 
 	def _on_response(self, event):
 		"""Callback from Firebase thread."""
@@ -109,6 +111,9 @@ class FirebaseBackend(MessengerBackend):
 			self._resp_listener.close()
 		if self._cmd_listener:
 			self._cmd_listener.close()
+		for listener in self._inject_listeners.values():
+			listener.close()
+		self._inject_listeners.clear()
 
 	async def send_question(
 		self,
@@ -288,3 +293,61 @@ class FirebaseBackend(MessengerBackend):
 			notification_body += f" - {caption}"
 
 		await self.send_notification(agent_id, notification_body)
+
+	async def write_session_message(
+		self,
+		session_id: str,
+		agent_id: str,
+		msg_type: str,
+		content: str,
+		request_id: str | None = None,
+	) -> None:
+		import uuid as _uuid
+		msg_id = _uuid.uuid4().hex[:8]
+		data: dict = {
+			"speaker": agent_id,
+			"type": msg_type,
+			"content": content,
+			"timestamp": int(time.time() * 1000),
+		}
+		if request_id is not None:
+			data["request_id"] = request_id
+		await self._loop.run_in_executor(
+			None,
+			lambda: self._session_ref.child(session_id).child("messages").child(msg_id).set(data),
+		)
+
+	async def write_session_meta(
+		self, session_id: str, agent_ids: list[str], task: str
+	) -> None:
+		meta = {
+			"agent_ids": agent_ids,
+			"task": task,
+			"created_at": int(time.time() * 1000),
+		}
+		await self._loop.run_in_executor(
+			None,
+			lambda: self._session_ref.child(session_id).child("meta").set(meta),
+		)
+
+	async def start_inject_listener(self, session_id: str) -> None:
+		if session_id in self._inject_listeners:
+			return
+		inject_ref = db.reference(f"sessions/{session_id}/inject_queue")
+
+		def _on_inject(event):
+			if event.event_type != "put" or not event.data:
+				return
+			path = event.path.strip("/")
+			data = event.data
+			if path and isinstance(data, dict) and "content" in data:
+				self._loop.call_soon_threadsafe(
+					self._inject_queue_internal.put_nowait,
+					(session_id, path, data["content"]),
+				)
+
+		self._inject_listeners[session_id] = inject_ref.listen(_on_inject)
+
+	async def poll_inject_messages(self):
+		while True:
+			yield await self._inject_queue_internal.get()
