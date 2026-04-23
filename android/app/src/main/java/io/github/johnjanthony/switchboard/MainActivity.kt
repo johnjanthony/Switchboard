@@ -11,6 +11,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -81,7 +82,9 @@ fun MainScreen(viewModel: MainViewModel) {
     val channels by viewModel.channels.collectAsState()
     val selectedChannelId by viewModel.selectedChannelId.collectAsState()
     val pendingQuestions by viewModel.pendingQuestions.collectAsState()
+    val unseenChannels by viewModel.unseenChannels.collectAsState()
     var showSpawnDialog by remember { mutableStateOf(false) }
+    var closeTargetChannelId by remember { mutableStateOf<String?>(null) }
 
     val channelList = channels.keys.toList().sorted()
 
@@ -98,21 +101,52 @@ fun MainScreen(viewModel: MainViewModel) {
                 )
                 if (channelList.isNotEmpty()) {
                     ScrollableTabRow(
-                        selectedTabIndex = channelList.indexOf(selectedChannelId).coerceAtLeast(0)
+                        selectedTabIndex = channelList.indexOf(selectedChannelId).coerceAtLeast(0),
+                        edgePadding = 8.dp,
+                        divider = {}
                     ) {
                         channelList.forEach { channelId ->
                             val hasPending = pendingQuestions.containsKey(channelId)
+                            val isUnseen = unseenChannels.contains(channelId)
+                            val needsAttention = hasPending || isUnseen
+                            
+                            val indicatorColor = when {
+                                hasPending -> MaterialTheme.colorScheme.error
+                                isUnseen -> MaterialTheme.colorScheme.primary
+                                else -> Color.Transparent
+                            }
+
                             Tab(
                                 selected = channelId == selectedChannelId,
                                 onClick = { viewModel.selectChannel(channelId) },
                                 text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(channelId, maxLines = 1)
-                                        if (hasPending) {
-                                            Spacer(Modifier.width(4.dp))
-                                            Box(
-                                                Modifier.size(8.dp)
-                                                    .background(MaterialTheme.colorScheme.error, CircleShape)
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .padding(vertical = 4.dp)
+                                            .then(
+                                                if (needsAttention) Modifier
+                                                    .border(2.dp, indicatorColor, RoundedCornerShape(16.dp))
+                                                    .background(indicatorColor.copy(alpha = 0.1f), RoundedCornerShape(16.dp))
+                                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                                                else Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                            )
+                                    ) {
+                                        Text(
+                                            text = channelId,
+                                            maxLines = 1,
+                                            style = if (needsAttention) MaterialTheme.typography.labelLarge else MaterialTheme.typography.labelMedium,
+                                            color = if (needsAttention) indicatorColor else MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        IconButton(
+                                            onClick = { closeTargetChannelId = channelId },
+                                            modifier = Modifier.size(16.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Close,
+                                                contentDescription = "Close",
+                                                modifier = Modifier.size(12.dp)
                                             )
                                         }
                                     }
@@ -155,6 +189,25 @@ fun MainScreen(viewModel: MainViewModel) {
             }
         )
     }
+
+    if (closeTargetChannelId != null) {
+        AlertDialog(
+            onDismissRequest = { closeTargetChannelId = null },
+            title = { Text("Close Session") },
+            text = { Text("Are you sure you want to close `${closeTargetChannelId}`? The agent will receive a 'back at desk' message.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.closeChannel(closeTargetChannelId!!)
+                        closeTargetChannelId = null
+                    }
+                ) { Text("Close") }
+            },
+            dismissButton = {
+                TextButton(onClick = { closeTargetChannelId = null }) { Text("Cancel") }
+            }
+        )
+    }
 }
 
 
@@ -189,41 +242,32 @@ fun ChannelView(
         // Compose area
         if (pendingQuestion != null) {
             val (msgId, qMsg) = pendingQuestion
-            // Sticky reply banner
-            Surface(
-                color = MaterialTheme.colorScheme.errorContainer,
-                modifier = Modifier.fillMaxWidth().padding(4.dp),
-                shape = RoundedCornerShape(8.dp),
-            ) {
-                Column(Modifier.padding(8.dp)) {
-                    Text("Reply to: ${qMsg.content}", style = MaterialTheme.typography.bodySmall,
-                        maxLines = 2)
-                    if (!qMsg.suggestions.isNullOrEmpty()) {
-                        LazyRow(modifier = Modifier.padding(vertical = 4.dp)) {
-                            items(qMsg.suggestions!!) { label ->
-                                OutlinedButton(
-                                    onClick = { onReply(msgId, qMsg.request_id ?: "", label) },
-                                    modifier = Modifier.padding(end = 4.dp),
-                                ) { Text(label) }
-                            }
+            Column(Modifier.fillMaxWidth().padding(8.dp)) {
+                if (!qMsg.suggestions.isNullOrEmpty()) {
+                    LazyRow(modifier = Modifier.padding(vertical = 4.dp)) {
+                        items(qMsg.suggestions!!) { label ->
+                            OutlinedButton(
+                                onClick = { onReply(msgId, qMsg.request_id ?: "", label) },
+                                modifier = Modifier.padding(end = 4.dp),
+                            ) { Text(label) }
                         }
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedTextField(
-                            value = replyText,
-                            onValueChange = { replyText = it },
-                            modifier = Modifier.weight(1f),
-                            placeholder = { Text("Type reply…") },
-                            singleLine = true,
-                        )
-                        IconButton(onClick = {
-                            if (replyText.isNotBlank()) {
-                                onReply(msgId, qMsg.request_id ?: "", replyText.trim())
-                                replyText = ""
-                            }
-                        }) {
-                            Icon(Icons.Default.Send, contentDescription = "Send reply")
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = replyText,
+                        onValueChange = { replyText = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Type reply…") },
+                        singleLine = true,
+                    )
+                    IconButton(onClick = {
+                        if (replyText.isNotBlank()) {
+                            onReply(msgId, qMsg.request_id ?: "", replyText.trim())
+                            replyText = ""
                         }
+                    }) {
+                        Icon(Icons.Default.Send, contentDescription = "Send reply")
                     }
                 }
             }
@@ -257,42 +301,51 @@ fun MessageBubble(
     onDownload: (url: String, name: String) -> Unit,
 ) {
     val isQuestion = msg.message_type == "question"
+    val isHuman = msg.message_type == "human"
     val isDocument = msg.message_type == "document"
-    val bubbleColor = when {
-        isQuestion -> MaterialTheme.colorScheme.errorContainer
-        else -> MaterialTheme.colorScheme.surfaceVariant
-    }
-    val borderMod = if (isQuestion)
-        Modifier.border(1.dp, MaterialTheme.colorScheme.error, RoundedCornerShape(8.dp))
-    else Modifier
+    
+    // Explicit color mapping
+    val bubbleColor = if (isHuman) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+    val textColor = if (isHuman) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
 
     Column(
-        Modifier.fillMaxWidth().padding(vertical = 2.dp, horizontal = 4.dp)
+        Modifier.fillMaxWidth().padding(vertical = 2.dp, horizontal = 4.dp),
+        horizontalAlignment = if (isHuman) Alignment.End else Alignment.Start
     ) {
         Text(
             text = msg.sender,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+            modifier = Modifier.padding(start = 6.dp, end = 6.dp, bottom = 2.dp),
         )
         Box(
             Modifier
-                .fillMaxWidth()
-                .then(borderMod)
-                .background(bubbleColor, RoundedCornerShape(8.dp))
+                .widthIn(max = 320.dp)
+                .background(bubbleColor, RoundedCornerShape(12.dp))
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
-            if (isDocument) {
-                Column {
-                    Text(msg.content, style = MaterialTheme.typography.bodyMedium)
-                    if (msg.url != null) {
-                        TextButton(onClick = { onDownload(msg.url!!, msg.content) }) {
-                            Text("Download")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f, fill = false)) {
+                    if (isDocument) {
+                        Text(msg.content, style = MaterialTheme.typography.bodyMedium, color = textColor)
+                        if (msg.url != null) {
+                            TextButton(onClick = { onDownload(msg.url!!, msg.content) }) {
+                                Text("Download")
+                            }
                         }
+                    } else {
+                        MarkdownText(msg.content, msg.format, color = textColor)
                     }
                 }
-            } else {
-                MarkdownText(msg.content, msg.format)
+                if (isQuestion) {
+                    Spacer(Modifier.width(8.dp))
+                    Icon(
+                        Icons.Default.Call,
+                        contentDescription = "Question",
+                        modifier = Modifier.size(16.dp).align(Alignment.Top),
+                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                    )
+                }
             }
         }
     }
@@ -300,8 +353,9 @@ fun MessageBubble(
 
 
 @Composable
-fun MarkdownText(content: String, format: String) {
+fun MarkdownText(content: String, format: String, color: androidx.compose.ui.graphics.Color = androidx.compose.ui.graphics.Color.Unspecified) {
     if (format == "markdown") {
+        val textColor = color.toArgb()
         AndroidView(
             factory = { ctx ->
                 TextView(ctx).apply {
@@ -309,6 +363,9 @@ fun MarkdownText(content: String, format: String) {
                 }
             },
             update = { view ->
+                if (color != androidx.compose.ui.graphics.Color.Unspecified) {
+                    view.setTextColor(textColor)
+                }
                 val markwon = io.noties.markwon.Markwon.builder(view.context)
                     .usePlugin(io.noties.markwon.html.HtmlPlugin.create())
                     .build()
@@ -316,7 +373,7 @@ fun MarkdownText(content: String, format: String) {
             }
         )
     } else {
-        Text(content, style = MaterialTheme.typography.bodyMedium)
+        Text(content, style = MaterialTheme.typography.bodyMedium, color = color)
     }
 }
 
