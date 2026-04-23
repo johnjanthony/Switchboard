@@ -125,11 +125,11 @@ def build_tool_handlers(
 		started = datetime.now(timezone.utc)
 		correlation = None
 		try:
-			correlation = await backend.write_channel_message(
+			correlation, msg_id = await backend.write_channel_message(
 				channel_id, sender, "question", question,
 				request_id=request_id, format=format, suggestions=suggestions,
 			)
-			future = registry.add(request_id, channel_id, correlation)
+			future = registry.add(request_id, channel_id, correlation, msg_id=msg_id)
 			logger.request_created(request_id, channel_id, question)
 			await _append_session_log(config.log_path, channel_id, "→", question)
 		except asyncio.CancelledError:
@@ -170,7 +170,7 @@ def build_tool_handlers(
 			source = "android_rest"
 		logger.request_resolved(request_id, channel_id, response_text=result, source=source, duration_ms=duration_ms)
 		try:
-			await backend.send_resolution_confirmation(request_id, channel_id, correlation)
+			await backend.send_resolution_confirmation(request_id, channel_id, correlation, response_text=result)
 		except Exception as exc:
 			logger.surface_error(f"resolution_confirmation_failed: {exc}", correlation=str(correlation))
 		return result
@@ -274,14 +274,30 @@ async def dispatch_responses(
 		try:
 			async for response in backend.poll_responses():
 				try:
-					request_id = registry.resolve_by_correlation(
+					record = registry.resolve_by_correlation(
 						response.correlation, response.text
 					)
-					if request_id is None:
+					if record is None:
 						logger.surface_error(
 							"unknown_correlation",
 							correlation=str(response.correlation),
 						)
+					elif record.msg_id and hasattr(backend, "write_response_text"):
+						# Update original question so it stays answered across restarts
+						asyncio.create_task(backend.write_response_text(
+							record.channel_id, record.msg_id, response.text
+						))
+						# Add a NEW message to the history so it shows up in-line in the app
+						async def _write_history():
+							try:
+								await backend.write_channel_message(
+									record.channel_id, "Human", "human", response.text
+								)
+								logger.notify_sent(record.channel_id, f"Reply: {response.text}")
+							except Exception as exc:
+								logger.surface_error(f"history_write_failed: {exc}")
+						
+						asyncio.create_task(_write_history())
 				except asyncio.CancelledError:
 					raise
 				except Exception as exc:

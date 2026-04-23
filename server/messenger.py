@@ -41,9 +41,10 @@ class MessengerBackend(ABC):
 		url: str | None = None,
 		format: str = "plain",
 		suggestions: list[str] | None = None,
-	) -> "CorrelationToken | None":
-		"""Write a message to the channel. Returns a correlation token for
-		message_type='question' (used to match incoming responses), None otherwise."""
+	) -> "tuple[CorrelationToken | None, str | None]":
+		"""Write a message to the channel. Returns (correlation, msg_id).
+		correlation is used for message_type='question' to match responses.
+		msg_id is the unique ID of the message in the backend."""
 
 	@abstractmethod
 	async def send_timeout_followup(
@@ -61,6 +62,7 @@ class MessengerBackend(ABC):
 		request_id: str,
 		channel_id: str,
 		correlation: "CorrelationToken",
+		response_text: str | None = None,
 	) -> None:
 		"""Confirm to the developer that their response was received."""
 
@@ -109,7 +111,7 @@ class MultiBackend(MessengerBackend):
 	async def write_channel_message(
 		self, channel_id, sender, message_type, content,
 		*, request_id=None, url=None, format="plain", suggestions=None,
-	) -> "CorrelationToken | None":
+	) -> "tuple[CorrelationToken | None, str | None]":
 		results = await asyncio.gather(*(
 			b.write_channel_message(
 				channel_id, sender, message_type, content,
@@ -117,9 +119,24 @@ class MultiBackend(MessengerBackend):
 			)
 			for b in self._backends
 		))
-		if message_type == "question":
-			return {b: r for b, r in zip(self._backends, results)}
-		return None
+		
+		# For MultiBackend, correlation is a dict mapping backend to its local correlation
+		# msg_id is just the first non-None msg_id from any backend
+		correlations = {}
+		msg_id = None
+		for b, res in zip(self._backends, results):
+			# handle both old (corr) and new (corr, mid) return types for robustness
+			if isinstance(res, tuple):
+				corr, mid = res
+			else:
+				corr, mid = res, None
+
+			if message_type == "question":
+				correlations[b] = corr
+			if mid:
+				msg_id = mid
+				
+		return (correlations if message_type == "question" else None), msg_id
 
 	async def send_timeout_followup(
 		self, request_id, channel_id, timeout_seconds, correlation
@@ -136,18 +153,24 @@ class MultiBackend(MessengerBackend):
 			))
 
 	async def send_resolution_confirmation(
-		self, request_id, channel_id, correlation
+		self, request_id, channel_id, correlation, response_text=None
 	) -> None:
 		if isinstance(correlation, dict):
 			await asyncio.gather(*(
-				b.send_resolution_confirmation(request_id, channel_id, correlation[b])
+				b.send_resolution_confirmation(request_id, channel_id, correlation[b], response_text=response_text)
 				for b in self._backends if b in correlation
 			))
 		else:
 			await asyncio.gather(*(
-				b.send_resolution_confirmation(request_id, channel_id, correlation)
+				b.send_resolution_confirmation(request_id, channel_id, correlation, response_text=response_text)
 				for b in self._backends
 			))
+
+	async def write_response_text(self, channel_id: str, msg_id: str, text: str) -> None:
+		await asyncio.gather(*(
+			b.write_response_text(channel_id, msg_id, text)
+			for b in self._backends if hasattr(b, "write_response_text")
+		))
 
 	async def poll_responses(self) -> "AsyncIterator[IncomingResponse]":
 		combined: asyncio.Queue = asyncio.Queue()

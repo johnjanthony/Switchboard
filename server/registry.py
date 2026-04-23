@@ -23,6 +23,7 @@ class PendingRequest:
 	channel_id: str
 	correlation: Any
 	future: asyncio.Future[str]
+	msg_id: str | None = None
 	created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -45,7 +46,9 @@ class Registry:
 		oldest = min(r.created_at for r in self._pending.values())
 		return (now - oldest).total_seconds()
 
-	def add(self, request_id: str, channel_id: str, correlation: Any) -> asyncio.Future[str]:
+	def add(
+		self, request_id: str, channel_id: str, correlation: Any, msg_id: str | None = None
+	) -> asyncio.Future[str]:
 		loop = asyncio.get_running_loop()
 		future: asyncio.Future[str] = loop.create_future()
 		self._pending[request_id] = PendingRequest(
@@ -53,18 +56,20 @@ class Registry:
 			channel_id=channel_id,
 			correlation=correlation,
 			future=future,
+			msg_id=msg_id,
 		)
-		if isinstance(correlation, dict):
-			for b, c in correlation.items():
-				self._by_correlation[(b, c)] = request_id
-		else:
-			self._by_correlation[correlation] = request_id
+		if correlation is not None:
+			if isinstance(correlation, dict):
+				for b, c in correlation.items():
+					self._by_correlation[(b, c)] = request_id
+			else:
+				self._by_correlation[correlation] = request_id
 		return future
 
 	def get(self, request_id: str) -> PendingRequest | None:
 		return self._pending.get(request_id)
 
-	def resolve_by_correlation(self, correlation: Any, text: str) -> str | None:
+	def resolve_by_correlation(self, correlation: Any, text: str) -> PendingRequest | None:
 		request_id = self._by_correlation.pop(correlation, None)
 		if request_id is None:
 			return None
@@ -77,7 +82,7 @@ class Registry:
 		if not record.future.done():
 			record.future.set_result(text)
 		self.total_answered += 1
-		return request_id
+		return record
 
 	def remove(self, request_id: str) -> None:
 		record = self._pending.pop(request_id, None)

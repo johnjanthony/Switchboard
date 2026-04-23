@@ -37,7 +37,8 @@ class AndroidBackend(MessengerBackend):
 		url: str | None = None,
 		format: str = "plain",
 		suggestions: list[str] | None = None,
-	) -> CorrelationToken | None:
+	) -> tuple[CorrelationToken | None, str | None]:
+		msg_id = f"msg_{int(asyncio.get_event_loop().time() * 1000)}"
 		if message_type == "question":
 			correlation = f"android_{request_id}"
 			self._pending_questions[request_id] = {
@@ -49,12 +50,12 @@ class AndroidBackend(MessengerBackend):
 			}
 			if self._logger:
 				self._logger.surface_error(f"ANDROID_SEND_QUESTION: [{channel_id} | {request_id}] {content}")
-			return correlation
+			return correlation, msg_id
 
 		if self._logger:
 			prefix = f"ANDROID_SEND_{message_type.upper()}"
 			self._logger.surface_error(f"{prefix}: [{channel_id}] {content}")
-		return None
+		return None, msg_id
 
 	async def send_timeout_followup(
 		self,
@@ -72,6 +73,7 @@ class AndroidBackend(MessengerBackend):
 		request_id: str,
 		channel_id: str,
 		correlation: CorrelationToken,
+		response_text: str | None = None,
 	) -> None:
 		self._pending_questions.pop(request_id, None)
 		if self._logger:

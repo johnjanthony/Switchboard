@@ -107,7 +107,10 @@ class FirebaseBackend(MessengerBackend):
 		url: str | None = None,
 		format: str = "plain",
 		suggestions: list[str] | None = None,
-	) -> CorrelationToken | None:
+	) -> tuple[CorrelationToken | None, str | None]:
+		# Ensure meta exists so the Android app discovers the channel properly
+		await self._write_default_meta_if_missing(channel_id)
+
 		msg_id = _uuid.uuid4().hex[:8]
 		timestamp = int(time.time() * 1000)
 		data: dict = {
@@ -115,11 +118,14 @@ class FirebaseBackend(MessengerBackend):
 			"message_type": message_type,
 			"content": content,
 			"timestamp": timestamp,
+			"format": format,
 		}
 		if request_id is not None:
 			data["request_id"] = request_id
 		if url is not None:
 			data["url"] = url
+		if suggestions:
+			data["suggestions"] = suggestions
 
 		await self._loop.run_in_executor(
 			None,
@@ -134,23 +140,40 @@ class FirebaseBackend(MessengerBackend):
 				body=content[:100] + ("..." if len(content) > 100 else ""),
 			)
 			msg = messaging.Message(notification=notif, topic="questions", data=fcm_data)
+		elif message_type == "human":
+			# Skip notification for the human's own reply
+			msg = None
 		else:
-			fcm_data = {"channel_id": channel_id, "message_type": message_type}
+			fcm_data = {"channel_id": channel_id, "sb_message_type": message_type}
 			notif = messaging.Notification(
 				title=f"Update from {sender}",
 				body=content[:100] + ("..." if len(content) > 100 else ""),
 			)
 			msg = messaging.Message(notification=notif, topic="notifications", data=fcm_data)
 
-		try:
-			await self._loop.run_in_executor(None, lambda: messaging.send(msg))
-		except Exception as exc:
-			if self._logger:
-				self._logger.surface_error(f"firebase_fcm_error: {exc}")
+		if msg:
+			try:
+				await self._loop.run_in_executor(None, lambda: messaging.send(msg))
+			except Exception as exc:
+				if self._logger:
+					self._logger.surface_error(f"firebase_fcm_error: {exc}")
 
 		if message_type == "question":
-			return f"firebase_{request_id}"
-		return None
+			return f"firebase_{request_id}", msg_id
+		return None, msg_id
+
+	async def _write_default_meta_if_missing(self, channel_id: str) -> None:
+		def _check_and_set():
+			ref = self._session_ref.child(channel_id).child("meta")
+			if not ref.get():
+				ref.set({
+					"type": "single",
+					"project_key": "discovered",
+					"created_at": int(time.time() * 1000),
+					"task": "Auto-discovered session",
+				})
+
+		await self._loop.run_in_executor(None, _check_and_set)
 
 	async def send_timeout_followup(
 		self,
@@ -174,8 +197,20 @@ class FirebaseBackend(MessengerBackend):
 		request_id: str,
 		channel_id: str,
 		correlation: CorrelationToken,
+		response_text: str | None = None,
 	) -> None:
-		pass  # response is already written to responses/{request_id} by the Android app
+		# If we have the original msg_id (passed as part of correlation or via some other lookup)
+		# we should write the response_text back to the message.
+		# Since the gateway now passes response_text, we can at least mark it.
+		# But wait, send_resolution_confirmation signature in MessengerBackend only has request_id, channel_id, correlation.
+		# Registry.resolve_by_correlation should give us the msg_id.
+		pass
+
+	async def write_response_text(self, channel_id: str, msg_id: str, text: str) -> None:
+		await self._loop.run_in_executor(
+			None,
+			lambda: self._session_ref.child(channel_id).child("messages").child(msg_id).child("response_text").set(text)
+		)
 
 	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
 		if not self._resp_listener:
