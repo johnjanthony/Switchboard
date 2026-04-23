@@ -47,6 +47,7 @@ scripts/
   restart-service.ps1        Stop + pytest gate + start
   register-spawn-task.ps1    Re-register SwitchboardSpawn scheduled task
   spawn-launcher.ps1         Runs in user session to open a new terminal tab
+  install-client.ps1         Build and deploy the Android app to a connected phone
 skill/
   SKILL.md             Agent skill instructions
 android/

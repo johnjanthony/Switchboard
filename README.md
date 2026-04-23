@@ -64,7 +64,12 @@ The project includes a native Android app in the `android/` directory.
 
 ### Build and Install
 1.  **Credentials**: Download `google-services.json` from your Firebase project and place it in `android/app/`.
-2.  **Build**: Open the `android/` folder in Android Studio and deploy to your phone.
+2.  **Deploy**: Connect your phone via USB or Wi-Fi (with Debugging enabled) and run:
+    ```powershell
+    .\scripts\install-client.ps1
+    ```
+    This script builds the debug APK, installs it, and launches the app automatically.
+3.  **Alternative**: Open the `android/` folder in Android Studio and deploy to your phone.
 
 The app uses Firebase Cloud Messaging (FCM) for instant push notifications and Realtime Database for two-way communication.
 
