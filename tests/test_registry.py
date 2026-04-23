@@ -24,8 +24,8 @@ async def test_add_returns_future_and_stores_record():
 async def test_resolve_by_correlation_sets_future_result_and_returns_request_id():
 	registry = Registry()
 	future = registry.add("abc123", "chan-1", correlation=42)
-	request_id = registry.resolve_by_correlation(42, "yes")
-	assert request_id == "abc123"
+	record = registry.resolve_by_correlation(42, "yes")
+	assert record.request_id == "abc123"
 	assert future.done()
 	assert future.result() == "yes"
 

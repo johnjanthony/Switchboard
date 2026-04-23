@@ -40,8 +40,9 @@ async def test_ask_human_returns_response_when_resolved(cfg, logger):
 	assert result == "yes"
 	assert len(backend.sent_questions) == 1
 	assert len(backend.sent_confirmations) == 1
-	_, _, correlation = backend.sent_confirmations[0]
+	_, _, correlation, response_text = backend.sent_confirmations[0]
 	assert correlation == 1000
+	assert response_text == "yes"
 
 
 from server.gateway import dispatch_responses
