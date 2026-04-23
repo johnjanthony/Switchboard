@@ -44,14 +44,16 @@ Switchboard reads its configuration from OS env vars. A `.env` file is loaded as
 
 ## Wire your agent to it
 
-### Gemini CLI (Recommended)
+### AI Agents (Claude, Gemini, etc.)
+
+#### Gemini CLI
 
 ```bash
 gemini mcp add switchboard http://localhost:9876/mcp --type http --trust
 gemini skills link .\skill
 ```
 
-### Claude Code
+#### Claude Code
 
 ```bash
 claude mcp add switchboard --scope user --transport http http://localhost:9876/mcp
@@ -82,6 +84,7 @@ Away mode activates when you tell your agent you're stepping away — any phrasi
 - **`ask_human(question, channel_id, sender?, format?, suggestions?)`** — blocks until you reply.
 - **`notify_human(message, channel_id, sender?, format?)`** — fire-and-forget status update.
 - **`send_document_human(path, channel_id, sender?, caption?)`** — delivers a file to your phone.
+- **`message_and_await_agent(channel_id, sender, message?)`** — collaborative session relay.
 
 To exit away mode, reply *"I'm back"*. The agent will provide a **Welcome Back Summary** of what was accomplished while you were away and then resume normal terminal output.
 
@@ -89,9 +92,12 @@ To exit away mode, reply *"I'm back"*. The agent will provide a **Welcome Back S
 
 Switchboard correlates your reply to the waiting `ask_human` call via the Android app's reply input at the bottom of the channel tab. Type your answer and tap Send. If the question included suggestion buttons, tap one to reply instantly without typing.
 
-### Spawning a new Claude Code session
+### Spawning a new agent session
 
-With `SWITCHBOARD_SPAWN_ROOT` configured, you can open a new Windows Terminal tab running a fresh Claude Code session directly from the Android app. Tap the **spawn** button in the app, choose a project and enter a prompt, then tap **Spawn**. For collab sessions, enable the **Collab mode** checkbox — Switchboard opens two terminal tabs that communicate with each other through the gateway.
+With `SWITCHBOARD_SPAWN_ROOT` configured, you can launch a fresh agent session directly from the Android app. Tap the **spawn** button in the app, choose a project, and enter a prompt.
+
+- **Backend selection:** Choose between **Claude** or **Gemini** using the checkboxes.
+- **Collab mode:** Enable both to launch a heterogeneous collaborative session — Switchboard opens two terminal tabs that communicate with each other through the gateway.
 
 **Prerequisites:**
 
@@ -102,7 +108,7 @@ With `SWITCHBOARD_SPAWN_ROOT` configured, you can open a new Windows Terminal ta
   .\scripts\register-spawn-task.ps1
   ```
 
-- The task fires in your interactive desktop session so Windows Terminal is reachable.
+- The task fires in your interactive desktop session so `claude` and `gemini` are reachable.
 
 A 60-second rate limit prevents accidental double-spawns. The spawn is audit-logged to `logs/switchboard.jsonl`.
 
