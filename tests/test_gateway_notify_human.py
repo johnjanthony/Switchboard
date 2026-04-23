@@ -80,8 +80,6 @@ class RecordingBackend(MessengerBackend):
 @pytest.fixture
 def cfg(tmp_path):
 	return Config(
-		telegram_bot_token="tok",
-		telegram_chat_id="123",
 		host="127.0.0.1",
 		port=9876,
 		timeout_seconds=60,

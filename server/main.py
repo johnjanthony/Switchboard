@@ -25,7 +25,6 @@ from server.logging_jsonl import JsonlLogger
 from server.messenger import MultiBackend
 from server.registry import Registry
 from server.spawn import SpawnHandler
-from server.telegram import TelegramBackend
 from server.android import AndroidBackend
 from server.firebase import FirebaseBackend
 
@@ -96,29 +95,10 @@ def _build_fastmcp(handlers) -> FastMCP:
 
 
 async def _run(config: Config) -> None:
-	# Silence httpx per-request INFO logs — they embed the bot token in the URL.
-	logging.getLogger("httpx").setLevel(logging.WARNING)
-
 	logger = JsonlLogger(config.log_path)
 	registry = Registry()
 
 	backends = []
-	preflight_ok = False
-
-	if config.enable_telegram and config.telegram_bot_token and config.telegram_chat_id:
-		telegram_backend = TelegramBackend(
-			token=config.telegram_bot_token,
-			chat_id=config.telegram_chat_id,
-			logger=logger,
-		)
-		backends.append(telegram_backend)
-
-		# Preflight: verify token via getMe. Non-fatal per spec §7 — log and continue.
-		try:
-			await telegram_backend.preflight()
-			preflight_ok = True
-		except Exception as exc:
-			logger.surface_error(f"telegram_preflight_failed: {exc}")
 
 	if config.enable_android:
 		android_backend = AndroidBackend(logger=logger)
@@ -151,7 +131,6 @@ async def _run(config: Config) -> None:
 			"pending_count": registry.pending_count,
 			"oldest_pending_age_seconds": registry.oldest_pending_age_seconds,
 			"total_answered": registry.total_answered,
-			"preflight_ok": preflight_ok,
 		})
 
 	app.add_route("/healthz", healthz, methods=["GET"])

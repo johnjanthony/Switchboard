@@ -17,8 +17,6 @@ from server.registry import Registry
 
 def make_config(tmp_path: Path, spawn_root=None) -> Config:
 	return Config(
-		telegram_bot_token="tok",
-		telegram_chat_id="123",
 		host="127.0.0.1",
 		port=9876,
 		timeout_seconds=60,
@@ -138,8 +136,6 @@ async def test_path_traversal_rejected(tmp_path):
 	outside = tmp_path / "outside"
 	outside.mkdir()
 	cfg = Config(
-		telegram_bot_token="tok",
-		telegram_chat_id="123",
 		host="127.0.0.1",
 		port=9876,
 		timeout_seconds=60,
@@ -213,8 +209,6 @@ async def test_spawn_started_logged_on_success(spawn_dirs):
 	from server.spawn import SpawnHandler
 	log_path = spawn_dirs / "log.jsonl"
 	cfg = Config(
-		telegram_bot_token="tok",
-		telegram_chat_id="123",
 		host="127.0.0.1",
 		port=9876,
 		timeout_seconds=60,

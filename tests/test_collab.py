@@ -154,8 +154,6 @@ from tests.test_gateway_notify_human import RecordingBackend
 
 def _make_config(tmp_path) -> Config:
 	return Config(
-		telegram_bot_token="tok",
-		telegram_chat_id="123",
 		host="127.0.0.1",
 		port=9876,
 		timeout_seconds=60,
@@ -216,7 +214,6 @@ async def test_message_and_await_agent_timeout_returns_sentinel(tmp_path):
 	session = _make_session(session_id="proj-abc1")
 	registry.add_session(session)
 	cfg = Config(
-		telegram_bot_token="tok", telegram_chat_id="123",
 		host="127.0.0.1", port=9876, timeout_seconds=0.05,
 		log_path=str(tmp_path / "log.jsonl"),
 	)
@@ -280,8 +277,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 def _make_spawn_config(tmp_path: Path, spawn_root=None) -> Config:
 	return Config(
-		telegram_bot_token="tok",
-		telegram_chat_id="123",
 		host="127.0.0.1",
 		port=9876,
 		timeout_seconds=60,

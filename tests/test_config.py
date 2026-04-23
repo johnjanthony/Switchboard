@@ -10,8 +10,6 @@ from server.config import Config, ConfigError, load_config
 
 def _clear_env(monkeypatch):
 	for key in [
-		"TELEGRAM_BOT_TOKEN",
-		"TELEGRAM_CHAT_ID",
 		"SWITCHBOARD_HOST",
 		"SWITCHBOARD_PORT",
 		"SWITCHBOARD_TIMEOUT_SECONDS",
@@ -23,28 +21,15 @@ def _clear_env(monkeypatch):
 
 def test_loads_minimum_required_fields(monkeypatch, tmp_path):
 	_clear_env(monkeypatch)
-	monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-	monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
 	cfg = load_config(dotenv_path=tmp_path / "does-not-exist.env")
 	assert isinstance(cfg, Config)
-	assert cfg.telegram_bot_token == "tok"
-	assert cfg.telegram_chat_id == "123"
 	assert cfg.host == "127.0.0.1"
 	assert cfg.port == 9876
 	assert cfg.timeout_seconds == 86400
 
 
-@pytest.mark.skip(reason="Telegram config is now optional")
-def test_raises_when_required_missing(monkeypatch, tmp_path):
-	_clear_env(monkeypatch)
-	with pytest.raises(ConfigError):
-		load_config(dotenv_path=tmp_path / "does-not-exist.env")
-
-
 def test_overrides_via_env(monkeypatch, tmp_path):
 	_clear_env(monkeypatch)
-	monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-	monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
 	monkeypatch.setenv("SWITCHBOARD_PORT", "9000")
 	monkeypatch.setenv("SWITCHBOARD_TIMEOUT_SECONDS", "60")
 	cfg = load_config(dotenv_path=tmp_path / "does-not-exist.env")
@@ -56,39 +41,31 @@ def test_dotenv_used_when_env_unset(monkeypatch, tmp_path):
 	_clear_env(monkeypatch)
 	env_file = tmp_path / ".env"
 	env_file.write_text(
-		"TELEGRAM_BOT_TOKEN=from-dotenv\nTELEGRAM_CHAT_ID=999\n"
+		"SWITCHBOARD_PORT=9999\n"
 	)
 	cfg = load_config(dotenv_path=env_file)
-	assert cfg.telegram_bot_token == "from-dotenv"
-	assert cfg.telegram_chat_id == "999"
+	assert cfg.port == 9999
 
 
 def test_os_env_wins_over_dotenv(monkeypatch, tmp_path):
 	_clear_env(monkeypatch)
-	monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "os-wins")
+	monkeypatch.setenv("SWITCHBOARD_PORT", "8888")
 	env_file = tmp_path / ".env"
 	env_file.write_text(
-		"TELEGRAM_BOT_TOKEN=from-dotenv\nTELEGRAM_CHAT_ID=999\n"
+		"SWITCHBOARD_PORT=7777\n"
 	)
 	cfg = load_config(dotenv_path=env_file)
-	assert cfg.telegram_bot_token == "os-wins"
-	assert cfg.telegram_chat_id == "999"
+	assert cfg.port == 8888
 
 
 def test_spawn_root_defaults_to_none(monkeypatch, tmp_path):
 	_clear_env(monkeypatch)
-	monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-	monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
 	cfg = load_config(dotenv_path=tmp_path / "no.env")
 	assert cfg.spawn_root is None
 
 
 def test_spawn_root_loaded_from_env(monkeypatch, tmp_path):
 	_clear_env(monkeypatch)
-	monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-	monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
 	monkeypatch.setenv("SWITCHBOARD_SPAWN_ROOT", str(tmp_path))
 	cfg = load_config(dotenv_path=tmp_path / "no.env")
 	assert cfg.spawn_root == tmp_path
-
-

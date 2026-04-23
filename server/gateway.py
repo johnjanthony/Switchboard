@@ -164,8 +164,6 @@ def build_tool_handlers(
 		source = "unknown"
 		if isinstance(correlation, dict):
 			source = "multi"
-		elif isinstance(correlation, int):
-			source = "telegram"
 		elif str(correlation).startswith("firebase_"):
 			source = "firebase"
 		elif str(correlation).startswith("android_"):

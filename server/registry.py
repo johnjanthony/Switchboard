@@ -2,8 +2,8 @@
 
 All access happens on a single asyncio event loop, so no locking is required.
 The secondary correlation index lets a messenger backend resolve a response
-using whatever opaque token it stored at send time (Telegram message_id,
-Firebase doc path, etc.) without knowing the request_id.
+using whatever opaque token it stored at send time (Firebase doc path, etc.)
+without knowing the request_id.
 """
 
 from __future__ import annotations

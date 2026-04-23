@@ -28,12 +28,12 @@ def test_request_created_writes_expected_fields(tmp_path):
 def test_request_resolved_records_duration_and_source(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
 	logger.request_resolved(
-		"a3f1", "IR2", response_text="yes", source="telegram", duration_ms=123
+		"a3f1", "IR2", response_text="yes", source="firebase", duration_ms=123
 	)
 	ev = read_events(tmp_path / "log.jsonl")[0]
 	assert ev["event"] == "request_resolved"
 	assert ev["response_preview"] == "yes"
-	assert ev["source"] == "telegram"
+	assert ev["source"] == "firebase"
 	assert ev["duration_ms"] == 123
 
 

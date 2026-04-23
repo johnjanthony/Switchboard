@@ -19,7 +19,7 @@ If any of these disagree, the 2026-04-22 spec wins for routing; the 2026-04-19 s
 
 ## Project shape
 
-Single Python process, one asyncio event loop, MCP HTTP server on `localhost:9876`, with pluggable backends (Android/Firebase; Telegram is present but being phased out). No web UI, no ntfy.
+Single Python process, one asyncio event loop, MCP HTTP server on `localhost:9876`, with pluggable backends (Android/Firebase). No web UI, no ntfy.
 
 Switchboard exists specifically for **away mode** — when John has stepped away and the VS Code chat UI is no longer being watched. At-desk interaction uses the normal VS Code chat channel.
 
@@ -35,11 +35,10 @@ server/
   config.py            Env-based Config loader (dotenv fallback)
   registry.py          PendingRequest + Registry (in-memory, correlation index)
   messenger.py         MessengerBackend ABC + IncomingResponse
-  telegram.py          Telegram MessengerBackend implementation (httpx)
   android.py           Android/Firebase MessengerBackend implementation
-  firebase.py          Firebase admin logic for Android/Telegram backend
+  firebase.py          Firebase admin logic for Android backend
   gateway.py           Tool handlers (ask_human, notify_human) + dispatch loops
-  spawn.py             Claude Code session spawner (triggered from Android app or Telegram)
+  spawn.py             Claude Code session spawner (triggered from Android app)
   collab.py            CollabSession dataclass + session registry (see 2026-04-22 spec)
   logging_jsonl.py     JSONL audit log
 scripts/
@@ -73,7 +72,7 @@ logs/
 
 ```bash
 pip install -e ".[dev]"
-# Either set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID as OS env vars,
+# Either set FIREBASE_SERVICE_ACCOUNT_JSON and FIREBASE_DATABASE_URL as OS env vars,
 # or create a .env file from .env.example and fill in the values.
 python -m server
 ```

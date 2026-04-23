@@ -1,4 +1,4 @@
-"""Telegram-triggered Claude Code session spawner."""
+"""Claude Code session spawner."""
 
 from __future__ import annotations
 

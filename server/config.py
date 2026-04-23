@@ -24,9 +24,6 @@ class Config:
 	port: int
 	timeout_seconds: int
 	log_path: str
-	telegram_bot_token: str | None = None
-	telegram_chat_id: str | None = None
-	enable_telegram: bool = False
 	enable_android: bool = False
 	firebase_service_account_json: str | None = None
 	firebase_database_url: str | None = None
@@ -59,9 +56,6 @@ def load_config(dotenv_path: str | Path | None = None) -> Config:
 		log_path=os.environ.get(
 			"SWITCHBOARD_LOG_PATH", "./logs/switchboard.jsonl"
 		),
-		telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN"),
-		telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID"),
-		enable_telegram=os.environ.get("SWITCHBOARD_ENABLE_TELEGRAM", "false").lower() == "true",
 		enable_android=os.environ.get("SWITCHBOARD_ENABLE_ANDROID", "false").lower() == "true",
 		firebase_service_account_json=os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON"),
 		firebase_database_url=os.environ.get("FIREBASE_DATABASE_URL"),

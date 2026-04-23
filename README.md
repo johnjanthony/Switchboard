@@ -20,26 +20,6 @@ pip install -e ".[dev]"
 
 Switchboard reads its configuration from OS env vars. A `.env` file is loaded as a fallback if present — OS env wins.
 
-### Core Configuration (Telegram)
-
-Copy the template and fill in the values:
-
-```bash
-cp .env.example .env
-# edit .env: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
-```
-
-Or set them as OS env vars:
-
-```bash
-export TELEGRAM_BOT_TOKEN="<token from @BotFather>"
-export TELEGRAM_CHAT_ID="<your numeric chat id>"
-```
-
-**To find your chat ID:** message [@userinfobot](https://t.me/userinfobot) on Telegram — it replies with your numeric ID.
-
-**Before your bot can message you:** open your bot in Telegram (search for its @username) and tap **Start** once. Telegram blocks bots from initiating conversations until the user opts in.
-
 ### Environment Variables
 
 | Variable | Required | Default | Purpose |
@@ -49,10 +29,6 @@ export TELEGRAM_CHAT_ID="<your numeric chat id>"
 | `SWITCHBOARD_PORT` | No | `9876` | Local port for the SSE/SSE server. |
 | `SWITCHBOARD_TIMEOUT_SECONDS` | No | `86400` | How long `ask_human` blocks before returning `__TIMEOUT__`. |
 | `SWITCHBOARD_LOG_PATH` | No | `./logs/switchboard.jsonl` | Path to the event audit log. |
-| **Telegram Channel** | | | |
-| `SWITCHBOARD_ENABLE_TELEGRAM` | No | `false` | Set to `true` to enable the Telegram bot backend. |
-| `TELEGRAM_BOT_TOKEN` | If enabled | | Your bot token from [@BotFather](https://t.me/botfather). |
-| `TELEGRAM_CHAT_ID` | If enabled | | Your numeric chat ID from [@userinfobot](https://t.me/userinfobot). |
 | **Android & Firebase** | | | |
 | `SWITCHBOARD_ENABLE_ANDROID` | No | `false` | Set to `true` to enable the Firebase backend and Android integration. |
 | `FIREBASE_DATABASE_URL` | If enabled | | The URL of your Firebase Realtime Database (e.g. `https://proj.firebaseio.com/`). |
@@ -165,7 +141,7 @@ With the server running, the Android app installed, and an agent wired up:
 pytest
 ```
 
-All unit tests are offline; no Telegram creds required.
+All unit tests are offline; no credentials required.
 
 ## Project layout
 

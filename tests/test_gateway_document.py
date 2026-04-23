@@ -105,8 +105,6 @@ def test_validate_path_rejects_denylist_glob(tmp_path, name):
 @pytest.fixture
 def cfg(tmp_path):
 	return Config(
-		telegram_bot_token="tok",
-		telegram_chat_id="123",
 		host="127.0.0.1",
 		port=9876,
 		timeout_seconds=60,

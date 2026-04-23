@@ -1,8 +1,7 @@
 """MessengerBackend abstract interface and shared types.
 
-The messenger surface is abstracted so the transport (Telegram now, Firebase
-later) can evolve without touching the gateway core. Concrete impls live in
-their own modules (e.g. `server/telegram.py`).
+The messenger surface is abstracted so the transport can evolve without 
+touching the gateway core.
 """
 
 from __future__ import annotations
