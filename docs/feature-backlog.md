@@ -32,17 +32,17 @@ Task Scheduler stepping-stone was skipped per developer preference.
 
 ---
 
-## SHIPPED: Telegram UX — ForceReply
+## SHIPPED (SUPERSEDED): Telegram UX — ForceReply
 
-**Delivered 2026-04-20.** `send_question` in `server/telegram.py` now includes `"reply_markup": {"force_reply": True}`. Telegram auto-enters reply mode when a question arrives — eliminates the manual reply-gesture failure mode observed in the first smoke test.
+**Delivered 2026-04-20. Superseded 2026-04-21.** `send_question` in `server/telegram.py` included `"reply_markup": {"force_reply": True}`. Telegram auto-entered reply mode when a question arrived — eliminated the manual reply-gesture failure mode observed in the first smoke test.
 
-Inline keyboard with suggestion buttons remains unshipped — pick up when a real yes/no/abort pattern shows up frequently in usage. See "Inline keyboard with suggestion buttons" below.
+**Telegram has since been decommissioned** (`server/telegram.py` removed). The Android app + Firebase backend replaced it entirely. ForceReply is no longer applicable; suggestion buttons were shipped natively for Android (see "Inline keyboard with suggestion buttons" below).
 
 ---
 
 ## SHIPPED: Never-stop-asking in away mode
 
-**Delivered 2026-04-20.** `skill/SKILL.md` updated with the "Staying alive in away mode" section. After completing a discrete developer-assigned task, the agent calls `ask_human("Task done: <summary>. What's next?", agent_id)` instead of ending its turn. `__TIMEOUT__` is treated as permission to end gracefully.
+**Delivered 2026-04-20.** `skill/SKILL.md` updated with the "Staying alive in away mode" section. After completing a discrete developer-assigned task, the agent calls `ask_human("Task done: <summary>. What's next?", channel_id)` instead of ending its turn. `__TIMEOUT__` is treated as permission to end gracefully.
 
 The "discrete task the developer handed to you" phrasing is load-bearing — prevents pinging between internal subtasks.
 
@@ -50,9 +50,11 @@ If agents mis-calibrate task boundaries in practice, mitigation is a gateway-sid
 
 ---
 
-## SHIPPED: Telegram-triggered Claude Code spawn
+## SHIPPED: Agent CLI spawn via scheduled task
 
-**Delivered 2026-04-21.** Developer sends `/spawn [project-key] [prompt]` to the bot; Switchboard writes a `spawn-pending.json` file and triggers the `SwitchboardSpawn` Windows Scheduled Task, which runs `spawn-launcher.ps1` in the user's interactive desktop session (Session 1) — where `wt.exe` is available. The launcher opens a new Windows Terminal tab running `claude -p "<prompt>" --dangerously-skip-permissions`.
+**Delivered 2026-04-21 (Telegram trigger); trigger replaced by Android spawn dialog 2026-04-22.** Switchboard writes a `spawn-pending.json` file and triggers the `SwitchboardSpawn` Windows Scheduled Task, which runs `spawn-launcher.ps1` in the user's interactive desktop session (Session 1) — where `wt.exe` is available. The launcher opens a new Windows Terminal tab running `claude -p "<prompt>" --dangerously-skip-permissions`.
+
+The original trigger was a Telegram `/spawn [project-key] [prompt]` bot command. After Telegram was decommissioned, the spawn dialog moved into the Android app (a floating action button that opens a form). The scheduled task and launcher script are unchanged.
 
 **Implementation vs original spec:** The shared-secret prefix (`SWITCHBOARD_SPAWN_TOKEN`) and per-project allowlist (`SWITCHBOARD_SPAWN_PROJECTS`) were simplified to a single `SWITCHBOARD_SPAWN_ROOT` directory. Sub-directory traversal is prevented by resolving paths against `spawn_root` and rejecting escapes. The bot token itself is the auth boundary. A 60-second rate limit is enforced per spawn.
 
@@ -64,17 +66,17 @@ If agents mis-calibrate task boundaries in practice, mitigation is a gateway-sid
 
 ## SHIPPED: Richer message formatting
 
-**Delivered 2026-04-21.** `ask_human` and `notify_human` accept an optional `format: "plain" | "html"` parameter (default `"plain"`). When `format="html"`, Telegram renders the message with `parse_mode=HTML` — supports `<b>`, `<i>`, `<code>`, `<pre>`, `<a href=>`. The gateway auto-escapes the agent_id/request_id prefix; the message body is the agent's responsibility.
+**Delivered 2026-04-21.** `ask_human` and `notify_human` accept an optional `format: "plain" | "html"` parameter (default `"plain"`). When `format="html"`, Telegram rendered the message with `parse_mode=HTML` — supports `<b>`, `<i>`, `<code>`, `<pre>`, `<a href=>`. The gateway auto-escapes the agent_id/request_id prefix; the message body is the agent's responsibility.
 
 **MarkdownV2 deliberately skipped.** Its 18-character escape list (including `.` and `-`) makes unescaped user strings a footgun; one stray period rejects the whole message.
 
-`skill/SKILL.md` updated with the `format` parameter contract, supported tags, and an explicit warning against Markdown syntax.
+**Updated 2026-04-21 (Android delivery):** `format="html"` was renamed to `format="markdown"` across the server tool API, skill doc, and Android client. The Android app renders Markdown via Markwon; `format="html"` is no longer a valid value. See "Android app UI, Markdown rendering, and push notifications" for current behavior.
 
 ---
 
 ## SHIPPED: File / document delivery
 
-**Delivered 2026-04-21.** New MCP tool `send_document_human(path, agent_id, caption?)` delivers files to the developer on Telegram via `sendDocument`. Fire-and-forget; per the "never end on fire-and-forget" rule, at least one `ask_human` must follow.
+**Delivered 2026-04-21.** New MCP tool `send_document_human(path, channel_id, sender?, caption?)` delivers files to the developer via Firebase Storage + Android app. Fire-and-forget; per the "never end on fire-and-forget" rule, at least one `ask_human` must follow.
 
 Security boundary enforced gateway-side:
 
@@ -84,21 +86,19 @@ Security boundary enforced gateway-side:
 - Denylist (glob, case-insensitive): `*token*`, `*secret*`, `*.pem`, `*.key`, `.env*`, `*.env`
 - JSONL audit log per call: resolved path, size_bytes, sha256, caption_preview
 
-**Known gap:** Telegram enforces a 1024-character caption limit. Oversized captions return `"ERROR: ..."` from the gateway rather than being validated upfront. Behavior is not silent; error message may be cryptic.
-
 24 new tests added (total: 98). `skill/SKILL.md` updated with `send_document_human` docs and constraints.
 
 ---
 
 ## SHIPPED: Inline keyboard with suggestion buttons
 
-**Delivered 2026-04-21.** `ask_human` now accepts `suggestions: list[str] | None = None`. When provided, Telegram renders tap-able inline buttons; the tapped label is returned as the response. Typed free-text replies still work via Telegram's manual reply gesture.
+**Delivered 2026-04-21.** `ask_human` now accepts `suggestions: list[str] | None = None`. When provided, the Android app renders tap-able buttons inline in the message bubble; the tapped label is returned as the response. Typed free-text replies still work via the compose box.
 
-Implementation: `poll_responses` now handles both `message.reply_to_message` (typed replies) and `callback_query` (button taps). Button taps are acknowledged immediately via `answerCallbackQuery` to dismiss Telegram's spinner. Chat-ID filtering applied to callback_query updates (same as messages). `_answer_callback_query` failures are non-fatal — logged as surface_error, response still resolved.
+Implementation: suggestions are stored in the Firebase `sessions/{channel_id}/messages/{msg_id}` document alongside the question. The Android `ChannelView` composable renders them as `Button` rows below the message text. Tapping writes the chosen label to `responses/{request_id}` in Firebase, which the server's response listener picks up and resolves.
 
-When suggestions are provided, `send_question` sends `inline_keyboard` reply_markup instead of `force_reply`. The two are mutually exclusive in Telegram's API.
+**Original Telegram implementation (superseded):** used `inline_keyboard` reply_markup; taps were handled via `callback_query` updates and acknowledged with `answerCallbackQuery`. Telegram is no longer active.
 
-5 new tests (108 total). `skill/SKILL.md` updated with usage docs and 64-char label constraint.
+`skill/SKILL.md` updated with usage docs and 64-char label constraint.
 
 ---
 
@@ -114,9 +114,7 @@ When suggestions are provided, `send_question` sends `inline_keyboard` reply_mar
 
 **Firebase deserialization fix:** `Question` data class fields changed from `val` to `var` to ensure Firebase Realtime Database can set all fields during deserialization. (The specific field affected was `format`; other fields appeared to work due to Firebase SDK version behaviour.)
 
-**Push notifications:** `POST_NOTIFICATIONS` permission added to the manifest with a runtime request on first launch (Android 13+). Two notification channels: `switchboard_questions` (`IMPORTANCE_HIGH` — heads-up banner with sound) for `ask_human` calls, and `switchboard_updates` (`IMPORTANCE_DEFAULT`) for `notify_human` and documents. Notifications use unique IDs (AtomicInteger counter) so they stack rather than replace each other. Tapping a notification opens the app to the correct agent tab via `agent_id` extra on the `PendingIntent`.
-
-**Known gap: Telegram + `format="markdown"`:** `telegram.py` checks `if format == "html":` to set `parse_mode=HTML`. If Telegram is re-enabled, agents using `format="markdown"` will get plain-text rendering on Telegram. Since Telegram is not in active use, this is deferred. Fix would require adding a `format == "markdown"` branch to `telegram.py` (using `parse_mode=MarkdownV2` with proper escaping, or mapping Markdown to HTML before sending).
+**Push notifications:** `POST_NOTIFICATIONS` permission added to the manifest with a runtime request on first launch (Android 13+). Two notification channels: `switchboard_questions` (`IMPORTANCE_HIGH` — heads-up banner with sound) for `ask_human` calls, and `switchboard_updates` (`IMPORTANCE_DEFAULT`) for `notify_human` and documents. Notifications use unique IDs (AtomicInteger counter) so they stack rather than replace each other. Tapping a notification opens the app to the correct channel tab via `channel_id` extra on the `PendingIntent`.
 
 ---
 
@@ -159,7 +157,8 @@ Android data model unified: `ChannelMessage` + `Channel` replace the four legacy
 When `ask_human` is called with suggestions, render them as tappable action buttons on the notification banner so the developer can reply without opening the app.
 
 **What it takes:**
-- **Server (`firebase.py`)** — include suggestions as a JSON-encoded string in the FCM data payload alongside `request_id` and `agent_id`
+
+- **Server (`firebase.py`)** — include suggestions as a JSON-encoded string in the FCM data payload alongside `request_id` and `channel_id`
 - **New `NotificationReplyReceiver`** — a `BroadcastReceiver` that fires silently when an action button is tapped, writes the answer directly to Firebase `responses/{request_id}`, and dismisses the notification
 - **FCM service** — parse suggestions from data payload, add up to 3 `addAction()` calls to the notification builder
 - **Manifest** — register the receiver
@@ -168,9 +167,14 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 
 ---
 
+## SHIPPED: `/healthz` endpoint
+
+Returns JSON `{pending_count, oldest_pending_age_seconds, total_answered, preflight_ok}`. Check from phone before a deep-work session to confirm the gateway is sane. Note: `preflight_ok` was a Telegram preflight check and is now legacy (always `true`).
+
+---
+
 ## Observability + reliability
 
-- **SHIPPED: `/healthz` extension.** Return JSON `{pending_count, oldest_pending_age_seconds, total_answered, preflight_ok}`. Check from phone before a deep-work session to confirm the gateway is sane. (Note: `preflight_ok` was for Telegram and is now legacy).
 - **Log rotation.** `logs/switchboard.jsonl` grows forever. At low volume this is a months-out concern, but worth a simple size-based rotation (`logs/switchboard.jsonl.1`, `.2`, with a cap).
 - **Rate-limiting at the gateway.** An agent that calls `notify_human` 100 times in a minute would hammer the backend and potentially trigger FCM rate limits. Simple token-bucket on outbound messages (e.g., 30/minute) would prevent this.
 - **Timeout snooze via Android app.** Add a "Snooze" button to the `ask_human` notification/tab that extends the window by 2h. Implementation: Android app writes `snooze: true` to the question object; gateway intercepts the change and resets the wait clock in the registry.
