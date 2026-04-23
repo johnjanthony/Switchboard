@@ -107,9 +107,26 @@ class FirebaseBackend(MessengerBackend):
 		url: str | None = None,
 		format: str = "plain",
 		suggestions: list[str] | None = None,
+		filename: str | None = None,
 	) -> tuple[CorrelationToken | None, str | None]:
 		# Ensure meta exists so the Android app discovers the channel properly
 		await self._write_default_meta_if_missing(channel_id)
+
+		# If this is a document and we have a local path instead of a URL, upload it
+		effective_url = url
+		effective_filename = filename
+		if message_type == "document" and url and not (url.startswith("http://") or url.startswith("https://")):
+			try:
+				path = Path(url)
+				effective_url = await self._upload_file(path)
+				if effective_filename is None:
+					effective_filename = path.name
+				if self._logger:
+					self._logger.surface_error(f"firebase_upload_success: {effective_url}")
+			except Exception as exc:
+				if self._logger:
+					self._logger.surface_error(f"firebase_upload_failed: {exc}")
+				# Continue anyway, the Android app will guard against the invalid URL
 
 		msg_id = _uuid.uuid4().hex[:8]
 		timestamp = int(time.time() * 1000)
@@ -122,8 +139,10 @@ class FirebaseBackend(MessengerBackend):
 		}
 		if request_id is not None:
 			data["request_id"] = request_id
-		if url is not None:
-			data["url"] = url
+		if effective_url is not None:
+			data["url"] = effective_url
+		if effective_filename is not None:
+			data["filename"] = effective_filename
 		if suggestions:
 			data["suggestions"] = suggestions
 
@@ -161,6 +180,20 @@ class FirebaseBackend(MessengerBackend):
 		if message_type == "question":
 			return f"firebase_{request_id}", msg_id
 		return None, msg_id
+
+	async def _upload_file(self, local_path: Path) -> str:
+		if not self._storage_bucket:
+			raise ValueError("Firebase Storage not configured (missing SWITCHBOARD_FIREBASE_STORAGE_BUCKET)")
+
+		def _do_upload():
+			bucket = storage.bucket(self._storage_bucket)
+			blob_name = f"documents/{_uuid.uuid4().hex}/{local_path.name}"
+			blob = bucket.blob(blob_name)
+			blob.upload_from_filename(str(local_path))
+			# Generate a signed URL valid for 7 days using V4 signing
+			return blob.generate_signed_url(version="v4", expiration=7 * 24 * 60 * 60)
+
+		return await self._loop.run_in_executor(None, _do_upload)
 
 	async def _write_default_meta_if_missing(self, channel_id: str) -> None:
 		def _check_and_set():

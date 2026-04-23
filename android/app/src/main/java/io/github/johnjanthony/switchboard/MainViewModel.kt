@@ -5,6 +5,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.webkit.MimeTypeMap
+import android.widget.Toast
 import androidx.lifecycle.ViewModel
 import androidx.core.content.FileProvider
 import com.google.firebase.database.ChildEventListener
@@ -256,28 +258,65 @@ class MainViewModel : ViewModel() {
     }
 
     fun downloadAndOpenFile(context: Context, url: String, fileName: String) {
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            Toast.makeText(context, "Invalid URL", Toast.LENGTH_SHORT).show()
+            return
+        }
         val client = OkHttpClient()
         val request = Request.Builder().url(url).build()
         client.newCall(request).enqueue(object : okhttp3.Callback {
-            override fun onFailure(call: okhttp3.Call, e: IOException) { e.printStackTrace() }
+            override fun onFailure(call: okhttp3.Call, e: IOException) {
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(context, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
             override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
-                if (!response.isSuccessful) return
-                val file = File(context.cacheDir, fileName)
+                val body = response.body
+                if (!response.isSuccessful || body == null) {
+                    val errorMsg = try { body?.string()?.take(100) ?: "" } catch (e: Exception) { "" }
+                    Handler(Looper.getMainLooper()).post {
+                        Toast.makeText(context, "Server error: ${response.code} $errorMsg", Toast.LENGTH_LONG).show()
+                    }
+                    return
+                }
+                
+                // Sanitize filename while preserving extension
+                val ext = fileName.substringAfterLast('.', "")
+                val nameWithoutExt = fileName.substringBeforeLast('.')
+                val safeBase = nameWithoutExt.replace(Regex("[^a-zA-Z0-9.\\-_]"), "_").take(50)
+                val safeFileName = if (ext.isNotEmpty() && ext != fileName) "$safeBase.$ext" else safeBase
+                
+                val file = File(context.cacheDir, safeFileName)
                 try {
-                    FileOutputStream(file).use { output -> response.body?.byteStream()?.copyTo(output) }
+                    FileOutputStream(file).use { output -> body.byteStream().copyTo(output) }
                     Handler(Looper.getMainLooper()).post { openFile(context, file) }
-                } catch (e: IOException) { e.printStackTrace() }
+                } catch (e: IOException) {
+                    Handler(Looper.getMainLooper()).post {
+                        Toast.makeText(context, "Save failed: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
             }
         })
     }
 
     private fun openFile(context: Context, file: File) {
-        val uri: Uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, context.contentResolver.getType(uri))
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            val uri: Uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
+
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mimeType)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            
+            val chooser = Intent.createChooser(intent, "Open ${file.name}")
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(chooser)
+        } catch (e: Exception) {
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(context, "Cannot open file: ${e.message}", Toast.LENGTH_LONG).show()
+            }
         }
-        context.startActivity(Intent.createChooser(intent, "Open with"))
     }
 }

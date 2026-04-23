@@ -14,6 +14,7 @@ data class ChannelMessage(
     @get:PropertyName("timestamp") @set:PropertyName("timestamp") var timestamp: Long = 0L,
     @get:PropertyName("format") @set:PropertyName("format") var format: String = "plain",
     @get:PropertyName("suggestions") @set:PropertyName("suggestions") var suggestions: List<String>? = null,
+    @get:PropertyName("filename") @set:PropertyName("filename") var filename: String? = null,
 )
 
 data class Channel(

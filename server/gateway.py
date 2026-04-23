@@ -192,6 +192,7 @@ def build_tool_handlers(
 				channel_id, sender, "document",
 				caption or resolved.name,
 				url=str(resolved),
+				filename=resolved.name,
 			)
 		except Exception as exc:
 			logger.tool_error(None, channel_id, str(exc))

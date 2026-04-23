@@ -28,3 +28,6 @@ local.properties
 
 # Superpowers implementation plans (scaffolding, not history-worthy)
 docs/superpowers/plans/
+
+# MCP stuff
+.repomap.tags.cache.v1/*

@@ -329,7 +329,7 @@ fun MessageBubble(
                     if (isDocument) {
                         Text(msg.content, style = MaterialTheme.typography.bodyMedium, color = textColor)
                         if (msg.url != null) {
-                            TextButton(onClick = { onDownload(msg.url!!, msg.content) }) {
+                            TextButton(onClick = { onDownload(msg.url!!, msg.filename ?: msg.content) }) {
                                 Text("Download")
                             }
                         }
