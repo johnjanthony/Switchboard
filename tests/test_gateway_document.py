@@ -10,6 +10,7 @@ import pytest
 from server.config import Config
 from server.gateway import _validate_path, build_tool_handlers
 from server.logging_jsonl import JsonlLogger
+from server.rate_limiter import RateLimiter
 from server.registry import Registry
 from tests.test_gateway_notify_human import RecordingBackend
 
@@ -205,3 +206,38 @@ async def test_send_document_human_backend_error_returns_error_string(cfg, logge
 	result = await handlers.send_document_human("report.txt", "my-chan-001", cwd=tmp_path)
 	assert result.startswith("ERROR:")
 	assert "telegram boom" in result
+
+
+@pytest.mark.asyncio
+async def test_send_document_human_returns_error_when_rate_limited(cfg, logger, tmp_path):
+	backend = RecordingBackend()
+	registry = Registry()
+	f = tmp_path / "report.txt"
+	f.write_text("hello")
+	limiter = RateLimiter(rate_per_minute=1)
+	handlers = build_tool_handlers(cfg, registry, backend, logger, limiter)
+
+	first = await handlers.send_document_human("report.txt", "chan-rl-001", cwd=tmp_path)
+	result = await handlers.send_document_human("report.txt", "chan-rl-001", cwd=tmp_path)  # over limit
+
+	assert first == "ok"
+	assert result.startswith("ERROR: rate limit exceeded")
+	assert "1 messages/min" in result
+	assert "60 seconds" in result  # ceil(60/1) = 60
+	assert len(backend.sent_documents) == 1  # second call did not reach backend
+
+
+@pytest.mark.asyncio
+async def test_send_document_human_path_error_bypasses_rate_limit(cfg, logger, tmp_path):
+	"""Path validation errors are always returned — rate limit is checked after validation."""
+	backend = RecordingBackend()
+	registry = Registry()
+	f = tmp_path / "report.txt"
+	f.write_text("hello")
+	limiter = RateLimiter(rate_per_minute=1)
+	handlers = build_tool_handlers(cfg, registry, backend, logger, limiter)
+	await handlers.send_document_human("report.txt", "chan-rl-002", cwd=tmp_path)  # exhausts the bucket
+	# Channel is now rate-limited, but path error should still surface
+	result = await handlers.send_document_human("nonexistent.txt", "chan-rl-002", cwd=tmp_path)
+	assert result.startswith("ERROR:")
+	assert "not found" in result

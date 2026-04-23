@@ -15,6 +15,7 @@ def _clear_env(monkeypatch):
 		"SWITCHBOARD_TIMEOUT_SECONDS",
 		"SWITCHBOARD_LOG_PATH",
 		"SWITCHBOARD_SPAWN_ROOT",
+		"SWITCHBOARD_RATE_LIMIT",
 	]:
 		monkeypatch.delenv(key, raising=False)
 
@@ -69,3 +70,24 @@ def test_spawn_root_loaded_from_env(monkeypatch, tmp_path):
 	monkeypatch.setenv("SWITCHBOARD_SPAWN_ROOT", str(tmp_path))
 	cfg = load_config(dotenv_path=tmp_path / "no.env")
 	assert cfg.spawn_root == tmp_path
+
+
+def test_rate_limit_defaults_to_30(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	monkeypatch.delenv("SWITCHBOARD_RATE_LIMIT", raising=False)
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.rate_limit == 30
+
+
+def test_rate_limit_zero_disables_limiting(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	monkeypatch.setenv("SWITCHBOARD_RATE_LIMIT", "0")
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.rate_limit == 0
+
+
+def test_rate_limit_configurable_via_env(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	monkeypatch.setenv("SWITCHBOARD_RATE_LIMIT", "60")
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.rate_limit == 60

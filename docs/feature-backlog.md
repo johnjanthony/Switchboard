@@ -144,6 +144,24 @@ Android data model unified: `ChannelMessage` + `Channel` replace the four legacy
 
 ---
 
+## Web Dashboard for Conversation Monitoring & Interaction
+
+**Proposed 2026-04-23.** A desktop-based web interface to supplement the Android app, allowing for more comfortable long-form replies and better visibility into multiple simultaneous sessions.
+
+**Key Features:**
+- **Real-time Monitoring**: Stream all active sessions from Firebase Realtime Database with a multi-pane or tabbed view.
+- **Full Interaction**: Mirror the Android app's interactive capabilities:
+    - Reply to `ask_human` prompts (including suggestion button support).
+    - Inject messages into collaborative channels (`message_and_await_agent`).
+- **Session Management**: View historical (closed) sessions and audit logs.
+- **Visual Cues**: High-visibility indicators for pending questions and unseen activity, synced with the Android app's state.
+
+**Technical Approach:**
+- **Frontend**: A lightweight Single Page App (React, Vue, or vanilla JS) using the Firebase Web SDK for direct RTDB binding.
+- **Deployment**: Can be hosted via Firebase Hosting for remote access or served locally by the Switchboard server (e.g., via FastAPI static files) for a "local-first" experience.
+
+---
+
 ## Resilience and Protocol Enforcement
 
 - **Silence Detection at the Gateway.** If an agent is in away mode and sends a terminal response (detected via missing tool calls when tool use is expected), have the gateway issue a proactive warning or pause the session.

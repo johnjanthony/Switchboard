@@ -168,3 +168,10 @@ class JsonlLogger:
 		if caption is not None:
 			event["caption_preview"] = _preview(caption)
 		self._write(event)
+
+	def rate_limited(self, channel_id: str, tool: str) -> None:
+		self._write({
+			"event": "rate_limited",
+			"channel_id": channel_id,
+			"tool": tool,
+		})

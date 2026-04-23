@@ -29,6 +29,7 @@ class Config:
 	firebase_database_url: str | None = None
 	firebase_storage_bucket: str | None = None
 	spawn_root: Path | None = None
+	rate_limit: int = 30
 
 
 def _require(name: str) -> str:
@@ -61,4 +62,5 @@ def load_config(dotenv_path: str | Path | None = None) -> Config:
 		firebase_database_url=os.environ.get("FIREBASE_DATABASE_URL"),
 		firebase_storage_bucket=os.environ.get("FIREBASE_STORAGE_BUCKET"),
 		spawn_root=Path(spawn_root_raw) if spawn_root_raw else None,
+		rate_limit=int(os.environ.get("SWITCHBOARD_RATE_LIMIT", "30")),
 	)

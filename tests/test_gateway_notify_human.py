@@ -12,6 +12,7 @@ from server.config import Config
 from server.gateway import build_tool_handlers
 from server.logging_jsonl import JsonlLogger
 from server.messenger import IncomingResponse, MessengerBackend
+from server.rate_limiter import RateLimiter
 from server.registry import Registry
 
 
@@ -135,3 +136,46 @@ async def test_notify_human_returns_error_sentinel_on_backend_failure(cfg, logge
 
 	assert result.startswith("ERROR:")
 	assert "notify boom" in result
+
+
+@pytest.mark.asyncio
+async def test_notify_human_returns_error_when_rate_limited(cfg, logger):
+	backend = RecordingBackend()
+	registry = Registry()
+	limiter = RateLimiter(rate_per_minute=2)
+	handlers = build_tool_handlers(cfg, registry, backend, logger, limiter)
+
+	await handlers.notify_human("first", "chan-rl-001")
+	await handlers.notify_human("second", "chan-rl-001")
+	result = await handlers.notify_human("third", "chan-rl-001")  # over limit
+
+	assert result.startswith("ERROR: rate limit exceeded")
+	assert "2 messages/min" in result
+	assert "30 seconds" in result  # ceil(60/2) = 30
+	assert len(backend.sent_notifications) == 2  # third call did not reach backend
+
+
+@pytest.mark.asyncio
+async def test_notify_human_no_limiter_is_unlimited(cfg, logger):
+	"""Passing no limiter (default None) never rate-limits."""
+	backend = RecordingBackend()
+	registry = Registry()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)  # no limiter
+
+	for i in range(50):
+		result = await handlers.notify_human(f"msg {i}", "chan-rl-002")
+		assert result == "ok"
+
+
+@pytest.mark.asyncio
+async def test_notify_human_rate_limit_is_per_channel(cfg, logger):
+	"""Exhausting one channel does not affect a different channel."""
+	backend = RecordingBackend()
+	registry = Registry()
+	limiter = RateLimiter(rate_per_minute=1)
+	handlers = build_tool_handlers(cfg, registry, backend, logger, limiter)
+
+	await handlers.notify_human("only msg", "chan-a")          # exhausts chan-a
+	assert (await handlers.notify_human("extra", "chan-a")).startswith("ERROR:")  # chan-a limited
+	result = await handlers.notify_human("hello", "chan-b")    # chan-b unaffected
+	assert result == "ok"

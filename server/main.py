@@ -25,6 +25,7 @@ from server.logging_jsonl import JsonlLogger
 from server.messenger import MultiBackend
 from server.registry import Registry
 from server.spawn import SpawnHandler
+from server.rate_limiter import RateLimiter
 from server.android import AndroidBackend
 from server.firebase import FirebaseBackend
 
@@ -121,7 +122,8 @@ async def _run(config: Config) -> None:
 	sidecar_path = _Path(config.log_path).parent / "collab-sessions.json"
 	await _notify_lost_collab_sessions(sidecar_path, backend)
 
-	handlers = build_tool_handlers(config, registry, backend, logger)
+	limiter = RateLimiter(config.rate_limit)
+	handlers = build_tool_handlers(config, registry, backend, logger, limiter)
 	mcp = _build_fastmcp(handlers)
 
 	app = mcp.streamable_http_app()

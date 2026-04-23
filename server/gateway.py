@@ -20,6 +20,7 @@ from typing import Any, Callable, Coroutine
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
 from server.messenger import MessengerBackend
+from server.rate_limiter import RateLimiter
 from server.registry import Registry
 
 TIMEOUT_SENTINEL = "__TIMEOUT__"
@@ -103,8 +104,16 @@ def build_tool_handlers(
 	registry: Registry,
 	backend: MessengerBackend,
 	logger: JsonlLogger,
+	limiter: RateLimiter | None = None,
 ) -> ToolHandlers:
 	async def notify_human(message: str, channel_id: str, sender: str = "Claude", format: str = "plain") -> str:
+		if limiter is not None and not limiter.consume(channel_id):
+			logger.rate_limited(channel_id, "notify_human")
+			return (
+				f"ERROR: rate limit exceeded — you are sending too fast.\n"
+				f"Limit is {limiter.rate_per_minute} messages/min per channel.\n"
+				f"Wait at least {limiter.wait_seconds} seconds before retrying, or slow your notify cadence."
+			)
 		try:
 			await backend.write_channel_message(channel_id, sender, "notify", message, format=format)
 			logger.notify_sent(channel_id, message)
@@ -184,6 +193,14 @@ def build_tool_handlers(
 		except ValueError as exc:
 			logger.tool_error(None, channel_id, str(exc))
 			return f"ERROR: {exc}"
+
+		if limiter is not None and not limiter.consume(channel_id):
+			logger.rate_limited(channel_id, "send_document_human")
+			return (
+				f"ERROR: rate limit exceeded — you are sending too fast.\n"
+				f"Limit is {limiter.rate_per_minute} messages/min per channel.\n"
+				f"Wait at least {limiter.wait_seconds} seconds before retrying, or slow your notify cadence."
+			)
 
 		try:
 			size_bytes = resolved.stat().st_size

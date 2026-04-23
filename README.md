@@ -73,6 +73,31 @@ The project includes a native Android app in the `android/` directory.
     This script builds the debug APK, installs it, and launches the app automatically.
 3.  **Alternative**: Open the `android/` folder in Android Studio and deploy to your phone.
 
+### Troubleshooting & Manual Wi-Fi Pairing
+
+If you encounter issues pairing your device over Wi-Fi (e.g., "protocol fault" or the device not appearing in Android Studio), follow these manual steps:
+
+1.  **Restart ADB Server**:
+    ```powershell
+    adb kill-server
+    adb start-server
+    ```
+2.  **Manual Pairing**:
+    On your phone, go to **Developer Options > Wireless Debugging > Pair device with pairing code**. Note the IP address, port, and pairing code.
+    ```powershell
+    adb pair <IP_ADDRESS>:<PAIRING_PORT>
+    # Enter the pairing code when prompted
+    ```
+3.  **Manual Connection**:
+    After successful pairing, look at the **IP address & Port** on the main Wireless Debugging screen (note: this port is usually different from the pairing port).
+    ```powershell
+    adb connect <IP_ADDRESS>:<CONNECTION_PORT>
+    ```
+4.  **Common Fixes**:
+    - **Toggle Wireless Debugging**: If a pairing attempt fails, turn Wireless Debugging OFF and back ON to reset the ports.
+    - **Check VPNs**: Ensure neither your PC nor your phone is connected to a VPN, as this often blocks local ADB discovery.
+    - **Forget Old Pairings**: If issues persist, select "Forget all paired devices" in the Wireless Debugging settings and start over.
+
 The app uses Firebase Cloud Messaging (FCM) for instant push notifications and Realtime Database for two-way communication.
 
 ## Using
