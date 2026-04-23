@@ -183,8 +183,8 @@ fun MainScreen(viewModel: MainViewModel) {
     if (showSpawnDialog) {
         SpawnSessionDialog(
             onDismiss = { showSpawnDialog = false },
-            onSpawn = { project, prompt, collab ->
-                viewModel.spawnSession(project, prompt, collab)
+            onSpawn = { project, prompt, useClaude, useGemini ->
+                viewModel.spawnSession(project, prompt, useClaude, useGemini)
                 showSpawnDialog = false
             }
         )
@@ -381,11 +381,12 @@ fun MarkdownText(content: String, format: String, color: androidx.compose.ui.gra
 @Composable
 fun SpawnSessionDialog(
     onDismiss: () -> Unit,
-    onSpawn: (project: String, prompt: String, collab: Boolean) -> Unit,
+    onSpawn: (project: String, prompt: String, useClaude: Boolean, useGemini: Boolean) -> Unit,
 ) {
     var project by remember { mutableStateOf("") }
     var prompt by remember { mutableStateOf("") }
-    var collab by remember { mutableStateOf(false) }
+    var useClaude by remember { mutableStateOf(true) }
+    var useGemini by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -410,15 +411,18 @@ fun SpawnSessionDialog(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Checkbox(checked = collab, onCheckedChange = { collab = it })
-                    Text("Collab mode (2 agents)")
+                    Checkbox(checked = useClaude, onCheckedChange = { useClaude = it })
+                    Text("Claude")
+                    Spacer(Modifier.width(16.dp))
+                    Checkbox(checked = useGemini, onCheckedChange = { useGemini = it })
+                    Text("Gemini")
                 }
             }
         },
         confirmButton = {
             Button(
-                onClick = { onSpawn(project.trim(), prompt.trim(), collab) },
-                enabled = prompt.isNotBlank(),
+                onClick = { onSpawn(project.trim(), prompt.trim(), useClaude, useGemini) },
+                enabled = prompt.isNotBlank() && (useClaude || useGemini),
             ) { Text("Spawn") }
         },
         dismissButton = {

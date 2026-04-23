@@ -250,11 +250,13 @@ class MainViewModel : ViewModel() {
         _unseenChannels.value = _unseenChannels.value - channelId
     }
 
-    fun spawnSession(project: String, prompt: String, collab: Boolean = false) {
-        val flags = if (collab) " --collab" else ""
-        val command = if (project.isBlank()) "/spawn$flags $prompt"
-                      else "/spawn $project$flags $prompt"
-        commandsRef.push().setValue(command)
+    fun spawnSession(project: String, prompt: String, useClaude: Boolean, useGemini: Boolean) {
+        val sb = StringBuilder("/spawn")
+        if (useClaude) sb.append(" --claude")
+        if (useGemini) sb.append(" --gemini")
+        if (project.isNotBlank()) sb.append(" $project")
+        sb.append(" $prompt")
+        commandsRef.push().setValue(sb.toString())
     }
 
     fun downloadAndOpenFile(context: Context, url: String, fileName: String) {

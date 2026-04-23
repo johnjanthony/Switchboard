@@ -63,20 +63,31 @@ def _make_channel_id(project_key: str) -> str:
 	return f"{project_key}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
 
 
-def _parse_spawn_flags(text: str) -> tuple[str, bool]:
-	"""Extract --collab flag; return (remaining_text, collab). Raises ValueError for obsolete flags."""
-	collab = False
+def _parse_spawn_flags(text: str) -> tuple[str, list[str]]:
+	"""Extract --claude, --gemini, --collab flags; return (remaining_text, backends)."""
+	backends: list[str] = []
 	parts: list[str] = []
 	for part in text.split():
-		if part == "--collab":
-			collab = True
+		if part == "--claude":
+			backends.append("claude")
+		elif part == "--gemini":
+			backends.append("gemini")
+		elif part == "--collab":
+			backends.extend(["claude", "claude"])
 		elif re.match(r"--agents=\d+$", part):
-			raise ValueError("--agents is no longer supported; use --collab for a two-agent session")
+			raise ValueError("--agents is no longer supported; use --claude, --gemini, or --collab flags")
 		elif part == "--relay":
-			raise ValueError("--relay is no longer supported; use --collab for a two-agent session with relay")
+			raise ValueError("--relay is no longer supported; use --collab for relay sessions")
 		else:
 			parts.append(part)
-	return " ".join(parts), collab
+	
+	if not backends:
+		backends = ["claude"]
+	return " ".join(parts), backends
+
+
+def _get_backend_name(backend: str) -> str:
+	return "Gemini" if backend == "gemini" else "Claude"
 
 
 class SpawnHandler:
@@ -109,7 +120,7 @@ class SpawnHandler:
 				return
 
 		try:
-			remaining_text, collab = _parse_spawn_flags(text)
+			remaining_text, backends = _parse_spawn_flags(text)
 		except ValueError as exc:
 			await self._backend.send_text(str(exc))
 			return
@@ -142,21 +153,25 @@ class SpawnHandler:
 			await self._backend.send_text(f"Unknown project: {project_key}.")
 			return
 
-		if collab:
-			await self._handle_collab_spawn(project_path, project_key, prompt)
+		if len(backends) > 1:
+			await self._handle_collab_spawn(project_path, project_key, prompt, backends[:2])
 		else:
-			await self._handle_single_spawn(project_path, project_key, prompt)
+			await self._handle_single_spawn(project_path, project_key, prompt, backends[0])
 
 	async def _handle_single_spawn(
-		self, project_path: Path, project_key: str, prompt: str | None
+		self, project_path: Path, project_key: str, prompt: str | None, backend_type: str
 	) -> None:
 		channel_id = _make_channel_id(project_key)
-		base = _BASE_INSTRUCTION.format(channel_id=channel_id)
+		sender = _get_backend_name(backend_type)
+		base = _BASE_INSTRUCTION.format(channel_id=channel_id).replace(
+			"sender defaults to 'Claude'", f"sender defaults to '{sender}'"
+		)
 		user_prompt = prompt or _DEFAULT_PROMPT
 		effective_prompt = f"{base} {user_prompt}"
 
 		pending = {
 			"channel_id": channel_id,
+			"backend": backend_type,
 			"prompt": effective_prompt,
 			"project_path": str(project_path),
 		}
@@ -189,12 +204,16 @@ class SpawnHandler:
 		await self._backend.send_spawn_ack(channel_id, prompt)
 
 	async def _handle_collab_spawn(
-		self, project_path: Path, project_key: str, prompt: str | None
+		self, project_path: Path, project_key: str, prompt: str | None, backends: list[str]
 	) -> None:
 		from server.collab import CollabSession
 		task = prompt or _DEFAULT_COLLAB_PROMPT
 		channel_id = _make_channel_id(project_key)
-		agent_senders = ["Agent 1", "Agent 2"]
+		
+		# Sender names derived directly from backends
+		s1 = _get_backend_name(backends[0])
+		s2 = _get_backend_name(backends[1])
+		agent_senders = [s1, s2]
 
 		def _make_prompt(sender: str, listener: bool) -> str:
 			note = _LISTENER_NOTE.format(channel_id=channel_id, sender=sender) if listener else ""
@@ -208,10 +227,18 @@ class SpawnHandler:
 		pending = {
 			"channel_id": channel_id,
 			"agents": [
-				{"sender": "Agent 1", "prompt": _make_prompt("Agent 1", False),
-				 "project_path": str(project_path)},
-				{"sender": "Agent 2", "prompt": _make_prompt("Agent 2", True),
-				 "project_path": str(project_path)},
+				{
+					"backend": backends[0],
+					"sender": s1,
+					"prompt": _make_prompt(s1, False),
+					"project_path": str(project_path)
+				},
+				{
+					"backend": backends[1],
+					"sender": s2,
+					"prompt": _make_prompt(s2, True),
+					"project_path": str(project_path)
+				},
 			],
 		}
 
@@ -242,7 +269,7 @@ class SpawnHandler:
 
 		session = CollabSession(
 			session_id=channel_id,
-			agent_senders=("Agent 1", "Agent 2"),
+			agent_senders=tuple(agent_senders),
 			task=task,
 		)
 		self._registry.add_session(session)

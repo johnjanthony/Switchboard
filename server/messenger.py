@@ -41,6 +41,7 @@ class MessengerBackend(ABC):
 		url: str | None = None,
 		format: str = "plain",
 		suggestions: list[str] | None = None,
+		filename: str | None = None,
 	) -> "tuple[CorrelationToken | None, str | None]":
 		"""Write a message to the channel. Returns (correlation, msg_id).
 		correlation is used for message_type='question' to match responses.
@@ -110,12 +111,13 @@ class MultiBackend(MessengerBackend):
 
 	async def write_channel_message(
 		self, channel_id, sender, message_type, content,
-		*, request_id=None, url=None, format="plain", suggestions=None,
+		*, request_id=None, url=None, format="plain", suggestions=None, filename=None,
 	) -> "tuple[CorrelationToken | None, str | None]":
 		results = await asyncio.gather(*(
 			b.write_channel_message(
 				channel_id, sender, message_type, content,
 				request_id=request_id, url=url, format=format, suggestions=suggestions,
+				filename=filename,
 			)
 			for b in self._backends
 		))

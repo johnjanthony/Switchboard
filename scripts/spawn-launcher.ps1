@@ -9,16 +9,28 @@ if ($params.PSObject.Properties.Name -contains 'agents') {
 	foreach ($agent in $params.agents) {
 		$escapedPath   = $agent.project_path.Replace("'", "''")
 		$escapedPrompt = $agent.prompt.Replace("'", "''").Replace('"', '\"')
-		$command = "Set-Location '$escapedPath'; claude '$escapedPrompt' --dangerously-skip-permissions"
+		
+		$cli = "claude '$escapedPrompt' --dangerously-skip-permissions"
+		if ($agent.backend -eq "gemini") {
+			$cli = "gemini '$escapedPrompt' --yolo"
+		}
+		
+		$command = "Set-Location '$escapedPath'; $cli"
 		$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 		Start-Process -FilePath "wt" -ArgumentList "new-tab", "--", "powershell.exe", "-EncodedCommand", $encoded
 		Start-Sleep -Milliseconds 500
 	}
 } else {
-	# Single-agent spawn: existing behaviour
+	# Single-agent spawn
 	$escapedPath   = $params.project_path.Replace("'", "''")
 	$escapedPrompt = $params.prompt.Replace("'", "''").Replace('"', '\"')
-	$command = "Set-Location '$escapedPath'; claude '$escapedPrompt' --dangerously-skip-permissions"
+	
+	$cli = "claude '$escapedPrompt' --dangerously-skip-permissions"
+	if ($params.backend -eq "gemini") {
+		$cli = "gemini '$escapedPrompt' --yolo"
+	}
+	
+	$command = "Set-Location '$escapedPath'; $cli"
 	$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 	Start-Process -FilePath "wt" -ArgumentList "new-tab", "--", "powershell.exe", "-EncodedCommand", $encoded
 }

@@ -37,6 +37,7 @@ class AndroidBackend(MessengerBackend):
 		url: str | None = None,
 		format: str = "plain",
 		suggestions: list[str] | None = None,
+		filename: str | None = None,
 	) -> tuple[CorrelationToken | None, str | None]:
 		msg_id = f"msg_{int(asyncio.get_event_loop().time() * 1000)}"
 		if message_type == "question":

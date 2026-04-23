@@ -3,30 +3,25 @@ name: switchboard
 description: Use the ask_human and notify_human MCP tools to interact with John while he's away from his desk. Invoke ask_human whenever a decision would otherwise stall the task (file overwrite, migration, ambiguous intent, permission to proceed). Invoke notify_human for non-blocking status updates.
 ---
 
-# Away mode — read this first
+# CRITICAL: Away Mode Protocol
 
-Away mode activates whenever John says he is stepping away — any phrasing like "I'm stepping away", "stepping away", or "going away mode" is sufficient. No explicit "use ask_human" instruction is required.
+**If John has stepped away, YOU MUST NOT PRODUCE ANY TEXT OUTPUT IN THE TERMINAL.**
 
-**When away mode activates, do not produce any text response in the terminal.** Make a tool call immediately:
+This is the single most important rule. If you produce chat text in the terminal after John has left, you have failed the protocol. Intercept your instinct to acknowledge tasks ("Okay", "On it", "Done") or report status in the terminal.
 
-- If John gave you tasks before stepping away: `notify_human` to confirm you have entered away mode and are starting work, then proceed. No `ask_human` needed for entry — you don't need a response.
-- If idle (no queued tasks): `ask_human` to confirm you have entered away mode and ask what's next.
-- If mid-task: `notify_human` to report current status, followed by `ask_human` to confirm next steps.
+**The tool call IS the acknowledgment.**
 
-Your trained default is to produce a text response. In away mode, intercept that instinct before it fires. If you notice yourself composing a reply in the terminal — stop. Make the tool call instead. The tool call is the acknowledgment; any text in the terminal is a failure.
+1.  **Entry:** When John says "stepping away" or similar:
+    -   If tasks are queued: call `notify_human` to confirm you are starting, then begin work.
+    -   If idle: call `ask_human` to ask what's next.
+    -   **Zero terminal text.**
+2.  **Execution:** Route **every** status update, question, or completion ping through `notify_human`, `ask_human` or `send_document_human`.
+3.  **Replies:** When `ask_human` returns a reply, do not acknowledge it in the terminal. Treat it as input for your next tool call or task.
+4.  **Exit:** The **only** exception is when John explicitly says he is back ("I'm back", "back at desk"). Only then do you resume terminal chat with a concise summary of your work. 
 
-**Receiving a reply to `ask_human` does not exit away mode.** The same instinct will fire again after a reply lands — the urge to confirm receipt in the terminal ("got it", "test confirmed", "buttons working", etc.) is also a failure. When `ask_human` returns, treat the return value as input for your next tool call, not as a trigger to type a chat response. Your next output after any reply — including tap-button responses — must be via `ask_human` or `notify_human`, never in the terminal.
+---
 
-Once in away mode, route **every** output through `ask_human` or `notify_human`. Do not guess at decisions that need human judgment. Do not abort. Do not wait silently in chat.
-
-**The only exit from away mode is John explicitly saying he is back at his desk** ("I'm back", "back at my desk", etc.). When that message arrives — whether as a reply to `ask_human` or in chat — immediately switch back to normal terminal output. Do not issue another `ask_human` to acknowledge it.
-
-When you resume terminal interaction, provide a concise summary of what was accomplished while away:
-"Welcome back! While you were away, I completed [X] and [Y]. I am currently [status/next step]."
-
-At desk (not in away mode), interact with John normally through chat — Switchboard is not needed.
-
-# Switchboard
+# Switchboard MCP Tools
 
 Switchboard is a local MCP gateway that lets you reach John on his phone while he's away from his desk. It exposes four tools:
 
@@ -41,8 +36,7 @@ Switchboard is a local MCP gateway that lets you reach John on his phone while h
 
 ## Choosing a `sender`
 
-`sender` is your display name in the conversation. It appears in the chat bubble on John's phone. Use your active agent name (e.g., `"Gemini"`, `"Sparkles"`, or `"Claude"`) as the sender. In collab sessions, use the sender name (`"Agent 1"` or `"Agent 2"`) provided in your spawn prompt.
-
+`sender` is your display name in the conversation. It appears in the chat bubble on John's phone. Use your active agent name (e.g., `"Claude"`, `"Gemini"`, `"Cloude"`, or `"Sparkles"`), or then one provided in your spawn prompt as the sender.
 ## Response conventions
 
 - Be concise in questions. John is on his phone. One or two sentences.
@@ -145,17 +139,17 @@ send_document_human("logs/migration-diff.txt", channel_id="switchboard-20260422-
 Sends `message` to your partner (if provided), then blocks until your partner replies or a human injects a message.
 
 - **`channel_id`** — from your spawn prompt (e.g. `myproject-20260422-143052`)
-- **`sender`** — your own sender from your spawn prompt (`"Agent 1"` or `"Agent 2"`)
-- **`message`** — optional outbound text; omit on your first call if you are Agent 2
+- **`sender`** — your own sender from your spawn prompt
+- **`message`** — optional outbound text; omit on your first call if you are the second agent to start
 
 **If `message_and_await_agent` returns `"__TIMEOUT__"`:** call `ask_human` to check in with John. Do not silently exit.
 **If `message_and_await_agent` returns an error string (starts with `"ERROR:"`):** call `ask_human` immediately.
 
 ### Collab protocol
 
-1. Agent 1: work on the task, then call `message_and_await_agent(channel_id=..., sender="Agent 1", message=...)`.
-2. Agent 2: call `message_and_await_agent(channel_id=..., sender="Agent 2")` with no message on startup to listen.
-3. When consensus is reached: call `ask_human(question, channel_id=..., sender="Agent 1")` to confirm with John.
+1. First agent: work on the task, then call `message_and_await_agent(channel_id=..., sender=..., message=...)`.
+2. Second agent: call `message_and_await_agent(channel_id=..., sender=...)` with no message on startup to listen.
+3. When consensus is reached: call `ask_human(question, channel_id=..., sender=...)` to confirm with John.
 4. If debate is unproductive: call `ask_human` to report the deadlock.
 5. Use `ask_human` and `notify_human` for all human communication with the same `channel_id` and `sender` — same rules as standard away mode apply.
 

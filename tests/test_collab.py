@@ -8,7 +8,7 @@ from server.collab import CollabSession
 def _make_session(**kwargs) -> CollabSession:
 	defaults = dict(
 		session_id="proj-abc1",
-		agent_senders=("Agent 1", "Agent 2"),
+		agent_senders=("Claude", "Gemini"),
 		task="review the code",
 	)
 	defaults.update(kwargs)
@@ -18,16 +18,16 @@ def _make_session(**kwargs) -> CollabSession:
 @pytest.mark.asyncio
 async def test_other_sender_returns_partner():
 	s = _make_session()
-	assert s.other_sender("Agent 1") == "Agent 2"
-	assert s.other_sender("Agent 2") == "Agent 1"
+	assert s.other_sender("Claude") == "Gemini"
+	assert s.other_sender("Gemini") == "Claude"
 
 
 @pytest.mark.asyncio
 async def test_deliver_resolves_waiting_future():
 	s = _make_session()
-	future = s.start_waiting("Agent 2")
+	future = s.start_waiting("Gemini")
 	assert not future.done()
-	s.deliver("Agent 2", "hello from agent 1")
+	s.deliver("Gemini", "hello from agent 1")
 	assert future.done()
 	assert future.result() == "hello from agent 1"
 
@@ -35,8 +35,8 @@ async def test_deliver_resolves_waiting_future():
 @pytest.mark.asyncio
 async def test_deliver_buffers_when_nobody_waiting():
 	s = _make_session()
-	s.deliver("Agent 2", "buffered message")
-	future = s.start_waiting("Agent 2")
+	s.deliver("Gemini", "buffered message")
+	future = s.start_waiting("Gemini")
 	assert future.done()
 	assert future.result() == "buffered message"
 
@@ -44,8 +44,8 @@ async def test_deliver_buffers_when_nobody_waiting():
 @pytest.mark.asyncio
 async def test_start_waiting_returns_pending_message_immediately():
 	s = _make_session()
-	s.deliver("Agent 1", "queued reply")
-	future = s.start_waiting("Agent 1")
+	s.deliver("Claude", "queued reply")
+	future = s.start_waiting("Claude")
 	assert future.done()
 	assert future.result() == "queued reply"
 
@@ -53,10 +53,10 @@ async def test_start_waiting_returns_pending_message_immediately():
 @pytest.mark.asyncio
 async def test_cancel_waiting_removes_future():
 	s = _make_session()
-	s.start_waiting("Agent 1")
-	s.cancel_waiting("Agent 1")
-	s.deliver("Agent 1", "too late")
-	future2 = s.start_waiting("Agent 1")
+	s.start_waiting("Claude")
+	s.cancel_waiting("Claude")
+	s.deliver("Claude", "too late")
+	future2 = s.start_waiting("Claude")
 	assert future2.done()
 	assert future2.result() == "too late"
 
@@ -64,7 +64,7 @@ async def test_cancel_waiting_removes_future():
 @pytest.mark.asyncio
 async def test_deliver_inject_resolves_waiting_agent():
 	s = _make_session()
-	future = s.start_waiting("Agent 1")
+	future = s.start_waiting("Claude")
 	s.deliver_inject("human says hi")
 	assert future.done()
 	assert future.result() == "human says hi"
@@ -74,7 +74,7 @@ async def test_deliver_inject_resolves_waiting_agent():
 async def test_deliver_inject_buffers_when_nobody_waiting():
 	s = _make_session()
 	s.deliver_inject("human message")
-	future = s.start_waiting("Agent 2")
+	future = s.start_waiting("Gemini")
 	assert future.done()
 	assert future.result() == "human message"
 
@@ -82,12 +82,12 @@ async def test_deliver_inject_buffers_when_nobody_waiting():
 @pytest.mark.asyncio
 async def test_start_waiting_prefers_agent_specific_over_inject():
 	s = _make_session()
-	s.deliver("Agent 2", "from agent 1")
+	s.deliver("Gemini", "from agent 1")
 	s.deliver_inject("from human")
-	future = s.start_waiting("Agent 2")
+	future = s.start_waiting("Gemini")
 	assert future.done()
 	assert future.result() == "from agent 1"
-	future2 = s.start_waiting("Agent 1")
+	future2 = s.start_waiting("Claude")
 	assert future2.done()
 	assert future2.result() == "from human"
 
@@ -137,7 +137,7 @@ async def test_registry_add_session_twice_replaces_previous():
 	registry.add_session(session1)
 	session2 = CollabSession(
 		session_id="proj-abc1",
-		agent_senders=("Agent 1", "Agent 2"),
+		agent_senders=("Claude", "Gemini"),
 		task="new task",
 	)
 	registry.add_session(session2)
@@ -166,7 +166,7 @@ async def test_message_and_await_agent_unknown_session_returns_error(tmp_path):
 	registry = Registry()
 	cfg = _make_config(tmp_path)
 	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), JsonlLogger(cfg.log_path))
-	result = await handlers.message_and_await_agent("no-session", "Agent 1", "hi")
+	result = await handlers.message_and_await_agent("no-session", "Claude", "hi")
 	assert result == "ERROR: session not found"
 
 
@@ -191,19 +191,19 @@ async def test_message_and_await_agent_two_agents_exchange(tmp_path):
 	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
 
 	task_b = asyncio.create_task(
-		handlers.message_and_await_agent("proj-abc1", "Agent 2")
+		handlers.message_and_await_agent("proj-abc1", "Gemini")
 	)
 	await asyncio.sleep(0)
 
 	task_a = asyncio.create_task(
-		handlers.message_and_await_agent("proj-abc1", "Agent 1", "hello from A")
+		handlers.message_and_await_agent("proj-abc1", "Claude", "hello from A")
 	)
 	await asyncio.sleep(0)
 
 	result_b = await asyncio.wait_for(task_b, timeout=1.0)
 	assert result_b == "hello from A"
 
-	session.deliver("Agent 1", "hello back from B")
+	session.deliver("Claude", "hello back from B")
 	result_a = await asyncio.wait_for(task_a, timeout=1.0)
 	assert result_a == "hello back from B"
 
@@ -218,7 +218,7 @@ async def test_message_and_await_agent_timeout_returns_sentinel(tmp_path):
 		log_path=str(tmp_path / "log.jsonl"),
 	)
 	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), JsonlLogger(cfg.log_path))
-	result = await handlers.message_and_await_agent("proj-abc1", "Agent 1")
+	result = await handlers.message_and_await_agent("proj-abc1", "Claude")
 	assert result == TIMEOUT_SENTINEL
 
 
@@ -232,7 +232,7 @@ async def test_message_and_await_agent_relay_calls_write_channel_message(tmp_pat
 	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
 
 	task = asyncio.create_task(
-		handlers.message_and_await_agent("proj-abc1", "Agent 1", "relay this")
+		handlers.message_and_await_agent("proj-abc1", "Claude", "relay this")
 	)
 	await asyncio.sleep(0)  # let message_and_await_agent run
 	await asyncio.sleep(0.01)  # let relay task execute
@@ -240,7 +240,7 @@ async def test_message_and_await_agent_relay_calls_write_channel_message(tmp_pat
 	agent_msgs = [m for m in backend.channel_messages if m["message_type"] == "agent"]
 	assert len(agent_msgs) == 1
 	assert agent_msgs[0]["channel_id"] == "proj-abc1"
-	assert agent_msgs[0]["sender"] == "Agent 1"
+	assert agent_msgs[0]["sender"] == "Claude"
 	assert agent_msgs[0]["content"] == "relay this"
 
 	task.cancel()
@@ -309,8 +309,8 @@ async def test_collab_spawn_writes_agents_array_in_pending_json(tmp_path):
 	data = _json.loads(pending_path.read_text())
 	assert "agents" in data
 	assert len(data["agents"]) == 2
-	assert data["agents"][0]["sender"] == "Agent 1"
-	assert data["agents"][1]["sender"] == "Agent 2"
+	assert data["agents"][0]["sender"] == "Claude"
+	assert data["agents"][1]["sender"] == "Claude"
 	assert "relay" not in data
 	assert "channel_id" in data
 	import re
@@ -340,7 +340,7 @@ async def test_collab_spawn_writes_sidecar(tmp_path):
 	entries = _json.loads(sidecar.read_text())
 	assert len(entries) == 1
 	assert "channel_id" in entries[0]
-	assert entries[0]["agent_senders"] == ["Agent 1", "Agent 2"]
+	assert entries[0]["agent_senders"] == ["Claude", "Claude"]
 
 
 @pytest.mark.asyncio
@@ -362,7 +362,7 @@ async def test_collab_spawn_registers_session_in_registry(tmp_path):
 
 	assert len(registry._sessions) == 1
 	session = list(registry._sessions.values())[0]
-	assert session.agent_senders == ("Agent 1", "Agent 2")
+	assert session.agent_senders == ("Claude", "Claude")
 
 
 @pytest.mark.asyncio

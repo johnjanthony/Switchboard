@@ -24,7 +24,7 @@ class RecordingBackend(MessengerBackend):
 
 	async def write_channel_message(
 		self, channel_id, sender, message_type, content,
-		*, request_id=None, url=None, format="plain", suggestions=None,
+		*, request_id=None, url=None, format="plain", suggestions=None, filename=None,
 	):
 		msg_id = f"msg_{len(self.channel_messages)}"
 		data = {
@@ -36,6 +36,7 @@ class RecordingBackend(MessengerBackend):
 			"url": url,
 			"format": format,
 			"suggestions": suggestions,
+			"filename": filename,
 			"msg_id": msg_id,
 		}
 		self.channel_messages.append(data)
