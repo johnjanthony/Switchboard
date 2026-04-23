@@ -1,6 +1,6 @@
 # Switchboard — Agent Orientation
 
-Switchboard is a local MCP gateway that lets AI agents pause mid-task and request human input from the user. Responses come back from their phone. The gateway exists to support *away mode* — at-desk interaction continues to use the normal terminal chat UI.
+Switchboard is a local MCP gateway that lets AI agents pause mid-task and request human input from John. Responses come back from their phone. The gateway exists to support *away mode* — at-desk interaction continues to use the normal terminal chat UI.
 
 This file is the quick-orient doc for any agent working **on Switchboard itself**. Agents that merely *consume* Switchboard don't need this — they just call `ask_human` / `notify_human`.
 
@@ -21,7 +21,7 @@ If any of these disagree, the 2026-04-22 spec wins for routing; the 2026-04-19 s
 
 Single Python process, one asyncio event loop, MCP HTTP server on `localhost:9876`, with pluggable backends (Android/Firebase). No web UI, no ntfy.
 
-Switchboard exists specifically for **away mode** — when the user has stepped away and the terminal chat UI is no longer being watched. At-desk interaction uses the normal terminal chat channel.
+Switchboard exists specifically for **away mode** — when John has stepped away and the terminal chat UI is no longer being watched. At-desk interaction uses the normal terminal chat channel.
 
 Registry is in-memory (`dict[request_id, asyncio.Future]`). Restart = pending requests are lost and waiting agents time out.
 
@@ -128,7 +128,7 @@ NSSM sets `AppDirectory=C:\Work\Switchboard` so `config.py`'s `.env` fallback re
 
 ## Away mode protocol
 
-Away mode activates whenever the user says they are stepping away — any phrasing like "I'm stepping away", "stepping away", or "going away mode" is sufficient. No explicit "use ask_human" instruction is required.
+Away mode activates whenever John says they are stepping away — any phrasing like "I'm stepping away", "stepping away", or "going away mode" is sufficient. No explicit "use ask_human" instruction is required.
 
 **When away mode activates, do not produce any text response in the terminal.** Make a tool call immediately:
 
@@ -140,7 +140,7 @@ There is no valid reason to type a chat acknowledgment first. "Got it" in the te
 
 **Receiving a reply to `ask_human` does not exit away mode.** Do not respond to a reply in the terminal. Your next output after receiving any reply must also be via `ask_human` or `notify_human` — even if the reply indicates the task is done or the session was a test.
 
-**The only exit from away mode is the user explicitly saying they are back at their desk.**
+**The only exit from away mode is John explicitly saying they are back at their desk.**
 
 When you resume terminal interaction, provide a **concise summary** of what was accomplished while away:
 "Welcome back! While you were away, I completed [X] and [Y]. I am currently [status/next step]."
