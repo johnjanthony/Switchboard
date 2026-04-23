@@ -229,7 +229,7 @@ fun ChannelView(
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
     }
 
-    Column(modifier.fillMaxSize().then(modifier)) {
+    Column(modifier.fillMaxSize()) {
         LazyColumn(
             state = listState,
             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
