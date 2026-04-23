@@ -1,8 +1,8 @@
 # Switchboard — Agent Orientation
 
-Switchboard is a local MCP gateway that lets Claude Code agents pause mid-task and request human input from John. Responses come back from his phone. The gateway exists to support *away mode* — at-desk interaction continues to use the normal VS Code chat UI.
+Switchboard is a local MCP gateway that lets AI agents pause mid-task and request human input from the user. Responses come back from their phone. The gateway exists to support *away mode* — at-desk interaction continues to use the normal terminal chat UI.
 
-This file is the quick-orient doc for any Claude Code agent working **on Switchboard itself**. Agents that merely *consume* Switchboard don't need this — they just call `ask_human` / `notify_human`.
+This file is the quick-orient doc for any agent working **on Switchboard itself**. Agents that merely *consume* Switchboard don't need this — they just call `ask_human` / `notify_human`.
 
 ## Canonical design
 
@@ -21,7 +21,7 @@ If any of these disagree, the 2026-04-22 spec wins for routing; the 2026-04-19 s
 
 Single Python process, one asyncio event loop, MCP HTTP server on `localhost:9876`, with pluggable backends (Android/Firebase). No web UI, no ntfy.
 
-Switchboard exists specifically for **away mode** — when John has stepped away and the VS Code chat UI is no longer being watched. At-desk interaction uses the normal VS Code chat channel.
+Switchboard exists specifically for **away mode** — when the user has stepped away and the terminal chat UI is no longer being watched. At-desk interaction uses the normal terminal chat channel.
 
 Registry is in-memory (`dict[request_id, asyncio.Future]`). Restart = pending requests are lost and waiting agents time out.
 
@@ -33,12 +33,12 @@ server/
   __main__.py          Enables `python -m server`
   main.py              Entry point — wires config, registry, backend, MCP, uvicorn
   config.py            Env-based Config loader (dotenv fallback)
-  registry.py          PendingRequest + Registry (in-memory, correlation index)
+  registry.py          PendingRequest + Registry (in-memory, correlation index, msg_id tracking)
   messenger.py         MessengerBackend ABC + IncomingResponse
-  android.py           Android/Firebase MessengerBackend implementation
-  firebase.py          Firebase admin logic for Android backend
+  android.py           Android/Firebase MessengerBackend implementation (Local dev mock)
+  firebase.py          Firebase admin logic for Android backend (FCM, Realtime DB)
   gateway.py           Tool handlers (ask_human, notify_human) + dispatch loops
-  spawn.py             Claude Code session spawner (triggered from Android app)
+  spawn.py             Agent session spawner (triggered from Android app)
   collab.py            CollabSession dataclass + session registry (see 2026-04-22 spec)
   logging_jsonl.py     JSONL audit log
 scripts/
@@ -46,19 +46,19 @@ scripts/
   uninstall-service.ps1      Remove the service
   restart-service.ps1        Stop + pytest gate + start
   register-spawn-task.ps1    Re-register SwitchboardSpawn scheduled task
-  spawn-launcher.ps1         Runs in user session to open a new wt tab
+  spawn-launcher.ps1         Runs in user session to open a new terminal tab
 skill/
-  SKILL.md             Installed into ~/.claude/skills/switchboard/
+  SKILL.md             Agent skill instructions
 android/
   app/src/main/
     AndroidManifest.xml
     java/io/github/johnjanthony/switchboard/
-      MainActivity.kt        Compose UI — tabs, chat view, message bubbles, spawn dialog
-      MainViewModel.kt       Firebase listeners, question/notification/document state
+      MainActivity.kt        Compose UI — tabs, chat view, bubble readability, high-vis indicators
+      MainViewModel.kt       Firebase listeners, immutable state tracking, unseen activity
       fcm/
         SwitchboardFirebaseMessagingService.kt  Push notifications (two channels, tap-to-tab)
       network/
-        ApiService.kt        Question data class (Firebase deserialization)
+        ApiService.kt        Data classes (@PropertyName annotated)
       ui/theme/              Material3 dark theme
   app/build.gradle           Markwon, Firebase, Compose dependencies
 logs/
@@ -77,7 +77,7 @@ pip install -e ".[dev]"
 python -m server
 ```
 
-Gateway comes up on `http://127.0.0.1:9876`. Point a Claude Code agent at `http://localhost:9876/mcp` (HTTP transport, `"type": "http"` in `.claude.json`).
+Gateway comes up on `http://127.0.0.1:9876`. Point your agent at `http://localhost:9876/mcp` (HTTP transport).
 
 ## Testing
 
@@ -99,7 +99,7 @@ Integration tests run in-process; no external services required. The backends (F
 
 ## Service management (Windows service via NSSM)
 
-The server runs as a Windows service so it starts automatically and survives VS Code being closed.
+The server runs as a Windows service so it starts automatically and survives the terminal being closed.
 
 ```powershell
 # One-time install (elevated PowerShell):
@@ -120,7 +120,7 @@ nssm status switchboard
 .\scripts\uninstall-service.ps1  # elevated PowerShell
 ```
 
-**Agents rebuilding or restarting the service MUST use `-SkipTests`.** The pytest gate takes ~15 seconds, which consumes the auto-reconnect window (31 seconds) and causes the MCP connection to drop permanently. With `-SkipTests`, the service restarts in ~3 seconds and Claude Code auto-reconnects within the window.
+**Agents rebuilding or restarting the service MUST use `-SkipTests`.** The pytest gate takes ~15 seconds, which consumes the auto-reconnect window (31 seconds) and causes the MCP connection to drop permanently. With `-SkipTests`, the service restarts in ~3 seconds and agents auto-reconnect within the window.
 
 Logs: `logs\switchboard.jsonl` (JSONL audit), `logs\nssm-stdout.log` / `nssm-stderr.log` (uvicorn console).
 
@@ -128,24 +128,28 @@ NSSM sets `AppDirectory=C:\Work\Switchboard` so `config.py`'s `.env` fallback re
 
 ## Away mode protocol
 
-Away mode activates whenever John says he is stepping away — any phrasing like "I'm stepping away" or "stepping away" is sufficient. No explicit "use ask_human" instruction is required.
+Away mode activates whenever the user says they are stepping away — any phrasing like "I'm stepping away", "stepping away", or "going away mode" is sufficient. No explicit "use ask_human" instruction is required.
 
 **When away mode activates, do not produce any text response in the terminal.** Make a tool call immediately:
 
-- If idle or between tasks: `ask_human` to confirm you have entered away mode and ask what's next.
+- If John gave you tasks before stepping away: `notify_human` to confirm you have entered away mode and are starting work, then proceed. No `ask_human` needed for entry — you don't need a response.
+- If idle (no queued tasks): `ask_human` to confirm you have entered away mode and ask what's next.
 - If mid-task: `notify_human` to report current status, followed by `ask_human` to confirm next steps.
 
 There is no valid reason to type a chat acknowledgment first. "Got it" in the terminal is a failure. The tool call is the acknowledgment. Every subsequent output — status updates, questions, task-done pings — continues through `ask_human` or `notify_human`.
 
 **Receiving a reply to `ask_human` does not exit away mode.** Do not respond to a reply in the terminal. Your next output after receiving any reply must also be via `ask_human` or `notify_human` — even if the reply indicates the task is done or the session was a test.
 
-The only exit from away mode is John explicitly saying he's back at his desk.
+**The only exit from away mode is the user explicitly saying they are back at their desk.**
+
+When you resume terminal interaction, provide a **concise summary** of what was accomplished while away:
+"Welcome back! While you were away, I completed [X] and [Y]. I am currently [status/next step]."
 
 Use `notify_human` only for true fire-and-forget updates: progress reports, confirmations of non-blocking steps, "starting X now" pings. It must not be used as a substitute for `ask_human` when a response is needed, and must not be the final output of a session — there must always be at least one `ask_human` to follow. When in doubt, use `ask_human`.
 
 **Restart behaviour differs by session type:**
 
-- **Single-agent away mode:** restarting with `-SkipTests` is safe. The service restarts in ~3 seconds and Claude Code auto-reconnects within the 31-second window. Any pending `ask_human` is lost from the registry, but the agent times out and re-asks. Do not restart without `-SkipTests` — the pytest gate takes ~15 seconds and the connection drops permanently.
+- **Single-agent away mode:** restarting with `-SkipTests` is safe. The service restarts in ~3 seconds and agents auto-reconnect within the 31-second window. Any pending `ask_human` is lost from the registry, but the agent times out and re-asks. Do not restart without `-SkipTests` — the pytest gate takes ~15 seconds and the connection drops permanently.
 - **Collab sessions:** never restart while a collab session is active. The in-memory `CollabSession` state is permanently lost on restart — the connection may recover but the session cannot. Both agents will receive `"ERROR: session not found"` and the collaboration ends.
 
 ## What belongs in CLAUDE-JOURNAL.md

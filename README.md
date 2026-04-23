@@ -1,10 +1,17 @@
 # Switchboard
 
-> A human-in-the-loop input gateway for Claude Code agents.
+> A human-in-the-loop input gateway for AI agents (Claude, Gemini, etc.).
 
-Switchboard is a locally-hosted MCP server that lets Claude Code agents pause mid-task and ask John a question via a native Android app. Designed for away-from-desk workflows where John has stepped away but wants his agents to continue working unsupervised until they hit a decision that genuinely requires human input.
+Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task and ask the user a question via a native Android app. Designed for away-from-desk workflows where you want your agents to continue working unsupervised until they hit a decision that genuinely requires human input.
 
-See [`docs/superpowers/specs/2026-04-19-switchboard-design.md`](docs/superpowers/specs/2026-04-19-switchboard-design.md) for the full design.
+## Features
+
+- **Unified Routing**: Target specific sessions using stable `channel_id`s and display names (`sender`).
+- **Asynchronous Updates**: Send non-blocking notifications or deliver documents directly to your phone.
+- **In-line Replies**: View your responses directly in the chat history for full context.
+- **Activity Indicators**: Prominent high-visibility tab borders and tints for unseen activity or pending questions.
+- **Session Spawning**: Launch fresh agent sessions on your desktop directly from your phone.
+- **Rich Markdown**: Full support for bold, italic, code blocks, checklists, and tables.
 
 ## Install
 
@@ -25,54 +32,30 @@ Switchboard reads its configuration from OS env vars. A `.env` file is loaded as
 | Variable | Required | Default | Purpose |
 | :--- | :--- | :--- | :--- |
 | **Server Settings** | | | |
-| `SWITCHBOARD_HOST` | No | `127.0.0.1` | Local bind address for the SSE/SSE server. |
-| `SWITCHBOARD_PORT` | No | `9876` | Local port for the SSE/SSE server. |
+| `SWITCHBOARD_HOST` | No | `127.0.0.1` | Local bind address for the SSE/HTTP server. |
+| `SWITCHBOARD_PORT` | No | `9876` | Local port for the SSE/HTTP server. |
 | `SWITCHBOARD_TIMEOUT_SECONDS` | No | `86400` | How long `ask_human` blocks before returning `__TIMEOUT__`. |
 | `SWITCHBOARD_LOG_PATH` | No | `./logs/switchboard.jsonl` | Path to the event audit log. |
 | **Android & Firebase** | | | |
 | `SWITCHBOARD_ENABLE_ANDROID` | No | `false` | Set to `true` to enable the Firebase backend and Android integration. |
-| `FIREBASE_DATABASE_URL` | If enabled | | The URL of your Firebase Realtime Database (e.g. `https://proj.firebaseio.com/`). |
+| `FIREBASE_DATABASE_URL` | If enabled | | The URL of your Firebase Realtime Database. |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | If enabled | | Absolute path to your Firebase service account key JSON file. |
-| `FIREBASE_STORAGE_BUCKET` | No | | Hostname of your Firebase Storage bucket (for document attachments). |
-| **Session Spawning** | | | |
-| `SWITCHBOARD_SPAWN_ROOT` | No | | Absolute path to the directory containing your project folders for `/spawn`. |
+| `FIREBASE_STORAGE_BUCKET` | No | | Hostname of your Firebase Storage bucket. |
 
-## Run
+## Wire your agent to it
+
+### Gemini CLI (Recommended)
 
 ```bash
-python -m server
+gemini mcp add switchboard http://localhost:9876/mcp --type http --trust
+gemini skills link .\skill
 ```
 
-The gateway binds to `127.0.0.1:9876` by default and exposes MCP over SSE at `/sse`.
-
-## Wire Claude Code to it
-
-Use the Claude Code CLI (recommended — registers at user scope):
+### Claude Code
 
 ```bash
 claude mcp add switchboard --scope user --transport http http://localhost:9876/mcp
-```
-
-Or add it manually to your MCP config:
-
-```json
-{
-  "mcpServers": {
-    "switchboard": {
-      "type": "http",
-      "url": "http://localhost:9876/mcp"
-    }
-  }
-}
-```
-
-## Install the skill
-
-The skill teaches the agent when and how to use `ask_human` / `notify_human`:
-
-```bash
-mkdir -p ~/.claude/skills/switchboard
-cp skill/SKILL.md ~/.claude/skills/switchboard/SKILL.md
+# Copy skill/SKILL.md to ~/.claude/skills/switchboard/SKILL.md
 ```
 
 ## Android App
@@ -81,23 +64,21 @@ The project includes a native Android app in the `android/` directory.
 
 ### Build and Install
 1.  **Credentials**: Download `google-services.json` from your Firebase project and place it in `android/app/`.
-2.  **Open in Android Studio**: Open the root `Switchboard` folder.
-3.  **Sync & Run**: Click the "Sync Project with Gradle Files" icon, then hit the **Run** button to install on your phone or emulator.
+2.  **Build**: Open the `android/` folder in Android Studio and deploy to your phone.
 
-The app uses Firebase Cloud Messaging (FCM) for instant push notifications and Realtime Database for two-way communication with your agents.
+The app uses Firebase Cloud Messaging (FCM) for instant push notifications and Realtime Database for two-way communication.
 
 ## Using
 
 ### Away mode
 
-Away mode activates when you tell your agent you're stepping away — any phrasing like *"I'm stepping away"* is sufficient. The agent immediately routes all output through `ask_human` or `notify_human` instead of the terminal.
+Away mode activates when you tell your agent you're stepping away — any phrasing like *"I'm stepping away"* is sufficient. The agent immediately routes all output through `ask_human` or `notify_human`.
 
-- **`ask_human(question, channel_id, sender?, format?, suggestions?)`** — blocks until John replies; returns the reply text, or `"__TIMEOUT__"` after 24 hours.
-- **`notify_human(message, channel_id, sender?, format?)`** — fire-and-forget status update; returns `"ok"` immediately.
-- **`send_document_human(path, channel_id, sender?, caption?)`** — delivers a file to John's phone; fire-and-forget.
-- **`message_and_await_agent(channel_id, sender, message?)`** — collab sessions only; sends to partner agent and blocks until reply.
+- **`ask_human(question, channel_id, sender?, format?, suggestions?)`** — blocks until you reply.
+- **`notify_human(message, channel_id, sender?, format?)`** — fire-and-forget status update.
+- **`send_document_human(path, channel_id, sender?, caption?)`** — delivers a file to your phone.
 
-To exit away mode, reply *"I'm back"* or equivalent. The agent switches back to normal terminal output.
+To exit away mode, reply *"I'm back"*. The agent will provide a **Welcome Back Summary** of what was accomplished while you were away and then resume normal terminal output.
 
 ### Replying to messages
 

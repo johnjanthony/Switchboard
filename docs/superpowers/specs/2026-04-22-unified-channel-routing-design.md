@@ -323,3 +323,25 @@ fun spawnSession(project: String, prompt: String, collab: Boolean = false) {
 - Inject support for single-agent channels
 - More than 2 agents per collab session
 - Changing `responses/` or `commands/` Firebase paths
+
+---
+
+## 12. Post-Implementation Notes (2026-04-23)
+
+The following refinements were implemented following initial deployment:
+
+### FCM Payload Reliability
+- **Conflict Resolution**: Renamed the `message_type` key to `sb_message_type` in the FCM data payload. This avoids conflicts with reserved Android/FCM keywords that previously caused silent delivery failures.
+- **Redundancy Suppression**: The server now skips sending FCM push notifications for `message_type="human"` (user replies), as the user already knows they sent the message.
+
+### Persistence & History
+- **Response Tracking**: Added `msg_id` tracking to the `Registry`. When a human reply is received, the server writes the `response_text` back into the original message node in the `sessions/` tree.
+- **Answer Filtering**: Updated the Android `MainViewModel` to filter out any messages with `response_text != null` from the `pendingQuestions` state. This ensures that the reply UI correctly stays hidden across app restarts.
+- **In-line Replies**: The server now creates a new message with `sender="Human"` and `message_type="human"` in the session history whenever a response is resolved. These appear as right-aligned bubbles in the app.
+
+### UI/UX Refinements
+- **State Tracking**: Converted `Channel` messages to an immutable `List` and used `.copy()` for all updates in the ViewModel. This ensures Jetpack Compose correctly detects every new message for real-time display without needing to switch tabs.
+- **High-Visibility Indicators**: Replaced the small unread dot with prominent **High-Visibility Borders** and **Background Tints** on tabs that have unseen activity (notifications/documents) or pending questions.
+- **Readability**: Unified text contrast by explicitly mapping `onSurfaceVariant` to the message content color for all agent bubbles. Added `@PropertyName` annotations to ensure reliable mapping between Firebase and Kotlin data classes.
+- **Agent Agnosticism**: Generalised documentation and the `switchboard` skill to support any agent (Claude, Gemini, etc.) using the gateway.
+
