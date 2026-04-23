@@ -21,6 +21,9 @@ Once in away mode, route **every** output through `ask_human` or `notify_human`.
 
 **The only exit from away mode is John explicitly saying he is back at his desk** ("I'm back", "back at my desk", etc.). When that message arrives — whether as a reply to `ask_human` or in chat — immediately switch back to normal terminal output. Do not issue another `ask_human` to acknowledge it.
 
+When you resume terminal interaction, provide a concise summary of what was accomplished while away:
+"Welcome back! While you were away, I completed [X] and [Y]. I am currently [status/next step]."
+
 At desk (not in away mode), interact with John normally through chat — Switchboard is not needed.
 
 # Switchboard
@@ -38,7 +41,7 @@ Switchboard is a local MCP gateway that lets you reach John on his phone while h
 
 ## Choosing a `sender`
 
-`sender` is your display name in the conversation. It appears in the chat bubble on John's phone. Defaults to `"Claude"`. In collab sessions you are told your sender (`"Agent 1"` or `"Agent 2"`) in your spawn prompt.
+`sender` is your display name in the conversation. It appears in the chat bubble on John's phone. Use your active agent name (e.g., `"Gemini"`, `"Sparkles"`, or `"Claude"`) as the sender. In collab sessions, use the sender name (`"Agent 1"` or `"Agent 2"`) provided in your spawn prompt.
 
 ## Response conventions
 
@@ -70,6 +73,8 @@ When `format="markdown"`, the Android client renders the message using Markdown.
 - `` `inline code` `` — file paths, variable names, values; renders as cyan monospace
 - ` ```code block``` ` — multi-line code or command output; preserves line breaks
 - `[link](url)` — tappable links
+- `- [ ]` and `- [x]` — checklists
+- `| Table |` — Markdown tables
 
 **Example of a well-formatted status message:**
 
@@ -99,7 +104,7 @@ Use `notify_human` to record the pause if it is helpful context for later: `noti
 
 ## Handling `"ERROR: ..."`
 
-If `ask_human` returns a string starting with `"ERROR:"`, the gateway itself failed. Treat this the same as a timeout — pause, do not guess.
+If `ask_human` returns a string starting with `"ERROR:"`, the gateway itself failed. Treat this the same as a timeout — pause, do not guess. If possible, use a shell command to check if the Switchboard server process is still running (e.g., `netstat -ano | findstr :9876`) to diagnose the failure before pausing.
 
 ## Staying alive in away mode
 

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "switchboard": {
+      "url": "http://localhost:9876/mcp",
+      "type": "http"
+    }
+  }
+}
