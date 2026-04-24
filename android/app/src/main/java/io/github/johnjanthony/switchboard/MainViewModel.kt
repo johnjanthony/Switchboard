@@ -44,6 +44,8 @@ class MainViewModel : ViewModel() {
     private val responsesRef = database.getReference("responses")
     private val commandsRef = database.getReference("commands")
 
+    private val messageListeners = mutableMapOf<String, ChildEventListener>()
+
     init {
         sessionsRef.keepSynced(true)
         setupChannelsListener()
@@ -53,56 +55,15 @@ class MainViewModel : ViewModel() {
         sessionsRef.addChildEventListener(object : ChildEventListener {
             override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
                 val channelId = snapshot.key ?: return
-                if (snapshot.child("state").getValue(String::class.java) == "closed") return
-
-                val metaSnap = snapshot.child("meta")
-                val type = metaSnap.child("type").getValue(String::class.java) ?: "single"
-                val projectKey = metaSnap.child("project_key").getValue(String::class.java) ?: channelId
-                val agentSenders = metaSnap.child("agent_senders").children
-                    .mapNotNull { it.getValue(String::class.java) }
-                val task = metaSnap.child("task").getValue(String::class.java) ?: ""
-
-                // Create initial channel object without iterating all messages here.
-                // The message listener attached below will handle the population of messages
-                // efficiently, including the initial burst and future updates.
-                val channel = Channel(
-                    channelId = channelId,
-                    type = type,
-                    projectKey = projectKey,
-                    agentSenders = agentSenders,
-                    task = task,
-                    messages = emptyList()
-                )
-
-                val current = _channels.value.toMutableMap()
-                current[channelId] = channel
-                _channels.value = current
-
-                if (_selectedChannelId.value == null) {
-                    _selectedChannelId.value = channelId
-                }
-
-                snapshot.child("messages").ref.addChildEventListener(object : ChildEventListener {
-                    override fun onChildAdded(snap: DataSnapshot, prev: String?) {
-                        val msgId = snap.key ?: return
-                        val msg = snap.getValue(ChannelMessage::class.java) ?: return
-                        addChannelMessage(channelId, msgId, msg)
-                    }
-                    override fun onChildChanged(snap: DataSnapshot, prev: String?) {
-                        val msgId = snap.key ?: return
-                        val msg = snap.getValue(ChannelMessage::class.java) ?: return
-                        addChannelMessage(channelId, msgId, msg)
-                    }
-                    override fun onChildRemoved(snap: DataSnapshot) {}
-                    override fun onChildMoved(snap: DataSnapshot, prev: String?) {}
-                    override fun onCancelled(error: DatabaseError) {}
-                })
+                ensureSessionSynchronized(channelId, snapshot)
             }
+
             override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {
                 val channelId = snapshot.key ?: return
                 
-                // Handle closure
-                if (snapshot.child("state").getValue(String::class.java) == "closed") {
+                // 1. Handle closure or reopening
+                val state = snapshot.child("state").getValue(String::class.java)
+                if (state == "closed") {
                     val current = _channels.value.toMutableMap()
                     if (current.containsKey(channelId)) {
                         current.remove(channelId)
@@ -114,45 +75,95 @@ class MainViewModel : ViewModel() {
                     return
                 }
 
-                // Handle meta updates or initialization
-                val metaSnap = snapshot.child("meta")
-                if (metaSnap.exists()) {
-                    val type = metaSnap.child("type").getValue(String::class.java) ?: "single"
-                    val projectKey = metaSnap.child("project_key").getValue(String::class.java) ?: channelId
-                    val agentSenders = metaSnap.child("agent_senders").children
-                        .mapNotNull { it.getValue(String::class.java) }
-                    val task = metaSnap.child("task").getValue(String::class.java) ?: ""
-
-                    val current = _channels.value.toMutableMap()
-                    val existing = current[channelId]
-                    if (existing != null) {
-                        current[channelId] = existing.copy(
-                            type = type,
-                            projectKey = projectKey,
-                            agentSenders = agentSenders,
-                            task = task
-                        )
-                        _channels.value = current
-                    } else {
-                        // Discovery via meta update if onChildAdded was skipped or filtered
-                        onChildAdded(snapshot, previousChildName)
-                    }
-                }
+                // 2. Ensure synchronized and update metadata
+                ensureSessionSynchronized(channelId, snapshot)
             }
+
             override fun onChildRemoved(snapshot: DataSnapshot) {
                 val channelId = snapshot.key ?: return
-                val current = _channels.value.toMutableMap()
-                if (current.containsKey(channelId)) {
-                    current.remove(channelId)
-                    _channels.value = current
-                    if (_selectedChannelId.value == channelId) {
-                        _selectedChannelId.value = _channels.value.keys.firstOrNull()
-                    }
-                }
+                cleanupSession(channelId)
             }
             override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
             override fun onCancelled(error: DatabaseError) {}
         })
+    }
+
+    private fun ensureSessionSynchronized(channelId: String, snapshot: DataSnapshot) {
+        val state = snapshot.child("state").getValue(String::class.java)
+        if (state == "closed") return
+
+        val metaSnap = snapshot.child("meta")
+        if (!metaSnap.exists()) return
+
+        val type = metaSnap.child("type").getValue(String::class.java) ?: "single"
+        val projectKey = metaSnap.child("project_key").getValue(String::class.java) ?: channelId
+        val agentSenders = metaSnap.child("agent_senders").children
+            .mapNotNull { it.getValue(String::class.java) }
+        val task = metaSnap.child("task").getValue(String::class.java) ?: ""
+
+        val current = _channels.value.toMutableMap()
+        val existing = current[channelId]
+        
+        if (existing != null) {
+            current[channelId] = existing.copy(
+                type = type,
+                projectKey = projectKey,
+                agentSenders = agentSenders,
+                task = task
+            )
+            _channels.value = current
+        } else {
+            val channel = Channel(
+                channelId = channelId,
+                type = type,
+                projectKey = projectKey,
+                agentSenders = agentSenders,
+                task = task,
+                messages = emptyList()
+            )
+            current[channelId] = channel
+            _channels.value = current
+            if (_selectedChannelId.value == null) {
+                _selectedChannelId.value = channelId
+            }
+        }
+
+        // Attach message listener if not already present
+        if (!messageListeners.containsKey(channelId)) {
+            val listener = object : ChildEventListener {
+                override fun onChildAdded(snap: DataSnapshot, prev: String?) {
+                    val msgId = snap.key ?: return
+                    val msg = snap.getValue(ChannelMessage::class.java) ?: return
+                    addChannelMessage(channelId, msgId, msg)
+                }
+                override fun onChildChanged(snap: DataSnapshot, prev: String?) {
+                    val msgId = snap.key ?: return
+                    val msg = snap.getValue(ChannelMessage::class.java) ?: return
+                    addChannelMessage(channelId, msgId, msg)
+                }
+                override fun onChildRemoved(snap: DataSnapshot) {}
+                override fun onChildMoved(snap: DataSnapshot, prev: String?) {}
+                override fun onCancelled(error: DatabaseError) {}
+            }
+            messageListeners[channelId] = listener
+            snapshot.child("messages").ref.addChildEventListener(listener)
+        }
+    }
+
+    private fun cleanupSession(channelId: String) {
+        val listener = messageListeners.remove(channelId)
+        if (listener != null) {
+            sessionsRef.child(channelId).child("messages").removeEventListener(listener)
+        }
+        
+        val current = _channels.value.toMutableMap()
+        if (current.containsKey(channelId)) {
+            current.remove(channelId)
+            _channels.value = current
+            if (_selectedChannelId.value == channelId) {
+                _selectedChannelId.value = _channels.value.keys.firstOrNull()
+            }
+        }
     }
 
     fun closeChannel(channelId: String) {
