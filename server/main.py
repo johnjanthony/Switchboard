@@ -30,6 +30,16 @@ from server.android import AndroidBackend
 from server.firebase import FirebaseBackend
 
 
+def _build_away_mode_route(registry: Registry):
+	async def away_mode(request: Request):
+		try:
+			active = registry.is_away_mode_active()
+		except Exception:
+			active = False
+		return JSONResponse({"active": active})
+	return away_mode
+
+
 async def _notify_lost_collab_sessions(sidecar_path: _Path, backend) -> None:
 	if not sidecar_path.exists():
 		return
@@ -92,12 +102,27 @@ def _build_fastmcp(handlers) -> FastMCP:
 		Omit message on your first call if you are Agent 2."""
 		return await handlers.message_and_await_agent(channel_id, sender, message)
 
+	@mcp.tool()
+	async def enter_away_mode() -> str:
+		"""Mark this Switchboard session as 'John is away'. The turn-end hook
+		will block agent turns that end in terminal output until exit_away_mode
+		is called. Idempotent."""
+		return await handlers.enter_away_mode()
+
+	@mcp.tool()
+	async def exit_away_mode() -> str:
+		"""Mark this Switchboard session as 'John is back'. The turn-end hook
+		stops blocking. Idempotent. Call as the first action when John explicitly
+		returns to the desk."""
+		return await handlers.exit_away_mode()
+
 	return mcp
 
 
 async def _run(config: Config) -> None:
 	logger = JsonlLogger(config.log_path)
-	registry = Registry()
+	away_mode_path = _Path(config.log_path).parent / "away-mode.json"
+	registry = Registry(away_mode_path=away_mode_path)
 
 	backends = []
 
@@ -136,6 +161,7 @@ async def _run(config: Config) -> None:
 		})
 
 	app.add_route("/healthz", healthz, methods=["GET"])
+	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
 
 	if config.enable_android:
 		async def get_questions(request: Request):

@@ -123,3 +123,30 @@ def test_document_sent_truncates_long_caption(tmp_path):
 	logger.document_sent("IR2", "/work/report.txt", 512, "deadbeef", caption=long_caption)
 	ev = read_events(tmp_path / "log.jsonl")[0]
 	assert len(ev["caption_preview"]) == 100
+
+
+def test_away_mode_entered_writes_event(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.away_mode_entered()
+	lines = (tmp_path / "log.jsonl").read_text(encoding="utf-8").strip().splitlines()
+	assert len(lines) == 1
+	event = json.loads(lines[0])
+	assert event["event"] == "away_mode_entered"
+	assert "ts" in event
+	assert "reason" not in event
+
+
+def test_away_mode_entered_with_reason(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.away_mode_entered(reason="spawn")
+	event = json.loads((tmp_path / "log.jsonl").read_text(encoding="utf-8").strip())
+	assert event["event"] == "away_mode_entered"
+	assert event["reason"] == "spawn"
+
+
+def test_away_mode_exited_writes_event(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.away_mode_exited()
+	event = json.loads((tmp_path / "log.jsonl").read_text(encoding="utf-8").strip())
+	assert event["event"] == "away_mode_exited"
+	assert "ts" in event

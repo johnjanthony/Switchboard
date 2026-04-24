@@ -224,3 +224,39 @@ async def test_spawn_started_logged_on_success(spawn_dirs):
 	assert len(spawn_events) == 1
 	assert spawn_events[0]["project_key"] == spawn_dirs.name
 	assert spawn_events[0]["prompt_preview"] == "(ask on start)"
+
+
+@pytest.mark.asyncio
+async def test_single_spawn_auto_enters_away_mode(spawn_dirs):
+	from server.spawn import SpawnHandler
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	registry = Registry(away_mode_path=spawn_dirs / "away-mode.json")
+	with patch("server.spawn.subprocess.run"):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle("/spawn rpdm/next-gen do stuff")
+	assert registry.is_away_mode_active() is True
+
+
+@pytest.mark.asyncio
+async def test_collab_spawn_auto_enters_away_mode(spawn_dirs):
+	from server.spawn import SpawnHandler
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	registry = Registry(away_mode_path=spawn_dirs / "away-mode.json")
+	with patch("server.spawn.subprocess.run"):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle("/spawn rpdm/next-gen --collab review this")
+	assert registry.is_away_mode_active() is True
+
+
+@pytest.mark.asyncio
+async def test_single_spawn_does_not_set_away_mode_on_schtasks_failure(spawn_dirs):
+	from server.spawn import SpawnHandler
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	registry = Registry(away_mode_path=spawn_dirs / "away-mode.json")
+	with patch("server.spawn.subprocess.run", side_effect=RuntimeError("schtasks boom")):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle("/spawn rpdm/next-gen do stuff")
+	assert registry.is_away_mode_active() is False

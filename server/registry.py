@@ -9,8 +9,10 @@ without knowing the request_id.
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -28,11 +30,13 @@ class PendingRequest:
 
 
 class Registry:
-	def __init__(self) -> None:
+	def __init__(self, away_mode_path: Path | None = None) -> None:
 		self._pending: dict[str, PendingRequest] = {}
 		self._by_correlation: dict[Any, str] = {}
 		self.total_answered: int = 0
 		self._sessions: dict[str, "CollabSession"] = {}
+		self._away_mode_path = away_mode_path
+		self._away_mode_active, self._away_mode_entered_at = self._load_away_mode()
 
 	@property
 	def pending_count(self) -> int:
@@ -101,3 +105,45 @@ class Registry:
 
 	def remove_session(self, session_id: str) -> None:
 		self._sessions.pop(session_id, None)
+
+	def is_away_mode_active(self) -> bool:
+		return self._away_mode_active
+
+	def set_away_mode(self, active: bool) -> None:
+		self._away_mode_active = active
+		self._away_mode_entered_at = (
+			datetime.now(timezone.utc) if active else None
+		)
+		self._persist_away_mode()
+
+	def _load_away_mode(self) -> tuple[bool, datetime | None]:
+		if self._away_mode_path is None or not self._away_mode_path.exists():
+			return False, None
+		try:
+			data = json.loads(self._away_mode_path.read_text(encoding="utf-8"))
+			active = bool(data.get("active", False))
+			entered_raw = data.get("entered_at")
+			entered = (
+				datetime.fromisoformat(entered_raw)
+				if isinstance(entered_raw, str)
+				else None
+			)
+			return active, entered
+		except Exception:
+			return False, None
+
+	def _persist_away_mode(self) -> None:
+		if self._away_mode_path is None:
+			return
+		payload = {
+			"active": self._away_mode_active,
+			"entered_at": (
+				self._away_mode_entered_at.isoformat()
+				if self._away_mode_entered_at is not None
+				else None
+			),
+		}
+		self._away_mode_path.parent.mkdir(parents=True, exist_ok=True)
+		self._away_mode_path.write_text(
+			json.dumps(payload), encoding="utf-8"
+		)

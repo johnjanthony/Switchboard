@@ -164,9 +164,39 @@ Android data model unified: `ChannelMessage` + `Channel` replace the four legacy
 
 ## Resilience and Protocol Enforcement
 
-- **Silence Detection at the Gateway.** If an agent is in away mode and sends a terminal response (detected via missing tool calls when tool use is expected), have the gateway issue a proactive warning or pause the session.
+- **Silence Detection at the Gateway.** *(Spec'd 2026-04-23 as "Away-Mode Enforcement" — Stop-hook + server-side flag approach replaces gateway transcript inspection. See [`docs/superpowers/specs/2026-04-23-away-mode-enforcement-design.md`](docs/superpowers/specs/2026-04-23-away-mode-enforcement-design.md).)*
 - **Away-Mode Framing Check.** Add an automated check to ensure that every agent response in away mode starts with a tool call.
 - **Skill Instruction Polish.** Periodically review and harden `SKILL.md` based on failure patterns (e.g., the 2026-04-23 terminal leak incident).
+
+---
+
+## Per-channel away-mode tracking
+
+Upgrade V1's global `away_mode_active` flag to per-`channel_id` state. The Stop hook would correlate its Claude Code `session_id` or `cwd` to a `channel_id` so only the session that is actually away gets blocked. Needed if John routinely runs one at-desk Claude Code session alongside an away-mode session — the global V1 flag would block Stop events in both.
+
+**What it takes:**
+
+- Server tracks `dict[channel_id, AwayState]` instead of a single bool.
+- `enter_away_mode(channel_id)` / `exit_away_mode(channel_id)` accept a `channel_id` argument.
+- Correlation mechanism: either (a) the tools also record `cwd` (passed by the agent or inferred) so the hook can query `GET /away-mode?cwd=<hook_cwd>`, or (b) a handshake where the agent writes a marker file keyed by cwd that the hook reads directly without HTTP.
+- Sidecar persistence updated to a list of entries.
+
+**Bundled enhancement: hook captures the leaked terminal text.** Once the hook knows the channel, it can read the last assistant message from the turn-end event stdin payload and forward it via `notify_human` on that channel before emitting the block/deny JSON. For Gemini, the field is documented as `prompt_response` on the `AfterAgent` payload — free to use. For Claude, the Stop payload field is not documented (verify at implementation time) — fall back to parsing `transcript_path` if absent. Result: the text the agent tried to leak to the terminal actually reaches John's phone instead of being lost, and the agent is still redirected to route the next turn through `ask_human`. Fair-game to do as part of this upgrade because without per-channel state the hook does not know where to post.
+
+See [`docs/superpowers/specs/2026-04-23-away-mode-enforcement-design.md`](docs/superpowers/specs/2026-04-23-away-mode-enforcement-design.md) for the V1 global-flag design this would replace.
+
+---
+
+## Android: MRU workspace selector in spawn dialog
+
+The spawn dialog currently requires typing the workspace path each time. Add an MRU-style dropdown that remembers workspaces John has spawned into before, so repeat spawns are a tap rather than a retype. New paths entered via free text are added to the MRU list; the dropdown shows them in most-recently-used order.
+
+**What it takes:**
+
+- Android persists the MRU list locally (SharedPreferences or DataStore) — no server-side change needed.
+- Spawn dialog layout changes: text field becomes a combo-box-style control (editable dropdown) that surfaces the MRU list while still accepting free-text entry for first-time paths.
+- Cap list size (e.g. 10 entries) and evict least-recently-used when full.
+- Successful spawn promotes the chosen entry to the top; failed spawn (server rejects the path) does not add it to the list.
 
 ---
 

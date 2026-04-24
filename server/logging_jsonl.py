@@ -175,3 +175,12 @@ class JsonlLogger:
 			"channel_id": channel_id,
 			"tool": tool,
 		})
+
+	def away_mode_entered(self, reason: str | None = None) -> None:
+		event: dict[str, Any] = {"event": "away_mode_entered"}
+		if reason is not None:
+			event["reason"] = reason
+		self._write(event)
+
+	def away_mode_exited(self) -> None:
+		self._write({"event": "away_mode_exited"})

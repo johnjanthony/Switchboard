@@ -11,28 +11,43 @@ This is the single most important rule. If you produce chat text in the terminal
 
 **The tool call IS the acknowledgment.**
 
+**Mark the session:** When entering away mode, call `enter_away_mode()` alongside the confirming `notify_human` call. When exiting, call `exit_away_mode()` as the first action before resuming terminal output. Spawned sessions auto-enter on spawn — do not call `enter_away_mode()` redundantly at spawn time.
+
+**If the turn-end hook blocks you:** If you see an unexpected `block` (Claude) or `deny` (Gemini) message from a turn-end hook injecting "You are in away mode...", the flag is still active. Either call `ask_human()` to check in with John, or — only if John explicitly told you he is back — call `exit_away_mode()` first and then resume terminal output.
+
 1.  **Entry:** When John says "stepping away" or similar:
     -   If tasks are queued: call `notify_human` to confirm you are starting, then begin work.
     -   If idle: call `ask_human` to ask what's next.
+    -   Call `enter_away_mode()` in the same response (or as the first tool call if spawned — but spawned sessions already have the flag set, so this is skippable).
     -   **Zero terminal text.**
 2.  **Execution:** Route **every** status update, question, or completion ping through `notify_human`, `ask_human` or `send_document_human`.
 3.  **Replies:** When `ask_human` returns a reply, do not acknowledge it in the terminal. Treat it as input for your next tool call or task.
-4.  **Exit:** The **only** exception is when John explicitly says he is back ("I'm back", "back at desk"). Only then do you resume terminal chat with a concise summary of your work. 
+4.  **Exit:** The **only** exception is when John explicitly says he is back ("I'm back", "back at desk"). Call `exit_away_mode()` as your first action, then resume terminal chat with a concise summary of your work.
 
 ---
 
 # Switchboard MCP Tools
 
-Switchboard is a local MCP gateway that lets you reach John on his phone while he's away from his desk. It exposes four tools:
+Switchboard is a local MCP gateway that lets you reach John on his phone while he's away from his desk. It exposes six tools:
 
 - **`ask_human(question, channel_id, sender?, format?, suggestions?)`** — blocks until John replies. Returns reply text or `"__TIMEOUT__"`.
 - **`notify_human(message, channel_id, sender?, format?)`** — fire-and-forget. Returns `"ok"`.
 - **`send_document_human(path, channel_id, sender?, caption?)`** — deliver a file. Fire-and-forget. Returns `"ok"` or `"ERROR: ..."`.
 - **`message_and_await_agent(channel_id, sender, message?)`** — collab sessions only. Send to partner and block.
+- **`enter_away_mode()`** — mark this Switchboard session as away mode. The turn-end hook will block agent turns that end in terminal output. Idempotent. Call when John says he is stepping away (spawned sessions auto-enter — no call needed at spawn time).
+- **`exit_away_mode()`** — mark this Switchboard session as at-desk. The turn-end hook stops blocking. Idempotent. Call as the first action when John explicitly returns to the desk.
 
 ## Choosing a `channel_id`
 
-`channel_id` is provided in your spawn prompt. Use it for **every** tool call — `ask_human`, `notify_human`, `send_document_human`, and `message_and_await_agent`. Do not derive or vary it. For bring-your-own sessions, John will provide the `channel_id` directly.
+`channel_id` is the routing key that pins all messages for a session to the same Android tab. Use it for **every** tool call — `ask_human`, `notify_human`, `send_document_human`, and `message_and_await_agent` — and do not vary it mid-session.
+
+Three cases for where it comes from:
+
+1. **Spawned sessions** — use the `channel_id` from your spawn prompt verbatim. Do not derive or vary.
+2. **BYO collab (two agents sharing a channel)** — John provides the `channel_id` so both agents agree on it. Do not invent one.
+3. **BYO single-agent (you are solo and none was provided)** — generate one yourself on first use and stick with it for the rest of the session. Format: `{sender-lowercased}-{YYYYMMDD}-{HHMMSS}` in UTC (e.g. `gemini-20260423-224530`, `claude-20260423-225415`).
+
+Never ask John to pick a channel_id in case 3 — it's the agent's job to produce one. Do ask in case 2, only if you're somehow in a collab situation without a shared value.
 
 ## Choosing a `sender`
 

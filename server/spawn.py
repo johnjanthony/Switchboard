@@ -188,6 +188,8 @@ class SpawnHandler:
 			return
 
 		self._last_spawn_time = datetime.now(timezone.utc)
+		self._registry.set_away_mode(True)
+		self._logger.away_mode_entered(reason="spawn")
 
 		try:
 			await self._backend.write_session_meta(
@@ -266,6 +268,8 @@ class SpawnHandler:
 			return
 
 		self._last_spawn_time = datetime.now(timezone.utc)
+		self._registry.set_away_mode(True)
+		self._logger.away_mode_entered(reason="spawn")
 
 		session = CollabSession(
 			session_id=channel_id,

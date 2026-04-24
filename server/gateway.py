@@ -121,6 +121,8 @@ class ToolHandlers:
 	notify_human: Callable[..., Coroutine[None, None, str]]
 	send_document_human: Callable[..., Coroutine[None, None, str]]
 	message_and_await_agent: Callable[..., Coroutine[None, None, str]]
+	enter_away_mode: Callable[..., Coroutine[None, None, str]]
+	exit_away_mode: Callable[..., Coroutine[None, None, str]]
 
 
 def build_tool_handlers(
@@ -340,11 +342,31 @@ def build_tool_handlers(
 			session.cancel_waiting(sender)
 			raise
 
+	async def enter_away_mode() -> str:
+		try:
+			registry.set_away_mode(True)
+			logger.away_mode_entered()
+			return "ok"
+		except Exception as exc:
+			logger.tool_error(None, None, str(exc))
+			return f"ERROR: {exc}"
+
+	async def exit_away_mode() -> str:
+		try:
+			registry.set_away_mode(False)
+			logger.away_mode_exited()
+			return "ok"
+		except Exception as exc:
+			logger.tool_error(None, None, str(exc))
+			return f"ERROR: {exc}"
+
 	return ToolHandlers(
 		ask_human=ask_human,
 		notify_human=notify_human,
 		send_document_human=send_document_human,
 		message_and_await_agent=message_and_await_agent,
+		enter_away_mode=enter_away_mode,
+		exit_away_mode=exit_away_mode,
 	)
 
 
