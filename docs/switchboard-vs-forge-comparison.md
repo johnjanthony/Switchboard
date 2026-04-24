@@ -143,7 +143,7 @@ Forge view of the world:
 | **Language / LOC** | Python ~2,000 LOC | Java ~8,576 LOC across 95+ files |
 | **Core packages** | 8 modules (registry, gateway, telegram, spawn, config, logging, messenger, main) | 18 packages (cli, git, evolution, logic, ui, terminal, notification, logging, input, models, utils...) |
 | **Test files** | 16 test modules, 100+ tests | JUnit 5 + Mockito (quantity not documented) |
-| **Docs** | README, CLAUDE.md, CLAUDE-JOURNAL.md, design spec, spawn spec, feature backlog | README, control flow reference (12KB), self-evolution design (28KB), Telegram config, Windows setup, feature roadmap, visual diagrams |
+| **Docs** | README, CLAUDE.md, PROJECT-JOURNAL.md, design spec, spawn spec, feature backlog | README, control flow reference (12KB), self-evolution design (28KB), Telegram config, Windows setup, feature roadmap, visual diagrams |
 | **Responsibility** | Single: human ↔ agent communication | Multiple: orchestration + UI + git + GitHub + Telegram + Firebase + evolution |
 | **Design philosophy** | Single-responsibility; minimal footprint; no agent logic | Rich orchestration; manages full debate lifecycle |
 

@@ -252,7 +252,7 @@ A `.env.example` file ships with documented placeholders. `.env` itself is gitig
 switchboard/
 ├── README.md
 ├── CLAUDE.md                       # agent orientation for this project
-├── CLAUDE-JOURNAL.md                # session-by-session progress log
+├── PROJECT-JOURNAL.md               # session-by-session progress log
 ├── .env.example
 ├── .gitignore
 ├── pyproject.toml
