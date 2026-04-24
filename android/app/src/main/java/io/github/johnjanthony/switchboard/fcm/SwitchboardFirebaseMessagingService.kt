@@ -26,6 +26,14 @@ class SwitchboardFirebaseMessagingService : FirebaseMessagingService() {
 		val body = remoteMessage.notification?.body ?: return
 		val channelId = remoteMessage.data["channel_id"]
 		val isQuestion = remoteMessage.data.containsKey("request_id")
+		
+		// Warm up database connection and sync the specific channel immediately
+		if (channelId != null) {
+			com.google.firebase.database.FirebaseDatabase.getInstance()
+				.getReference("sessions/$channelId")
+				.keepSynced(true)
+		}
+
 		showNotification(title, body, channelId, isQuestion)
 	}
 

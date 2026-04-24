@@ -45,6 +45,7 @@ class MainViewModel : ViewModel() {
     private val commandsRef = database.getReference("commands")
 
     init {
+        sessionsRef.keepSynced(true)
         setupChannelsListener()
     }
 
@@ -61,23 +62,16 @@ class MainViewModel : ViewModel() {
                     .mapNotNull { it.getValue(String::class.java) }
                 val task = metaSnap.child("task").getValue(String::class.java) ?: ""
 
-                val messages = mutableListOf<Pair<String, ChannelMessage>>()
-                snapshot.child("messages").children.forEach { msgSnap ->
-                    val msgId = msgSnap.key ?: return@forEach
-                    val msg = msgSnap.getValue(ChannelMessage::class.java) ?: return@forEach
-                    messages.add(msgId to msg)
-                    if (msg.message_type == "question" && msg.request_id != null && msg.response_text == null) {
-                        enqueuePendingQuestion(channelId, msgId, msg)
-                    }
-                }
-
+                // Create initial channel object without iterating all messages here.
+                // The message listener attached below will handle the population of messages
+                // efficiently, including the initial burst and future updates.
                 val channel = Channel(
                     channelId = channelId,
                     type = type,
                     projectKey = projectKey,
                     agentSenders = agentSenders,
                     task = task,
-                    messages = messages
+                    messages = emptyList()
                 )
 
                 val current = _channels.value.toMutableMap()
@@ -223,13 +217,6 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    private fun enqueuePendingQuestion(channelId: String, msgId: String, msg: ChannelMessage) {
-        val current = _pendingQuestions.value.toMutableMap()
-        if (!current.containsKey(channelId)) {
-            current[channelId] = msgId to msg
-            _pendingQuestions.value = current
-        }
-    }
 
     fun replyToQuestion(channelId: String, msgId: String, requestId: String, text: String) {
         responsesRef.child(requestId).setValue(
