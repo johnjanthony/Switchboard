@@ -32,11 +32,11 @@ Switchboard is a local MCP gateway that lets you reach John on his phone while h
 
 ## Choosing a `channel_id`
 
-`channel_id` is provided in your spawn prompt. Use it for **every** tool call — `ask_human`, `notify_human`, `send_document_human`, and `message_and_await_agent`. Do not derive or vary it.
+`channel_id` is provided in your spawn prompt. Use it for **every** tool call — `ask_human`, `notify_human`, `send_document_human`, and `message_and_await_agent`. Do not derive or vary it. For bring-your-own sessions, John will provide the `channel_id` directly.
 
 ## Choosing a `sender`
 
-`sender` is your display name in the conversation. It appears in the chat bubble on John's phone. Use your active agent name (e.g., `"Claude"`, `"Gemini"`, `"Cloude"`, or `"Sparkles"`), or then one provided in your spawn prompt as the sender.
+`sender` is your display name in the conversation. It appears in the chat bubble on John's phone. Use your active agent name (e.g., `"Claude"`, `"Gemini"`, `"Cloude"`, or `"Sparkles"`), or the one provided in your spawn prompt as the sender.
 ## Response conventions
 
 - Be concise in questions. John is on his phone. One or two sentences.
@@ -136,22 +136,73 @@ send_document_human("logs/migration-diff.txt", channel_id="switchboard-20260422-
 
 ### `message_and_await_agent(channel_id, sender, message?)`
 
-Sends `message` to your partner (if provided), then blocks until your partner replies or a human injects a message.
+Sends `message` to your partner (if provided), then blocks until your partner
+replies or a human injects a message.
 
-- **`channel_id`** — from your spawn prompt (e.g. `myproject-20260422-143052`)
-- **`sender`** — your own sender from your spawn prompt
-- **`message`** — optional outbound text; omit on your first call if you are the second agent to start
+- **`channel_id`** — from your spawn prompt, or provided by John for BYO sessions
+- **`sender`** — your own sender name, unique within the session
+- **`message`** — optional outbound text; omit if John has told you to wait for your partner
 
-**If `message_and_await_agent` returns `"__TIMEOUT__"`:** call `ask_human` to check in with John. Do not silently exit.
-**If `message_and_await_agent` returns an error string (starts with `"ERROR:"`):** call `ask_human` immediately.
+**If `message_and_await_agent` returns `"__TIMEOUT__"`:** if in away mode, call
+`ask_human` to check in with John. If not in away mode, report in the terminal.
+**If `message_and_await_agent` returns an error string (starts with `"ERROR:"`):**
+handle the same way as a timeout.
+
+### Away mode and collab mode are independent
+
+**Away mode** means John is not at the desk. ALL output must go through
+`notify_human`, `ask_human`, or `send_document_human` — no terminal text. Away
+mode is active when:
+- You were spawned by Switchboard (single-agent or collab)
+- John explicitly says he is stepping away
+
+**Collab mode** means you are paired with a second agent via
+`message_and_await_agent`. Collab mode does NOT imply away mode.
+
+When both modes are active: `message_and_await_agent` for peer communication,
+`ask_human`/`notify_human`/`send_document_human` for all human communication —
+no terminal output. If John steps away during an active BYO collab session,
+continue using the same `channel_id` for everything — the session is already
+registered and the Android tab already exists. The only change is that human
+communication moves from the terminal to `ask_human` / `notify_human` with that
+same `channel_id`.
+
+When collab mode only (BYO, John has not stepped away): `message_and_await_agent`
+for peer communication; once consensus is reached or you are blocked, report back
+to John in the terminal normally.
 
 ### Collab protocol
 
-1. First agent: work on the task, then call `message_and_await_agent(channel_id=..., sender=..., message=...)`.
-2. Second agent: call `message_and_await_agent(channel_id=..., sender=...)` with no message on startup to listen.
-3. When consensus is reached: call `ask_human(question, channel_id=..., sender=...)` to confirm with John.
-4. If debate is unproductive: call `ask_human` to report the deadlock.
-5. Use `ask_human` and `notify_human` for all human communication with the same `channel_id` and `sender` — same rules as standard away mode apply.
+1. If John told you to wait for your partner, call `message_and_await_agent(
+   channel_id=..., sender=...)` with no message. Block until your partner speaks.
+2. If John gave you work to do first, complete it then call
+   `message_and_await_agent(channel_id=..., sender=..., message="...")`.
+3. Exchange continues — each agent replies by calling `message_and_await_agent`
+   with their response as `message`. If both agents began with a message, the
+   first response each receives will be their partner's independent opening
+   position rather than a reply to theirs — this is normal, treat it as their
+   opening position and respond to it.
+4. When consensus is reached:
+   - **Away mode active:** call `ask_human` to confirm with John.
+   - **Away mode not active:** respond in the terminal.
+5. If debate becomes unproductive:
+   - **Away mode active:** call `ask_human` to report the deadlock.
+   - **Away mode not active:** report in the terminal.
+
+### Bring your own session
+
+John can initiate a collab session between two already-running agents by providing
+both with a shared `channel_id`. Each agent uses their own display name as `sender`
+(e.g. `"Claude"`, `"Gemini"`) — this is naturally unique across different agent types.
+If John needs a specific name (e.g. two Claude instances), he will tell you.
+
+Call `message_and_await_agent` as described in the collab protocol above. No
+special setup is required — the first agent to call creates the session. Call
+ordering does not matter; the gateway handles timing transparently. A third
+distinct sender gets `"ERROR: session is full"`.
+
+BYO sessions do not imply away mode. Unless John has also said he is stepping
+away, report back to him in the terminal once the collab exchange concludes.
 
 ## What not to use it for
 

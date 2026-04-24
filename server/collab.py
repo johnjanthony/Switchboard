@@ -10,12 +10,24 @@ from datetime import datetime, timezone
 @dataclass
 class CollabSession:
 	session_id: str
-	agent_senders: tuple[str, str]
+	agent_senders: list[str]
 	task: str
+	is_byo: bool = False
 	created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+	_pre_enroll_msg: str | None = field(default=None, repr=False)
 	_waiting: dict[str, asyncio.Future] = field(default_factory=dict, repr=False)
 	_pending: dict[str, list[str]] = field(default_factory=dict, repr=False)
 	transcript: list[dict] = field(default_factory=list)
+
+	def enroll(self, sender: str) -> str | None:
+		if sender in self.agent_senders:
+			if len(self.agent_senders) >= 2:
+				return None  # idempotent — already fully enrolled
+			return "duplicate"
+		if len(self.agent_senders) >= 2:
+			return "full"
+		self.agent_senders.append(sender)
+		return None
 
 	def other_sender(self, sender: str) -> str:
 		return self.agent_senders[1] if sender == self.agent_senders[0] else self.agent_senders[0]

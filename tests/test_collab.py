@@ -8,7 +8,7 @@ from server.collab import CollabSession
 def _make_session(**kwargs) -> CollabSession:
 	defaults = dict(
 		session_id="proj-abc1",
-		agent_senders=("Claude", "Gemini"),
+		agent_senders=["Claude", "Gemini"],
 		task="review the code",
 	)
 	defaults.update(kwargs)
@@ -92,6 +92,50 @@ async def test_start_waiting_prefers_agent_specific_over_inject():
 	assert future2.result() == "from human"
 
 
+# enroll() tests
+
+def test_enroll_adds_new_sender():
+	s = CollabSession(session_id="ch", agent_senders=[], task="")
+	assert s.enroll("Alice") is None
+	assert s.agent_senders == ["Alice"]
+
+
+def test_enroll_second_distinct_sender():
+	s = CollabSession(session_id="ch", agent_senders=[], task="")
+	s.enroll("Alice")
+	assert s.enroll("Bob") is None
+	assert s.agent_senders == ["Alice", "Bob"]
+
+
+def test_enroll_idempotent_when_full():
+	s = CollabSession(session_id="ch", agent_senders=["Alice", "Bob"], task="")
+	assert s.enroll("Alice") is None
+	assert s.enroll("Bob") is None
+	assert s.agent_senders == ["Alice", "Bob"]
+
+
+def test_enroll_duplicate_name_when_not_full_returns_duplicate():
+	s = CollabSession(session_id="ch", agent_senders=[], task="")
+	s.enroll("Alice")
+	assert s.enroll("Alice") == "duplicate"
+	assert s.agent_senders == ["Alice"]
+
+
+def test_enroll_third_distinct_sender_returns_full():
+	s = CollabSession(session_id="ch", agent_senders=["Alice", "Bob"], task="")
+	assert s.enroll("Charlie") == "full"
+	assert s.agent_senders == ["Alice", "Bob"]
+
+
+@pytest.mark.asyncio
+async def test_other_sender_after_dynamic_enrollment():
+	s = CollabSession(session_id="ch", agent_senders=[], task="")
+	s.enroll("Alice")
+	s.enroll("Bob")
+	assert s.other_sender("Alice") == "Bob"
+	assert s.other_sender("Bob") == "Alice"
+
+
 # Registry tests
 
 from server.registry import Registry
@@ -137,7 +181,7 @@ async def test_registry_add_session_twice_replaces_previous():
 	registry.add_session(session1)
 	session2 = CollabSession(
 		session_id="proj-abc1",
-		agent_senders=("Claude", "Gemini"),
+		agent_senders=["Claude", "Gemini"],
 		task="new task",
 	)
 	registry.add_session(session2)
@@ -162,23 +206,216 @@ def _make_config(tmp_path) -> Config:
 
 
 @pytest.mark.asyncio
-async def test_message_and_await_agent_unknown_session_returns_error(tmp_path):
+async def test_message_and_await_agent_unknown_channel_creates_byo_session(tmp_path):
 	registry = Registry()
 	cfg = _make_config(tmp_path)
-	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), JsonlLogger(cfg.log_path))
-	result = await handlers.message_and_await_agent("no-session", "Claude", "hi")
-	assert result == "ERROR: session not found"
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
+	# Calling with an unknown channel_id creates a BYO session — does not error
+	task = asyncio.create_task(
+		handlers.message_and_await_agent("new-byo-channel", "Alice")
+	)
+	await asyncio.sleep(0.01)
+	assert registry.get_session("new-byo-channel") is not None
+	session = registry.get_session("new-byo-channel")
+	assert session.is_byo is True
+	assert "Alice" in session.agent_senders
+	task.cancel()
+	with pytest.raises(asyncio.CancelledError):
+		await task
 
 
 @pytest.mark.asyncio
-async def test_message_and_await_agent_wrong_sender_returns_error(tmp_path):
+async def test_message_and_await_agent_third_sender_returns_full_error(tmp_path):
 	registry = Registry()
 	session = _make_session(session_id="proj-abc1")
 	registry.add_session(session)
 	cfg = _make_config(tmp_path)
 	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), JsonlLogger(cfg.log_path))
 	result = await handlers.message_and_await_agent("proj-abc1", "Intruder", "hi")
-	assert result == "ERROR: session not found"
+	assert result == "ERROR: session is full"
+
+
+@pytest.mark.asyncio
+async def test_message_and_await_agent_duplicate_sender_returns_error(tmp_path):
+	registry = Registry()
+	cfg = _make_config(tmp_path)
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
+	# First call enrolls Alice
+	task = asyncio.create_task(
+		handlers.message_and_await_agent("byo-ch", "Alice")
+	)
+	await asyncio.sleep(0.01)
+	# Second call with same name is a duplicate collision
+	result = await handlers.message_and_await_agent("byo-ch", "Alice")
+	assert result == "ERROR: sender 'Alice' is already enrolled — use a unique sender name"
+	task.cancel()
+	with pytest.raises(asyncio.CancelledError):
+		await task
+
+
+@pytest.mark.asyncio
+async def test_message_and_await_agent_byo_fires_write_session_meta(tmp_path):
+	registry = Registry()
+	cfg = _make_config(tmp_path)
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
+	task = asyncio.create_task(
+		handlers.message_and_await_agent("byo-meta-ch", "Alice")
+	)
+	await asyncio.sleep(0.05)
+	assert any(m["channel_id"] == "byo-meta-ch" for m in backend.session_metas)
+	task.cancel()
+	with pytest.raises(asyncio.CancelledError):
+		await task
+
+
+@pytest.mark.asyncio
+async def test_message_and_await_agent_byo_fires_inject_listener(tmp_path):
+	registry = Registry()
+	cfg = _make_config(tmp_path)
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
+	task = asyncio.create_task(
+		handlers.message_and_await_agent("byo-inject-ch", "Alice")
+	)
+	await asyncio.sleep(0.05)
+	assert "byo-inject-ch" in backend.inject_listeners
+	task.cancel()
+	with pytest.raises(asyncio.CancelledError):
+		await task
+
+
+@pytest.mark.asyncio
+async def test_message_and_await_agent_byo_writes_sidecar(tmp_path):
+	import json as _json
+	registry = Registry()
+	cfg = _make_config(tmp_path)
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
+	task = asyncio.create_task(
+		handlers.message_and_await_agent("byo-sidecar-ch", "Alice")
+	)
+	await asyncio.sleep(0.05)
+	sidecar = tmp_path / "collab-sessions.json"
+	assert sidecar.exists()
+	entries = _json.loads(sidecar.read_text())
+	assert any(e["channel_id"] == "byo-sidecar-ch" for e in entries)
+	task.cancel()
+	with pytest.raises(asyncio.CancelledError):
+		await task
+
+
+@pytest.mark.asyncio
+async def test_byo_listener_first_receives_initiator_message(tmp_path):
+	"""Listener calls with no message, initiator calls with message — listener receives it."""
+	registry = Registry()
+	cfg = _make_config(tmp_path)
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
+
+	# Listener calls first with no message
+	task_listener = asyncio.create_task(
+		handlers.message_and_await_agent("byo-ch", "Alice")
+	)
+	await asyncio.sleep(0)
+
+	# Initiator calls with a message
+	task_initiator = asyncio.create_task(
+		handlers.message_and_await_agent("byo-ch", "Bob", "hello from Bob")
+	)
+	await asyncio.sleep(0)
+
+	# Alice (listener) should receive Bob's message
+	result_listener = await asyncio.wait_for(task_listener, timeout=1.0)
+	assert result_listener == "hello from Bob"
+
+	# Clean up Bob's waiting task
+	registry.get_session("byo-ch").deliver("Bob", "reply from Alice")
+	result_initiator = await asyncio.wait_for(task_initiator, timeout=1.0)
+	assert result_initiator == "reply from Alice"
+
+
+@pytest.mark.asyncio
+async def test_byo_initiator_first_receives_listener_message(tmp_path):
+	"""Initiator calls first with message (buffered), listener calls with no message
+	and immediately receives the buffered message."""
+	registry = Registry()
+	cfg = _make_config(tmp_path)
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
+
+	# Initiator calls first with a message
+	task_initiator = asyncio.create_task(
+		handlers.message_and_await_agent("byo-ch2", "Bob", "hello from Bob")
+	)
+	await asyncio.sleep(0)
+
+	# Listener calls with no message — receives the buffered message immediately
+	task_listener = asyncio.create_task(
+		handlers.message_and_await_agent("byo-ch2", "Alice")
+	)
+	result_listener = await asyncio.wait_for(task_listener, timeout=1.0)
+	assert result_listener == "hello from Bob"
+
+	# Clean up Bob's waiting task
+	registry.get_session("byo-ch2").deliver("Bob", "reply from Alice")
+	result_initiator = await asyncio.wait_for(task_initiator, timeout=1.0)
+	assert result_initiator == "reply from Alice"
+
+
+@pytest.mark.asyncio
+async def test_byo_both_with_messages_each_receives_partners_opening(tmp_path):
+	"""Both agents call with a message. Each receives the other's opening message."""
+	registry = Registry()
+	cfg = _make_config(tmp_path)
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
+
+	task_alice = asyncio.create_task(
+		handlers.message_and_await_agent("byo-ch3", "Alice", "Alice's opening")
+	)
+	await asyncio.sleep(0)
+
+	task_bob = asyncio.create_task(
+		handlers.message_and_await_agent("byo-ch3", "Bob", "Bob's opening")
+	)
+
+	result_alice = await asyncio.wait_for(task_alice, timeout=1.0)
+	result_bob = await asyncio.wait_for(task_bob, timeout=1.0)
+
+	assert result_alice == "Bob's opening"
+	assert result_bob == "Alice's opening"
+
+
+@pytest.mark.asyncio
+async def test_byo_initiator_first_relay_fires_with_correct_sender(tmp_path):
+	"""When buffered message is drained, relay fires with the original sender name."""
+	registry = Registry()
+	cfg = _make_config(tmp_path)
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
+
+	# Bob sends first (buffered)
+	task_bob = asyncio.create_task(
+		handlers.message_and_await_agent("byo-relay-ch", "Bob", "Bob speaks first")
+	)
+	await asyncio.sleep(0)
+
+	# Alice joins with no message — drains buffer
+	task_alice = asyncio.create_task(
+		handlers.message_and_await_agent("byo-relay-ch", "Alice")
+	)
+	await asyncio.sleep(0.05)  # let relay tasks execute
+
+	agent_msgs = [m for m in backend.channel_messages if m["message_type"] == "agent"]
+	assert any(m["sender"] == "Bob" and m["content"] == "Bob speaks first" for m in agent_msgs)
+
+	# Clean up
+	await asyncio.wait_for(task_alice, timeout=1.0)
+	registry.get_session("byo-relay-ch").deliver("Bob", "done")
+	await asyncio.wait_for(task_bob, timeout=1.0)
 
 
 @pytest.mark.asyncio
@@ -362,7 +599,7 @@ async def test_collab_spawn_registers_session_in_registry(tmp_path):
 
 	assert len(registry._sessions) == 1
 	session = list(registry._sessions.values())[0]
-	assert session.agent_senders == ("Claude", "Claude")
+	assert session.agent_senders == ["Claude", "Claude"]
 
 
 @pytest.mark.asyncio

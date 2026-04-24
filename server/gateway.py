@@ -11,12 +11,14 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import hashlib
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
+from server.collab import CollabSession
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
 from server.messenger import MessengerBackend
@@ -87,6 +89,28 @@ async def _append_session_log(log_path: str, channel_id: str, direction: str, te
 		path.parent.mkdir(exist_ok=True)
 		with path.open("a", encoding="utf-8") as f:
 			f.write(line)
+
+	await asyncio.to_thread(_write)
+
+
+async def _write_byo_sidecar(log_path: str, channel_id: str) -> None:
+	sidecar_path = Path(log_path).parent / "collab-sessions.json"
+	entry = {
+		"channel_id": channel_id,
+		"agent_senders": [],
+		"task": "",
+		"created_at": datetime.now(timezone.utc).isoformat(),
+	}
+
+	def _write() -> None:
+		existing: list = []
+		if sidecar_path.exists():
+			try:
+				existing = json.loads(sidecar_path.read_text(encoding="utf-8"))
+			except Exception:
+				pass
+		existing.append(entry)
+		sidecar_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
 
 	await asyncio.to_thread(_write)
 
@@ -227,8 +251,22 @@ def build_tool_handlers(
 		channel_id: str, sender: str, message: str | None = None
 	) -> str:
 		session = registry.get_session(channel_id)
-		if session is None or sender not in session.agent_senders:
-			return "ERROR: session not found"
+		if session is None:
+			session = CollabSession(
+				session_id=channel_id, agent_senders=[], task="", is_byo=True
+			)
+			registry.add_session(session)
+			asyncio.create_task(backend.write_session_meta(
+				channel_id, "collab", channel_id, agent_senders=[], task=""
+			))
+			asyncio.create_task(_write_byo_sidecar(config.log_path, channel_id))
+			asyncio.create_task(backend.start_inject_listener(channel_id))
+
+		err = session.enroll(sender)
+		if err == "duplicate":
+			return f"ERROR: sender '{sender}' is already enrolled — use a unique sender name"
+		if err == "full":
+			return "ERROR: session is full"
 
 		try:
 			if message is not None:
@@ -238,16 +276,43 @@ def build_tool_handlers(
 					"timestamp": datetime.now(timezone.utc).isoformat(),
 				}
 				session.transcript.append(entry)
-				async def _relay(cid=channel_id, s=sender, msg=message) -> None:
-					try:
-						await backend.write_channel_message(cid, s, "agent", msg)
-					except Exception as exc:
-						logger.surface_error(f"collab_relay_error: {exc}")
-				asyncio.create_task(_relay())
-				other = session.other_sender(sender)
-				session.deliver(other, message)
 				logger.collab_message_sent(channel_id, sender, message)
 				await _append_session_log(config.log_path, channel_id, "→", f"{sender}: {message}")
+
+				if len(session.agent_senders) == 2:
+					if session._pre_enroll_msg is not None:
+						pre_msg = session._pre_enroll_msg
+						session._pre_enroll_msg = None
+						buf_sender = session.other_sender(sender)
+						session.deliver(sender, pre_msg)
+						async def _relay_buf(cid=channel_id, s=buf_sender, msg=pre_msg) -> None:
+							try:
+								await backend.write_channel_message(cid, s, "agent", msg)
+							except Exception as exc:
+								logger.surface_error(f"collab_relay_error: {exc}")
+						asyncio.create_task(_relay_buf())
+					other = session.other_sender(sender)
+					session.deliver(other, message)
+					async def _relay(cid=channel_id, s=sender, msg=message) -> None:
+						try:
+							await backend.write_channel_message(cid, s, "agent", msg)
+						except Exception as exc:
+							logger.surface_error(f"collab_relay_error: {exc}")
+					asyncio.create_task(_relay())
+				else:
+					session._pre_enroll_msg = message
+			else:
+				if len(session.agent_senders) == 2 and session._pre_enroll_msg is not None:
+					pre_msg = session._pre_enroll_msg
+					session._pre_enroll_msg = None
+					buf_sender = session.other_sender(sender)
+					session.deliver(sender, pre_msg)
+					async def _relay_buf2(cid=channel_id, s=buf_sender, msg=pre_msg) -> None:
+						try:
+							await backend.write_channel_message(cid, s, "agent", msg)
+						except Exception as exc:
+							logger.surface_error(f"collab_relay_error: {exc}")
+					asyncio.create_task(_relay_buf2())
 
 			future = session.start_waiting(sender)
 		except Exception as exc:

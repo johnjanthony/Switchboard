@@ -269,7 +269,7 @@ class SpawnHandler:
 
 		session = CollabSession(
 			session_id=channel_id,
-			agent_senders=tuple(agent_senders),
+			agent_senders=list(agent_senders),
 			task=task,
 		)
 		self._registry.add_session(session)

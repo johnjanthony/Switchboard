@@ -21,6 +21,8 @@ class RecordingBackend(MessengerBackend):
 		self.channel_messages: list[dict] = []
 		self.sent_timeouts: list[tuple] = []
 		self.sent_confirmations: list[tuple] = []
+		self.session_metas: list[dict] = []
+		self.inject_listeners: list[str] = []
 		self._next_correlation = 1000
 
 	async def write_channel_message(
@@ -71,6 +73,19 @@ class RecordingBackend(MessengerBackend):
 
 	async def aclose(self) -> None:
 		pass
+
+	async def write_session_meta(
+		self, channel_id: str, session_type: str, project_key: str, **kwargs
+	) -> None:
+		self.session_metas.append({
+			"channel_id": channel_id,
+			"session_type": session_type,
+			"project_key": project_key,
+			**kwargs,
+		})
+
+	async def start_inject_listener(self, channel_id: str) -> None:
+		self.inject_listeners.append(channel_id)
 
 	# Helpers for assertions in existing tests
 	@property

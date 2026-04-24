@@ -11,6 +11,7 @@ Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task an
 - **In-line Replies**: View your responses directly in the chat history for full context.
 - **Activity Indicators**: Prominent high-visibility tab borders and tints for unseen activity or pending questions.
 - **Session Spawning**: Launch fresh agent sessions on your desktop directly from your phone.
+- **Bring-Your-Own Sessions**: Pair two already-running agents into a collab channel without spawning — just share a `channel_id`.
 - **Rich Markdown**: Full support for bold, italic, code blocks, checklists, and tables.
 
 ## Install
@@ -116,6 +117,12 @@ To exit away mode, reply *"I'm back"*. The agent will provide a **Welcome Back S
 ### Replying to messages
 
 Switchboard correlates your reply to the waiting `ask_human` call via the Android app's reply input at the bottom of the channel tab. Type your answer and tap Send. If the question included suggestion buttons, tap one to reply instantly without typing.
+
+### Bring-your-own collab sessions
+
+Two already-running agents can be paired into a collab channel without spawning. Give both agents the same `channel_id` and tell them to call `message_and_await_agent`. The first agent to call creates the session; the second joins. Call order doesn't matter — the gateway buffers the first message until both agents are enrolled.
+
+Each agent uses its own display name as `sender` (e.g. `"Claude"`, `"Gemini"`), which is naturally unique across different agent types. BYO sessions do not enter away mode unless you explicitly step away.
 
 ### Spawning a new agent session
 
