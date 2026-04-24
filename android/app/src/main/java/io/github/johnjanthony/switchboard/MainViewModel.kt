@@ -14,6 +14,7 @@ import com.google.firebase.database.ChildEventListener
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.ValueEventListener
 import io.github.johnjanthony.switchboard.network.Channel
 import io.github.johnjanthony.switchboard.network.ChannelMessage
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,16 +44,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _unseenChannels = MutableStateFlow<Set<String>>(emptySet())
     val unseenChannels: StateFlow<Set<String>> = _unseenChannels.asStateFlow()
 
+    private val _hiddenChannels = MutableStateFlow<Map<String, Channel>>(emptyMap())
+    val hiddenChannels: StateFlow<Map<String, Channel>> = _hiddenChannels.asStateFlow()
+
+    private val _awayModeActive = MutableStateFlow(false)
+    val awayModeActive: StateFlow<Boolean> = _awayModeActive.asStateFlow()
+    private var lastAppliedAwayModeUpdate: Long = 0L
+
     private val database = FirebaseDatabase.getInstance()
     private val sessionsRef = database.getReference("sessions")
     private val responsesRef = database.getReference("responses")
     private val commandsRef = database.getReference("commands")
+    private val awayModeRef = database.getReference("away_mode")
 
     private val messageListeners = mutableMapOf<String, ChildEventListener>()
 
     init {
         sessionsRef.keepSynced(true)
         setupChannelsListener()
+        setupAwayModeListener()
         loadProjectMru()
     }
 
@@ -96,22 +106,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {
                 val channelId = snapshot.key ?: return
-                
-                // 1. Handle closure or reopening
-                val state = snapshot.child("state").getValue(String::class.java)
-                if (state == "closed") {
-                    val current = _channels.value.toMutableMap()
-                    if (current.containsKey(channelId)) {
-                        current.remove(channelId)
-                        _channels.value = current
-                        if (_selectedChannelId.value == channelId) {
-                            _selectedChannelId.value = _channels.value.keys.firstOrNull()
-                        }
-                    }
-                    return
-                }
-
-                // 2. Ensure synchronized and update metadata
                 ensureSessionSynchronized(channelId, snapshot)
             }
 
@@ -124,9 +118,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         })
     }
 
+    private fun setupAwayModeListener() {
+        awayModeRef.addValueEventListener(object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                // Guard against out-of-order delivery during Firebase reconnect.
+                // If updated_at is present AND strictly older than the last
+                // applied value, discard. Missing updated_at (legacy/malformed)
+                // falls through and is applied — we cannot prove it stale.
+                val updatedAt = snapshot.child("updated_at").getValue(Long::class.java)
+                if (updatedAt != null && updatedAt < lastAppliedAwayModeUpdate) return
+                if (updatedAt != null) lastAppliedAwayModeUpdate = updatedAt
+                _awayModeActive.value = snapshot.child("active").getValue(Boolean::class.java) == true
+            }
+            override fun onCancelled(error: DatabaseError) {}
+        })
+    }
+
     private fun ensureSessionSynchronized(channelId: String, snapshot: DataSnapshot) {
         val state = snapshot.child("state").getValue(String::class.java)
-        if (state == "closed") return
+        val hiddenField = snapshot.child("hidden").getValue(Boolean::class.java)
+        val isHidden = hiddenField == true || state == "closed"
 
         val metaSnap = snapshot.child("meta")
         if (!metaSnap.exists()) return
@@ -137,17 +148,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .mapNotNull { it.getValue(String::class.java) }
         val task = metaSnap.child("task").getValue(String::class.java) ?: ""
 
-        val current = _channels.value.toMutableMap()
-        val existing = current[channelId]
-        
+        val existing = _channels.value[channelId] ?: _hiddenChannels.value[channelId]
+
         if (existing != null) {
-            current[channelId] = existing.copy(
+            val updated = existing.copy(
                 type = type,
                 projectKey = projectKey,
                 agentSenders = agentSenders,
-                task = task
+                task = task,
+                hidden = isHidden,
             )
-            _channels.value = current
+            movePartition(channelId, updated, isHidden)
         } else {
             val channel = Channel(
                 channelId = channelId,
@@ -155,11 +166,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 projectKey = projectKey,
                 agentSenders = agentSenders,
                 task = task,
-                messages = emptyList()
+                messages = emptyList(),
+                hidden = isHidden,
             )
-            current[channelId] = channel
-            _channels.value = current
-            if (_selectedChannelId.value == null) {
+            movePartition(channelId, channel, isHidden)
+            if (!isHidden && _selectedChannelId.value == null) {
                 _selectedChannelId.value = channelId
             }
         }
@@ -202,32 +213,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun closeChannel(channelId: String) {
-        // 1. Mark session as closed in Firebase
-        sessionsRef.child(channelId).child("state").setValue("closed")
-
-        // 2. Auto-reply to any pending question for this channel
-        val pending = _pendingQuestions.value[channelId]
-        if (pending != null) {
-            val (msgId, msg) = pending
-            if (msg.request_id != null) {
-                replyToQuestion(channelId, msgId, msg.request_id!!, "I'm back at my desk now, let's proceed in the terminal")
-            }
+    private fun movePartition(channelId: String, channel: Channel, hidden: Boolean) {
+        val visible = _channels.value.toMutableMap()
+        val hiddenMap = _hiddenChannels.value.toMutableMap()
+        if (hidden) {
+            visible.remove(channelId)
+            hiddenMap[channelId] = channel
+        } else {
+            hiddenMap.remove(channelId)
+            visible[channelId] = channel
         }
+        _channels.value = visible
+        _hiddenChannels.value = hiddenMap
 
-        // 3. Update local state
-        val current = _channels.value.toMutableMap()
-        current.remove(channelId)
-        _channels.value = current
-        if (_selectedChannelId.value == channelId) {
+        if (hidden && _selectedChannelId.value == channelId) {
             _selectedChannelId.value = _channels.value.keys.firstOrNull()
         }
     }
 
+    fun hideChannel(channelId: String) {
+        sessionsRef.child(channelId).child("hidden").setValue(true)
+    }
+
+    fun unhideChannel(channelId: String) {
+        sessionsRef.child(channelId).child("hidden").setValue(false)
+        // Select the channel so the user goes straight to it after unhiding.
+        _selectedChannelId.value = channelId
+    }
+
     private fun addChannelMessage(channelId: String, msgId: String, msg: ChannelMessage) {
-        val current = _channels.value.toMutableMap()
-        val channel = current[channelId] ?: return
-        
+        val visible = _channels.value.toMutableMap()
+        val hiddenMap = _hiddenChannels.value.toMutableMap()
+
+        val inVisible = visible[channelId]
+        val inHidden = hiddenMap[channelId]
+        val channel = inVisible ?: inHidden ?: return
+
         val newMessages = channel.messages.toMutableList()
         val existingIndex = newMessages.indexOfFirst { it.first == msgId }
         if (existingIndex != -1) {
@@ -235,15 +256,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             newMessages.add(msgId to msg)
         }
-        
-        current[channelId] = channel.copy(messages = newMessages)
-        _channels.value = current
-        
-        // Track unseen status
+
+        val updated = channel.copy(messages = newMessages)
+        if (inVisible != null) {
+            visible[channelId] = updated
+            _channels.value = visible
+        } else {
+            hiddenMap[channelId] = updated
+            _hiddenChannels.value = hiddenMap
+        }
+
+        // Track unseen status — apply to hidden channels too; the Hidden Channels
+        // dialog uses _unseenChannels to render the subtle primary-colour adornment.
         if (msg.sender != "Human" && channelId != _selectedChannelId.value) {
             _unseenChannels.value = _unseenChannels.value + channelId
         }
-        
+
         if (msg.message_type == "question" && msg.request_id != null) {
             val pending = _pendingQuestions.value.toMutableMap()
             if (msg.response_text != null) {
@@ -253,13 +281,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _pendingQuestions.value = pending
                 }
             } else {
-                // Update or add pending question
+                // Update or add pending question — tracks for BOTH visible and
+                // hidden channels so the bulk-respond flow (Slice J) can reach them.
                 pending[channelId] = msgId to msg
                 _pendingQuestions.value = pending
             }
         }
-        
-        if (_selectedChannelId.value == null) {
+
+        if (_selectedChannelId.value == null && inVisible != null) {
+            // Only auto-select visible channels on first-message arrival.
             _selectedChannelId.value = channelId
         }
     }
@@ -292,6 +322,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (project.isNotBlank()) sb.append(" $project")
         sb.append(" $prompt")
         commandsRef.push().setValue(sb.toString())
+    }
+
+    fun requestAwayModeToggle(desired: Boolean) {
+        val cmd = if (desired) "/away-mode on" else "/away-mode off"
+        commandsRef.push().setValue(cmd)
+    }
+
+    fun bulkRespondAndExit(text: String) {
+        // Snapshot the pending questions to iterate a stable view; also covers
+        // hidden channels because Slice E's addChannelMessage fix tracks
+        // _pendingQuestions for both partitions.
+        val snapshot = _pendingQuestions.value.toMap()
+        snapshot.forEach { (_, pair) ->
+            val (_, msg) = pair
+            val reqId = msg.request_id
+            if (!reqId.isNullOrEmpty()) {
+                responsesRef.child(reqId).setValue(
+                    mapOf("text" to text, "timestamp" to System.currentTimeMillis())
+                )
+            }
+        }
+        _pendingQuestions.value = emptyMap()
+        requestAwayModeToggle(false)
     }
 
     fun downloadAndOpenFile(context: Context, url: String, fileName: String) {

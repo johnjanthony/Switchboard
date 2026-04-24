@@ -146,40 +146,93 @@ class FirebaseBackend(MessengerBackend):
 		if suggestions:
 			data["suggestions"] = suggestions
 
+		await self._write_message_node(channel_id, msg_id, data)
+
+		# Hide-aware FCM gating
+		if message_type == "human":
+			# Never push FCM for the human's own reply (existing behaviour).
+			return None, msg_id
+
+		hidden = await self._read_hidden(channel_id)
+		if hidden and message_type != "question":
+			# Suppressed: message stored in Firebase, no push.
+			return None, msg_id
+		if hidden and message_type == "question":
+			# Auto-unhide atomically before pushing the notification.
+			await self._write_hidden(channel_id, False)
+
+		fcm_data: dict = {
+			"channel_id": channel_id,
+			"sb_message_type": message_type,
+		}
+		if message_type == "question" and request_id is not None:
+			fcm_data["request_id"] = request_id
+
+		try:
+			await self._send_fcm(channel_id, message_type, sender, content, fcm_data)
+		except Exception as exc:
+			if self._logger:
+				self._logger.surface_error(f"firebase_fcm_error: {exc}")
+
+		if message_type == "question":
+			return f"firebase_{request_id}", msg_id
+		return None, msg_id
+
+	async def _write_away_mode_node(self, active: bool, updated_at: int) -> None:
+		def _write():
+			db.reference("away_mode").set({"active": active, "updated_at": updated_at})
+
+		await self._loop.run_in_executor(None, _write)
+
+	async def write_away_mode_mirror(self, active: bool) -> None:
+		await self._write_away_mode_node(active, int(time.time() * 1000))
+
+	async def _read_hidden(self, channel_id: str) -> bool:
+		def _read():
+			ref = self._session_ref.child(channel_id).child("hidden")
+			val = ref.get()
+			if val is None:
+				# Backward-compat: legacy state="closed" is treated as hidden=true
+				state = self._session_ref.child(channel_id).child("state").get()
+				return state == "closed"
+			return bool(val)
+
+		return await self._loop.run_in_executor(None, _read)
+
+	async def _write_hidden(self, channel_id: str, value: bool) -> None:
+		await self._loop.run_in_executor(
+			None,
+			lambda: self._session_ref.child(channel_id).child("hidden").set(value),
+		)
+
+	async def _write_message_node(self, channel_id: str, msg_id: str, data: dict) -> None:
 		await self._loop.run_in_executor(
 			None,
 			lambda: self._session_ref.child(channel_id).child("messages").child(msg_id).set(data),
 		)
 
-		# FCM push
+	async def _send_fcm(
+		self,
+		channel_id: str,
+		message_type: str,
+		sender: str,
+		content: str,
+		fcm_data: dict,
+	) -> None:
 		if message_type == "question":
-			fcm_data = {"request_id": request_id or "", "channel_id": channel_id}
 			notif = messaging.Notification(
 				title=f"Question from {sender}",
 				body=content[:100] + ("..." if len(content) > 100 else ""),
 			)
 			msg = messaging.Message(notification=notif, topic="questions", data=fcm_data)
-		elif message_type == "human":
-			# Skip notification for the human's own reply
-			msg = None
 		else:
-			fcm_data = {"channel_id": channel_id, "sb_message_type": message_type}
 			notif = messaging.Notification(
 				title=f"Update from {sender}",
 				body=content[:100] + ("..." if len(content) > 100 else ""),
 			)
 			msg = messaging.Message(notification=notif, topic="notifications", data=fcm_data)
 
-		if msg:
-			try:
-				await self._loop.run_in_executor(None, lambda: messaging.send(msg))
-			except Exception as exc:
-				if self._logger:
-					self._logger.surface_error(f"firebase_fcm_error: {exc}")
-
-		if message_type == "question":
-			return f"firebase_{request_id}", msg_id
-		return None, msg_id
+		await self._loop.run_in_executor(None, lambda: messaging.send(msg))
 
 	async def _upload_file(self, local_path: Path) -> str:
 		if not self._storage_bucket:

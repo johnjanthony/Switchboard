@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +38,7 @@ class Registry:
 		self._sessions: dict[str, "CollabSession"] = {}
 		self._away_mode_path = away_mode_path
 		self._away_mode_active, self._away_mode_entered_at = self._load_away_mode()
+		self._away_mode_callback = None
 
 	@property
 	def pending_count(self) -> int:
@@ -115,6 +117,19 @@ class Registry:
 			datetime.now(timezone.utc) if active else None
 		)
 		self._persist_away_mode()
+		if self._away_mode_callback is not None:
+			try:
+				self._away_mode_callback(active)
+			except Exception:
+				# Callback failures never propagate back to the toggler, but we log them
+				# so operators can see if the Firebase mirror stopped updating.
+				logging.getLogger(__name__).exception("away_mode_callback raised")
+
+	def set_away_mode_callback(self, callback) -> None:
+		"""Register a post-set callback invoked with the new active value after
+		in-memory state and sidecar are both updated. Single-slot; the latest
+		registration wins. Pass None to clear."""
+		self._away_mode_callback = callback
 
 	def _load_away_mode(self) -> tuple[bool, datetime | None]:
 		if self._away_mode_path is None or not self._away_mode_path.exists():

@@ -24,4 +24,5 @@ data class Channel(
     val agentSenders: List<String> = emptyList(),
     val task: String = "",
     val messages: List<Pair<String, ChannelMessage>> = emptyList(),
+    val hidden: Boolean = false,
 )

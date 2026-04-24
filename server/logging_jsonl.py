@@ -182,5 +182,8 @@ class JsonlLogger:
 			event["reason"] = reason
 		self._write(event)
 
-	def away_mode_exited(self) -> None:
-		self._write({"event": "away_mode_exited"})
+	def away_mode_exited(self, reason: str | None = None) -> None:
+		event: dict[str, Any] = {"event": "away_mode_exited"}
+		if reason is not None:
+			event["reason"] = reason
+		self._write(event)

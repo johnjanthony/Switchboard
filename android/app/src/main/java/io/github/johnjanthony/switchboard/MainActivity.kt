@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.text.method.LinkMovementMethod
+import android.widget.Toast
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -15,8 +16,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import io.github.johnjanthony.switchboard.fcm.SwitchboardFirebaseMessagingService
 import androidx.compose.foundation.layout.*
@@ -86,8 +90,14 @@ fun MainScreen(viewModel: MainViewModel) {
     val pendingQuestions by viewModel.pendingQuestions.collectAsState()
     val unseenChannels by viewModel.unseenChannels.collectAsState()
     val projectMru by viewModel.projectMru.collectAsState()
+    val hiddenChannels by viewModel.hiddenChannels.collectAsState()
+    val awayModeActive by viewModel.awayModeActive.collectAsState()
+    var showAwayConfirm by remember { mutableStateOf(false) }
+    var showBulkRespond by remember { mutableStateOf(false) }
     var showSpawnDialog by remember { mutableStateOf(false) }
-    var closeTargetChannelId by remember { mutableStateOf<String?>(null) }
+    var showOverflowMenu by remember { mutableStateOf(false) }
+    var showHiddenChannelsDialog by remember { mutableStateOf(false) }
+    var hideTargetChannelId by remember { mutableStateOf<String?>(null) }
 
     val channelList = channels.keys.toList().sorted()
 
@@ -97,8 +107,34 @@ fun MainScreen(viewModel: MainViewModel) {
                 TopAppBar(
                     title = { Text("Switchboard") },
                     actions = {
+                        AwayModePillChip(
+                            active = awayModeActive,
+                            onLongPress = {
+                                val pendingCount = pendingQuestions.size
+                                if (awayModeActive && pendingCount > 0) {
+                                    showBulkRespond = true
+                                } else {
+                                    showAwayConfirm = true
+                                }
+                            }
+                        )
                         IconButton(onClick = { showSpawnDialog = true }) {
                             Icon(Icons.Default.Add, contentDescription = "Spawn")
+                        }
+                        IconButton(onClick = { showOverflowMenu = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More")
+                        }
+                        DropdownMenu(
+                            expanded = showOverflowMenu,
+                            onDismissRequest = { showOverflowMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Hidden channels (${hiddenChannels.size})") },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    showHiddenChannelsDialog = true
+                                }
+                            )
                         }
                     }
                 )
@@ -143,12 +179,19 @@ fun MainScreen(viewModel: MainViewModel) {
                                         )
                                         Spacer(Modifier.width(8.dp))
                                         IconButton(
-                                            onClick = { closeTargetChannelId = channelId },
+                                            onClick = {
+                                                val hasPending = pendingQuestions.containsKey(channelId)
+                                                if (hasPending) {
+                                                    hideTargetChannelId = channelId
+                                                } else {
+                                                    viewModel.hideChannel(channelId)
+                                                }
+                                            },
                                             modifier = Modifier.size(16.dp)
                                         ) {
                                             Icon(
-                                                Icons.Default.Close,
-                                                contentDescription = "Close",
+                                                Icons.Default.VisibilityOff,
+                                                contentDescription = "Hide",
                                                 modifier = Modifier.size(12.dp)
                                             )
                                         }
@@ -195,22 +238,75 @@ fun MainScreen(viewModel: MainViewModel) {
         )
     }
 
-    if (closeTargetChannelId != null) {
+    if (hideTargetChannelId != null) {
         AlertDialog(
-            onDismissRequest = { closeTargetChannelId = null },
-            title = { Text("Close Session") },
-            text = { Text("Are you sure you want to close `${closeTargetChannelId}`? The agent will receive a 'back at desk' message.") },
+            onDismissRequest = { hideTargetChannelId = null },
+            title = { Text("Hide channel") },
+            text = { Text("${hideTargetChannelId} has a pending question. Hide anyway?") },
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.closeChannel(closeTargetChannelId!!)
-                        closeTargetChannelId = null
+                        viewModel.hideChannel(hideTargetChannelId!!)
+                        hideTargetChannelId = null
                     }
-                ) { Text("Close") }
+                ) { Text("Hide anyway") }
             },
             dismissButton = {
-                TextButton(onClick = { closeTargetChannelId = null }) { Text("Cancel") }
+                TextButton(onClick = { hideTargetChannelId = null }) { Text("Cancel") }
             }
+        )
+    }
+
+    if (showHiddenChannelsDialog) {
+        HiddenChannelsDialog(
+            hiddenChannels = hiddenChannels,
+            pendingQuestions = pendingQuestions,
+            unseenChannels = unseenChannels,
+            onUnhide = { channelId ->
+                viewModel.unhideChannel(channelId)
+                showHiddenChannelsDialog = false
+            },
+            onDismiss = { showHiddenChannelsDialog = false }
+        )
+    }
+
+    if (showAwayConfirm) {
+        val entering = !awayModeActive
+        AlertDialog(
+            onDismissRequest = { showAwayConfirm = false },
+            title = { Text(if (entering) "Enter away mode?" else "Exit away mode?") },
+            text = {
+                Text(
+                    if (entering)
+                        "Terminal output will be redirected to the app until you exit."
+                    else
+                        "Terminal output will resume for active agents."
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    viewModel.requestAwayModeToggle(entering)
+                    showAwayConfirm = false
+                }) { Text(if (entering) "Enter" else "Exit") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAwayConfirm = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showBulkRespond) {
+        BulkRespondDialog(
+            pending = pendingQuestions,
+            onSendToAll = { text ->
+                viewModel.bulkRespondAndExit(text)
+                showBulkRespond = false
+            },
+            onSkip = {
+                viewModel.requestAwayModeToggle(false)
+                showBulkRespond = false
+            },
+            onDismiss = { showBulkRespond = false }
         )
     }
 }
@@ -380,6 +476,153 @@ fun MarkdownText(content: String, format: String, color: androidx.compose.ui.gra
     } else {
         Text(content, style = MaterialTheme.typography.bodyMedium, color = color)
     }
+}
+
+
+@Composable
+fun HiddenChannelsDialog(
+    hiddenChannels: Map<String, Channel>,
+    pendingQuestions: Map<String, Pair<String, ChannelMessage>>,
+    unseenChannels: Set<String>,
+    onUnhide: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Hidden channels") },
+        text = {
+            if (hiddenChannels.isEmpty()) {
+                Text("No hidden channels.")
+            } else {
+                LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
+                    items(hiddenChannels.keys.toList().sorted(), key = { it }) { channelId ->
+                        val hasPending = pendingQuestions.containsKey(channelId)
+                        val hasUnseen = unseenChannels.contains(channelId)
+                        val indicatorColor = when {
+                            hasPending -> MaterialTheme.colorScheme.error
+                            hasUnseen -> MaterialTheme.colorScheme.primary
+                            else -> Color.Transparent
+                        }
+                        val needsAdornment = hasPending || hasUnseen
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .then(
+                                    if (needsAdornment) Modifier
+                                        .border(2.dp, indicatorColor, RoundedCornerShape(8.dp))
+                                        .background(indicatorColor.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 8.dp, vertical = 8.dp)
+                                    else Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
+                                )
+                                .clickable { onUnhide(channelId) },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            when {
+                                hasPending -> Icon(
+                                    Icons.Default.Help,
+                                    contentDescription = "Pending question",
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.error,
+                                )
+                                hasUnseen -> Icon(
+                                    Icons.Default.Notifications,
+                                    contentDescription = "Unseen activity",
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                                else -> Spacer(Modifier.size(20.dp))
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Text(channelId, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        }
+    )
+}
+
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun AwayModePillChip(active: Boolean, onLongPress: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val bg = if (active) MaterialTheme.colorScheme.error else Color.Transparent
+    val borderColor = if (active) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+    val textColor = if (active) Color.White else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+    val label = if (active) "AWAY" else "AT DESK"
+
+    Box(
+        modifier = Modifier
+            .padding(horizontal = 4.dp)
+            .border(1.dp, borderColor, RoundedCornerShape(50))
+            .background(bg, RoundedCornerShape(50))
+            .combinedClickable(
+                onClick = {
+                    Toast.makeText(context, "Long-press to toggle", Toast.LENGTH_SHORT).show()
+                },
+                onLongClick = onLongPress,
+            )
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+    ) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = textColor)
+    }
+}
+
+
+@Composable
+fun BulkRespondDialog(
+    pending: Map<String, Pair<String, ChannelMessage>>,
+    onSendToAll: (String) -> Unit,
+    onSkip: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf("I'm back at my desk now, let's proceed in the terminal") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("You have ${pending.size} pending question(s)") },
+        text = {
+            Column {
+                Text("Respond to all with the same message?")
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    maxLines = 4,
+                )
+                Spacer(Modifier.height(8.dp))
+                LazyColumn(modifier = Modifier.heightIn(max = 200.dp)) {
+                    items(pending.keys.toList().sorted(), key = { it }) { channelId ->
+                        val qMsg = pending[channelId]?.second
+                        val preview = qMsg?.content?.take(80) ?: ""
+                        Column(Modifier.padding(vertical = 4.dp)) {
+                            Text(channelId, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            Text(preview, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSendToAll(text) }, enabled = text.isNotBlank()) {
+                Text("Send to all")
+            }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onSkip) { Text("Skip (toggle off only)") }
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        }
+    )
 }
 
 
