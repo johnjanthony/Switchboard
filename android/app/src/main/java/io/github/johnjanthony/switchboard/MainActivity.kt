@@ -36,6 +36,8 @@ import io.github.johnjanthony.switchboard.network.Channel
 import io.github.johnjanthony.switchboard.network.ChannelMessage
 import io.github.johnjanthony.switchboard.ui.theme.SwitchboardTheme
 
+import androidx.compose.ui.tooling.preview.Preview
+
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
 
@@ -83,6 +85,7 @@ fun MainScreen(viewModel: MainViewModel) {
     val selectedChannelId by viewModel.selectedChannelId.collectAsState()
     val pendingQuestions by viewModel.pendingQuestions.collectAsState()
     val unseenChannels by viewModel.unseenChannels.collectAsState()
+    val projectMru by viewModel.projectMru.collectAsState()
     var showSpawnDialog by remember { mutableStateOf(false) }
     var closeTargetChannelId by remember { mutableStateOf<String?>(null) }
 
@@ -182,11 +185,13 @@ fun MainScreen(viewModel: MainViewModel) {
 
     if (showSpawnDialog) {
         SpawnSessionDialog(
+            mruList = projectMru,
             onDismiss = { showSpawnDialog = false },
             onSpawn = { project, prompt, useClaude, useGemini ->
                 viewModel.spawnSession(project, prompt, useClaude, useGemini)
                 showSpawnDialog = false
-            }
+            },
+            onRemoveFromMru = { viewModel.removeFromProjectMru(it) }
         )
     }
 
@@ -378,28 +383,75 @@ fun MarkdownText(content: String, format: String, color: androidx.compose.ui.gra
 }
 
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SpawnSessionDialog(
+    mruList: List<String>,
     onDismiss: () -> Unit,
     onSpawn: (project: String, prompt: String, useClaude: Boolean, useGemini: Boolean) -> Unit,
+    onRemoveFromMru: (String) -> Unit,
 ) {
     var project by remember { mutableStateOf("") }
     var prompt by remember { mutableStateOf("") }
     var useClaude by remember { mutableStateOf(true) }
     var useGemini by remember { mutableStateOf(false) }
+    var expanded by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Spawn Session") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = project,
-                    onValueChange = { project = it },
-                    label = { Text("Project (optional)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                ExposedDropdownMenuBox(
+                    expanded = expanded,
+                    onExpandedChange = { expanded = !expanded }
+                ) {
+                    OutlinedTextField(
+                        value = project,
+                        onValueChange = { project = it },
+                        label = { Text("Project (optional)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+                        },
+                        colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
+                    )
+                    if (mruList.isNotEmpty()) {
+                        ExposedDropdownMenu(
+                            expanded = expanded,
+                            onDismissRequest = { expanded = false }
+                        ) {
+                            mruList.forEach { item ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Text(item, modifier = Modifier.weight(1f))
+                                            IconButton(
+                                                onClick = { onRemoveFromMru(item) },
+                                                modifier = Modifier.size(24.dp)
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.Delete,
+                                                    contentDescription = "Remove",
+                                                    modifier = Modifier.size(16.dp),
+                                                    tint = MaterialTheme.colorScheme.error
+                                                )
+                                            }
+                                        }
+                                    },
+                                    onClick = {
+                                        project = item
+                                        expanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = prompt,
                     onValueChange = { prompt = it },
@@ -429,4 +481,17 @@ fun SpawnSessionDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun SpawnSessionDialogPreview() {
+    SwitchboardTheme {
+        SpawnSessionDialog(
+            mruList = listOf("project-a", "project-b", "long/path/to/project-c"),
+            onDismiss = {},
+            onSpawn = { _, _, _, _ -> },
+            onRemoveFromMru = {}
+        )
+    }
 }

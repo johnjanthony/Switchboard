@@ -1,5 +1,6 @@
 package io.github.johnjanthony.switchboard
 
+import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -7,7 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.webkit.MimeTypeMap
 import android.widget.Toast
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.core.content.FileProvider
 import com.google.firebase.database.ChildEventListener
 import com.google.firebase.database.DataSnapshot
@@ -24,10 +25,13 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 
-class MainViewModel : ViewModel() {
+class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _channels = MutableStateFlow<Map<String, Channel>>(emptyMap())
     val channels: StateFlow<Map<String, Channel>> = _channels.asStateFlow()
+
+    private val _projectMru = MutableStateFlow<List<String>>(emptyList())
+    val projectMru: StateFlow<List<String>> = _projectMru.asStateFlow()
 
     // Per-channel: the current pending question (msgId, message), or null
     private val _pendingQuestions = MutableStateFlow<Map<String, Pair<String, ChannelMessage>>>(emptyMap())
@@ -49,6 +53,38 @@ class MainViewModel : ViewModel() {
     init {
         sessionsRef.keepSynced(true)
         setupChannelsListener()
+        loadProjectMru()
+    }
+
+    private fun loadProjectMru() {
+        val prefs = getApplication<Application>().getSharedPreferences("switchboard_prefs", Context.MODE_PRIVATE)
+        val mruString = prefs.getString("project_mru", "") ?: ""
+        if (mruString.isNotEmpty()) {
+            _projectMru.value = mruString.split("|").filter { it.isNotBlank() }
+        }
+    }
+
+    private fun saveProjectMru(mru: List<String>) {
+        val prefs = getApplication<Application>().getSharedPreferences("switchboard_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("project_mru", mru.joinToString("|")).apply()
+    }
+
+    private fun updateProjectMru(project: String) {
+        if (project.isBlank()) return
+        val current = _projectMru.value.toMutableList()
+        current.remove(project)
+        current.add(0, project)
+        val limited = current.take(10)
+        _projectMru.value = limited
+        saveProjectMru(limited)
+    }
+
+    fun removeFromProjectMru(project: String) {
+        val current = _projectMru.value.toMutableList()
+        if (current.remove(project)) {
+            _projectMru.value = current
+            saveProjectMru(current)
+        }
     }
 
     private fun setupChannelsListener() {
@@ -249,6 +285,7 @@ class MainViewModel : ViewModel() {
     }
 
     fun spawnSession(project: String, prompt: String, useClaude: Boolean, useGemini: Boolean) {
+        updateProjectMru(project)
         val sb = StringBuilder("/spawn")
         if (useClaude) sb.append(" --claude")
         if (useGemini) sb.append(" --gemini")
