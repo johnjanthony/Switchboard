@@ -20,6 +20,27 @@ class SwitchboardFirebaseMessagingService : FirebaseMessagingService() {
 		const val CHANNEL_UPDATES = "switchboard_updates"
 		const val EXTRA_AGENT_ID = "agent_id"
 		private val notificationId = AtomicInteger(1)
+
+		fun ensureChannels(context: Context) {
+			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+				val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+				manager.createNotificationChannel(
+					NotificationChannel(CHANNEL_QUESTIONS, "Questions", NotificationManager.IMPORTANCE_HIGH).apply {
+						description = "Agent questions requiring a response"
+					}
+				)
+				manager.createNotificationChannel(
+					NotificationChannel(CHANNEL_DOCUMENTS, "Documents", NotificationManager.IMPORTANCE_DEFAULT).apply {
+						description = "Documents delivered by agents"
+					}
+				)
+				manager.createNotificationChannel(
+					NotificationChannel(CHANNEL_UPDATES, "Updates", NotificationManager.IMPORTANCE_DEFAULT).apply {
+						description = "Agent status updates and collab relay messages"
+					}
+				)
+			}
+		}
 	}
 
 	override fun onMessageReceived(remoteMessage: RemoteMessage) {
@@ -70,27 +91,7 @@ class SwitchboardFirebaseMessagingService : FirebaseMessagingService() {
 			.build()
 
 		val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-		ensureChannels(manager)
+		ensureChannels(this)
 		manager.notify(notificationId.getAndIncrement(), notification)
-	}
-
-	private fun ensureChannels(manager: NotificationManager) {
-		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-			manager.createNotificationChannel(
-				NotificationChannel(CHANNEL_QUESTIONS, "Questions", NotificationManager.IMPORTANCE_HIGH).apply {
-					description = "Agent questions requiring a response"
-				}
-			)
-			manager.createNotificationChannel(
-				NotificationChannel(CHANNEL_DOCUMENTS, "Documents", NotificationManager.IMPORTANCE_DEFAULT).apply {
-					description = "Documents delivered by agents"
-				}
-			)
-			manager.createNotificationChannel(
-				NotificationChannel(CHANNEL_UPDATES, "Updates", NotificationManager.IMPORTANCE_DEFAULT).apply {
-					description = "Agent status updates and collab relay messages"
-				}
-			)
-		}
 	}
 }

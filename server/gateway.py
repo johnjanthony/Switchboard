@@ -156,6 +156,22 @@ def build_tool_handlers(
 		format: str = "plain",
 		suggestions: list[str] | None = None,
 	) -> str:
+		if not registry.is_away_mode_active():
+			# At-desk redirect: deliver the question as a notify (downgrade
+			# message_type, drop request_id + suggestions), skip PendingRequest
+			# registration, and return a redirect-error so the SKILL steers the
+			# agent to produce the question in the terminal instead.
+			try:
+				await backend.write_channel_message(
+					channel_id, sender, "notify", question, format=format,
+				)
+				logger.notify_sent(channel_id, question)
+				await _append_session_log(config.log_path, channel_id, "→", question)
+			except Exception as exc:
+				logger.tool_error(None, channel_id, str(exc))
+				return f"ERROR: {exc}"
+			return "ERROR: John is at his desk. Ask this question via the terminal."
+
 		request_id = _new_request_id()
 		started = datetime.now(timezone.utc)
 		correlation = None

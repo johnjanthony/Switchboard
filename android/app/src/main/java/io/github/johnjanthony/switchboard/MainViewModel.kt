@@ -325,6 +325,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun requestAwayModeToggle(desired: Boolean) {
+        // Optimistic UI update — the pill flips immediately. The Firebase listener
+        // will reconcile to the authoritative server value when the mirror write
+        // round-trips back (typically within 2-3 seconds).
+        _awayModeActive.value = desired
         val cmd = if (desired) "/away-mode on" else "/away-mode off"
         commandsRef.push().setValue(cmd)
     }

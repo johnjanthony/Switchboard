@@ -599,7 +599,7 @@ fun BulkRespondDialog(
                     maxLines = 4,
                 )
                 Spacer(Modifier.height(8.dp))
-                LazyColumn(modifier = Modifier.heightIn(max = 200.dp)) {
+                LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
                     items(pending.keys.toList().sorted(), key = { it }) { channelId ->
                         val qMsg = pending[channelId]?.second
                         val preview = qMsg?.content?.take(80) ?: ""

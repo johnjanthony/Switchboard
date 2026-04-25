@@ -219,18 +219,32 @@ class FirebaseBackend(MessengerBackend):
 		content: str,
 		fcm_data: dict,
 	) -> None:
+		# Background-mode FCM auto-display routes by AndroidConfig.notification.channel_id
+		# rather than going through onMessageReceived. Without this, background pushes
+		# fall through to Android's default "Miscellaneous" channel.
+		android_channel_id = {
+			"question": "switchboard_questions",
+			"document": "switchboard_documents",
+		}.get(message_type, "switchboard_updates")
+		android_cfg = messaging.AndroidConfig(
+			notification=messaging.AndroidNotification(channel_id=android_channel_id),
+		)
 		if message_type == "question":
 			notif = messaging.Notification(
 				title=f"Question from {sender}",
 				body=content[:100] + ("..." if len(content) > 100 else ""),
 			)
-			msg = messaging.Message(notification=notif, topic="questions", data=fcm_data)
+			msg = messaging.Message(
+				notification=notif, topic="questions", data=fcm_data, android=android_cfg,
+			)
 		else:
 			notif = messaging.Notification(
 				title=f"Update from {sender}",
 				body=content[:100] + ("..." if len(content) > 100 else ""),
 			)
-			msg = messaging.Message(notification=notif, topic="notifications", data=fcm_data)
+			msg = messaging.Message(
+				notification=notif, topic="notifications", data=fcm_data, android=android_cfg,
+			)
 
 		await self._loop.run_in_executor(None, lambda: messaging.send(msg))
 
