@@ -67,5 +67,9 @@ dependencies {
     implementation 'com.google.firebase:firebase-messaging-ktx'
     implementation 'com.google.firebase:firebase-database-ktx'
 
+    // Markdown/HTML rendering
+    implementation 'io.noties.markwon:core:4.6.2'
+    implementation 'io.noties.markwon:html:4.6.2'
+
     debugImplementation 'androidx.compose.ui:ui-tooling'
 }

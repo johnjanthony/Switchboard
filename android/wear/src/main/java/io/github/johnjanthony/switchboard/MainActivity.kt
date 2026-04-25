@@ -19,6 +19,10 @@ import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.navigation.SwipeDismissableNavHost
 import androidx.wear.compose.navigation.composable
 import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
+import android.text.method.LinkMovementMethod
+import android.widget.TextView
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.viewinterop.AndroidView
 import io.github.johnjanthony.switchboard.network.Channel
 
 class MainActivity : ComponentActivity() {
@@ -137,8 +141,19 @@ fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController
 fun MessageListScreen(channelId: String, viewModel: MainViewModel, navController: NavHostController) {
     val channels by viewModel.channels.collectAsState()
     val channel = channels[channelId] ?: return
+    val sortedMessages = remember(channel.messages) {
+        channel.messages.sortedBy { it.second.timestamp }
+    }
     
     val listState = rememberScalingLazyListState()
+
+    LaunchedEffect(sortedMessages.size) {
+        if (sortedMessages.isNotEmpty()) {
+            // Scroll to the last item. Index 0 is the header, 
+            // so last message is at index sortedMessages.size
+            listState.scrollToItem(sortedMessages.size)
+        }
+    }
     
     ScreenScaffold(
         scrollState = listState,
@@ -159,7 +174,7 @@ fun MessageListScreen(channelId: String, viewModel: MainViewModel, navController
                 )
             }
             
-            items(channel.messages.reversed()) { (_, msg) ->
+            items(sortedMessages) { (_, msg) ->
                 val isQuestion = msg.message_type == "question" && msg.response_text == null
                 
                 Card(
@@ -176,9 +191,10 @@ fun MessageListScreen(channelId: String, viewModel: MainViewModel, navController
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary
                         )
-                        Text(
-                            text = msg.content,
-                            style = MaterialTheme.typography.bodySmall
+                        MarkdownText(
+                            content = msg.content,
+                            format = msg.format,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                         if (isQuestion) {
                             Text(
@@ -235,5 +251,30 @@ fun ReplyScreen(channelId: String, msgId: String, requestId: String, viewModel: 
                 )
             }
         }
+    }
+}
+
+@Composable
+fun MarkdownText(content: String, format: String, color: androidx.compose.ui.graphics.Color = androidx.compose.ui.graphics.Color.Unspecified) {
+    if (format == "markdown") {
+        val textColor = color.toArgb()
+        AndroidView(
+            factory = { ctx ->
+                TextView(ctx).apply {
+                    movementMethod = LinkMovementMethod.getInstance()
+                }
+            },
+            update = { view ->
+                if (color != androidx.compose.ui.graphics.Color.Unspecified) {
+                    view.setTextColor(textColor)
+                }
+                val markwon = io.noties.markwon.Markwon.builder(view.context)
+                    .usePlugin(io.noties.markwon.html.HtmlPlugin.create())
+                    .build()
+                markwon.setMarkdown(view, content)
+            }
+        )
+    } else {
+        Text(content, style = MaterialTheme.typography.bodySmall, color = color)
     }
 }
