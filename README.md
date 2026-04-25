@@ -67,16 +67,16 @@ The project includes a native Android app in the `android/` directory.
 
 ### Build and Install
 1.  **Credentials**: Download `google-services.json` from your Firebase project and place it in `android/app/`.
-2.  **Deploy**: Connect your phone via USB or Wi-Fi (with Debugging enabled) and run:
+2.  **Deploy**: Connect your phone via USB or Wifi (with Debugging enabled) and run:
     ```powershell
     .\scripts\install-client.ps1
     ```
     This script builds the debug APK, installs it, and launches the app automatically.
 3.  **Alternative**: Open the `android/` folder in Android Studio and deploy to your phone.
 
-### Troubleshooting & Manual Wi-Fi Pairing
+### Troubleshooting & Manual Wifi Pairing
 
-If you encounter issues pairing your device over Wi-Fi (e.g., "protocol fault" or the device not appearing in Android Studio), follow these manual steps:
+If you encounter issues pairing your device over Wifi (e.g., "protocol fault" or the device not appearing in Android Studio), follow these manual steps:
 
 1.  **Restart ADB Server**:
     ```powershell
