@@ -150,3 +150,25 @@ def test_away_mode_exited_writes_event(tmp_path):
 	event = json.loads((tmp_path / "log.jsonl").read_text(encoding="utf-8").strip())
 	assert event["event"] == "away_mode_exited"
 	assert "ts" in event
+
+
+def test_away_mode_exited_with_reason(tmp_path):
+	from server.logging_jsonl import JsonlLogger
+	log = tmp_path / "audit.jsonl"
+	logger = JsonlLogger(log)
+	logger.away_mode_exited(reason="android")
+	contents = log.read_text(encoding="utf-8").strip()
+	event = json.loads(contents.splitlines()[-1])
+	assert event["event"] == "away_mode_exited"
+	assert event["reason"] == "android"
+
+
+def test_away_mode_exited_without_reason(tmp_path):
+	from server.logging_jsonl import JsonlLogger
+	log = tmp_path / "audit.jsonl"
+	logger = JsonlLogger(log)
+	logger.away_mode_exited()
+	contents = log.read_text(encoding="utf-8").strip()
+	event = json.loads(contents.splitlines()[-1])
+	assert event["event"] == "away_mode_exited"
+	assert "reason" not in event

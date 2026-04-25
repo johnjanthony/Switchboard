@@ -119,6 +119,19 @@ def _build_fastmcp(handlers) -> FastMCP:
 	return mcp
 
 
+async def _wire_away_mode_mirror(registry: "Registry", backend: "MessengerBackend") -> None:
+	"""Register a post-set callback that mirrors the away-mode flag to Firebase,
+	and perform a startup push so Firebase reflects the sidecar truth."""
+	loop = asyncio.get_running_loop()
+
+	def _on_change(active: bool) -> None:
+		# set_away_mode is sync but the mirror write is async — schedule it.
+		loop.create_task(backend.write_away_mode_mirror(active))
+
+	registry.set_away_mode_callback(_on_change)
+	await backend.write_away_mode_mirror(registry.is_away_mode_active())
+
+
 async def _run(config: Config) -> None:
 	logger = JsonlLogger(config.log_path)
 	away_mode_path = _Path(config.log_path).parent / "away-mode.json"
@@ -146,6 +159,8 @@ async def _run(config: Config) -> None:
 
 	sidecar_path = _Path(config.log_path).parent / "collab-sessions.json"
 	await _notify_lost_collab_sessions(sidecar_path, backend)
+
+	await _wire_away_mode_mirror(registry, backend)
 
 	limiter = RateLimiter(config.rate_limit)
 	handlers = build_tool_handlers(config, registry, backend, logger, limiter)

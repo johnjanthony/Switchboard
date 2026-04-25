@@ -260,3 +260,85 @@ async def test_single_spawn_does_not_set_away_mode_on_schtasks_failure(spawn_dir
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 	assert registry.is_away_mode_active() is False
+
+
+# --- /away-mode command dispatch ---
+
+def _read_events(cfg: Config) -> list[dict]:
+	log = Path(cfg.log_path)
+	if not log.exists():
+		return []
+	return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+@pytest.mark.asyncio
+async def test_away_mode_on_command_sets_flag_and_audits(tmp_path):
+	from server.spawn import SpawnHandler
+	cfg = make_config(tmp_path, spawn_root=tmp_path)
+	backend = make_backend()
+	registry = Registry(away_mode_path=tmp_path / "away.json")
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+	assert registry.is_away_mode_active() is False
+
+	await handler.handle("/away-mode on")
+
+	assert registry.is_away_mode_active() is True
+	events = _read_events(cfg)
+	entered = [e for e in events if e.get("event") == "away_mode_entered"]
+	assert entered and entered[-1].get("reason") == "android"
+
+
+@pytest.mark.asyncio
+async def test_away_mode_off_command_clears_flag_and_audits(tmp_path):
+	from server.spawn import SpawnHandler
+	cfg = make_config(tmp_path, spawn_root=tmp_path)
+	backend = make_backend()
+	registry = Registry(away_mode_path=tmp_path / "away.json")
+	registry.set_away_mode(True)
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+
+	await handler.handle("/away-mode off")
+
+	assert registry.is_away_mode_active() is False
+	events = _read_events(cfg)
+	exited = [e for e in events if e.get("event") == "away_mode_exited"]
+	assert exited and exited[-1].get("reason") == "android"
+
+
+@pytest.mark.asyncio
+async def test_away_mode_unknown_subcommand_is_ignored(tmp_path):
+	from server.spawn import SpawnHandler
+	cfg = make_config(tmp_path, spawn_root=tmp_path)
+	backend = make_backend()
+	registry = Registry(away_mode_path=tmp_path / "away.json")
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+
+	await handler.handle("/away-mode wobble")
+
+	assert registry.is_away_mode_active() is False
+	events = _read_events(cfg)
+	# Must not have emitted entered/exited audit events
+	assert not any(
+		e.get("event") in ("away_mode_entered", "away_mode_exited")
+		for e in events
+	)
+	# Positive assertion: the unknown-subcommand path MUST call surface_error
+	# with a descriptive detail so future refactors can't silently swallow it.
+	surface_errors = [e for e in events if e.get("event") == "surface_error"]
+	assert len(surface_errors) == 1
+	assert "away_mode_unknown_subcommand" in surface_errors[0].get("detail", "")
+	assert "wobble" in surface_errors[0].get("detail", "")
+
+
+@pytest.mark.asyncio
+async def test_spawn_command_still_works(spawn_dirs):
+	from server.spawn import SpawnHandler, _BASE_INSTRUCTION, _DEFAULT_PROMPT
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	registry = Registry(away_mode_path=spawn_dirs / "away.json")
+	with patch("server.spawn.subprocess.run"):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle("/spawn")
+	# Sanity: /spawn still routes to the spawn path (pending file written).
+	pending = _pending_path(cfg)
+	assert pending.exists()

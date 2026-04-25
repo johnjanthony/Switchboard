@@ -141,3 +141,49 @@ def test_away_mode_no_path_set_does_not_crash():
 	assert registry.is_away_mode_active() is True
 	registry.set_away_mode(False)
 	assert registry.is_away_mode_active() is False
+
+
+def test_set_away_mode_invokes_callback(tmp_path):
+	registry = Registry(away_mode_path=tmp_path / "away.json")
+	calls: list[bool] = []
+	registry.set_away_mode_callback(lambda v: calls.append(v))
+	registry.set_away_mode(True)
+	registry.set_away_mode(False)
+	assert calls == [True, False]
+
+
+def test_set_away_mode_without_callback_is_noop(tmp_path):
+	registry = Registry(away_mode_path=tmp_path / "away.json")
+	# No callback registered; must not raise.
+	registry.set_away_mode(True)
+	assert registry.is_away_mode_active() is True
+
+
+def test_set_away_mode_callback_is_called_after_persist(tmp_path):
+	registry = Registry(away_mode_path=tmp_path / "away.json")
+	seen_from_disk: list[bool] = []
+
+	def _cb(active: bool) -> None:
+		# By the time the callback fires, the sidecar must already reflect
+		# the new value, so a fresh Registry loading the same path sees it.
+		other = Registry(away_mode_path=tmp_path / "away.json")
+		seen_from_disk.append(other.is_away_mode_active())
+
+	registry.set_away_mode_callback(_cb)
+	registry.set_away_mode(True)
+	assert seen_from_disk == [True]
+
+
+def test_set_away_mode_callback_failure_does_not_propagate(tmp_path, caplog):
+	registry = Registry(away_mode_path=tmp_path / "away.json")
+
+	def _cb(active: bool) -> None:
+		raise RuntimeError("boom")
+
+	registry.set_away_mode_callback(_cb)
+	# Must not raise.
+	import logging
+	with caplog.at_level(logging.ERROR):
+		registry.set_away_mode(True)
+	assert registry.is_away_mode_active() is True
+	assert any("away_mode_callback" in rec.message for rec in caplog.records)

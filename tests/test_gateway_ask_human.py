@@ -30,6 +30,7 @@ def logger(cfg):
 async def test_ask_human_returns_response_when_resolved(cfg, logger):
 	backend = RecordingBackend()
 	registry = Registry()
+	registry.set_away_mode(True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
 	task = asyncio.create_task(handlers.ask_human("Overwrite foo?", "ir2-chan-001"))
@@ -63,6 +64,7 @@ class YieldingBackend(RecordingBackend):
 @pytest.mark.asyncio
 async def test_dispatch_loop_routes_responses_to_registry(cfg, logger):
 	registry = Registry()
+	registry.set_away_mode(True)
 	backend = YieldingBackend([IncomingResponse(correlation=1000, text="yes")])
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
@@ -156,6 +158,7 @@ async def test_ask_human_cleans_up_registry_on_cancellation(cfg, logger):
 	entry must not be left behind."""
 	backend = RecordingBackend()
 	registry = Registry()
+	registry.set_away_mode(True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
 	task = asyncio.create_task(handlers.ask_human("q", "IR2"))
@@ -214,6 +217,7 @@ async def test_concurrent_ask_human_calls_resolve_independently(cfg, logger):
 	"""Two concurrent ask_human calls, resolved out of order via the
 	dispatch loop, each return their own reply."""
 	registry = Registry()
+	registry.set_away_mode(True)
 	backend = YieldingBackend([
 		IncomingResponse(correlation=1001, text="answer-to-second"),
 		IncomingResponse(correlation=1000, text="answer-to-first"),
@@ -241,3 +245,56 @@ async def test_concurrent_ask_human_calls_resolve_independently(cfg, logger):
 			await dispatch_task
 		except asyncio.CancelledError:
 			pass
+
+
+@pytest.mark.asyncio
+async def test_ask_human_at_desk_returns_redirect_and_delivers_as_notify(cfg, logger):
+	"""When away mode is off, ask_human delivers a passive notify and returns the
+	at-desk redirect error so the agent produces the question in the terminal."""
+	backend = RecordingBackend()
+	registry = Registry()
+	# away_mode_active defaults to False — no set_away_mode call needed.
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	result = await handlers.ask_human(
+		"Should I overwrite foo.java?", "chan-atdesk-001", suggestions=["yes", "no"]
+	)
+
+	# Returns the redirect sentinel.
+	assert result == "ERROR: John is at his desk. Ask this question via the terminal."
+
+	# Backend received exactly one write — a notify, not a question.
+	assert len(backend.channel_messages) == 1
+	msg = backend.channel_messages[0]
+	assert msg["message_type"] == "notify"
+	assert msg["content"] == "Should I overwrite foo.java?"
+	# No request_id and no suggestions on the downgraded notify.
+	assert msg["request_id"] is None
+	assert msg["suggestions"] is None
+
+	# No pending request registered.
+	assert registry.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_ask_human_away_mode_blocks_as_before(cfg, logger):
+	"""When away mode is active, ask_human registers a pending request and blocks
+	until a response arrives — existing behavior is preserved."""
+	backend = RecordingBackend()
+	registry = Registry()
+	registry.set_away_mode(True)
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	task = asyncio.create_task(handlers.ask_human("Proceed with migration?", "chan-away-001"))
+	await asyncio.sleep(0)
+
+	# A question was written to the backend.
+	assert len(backend.sent_questions) == 1
+	# A pending request was registered.
+	assert registry.pending_count == 1
+
+	# Resolve via the recorded correlation token.
+	resolved = registry.resolve_by_correlation(1000, "yes")
+	assert resolved is not None
+	result = await asyncio.wait_for(task, timeout=1.0)
+	assert result == "yes"

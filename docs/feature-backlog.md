@@ -47,6 +47,10 @@ Upgrade V1's global `away_mode_active` flag to per-`channel_id` state. The Stop 
 
 See [`superpowers/specs/2026-04-23-away-mode-enforcement-design.md`](superpowers/specs/2026-04-23-away-mode-enforcement-design.md) for the V1 global-flag design this would replace.
 
+**Also covers:** replacing the global-flag-based at-desk `ask_human` redirect (shipped 2026-04-24 post-Phase-7). Under per-channel state, an `ask_human` call's redirect decision becomes "is THIS channel's flag off?" rather than "is the global flag off?" — naturally handling the case where spawned-for-phone sessions legitimately want full blocking-ask behavior even when the terminal session's flag is off.
+
+**Bundled candidate: reply-routing by current pending pointer (rather than `request_id`).** Today, an Android reply targets a specific `request_id` written into the message payload at `ask_human` time. If the agent's `ask_human` await is cancelled (terminal Ctrl-C, network hiccup, restart), the `PendingRequest` is removed from the registry; a subsequent reply from the phone hits `responses/{request_id}` and the dispatcher logs `unknown_correlation` and drops it. The fix: track a "current pending question" pointer per channel, optionally per-sender for collab channels (since two collaborating agents could both legitimately have an outstanding question). The Android reply UI targets that pointer, so the user's intent ("answer the question I see on screen") is preserved even across cancellation races. Logically belongs with the per-channel away-mode work since both touch per-channel registry state and both surface in the same Android reply path.
+
 ---
 
 ## Android: MRU workspace selector in spawn dialog

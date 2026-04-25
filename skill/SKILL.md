@@ -15,14 +15,19 @@ This is the single most important rule. If you produce chat text in the terminal
 
 **If the turn-end hook blocks you:** If you see an unexpected `block` (Claude) or `deny` (Gemini) message from a turn-end hook injecting "You are in away mode...", the flag is still active. Either call `ask_human()` to check in with John, or — only if John explicitly told you he is back — call `exit_away_mode()` first and then resume terminal output.
 
-1.  **Entry:** When John says "stepping away" or similar:
-    -   If tasks are queued: call `notify_human` to confirm you are starting, then begin work.
-    -   If idle: call `ask_human` to ask what's next.
-    -   Call `enter_away_mode()` in the same response (or as the first tool call if spawned — but spawned sessions already have the flag set, so this is skippable).
-    -   **Zero terminal text.**
+1.  **Entry:** When John says "stepping away", "going away mode", "I'm away", or any equivalent phrasing — even when bundled with other directives in the same message — the trigger fires.
+    -   **`enter_away_mode()` MUST be your first tool call**, before any other work the message asks you to do. The flag must be set server-side so that subsequent `ask_human` calls block normally instead of triggering the at-desk redirect.
+    -   After the flag is set, then continue:
+        -   If tasks are queued: call `notify_human` to confirm you are starting, then begin work.
+        -   If idle: call `ask_human` to ask what's next.
+        -   If mid-task: call `notify_human` to report status, then `ask_human` for next steps.
+    -   For spawned sessions, the flag is already set at spawn time — skip the `enter_away_mode()` call.
+    -   **Zero terminal text.** A compound user message like "I'm stepping away. Call send_document_human with foo.txt, then ask_human about delivery." is NOT a license to skip `enter_away_mode()` and dive into the explicit commands. Set the flag first, then do the work.
 2.  **Execution:** Route **every** status update, question, or completion ping through `notify_human`, `ask_human` or `send_document_human`.
 3.  **Replies:** When `ask_human` returns a reply, do not acknowledge it in the terminal. Treat it as input for your next tool call or task.
 4.  **Exit:** The **only** exception is when John explicitly says he is back ("I'm back", "back at desk"). Call `exit_away_mode()` as your first action, then resume terminal chat with a concise summary of your work.
+
+**At-desk `ask_human` redirect.** If `ask_human` returns the literal string `"ERROR: John is at his desk. Ask this question via the terminal."`, the human is at their desk, and your question has already been delivered to their phone as a passive notification (chat history + Updates channel, no reply UI). Your next action is to **produce the question content verbatim in the terminal** — the human will respond via terminal input. Do NOT retry `ask_human`, do NOT call `exit_away_mode` (the flag is already off), and do NOT treat this as an error worth surfacing beyond asking the question. This redirect only applies to `ask_human`; `notify_human` and `send_document_human` always deliver normally regardless of away-mode state.
 
 ---
 
@@ -114,6 +119,8 @@ Use `notify_human` to record the pause if it is helpful context for later: `noti
 ## Handling `"ERROR: ..."`
 
 If `ask_human` returns a string starting with `"ERROR:"`, the gateway itself failed. Treat this the same as a timeout — pause, do not guess. If possible, use a shell command to check if the Switchboard server process is still running (e.g., `netstat -ano | findstr :9876`) to diagnose the failure before pausing.
+
+**Exception:** the literal string `"ERROR: John is at his desk. Ask this question via the terminal."` is NOT a gateway failure — it is the at-desk redirect described in the Away Mode Protocol above. In that specific case, produce the question in the terminal and continue; do not pause.
 
 ## Staying alive in away mode
 

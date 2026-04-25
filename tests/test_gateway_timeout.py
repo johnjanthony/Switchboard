@@ -28,6 +28,7 @@ def logger(cfg):
 async def test_ask_human_returns_sentinel_on_timeout(cfg, logger):
 	backend = RecordingBackend()
 	registry = Registry()
+	registry.set_away_mode(True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
 	result = await handlers.ask_human("Overwrite foo?", "ir2-chan-001")
@@ -51,6 +52,7 @@ class BrokenBackend(RecordingBackend):
 async def test_ask_human_returns_error_sentinel_on_backend_failure(cfg, logger):
 	backend = BrokenBackend()
 	registry = Registry()
+	registry.set_away_mode(True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
 	result = await handlers.ask_human("q", "ir2-chan-001")

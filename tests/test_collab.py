@@ -488,6 +488,7 @@ async def test_message_and_await_agent_relay_calls_write_channel_message(tmp_pat
 @pytest.mark.asyncio
 async def test_ask_human_writes_channel_message(tmp_path):
 	registry = Registry()
+	registry.set_away_mode(True)
 	cfg = _make_config(tmp_path)
 	backend = RecordingBackend()
 	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))

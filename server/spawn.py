@@ -103,8 +103,25 @@ class SpawnHandler:
 		self._last_spawn_time: datetime | None = None
 
 	async def handle(self, raw: str) -> None:
-		text = raw[len("/spawn"):].strip()
-		await self._handle_spawn(text)
+		stripped = raw.strip()
+		if stripped.startswith("/spawn"):
+			await self._handle_spawn(stripped[len("/spawn"):].strip())
+		elif stripped.startswith("/away-mode"):
+			await self._handle_away_mode_command(stripped[len("/away-mode"):].strip())
+		# Unknown command: silently ignore. The command watcher surfaces its
+		# own errors, and we don't want a typo in the Android app to crash
+		# the dispatcher.
+
+	async def _handle_away_mode_command(self, arg: str) -> None:
+		arg = arg.strip().lower()
+		if arg == "on":
+			self._registry.set_away_mode(True)
+			self._logger.away_mode_entered(reason="android")
+		elif arg == "off":
+			self._registry.set_away_mode(False)
+			self._logger.away_mode_exited(reason="android")
+		else:
+			self._logger.surface_error(f"away_mode_unknown_subcommand: {arg!r}")
 
 	async def _handle_spawn(self, text: str) -> None:
 		if self._spawn_root is None:

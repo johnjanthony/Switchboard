@@ -100,6 +100,12 @@ class MessengerBackend(ABC):
 		if False:
 			yield
 
+	async def write_away_mode_mirror(self, active: bool) -> None:
+		"""Mirror the server's away-mode flag to Firebase for the Android app's
+		pill-chip listener. No-op by default; backends that expose a Firebase
+		surface override this."""
+		pass
+
 	@abstractmethod
 	async def aclose(self) -> None:
 		"""Release any resources held by the backend."""
@@ -220,6 +226,9 @@ class MultiBackend(MessengerBackend):
 
 	async def start_inject_listener(self, session_id) -> None:
 		await asyncio.gather(*(b.start_inject_listener(session_id) for b in self._backends))
+
+	async def write_away_mode_mirror(self, active: bool) -> None:
+		await asyncio.gather(*(b.write_away_mode_mirror(active) for b in self._backends))
 
 	async def aclose(self) -> None:
 		await asyncio.gather(*(b.aclose() for b in self._backends))
