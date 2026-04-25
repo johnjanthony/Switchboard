@@ -1,12 +1,15 @@
 """Turn-end hook for Claude Code (Stop) and Gemini CLI (AfterAgent).
 
-Queries the local Switchboard gateway; when away mode is active, emits the
-appropriate block/deny JSON on stdout so the agent is forced to keep the turn
-alive and route output through ask_human / notify_human instead of leaking to
-the terminal.
+Reads the working directory from stdin JSON (Claude Code passes it as
+`{"cwd": "..."}` in the Stop hook payload) and queries the local Switchboard
+gateway at `/away-mode?cwd=<cwd>`. When that cwd's away mode is active, emits
+the appropriate block/deny JSON on stdout so the agent is forced to keep the
+turn alive and route output through ask_human / notify_human instead of leaking
+to the terminal.
 
 Fails open: any error (connection refused, timeout, unknown --cli, malformed
-response) results in silent exit 0, so non-Switchboard sessions are unaffected.
+response, missing cwd) results in silent exit 0, so non-Switchboard sessions
+are unaffected.
 """
 
 from __future__ import annotations
@@ -29,9 +32,11 @@ REDIRECT_REASON = (
 )
 
 
-def _fetch_active(url: str) -> bool:
+def _fetch_active(url: str, cwd: str) -> bool:
+	from urllib.parse import urlencode
+	full_url = f"{url}?{urlencode({'cwd': cwd})}"
 	try:
-		with urllib.request.urlopen(url, timeout=TIMEOUT_SECONDS) as resp:
+		with urllib.request.urlopen(full_url, timeout=TIMEOUT_SECONDS) as resp:
 			if resp.status != 200:
 				return False
 			body = resp.read()
@@ -57,17 +62,27 @@ def main() -> int:
 	parser.add_argument("--cli", required=False)
 	args, _unknown = parser.parse_known_args()
 
-	# Drain stdin so the parent does not see a broken pipe. Content is ignored.
+	stdin_data = ""
 	try:
-		sys.stdin.read()
+		stdin_data = sys.stdin.read()
 	except Exception:
 		pass
 
 	if args.cli not in {"claude", "gemini"}:
 		return 0
 
+	cwd = ""
+	try:
+		payload = json.loads(stdin_data) if stdin_data else {}
+		cwd = payload.get("cwd", "") or ""
+	except Exception:
+		cwd = ""
+
+	if not cwd:
+		return 0  # fail-open without cwd
+
 	url = os.environ.get("SWITCHBOARD_URL", DEFAULT_URL)
-	if not _fetch_active(url):
+	if not _fetch_active(url, cwd):
 		return 0
 
 	if args.cli == "claude":

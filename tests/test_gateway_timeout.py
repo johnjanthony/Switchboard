@@ -8,6 +8,9 @@ from server.logging_jsonl import JsonlLogger
 from server.registry import Registry
 from tests.test_gateway_notify_human import RecordingBackend
 
+_CWD = "c:/work/sw"
+_SENDER = "Claude"
+
 
 @pytest.fixture
 def cfg(tmp_path):
@@ -28,17 +31,17 @@ def logger(cfg):
 async def test_ask_human_returns_sentinel_on_timeout(cfg, logger):
 	backend = RecordingBackend()
 	registry = Registry()
-	registry.set_away_mode(True)
+	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.ask_human("Overwrite foo?", "ir2-chan-001")
+	result = await handlers.ask_human("Overwrite foo?", _CWD)
 
 	assert result == TIMEOUT_SENTINEL
 	# Backend was asked to send a timeout follow-up.
 	assert len(backend.sent_timeouts) == 1
 	assert backend.sent_timeouts[0][0] == backend.sent_questions[0][0]  # request_id matches
-	# Registry entry is cleaned up.
-	assert registry.resolve_by_correlation(1000, "late") is None
+	# Registry entry is cleaned up — (cwd, sender) returns None.
+	assert registry.resolve(cwd=_CWD, sender=_SENDER, text="late") is None
 
 
 class BrokenBackend(RecordingBackend):
@@ -52,10 +55,10 @@ class BrokenBackend(RecordingBackend):
 async def test_ask_human_returns_error_sentinel_on_backend_failure(cfg, logger):
 	backend = BrokenBackend()
 	registry = Registry()
-	registry.set_away_mode(True)
+	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.ask_human("q", "ir2-chan-001")
+	result = await handlers.ask_human("q", _CWD)
 
 	assert result.startswith("ERROR:")
 	assert "boom" in result

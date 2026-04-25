@@ -1,9 +1,9 @@
 """In-memory pending-request registry.
 
 All access happens on a single asyncio event loop, so no locking is required.
-The secondary correlation index lets a messenger backend resolve a response
-using whatever opaque token it stored at send time (Firebase doc path, etc.)
-without knowing the request_id.
+Pending requests are keyed by (cwd, sender) with supersede semantics: if a
+new request arrives for the same (cwd, sender) pair, the prior future is
+cancelled and replaced.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
 	from server.collab import CollabSession
@@ -22,22 +22,21 @@ if TYPE_CHECKING:
 
 @dataclass
 class PendingRequest:
+	cwd: str
+	sender: str
 	request_id: str
-	channel_id: str
-	correlation: Any
 	future: asyncio.Future[str]
+	started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 	msg_id: str | None = None
-	created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class Registry:
 	def __init__(self, away_mode_path: Path | None = None) -> None:
-		self._pending: dict[str, PendingRequest] = {}
-		self._by_correlation: dict[Any, str] = {}
-		self.total_answered: int = 0
 		self._sessions: dict[str, "CollabSession"] = {}
+		self._pending: dict[tuple[str, str], PendingRequest] = {}
+		self.total_answered: int = 0
 		self._away_mode_path = away_mode_path
-		self._away_mode_active, self._away_mode_entered_at = self._load_away_mode()
+		self._global_away, self._cwd_overrides = self._load_away_mode()
 		self._away_mode_callback = None
 
 	@property
@@ -49,116 +48,160 @@ class Registry:
 		if not self._pending:
 			return None
 		now = datetime.now(timezone.utc)
-		oldest = min(r.created_at for r in self._pending.values())
+		oldest = min(r.started_at for r in self._pending.values())
 		return (now - oldest).total_seconds()
 
 	def add(
-		self, request_id: str, channel_id: str, correlation: Any, msg_id: str | None = None
-	) -> asyncio.Future[str]:
-		loop = asyncio.get_running_loop()
-		future: asyncio.Future[str] = loop.create_future()
-		self._pending[request_id] = PendingRequest(
+		self,
+		cwd: str,
+		sender: str,
+		request_id: str,
+		msg_id: str | None = None,
+		return_superseded: bool = False,
+	) -> asyncio.Future | tuple[asyncio.Future, str | None]:
+		"""Add a pending request. If (cwd, sender) is already occupied, the
+		prior PendingRequest is superseded: its future is cancelled, the entry
+		removed, and the prior request_id returned (when return_superseded=True)
+		so callers can mark the prior question's Firebase entry as cancelled.
+
+		Returns the new Future. If return_superseded=True, returns
+		(future, prior_request_id_or_None)."""
+		key = (cwd, sender)
+		prior_request_id = None
+		existing = self._pending.pop(key, None)
+		if existing is not None:
+			prior_request_id = existing.request_id
+			if not existing.future.done():
+				existing.future.cancel()
+		future = asyncio.get_event_loop().create_future()
+		self._pending[key] = PendingRequest(
+			cwd=cwd,
+			sender=sender,
 			request_id=request_id,
-			channel_id=channel_id,
-			correlation=correlation,
 			future=future,
 			msg_id=msg_id,
 		)
-		if correlation is not None:
-			if isinstance(correlation, dict):
-				for b, c in correlation.items():
-					self._by_correlation[(b, c)] = request_id
-			else:
-				self._by_correlation[correlation] = request_id
+		if return_superseded:
+			return future, prior_request_id
 		return future
 
-	def get(self, request_id: str) -> PendingRequest | None:
-		return self._pending.get(request_id)
+	def get(self, key: tuple[str, str]) -> "PendingRequest | None":
+		return self._pending.get(key)
 
-	def resolve_by_correlation(self, correlation: Any, text: str) -> PendingRequest | None:
-		request_id = self._by_correlation.pop(correlation, None)
-		if request_id is None:
-			return None
-		record = self._pending.pop(request_id, None)
+	def resolve(self, cwd: str, sender: str, text: str) -> str | None:
+		"""Resolve the pending request for (cwd, sender). Returns the
+		request_id of the resolved entry, or None if no pending exists."""
+		key = (cwd, sender)
+		record = self._pending.pop(key, None)
 		if record is None:
 			return None
-		if isinstance(record.correlation, dict):
-			for b, c in record.correlation.items():
-				self._by_correlation.pop((b, c), None)
 		if not record.future.done():
 			record.future.set_result(text)
-		self.total_answered += 1
-		return record
+		return record.request_id
 
-	def remove(self, request_id: str) -> None:
-		record = self._pending.pop(request_id, None)
-		if record is not None:
-			if isinstance(record.correlation, dict):
-				for b, c in record.correlation.items():
-					self._by_correlation.pop((b, c), None)
-			else:
-				self._by_correlation.pop(record.correlation, None)
+	def remove(self, cwd: str, sender: str) -> str | None:
+		"""Remove the pending entry for (cwd, sender). Cancels the future if
+		pending. Returns the request_id of the removed entry, or None."""
+		key = (cwd, sender)
+		record = self._pending.pop(key, None)
+		if record is None:
+			return None
+		if not record.future.done():
+			record.future.cancel()
+		return record.request_id
+
+	def all_pending(self) -> list["PendingRequest"]:
+		"""Snapshot for bulk-respond on global exit (Slice I)."""
+		return list(self._pending.values())
 
 	def add_session(self, session: "CollabSession") -> None:
-		self._sessions[session.session_id] = session
+		self._sessions[session.cwd] = session
 
-	def get_session(self, session_id: str) -> "CollabSession | None":
-		return self._sessions.get(session_id)
+	def get_session(self, cwd: str) -> "CollabSession | None":
+		return self._sessions.get(cwd)
 
-	def remove_session(self, session_id: str) -> None:
-		self._sessions.pop(session_id, None)
+	def remove_session(self, cwd: str) -> None:
+		self._sessions.pop(cwd, None)
 
-	def is_away_mode_active(self) -> bool:
-		return self._away_mode_active
+	def is_away_mode_active(self, cwd: str) -> bool:
+		if cwd in self._cwd_overrides:
+			return self._cwd_overrides[cwd]
+		return self._global_away
 
-	def set_away_mode(self, active: bool) -> None:
-		self._away_mode_active = active
-		self._away_mode_entered_at = (
-			datetime.now(timezone.utc) if active else None
-		)
+	def set_global_away(self, active: bool) -> None:
+		if self._global_away == active and not self._cwd_overrides:
+			return
+		self._global_away = active
+		self._cwd_overrides = {}
 		self._persist_away_mode()
-		if self._away_mode_callback is not None:
-			try:
-				self._away_mode_callback(active)
-			except Exception:
-				# Callback failures never propagate back to the toggler, but we log them
-				# so operators can see if the Firebase mirror stopped updating.
-				logging.getLogger(__name__).exception("away_mode_callback raised")
+		self._fire_callback(None, active)
+
+	def set_cwd_override(self, cwd: str, active: bool) -> None:
+		prior = self.is_away_mode_active(cwd)
+		self._cwd_overrides[cwd] = active
+		new = self.is_away_mode_active(cwd)
+		if prior == new:
+			# Resolution unchanged: skip persist + callback to avoid churn.
+			return
+		self._persist_away_mode()
+		self._fire_callback(cwd, new)
+
+	def remove_cwd_override(self, cwd: str) -> None:
+		if cwd not in self._cwd_overrides:
+			return
+		prior_value = self._cwd_overrides[cwd]
+		del self._cwd_overrides[cwd]
+		new = self.is_away_mode_active(cwd)
+		if prior_value != new:
+			self._persist_away_mode()
+			self._fire_callback(cwd, new)
+
+	def cwd_overrides(self) -> dict[str, bool]:
+		return dict(self._cwd_overrides)
+
+	def global_away(self) -> bool:
+		return self._global_away
 
 	def set_away_mode_callback(self, callback) -> None:
-		"""Register a post-set callback invoked with the new active value after
-		in-memory state and sidecar are both updated. Single-slot; the latest
-		registration wins. Pass None to clear."""
+		"""Callback receives (cwd_or_None, active). cwd=None on global flips,
+		otherwise the canonical_cwd whose override changed. Fires only when the
+		resolution actually changes (not on no-op repeats)."""
 		self._away_mode_callback = callback
 
-	def _load_away_mode(self) -> tuple[bool, datetime | None]:
+	def _fire_callback(self, cwd: str | None, active: bool) -> None:
+		if self._away_mode_callback is None:
+			return
+		try:
+			self._away_mode_callback(cwd, active)
+		except Exception:
+			logging.getLogger(__name__).exception("away_mode_callback raised")
+
+	def _load_away_mode(self) -> tuple[bool, dict[str, bool]]:
 		if self._away_mode_path is None or not self._away_mode_path.exists():
-			return False, None
+			return False, {}
 		try:
 			data = json.loads(self._away_mode_path.read_text(encoding="utf-8"))
-			active = bool(data.get("active", False))
-			entered_raw = data.get("entered_at")
-			entered = (
-				datetime.fromisoformat(entered_raw)
-				if isinstance(entered_raw, str)
-				else None
-			)
-			return active, entered
 		except Exception:
-			return False, None
+			return False, {}
+		# V1 shape detection: legacy file has "active" but no "global". Discard.
+		if "global" not in data:
+			return False, {}
+		global_away = bool(data.get("global", False))
+		overrides_raw = data.get("overrides", {})
+		if not isinstance(overrides_raw, dict):
+			overrides_raw = {}
+		overrides = {k: bool(v) for k, v in overrides_raw.items() if isinstance(k, str)}
+		return global_away, overrides
 
 	def _persist_away_mode(self) -> None:
 		if self._away_mode_path is None:
 			return
-		payload = {
-			"active": self._away_mode_active,
-			"entered_at": (
-				self._away_mode_entered_at.isoformat()
-				if self._away_mode_entered_at is not None
-				else None
-			),
+		data = {
+			"global": self._global_away,
+			"overrides": dict(self._cwd_overrides),
 		}
 		self._away_mode_path.parent.mkdir(parents=True, exist_ok=True)
 		self._away_mode_path.write_text(
-			json.dumps(payload), encoding="utf-8"
+			json.dumps(data, indent=2, sort_keys=True),
+			encoding="utf-8",
 		)

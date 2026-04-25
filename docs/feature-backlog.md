@@ -32,24 +32,21 @@ Open/proposed features for Switchboard. Shipped items have been moved to [`../PR
 
 ---
 
-## Per-channel away-mode tracking
+## Per-channel away-mode tracking — IN IMPLEMENTATION (Slices A–L complete in working tree, Slice M pending)
 
-Upgrade V1's global `away_mode_active` flag to per-`channel_id` state. The Stop hook would correlate its Claude Code `session_id` or `cwd` to a `channel_id` so only the session that is actually away gets blocked. Needed if John routinely runs one at-desk Claude Code session alongside an away-mode session — the global V1 flag would block Stop events in both.
+This entry has graduated from backlog to active work. Implementation expanded in scope during brainstorming to **cwd-as-channel unification**: replacing `channel_id` with canonical-cwd as the namespace, re-keying blocking exchanges by `(cwd, sender)` with supersede semantics, two-tier away-mode (`_global_away` + `_cwd_overrides`), and an Android UI overhaul to a list-based two-page nav.
 
-**What it takes:**
+**Spec:** [`superpowers/specs/2026-04-24-cwd-as-channel-and-per-cwd-away-mode-design.md`](superpowers/specs/2026-04-24-cwd-as-channel-and-per-cwd-away-mode-design.md)
+**Plan:** `superpowers/plans/2026-04-25-cwd-as-channel-and-per-cwd-away-mode.md` (gitignored)
+**Branch:** `cwd-as-channel`
+**Status (2026-04-25):** Slices A–L complete in working tree (no commits per CLAUDE.md). 321 server tests passing, Android `compileDebugKotlin` clean. Slice M (manual phone validation, 10 scenarios) is the only remaining work. See `docs/project_next_session.md` for full handoff details.
 
-- Server tracks `dict[channel_id, AwayState]` instead of a single bool.
-- `enter_away_mode(channel_id)` / `exit_away_mode(channel_id)` accept a `channel_id` argument.
-- Correlation mechanism: either (a) the tools also record `cwd` (passed by the agent or inferred) so the hook can query `GET /away-mode?cwd=<hook_cwd>`, or (b) a handshake where the agent writes a marker file keyed by cwd that the hook reads directly without HTTP.
-- Sidecar persistence updated to a list of entries.
+The original concerns this entry tracked are all subsumed by the new spec:
+- Per-channel away state → covered by Slice B (two-tier `_global_away` + `_cwd_overrides`).
+- At-desk `ask_human` redirect under per-channel state → covered by Slice D (per-cwd resolution in `gateway.ask_human`).
+- Reply-routing by current-pending pointer → covered by Slice C (re-key `_pending` by `(cwd, sender)` so the slot itself is the pointer; supersede on add).
 
-**Bundled enhancement: hook captures the leaked terminal text.** Once the hook knows the channel, it can read the last assistant message from the turn-end event stdin payload and forward it via `notify_human` on that channel before emitting the block/deny JSON. For Gemini, the field is documented as `prompt_response` on the `AfterAgent` payload — free to use. For Claude, the Stop payload field is not documented (verify at implementation time) — fall back to parsing `transcript_path` if absent. Result: the text the agent tried to leak to the terminal actually reaches John's phone instead of being lost, and the agent is still redirected to route the next turn through `ask_human`. Fair-game to do as part of this upgrade because without per-channel state the hook does not know where to post.
-
-See [`superpowers/specs/2026-04-23-away-mode-enforcement-design.md`](superpowers/specs/2026-04-23-away-mode-enforcement-design.md) for the V1 global-flag design this would replace.
-
-**Also covers:** replacing the global-flag-based at-desk `ask_human` redirect (shipped 2026-04-24 post-Phase-7). Under per-channel state, an `ask_human` call's redirect decision becomes "is THIS channel's flag off?" rather than "is the global flag off?" — naturally handling the case where spawned-for-phone sessions legitimately want full blocking-ask behavior even when the terminal session's flag is off.
-
-**Bundled candidate: reply-routing by current pending pointer (rather than `request_id`).** Today, an Android reply targets a specific `request_id` written into the message payload at `ask_human` time. If the agent's `ask_human` await is cancelled (terminal Ctrl-C, network hiccup, restart), the `PendingRequest` is removed from the registry; a subsequent reply from the phone hits `responses/{request_id}` and the dispatcher logs `unknown_correlation` and drops it. The fix: track a "current pending question" pointer per channel, optionally per-sender for collab channels (since two collaborating agents could both legitimately have an outstanding question). The Android reply UI targets that pointer, so the user's intent ("answer the question I see on screen") is preserved even across cancellation races. Logically belongs with the per-channel away-mode work since both touch per-channel registry state and both surface in the same Android reply path.
+The bundled "hook captures leaked terminal text" enhancement is **not** included in the current spec — it remains a separate follow-up and could be bolted on later (the Stop hook now knows the cwd, so plumbing it through `notify_human` on the channel is straightforward).
 
 ---
 

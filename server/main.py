@@ -17,6 +17,7 @@ from starlette.requests import Request
 from server.config import Config, load_config
 from server.gateway import (
 	build_tool_handlers,
+	dispatch_away_mode_commands,
 	dispatch_commands,
 	dispatch_inject_queue,
 	dispatch_responses,
@@ -31,12 +32,16 @@ from server.firebase import FirebaseBackend
 
 
 def _build_away_mode_route(registry: Registry):
+	from server.canonicalization import canonicalize_cwd, CanonicalizationError
 	async def away_mode(request: Request):
+		cwd_raw = request.query_params.get("cwd", "")
+		if not cwd_raw:
+			return JSONResponse({"active": False})
 		try:
-			active = registry.is_away_mode_active()
-		except Exception:
-			active = False
-		return JSONResponse({"active": active})
+			canonical = canonicalize_cwd(cwd_raw)
+		except CanonicalizationError:
+			return JSONResponse({"active": False})
+		return JSONResponse({"active": registry.is_away_mode_active(canonical)})
 	return away_mode
 
 
@@ -69,52 +74,69 @@ def _build_fastmcp(handlers) -> FastMCP:
 	@mcp.tool()
 	async def ask_human(
 		question: str,
-		channel_id: str,
+		cwd: str,
 		sender: str = "Claude",
+		title: str | None = None,
 		format: str = "plain",
 		suggestions: list[str] | None = None,
 	) -> str:
-		"""Block until the developer responds from their phone. Returns the response
-		text, or '__TIMEOUT__' if the timeout window elapses. Set format='markdown'
-		for rich formatting. Pass suggestions=['yes','no'] for tap-able inline buttons."""
-		return await handlers.ask_human(question, channel_id, sender, format, suggestions)
+		"""Block until John responds from his phone. Returns the response text,
+		or '__TIMEOUT__' if the timeout window elapses.
+
+		cwd: Your current working directory (from $PWD or the system prompt's
+		'Primary working directory' field). Used as the channel routing key —
+		canonicalized server-side.
+
+		title: Optional. Session label shown on John's phone tab. SKILL mandates
+		first-call set; omit on later calls when scope hasn't changed. Server
+		truncates to 80 chars."""
+		return await handlers.ask_human(question, cwd, sender, title, format, suggestions)
 
 	@mcp.tool()
-	async def notify_human(message: str, channel_id: str, sender: str = "Claude", format: str = "plain") -> str:
-		"""Fire a status message to the developer. Non-blocking.
-		Set format='markdown' for rich formatting."""
-		return await handlers.notify_human(message, channel_id, sender, format)
+	async def notify_human(
+		message: str,
+		cwd: str,
+		sender: str = "Claude",
+		title: str | None = None,
+		format: str = "plain",
+	) -> str:
+		"""Fire a status message to John. Non-blocking. cwd routes to the channel."""
+		return await handlers.notify_human(message, cwd, sender, title, format)
 
 	@mcp.tool()
 	async def send_document_human(
-		path: str, channel_id: str, sender: str = "Claude", caption: str | None = None
+		path: str,
+		cwd: str,
+		sender: str = "Claude",
+		title: str | None = None,
+		caption: str | None = None,
 	) -> str:
-		"""Deliver a file to the developer. Non-blocking.
-		path must be relative to the project working directory. Max 5 MB."""
-		return await handlers.send_document_human(path, channel_id, sender, caption)
+		"""Deliver a file to John. Non-blocking. path is relative to cwd. Max 5 MB."""
+		return await handlers.send_document_human(path, cwd, sender, title, caption)
 
 	@mcp.tool()
 	async def message_and_await_agent(
-		channel_id: str, sender: str, message: str | None = None
+		cwd: str,
+		sender: str,
+		title: str | None = None,
+		message: str | None = None,
 	) -> str:
-		"""Send a message to your collaboration partner and block until they reply.
-		channel_id and sender are provided in your spawn prompt.
+		"""Send to your collab partner and block until they reply.
+		cwd is the shared session key. sender is your unique display name.
 		Omit message on your first call if you are Agent 2."""
-		return await handlers.message_and_await_agent(channel_id, sender, message)
+		return await handlers.message_and_await_agent(cwd, sender, title, message)
 
 	@mcp.tool()
-	async def enter_away_mode() -> str:
-		"""Mark this Switchboard session as 'John is away'. The turn-end hook
-		will block agent turns that end in terminal output until exit_away_mode
-		is called. Idempotent."""
-		return await handlers.enter_away_mode()
+	async def enter_away_mode(cwd: str) -> str:
+		"""Mark this Switchboard session (cwd) as 'John is away'. Sets the
+		per-cwd override True. Idempotent."""
+		return await handlers.enter_away_mode(cwd)
 
 	@mcp.tool()
-	async def exit_away_mode() -> str:
-		"""Mark this Switchboard session as 'John is back'. The turn-end hook
-		stops blocking. Idempotent. Call as the first action when John explicitly
-		returns to the desk."""
-		return await handlers.exit_away_mode()
+	async def exit_away_mode(cwd: str) -> str:
+		"""Mark this Switchboard session (cwd) as 'John is back'. Sets the
+		per-cwd override False. Idempotent."""
+		return await handlers.exit_away_mode(cwd)
 
 	return mcp
 
@@ -124,12 +146,16 @@ async def _wire_away_mode_mirror(registry: "Registry", backend: "MessengerBacken
 	and perform a startup push so Firebase reflects the sidecar truth."""
 	loop = asyncio.get_running_loop()
 
-	def _on_change(active: bool) -> None:
-		# set_away_mode is sync but the mirror write is async — schedule it.
-		loop.create_task(backend.write_away_mode_mirror(active))
+	def _on_change(cwd: "str | None", active: bool) -> None:
+		if cwd is None:
+			effective = registry.global_away() or bool(registry.cwd_overrides())
+			loop.create_task(backend.write_away_mode_mirror(None, effective))
+		else:
+			loop.create_task(backend.write_away_mode_mirror(cwd, active))
 
 	registry.set_away_mode_callback(_on_change)
-	await backend.write_away_mode_mirror(registry.is_away_mode_active())
+	initial = registry.global_away() or bool(registry.cwd_overrides())
+	await backend.write_away_mode_mirror(None, initial)
 
 
 async def _run(config: Config) -> None:
@@ -217,6 +243,10 @@ async def _run(config: Config) -> None:
 		dispatch_inject_queue(registry, backend, logger)
 	)
 
+	away_cmd_task = asyncio.create_task(
+		dispatch_away_mode_commands(registry, backend, handlers, logger)
+	)
+
 	loop = asyncio.get_running_loop()
 
 	def _request_stop() -> None:
@@ -237,12 +267,15 @@ async def _run(config: Config) -> None:
 		dispatch_task.cancel()
 		spawn_task.cancel()
 		inject_task.cancel()
+		away_cmd_task.cancel()
 		with contextlib.suppress(asyncio.CancelledError):
 			await dispatch_task
 		with contextlib.suppress(asyncio.CancelledError):
 			await spawn_task
 		with contextlib.suppress(asyncio.CancelledError):
 			await inject_task
+		with contextlib.suppress(asyncio.CancelledError):
+			await away_cmd_task
 		await backend.aclose()
 
 

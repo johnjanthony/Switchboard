@@ -11,8 +11,10 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "turn-end-hook-away-mode.py"
 
+_DEFAULT_CWD_PAYLOAD = json.dumps({"cwd": "c:/work/switchboard"})
 
-def _run(cli: str, stdin: str = "{}", url_env: str | None = None) -> subprocess.CompletedProcess:
+
+def _run(cli: str, stdin: str = _DEFAULT_CWD_PAYLOAD, url_env: str | None = None) -> subprocess.CompletedProcess:
 	env = None
 	if url_env is not None:
 		import os
@@ -29,15 +31,20 @@ def _run(cli: str, stdin: str = "{}", url_env: str | None = None) -> subprocess.
 
 
 class _FakeServer:
-	"""Context manager that starts a tiny HTTP server returning a fixed payload."""
+	"""Context manager that starts a tiny HTTP server returning a fixed payload.
 
-	def __init__(self, payload: dict | None, status: int = 200, hang: bool = False):
+	Set `record_queries=True` to capture the raw path+query of each GET request.
+	"""
+
+	def __init__(self, payload: dict | None, status: int = 200, hang: bool = False, record_queries: bool = False):
 		self.payload = payload
 		self.status = status
 		self.hang = hang
+		self.record_queries = record_queries
 		self._thread = None
 		self._httpd = None
 		self.port = None
+		self.received_paths: list[str] = []
 
 	def __enter__(self):
 		import http.server
@@ -46,9 +53,11 @@ class _FakeServer:
 		payload = self.payload
 		status = self.status
 		hang = self.hang
+		received_paths = self.received_paths
 
 		class Handler(http.server.BaseHTTPRequestHandler):
 			def do_GET(self):
+				received_paths.append(self.path)
 				if hang:
 					import time
 					time.sleep(5)
@@ -116,7 +125,6 @@ def test_gemini_active_false_silent_exit():
 
 
 def test_connection_refused_silent_exit():
-	# Use a port that is guaranteed not to have a listener
 	r = _run("claude", url_env="http://127.0.0.1:1/away-mode")
 	assert r.returncode == 0
 	assert r.stdout.strip() == ""
@@ -155,17 +163,41 @@ def test_malformed_payload_silent_exit():
 	assert r.stdout.strip() == ""
 
 
-def test_stdin_is_ignored():
-	"""V1 does not parse stdin — hook must work with any payload."""
-	with _FakeServer({"active": True}) as srv:
-		r = _run("claude", stdin='{"garbage": true, "weird": [1,2,3]}', url_env=srv.url)
-	assert r.returncode == 0
-	out = json.loads(r.stdout)
-	assert out["decision"] == "block"
-
-
 def test_unknown_cli_exits_silently():
 	r = _run("notacli", url_env="http://127.0.0.1:1/away-mode")
-	# Must not crash or print to stdout — fail-open regardless
+	assert r.returncode == 0
+	assert r.stdout.strip() == ""
+
+
+def test_hook_sends_cwd_as_query_param():
+	"""Hook includes ?cwd=... in the URL it requests."""
+	with _FakeServer({"active": True}, record_queries=True) as srv:
+		r = _run("claude", stdin=json.dumps({"cwd": "c:/work/myproj"}), url_env=srv.url)
+	assert r.returncode == 0
+	assert len(srv.received_paths) == 1
+	assert "cwd=" in srv.received_paths[0]
+	assert "myproj" in srv.received_paths[0]
+
+
+def test_hook_missing_cwd_fail_open():
+	"""When stdin has no cwd field, hook fails open (exit 0, no block)."""
+	with _FakeServer({"active": True}) as srv:
+		r = _run("claude", stdin=json.dumps({"other": "data"}), url_env=srv.url)
+	assert r.returncode == 0
+	assert r.stdout.strip() == ""
+
+
+def test_hook_empty_stdin_fail_open():
+	"""Empty stdin means no cwd — hook fails open."""
+	with _FakeServer({"active": True}) as srv:
+		r = _run("claude", stdin="", url_env=srv.url)
+	assert r.returncode == 0
+	assert r.stdout.strip() == ""
+
+
+def test_hook_invalid_json_stdin_fail_open():
+	"""Malformed stdin JSON is treated as no cwd — hook fails open."""
+	with _FakeServer({"active": True}) as srv:
+		r = _run("claude", stdin="not json at all", url_env=srv.url)
 	assert r.returncode == 0
 	assert r.stdout.strip() == ""

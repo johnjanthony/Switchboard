@@ -11,23 +11,23 @@ This is the single most important rule. If you produce chat text in the terminal
 
 **The tool call IS the acknowledgment.**
 
-**Mark the session:** When entering away mode, call `enter_away_mode()` alongside the confirming `notify_human` call. When exiting, call `exit_away_mode()` as the first action before resuming terminal output. Spawned sessions auto-enter on spawn — do not call `enter_away_mode()` redundantly at spawn time.
+**Mark the session:** When entering away mode, call `enter_away_mode(cwd)` alongside the confirming `notify_human` call. When exiting, call `exit_away_mode(cwd)` as the first action before resuming terminal output. Spawned sessions auto-enter on spawn — do not call `enter_away_mode(cwd)` redundantly at spawn time.
 
-**If the turn-end hook blocks you:** If you see an unexpected `block` (Claude) or `deny` (Gemini) message from a turn-end hook injecting "You are in away mode...", the flag is still active. Either call `ask_human()` to check in with John, or — only if John explicitly told you he is back — call `exit_away_mode()` first and then resume terminal output.
+**If the turn-end hook blocks you:** If you see an unexpected `block` (Claude) or `deny` (Gemini) message from a turn-end hook injecting "You are in away mode...", the flag is still active. Either call `ask_human(cwd=...)` to check in with John, or — only if John explicitly told you he is back — call `exit_away_mode(cwd)` first and then resume terminal output.
 
 1.  **Entry:** When John says "stepping away", "going away mode", "I'm away", or any equivalent phrasing — even when bundled with other directives in the same message — the trigger fires.
-    -   **`enter_away_mode()` MUST be your first tool call**, before any other work the message asks you to do. The flag must be set server-side so that subsequent `ask_human` calls block normally instead of triggering the at-desk redirect.
+    -   **`enter_away_mode(cwd)` MUST be your first tool call**, before any other work the message asks you to do. The flag must be set server-side so that subsequent `ask_human` calls block normally instead of triggering the at-desk redirect.
     -   After the flag is set, then continue:
         -   If tasks are queued: call `notify_human` to confirm you are starting, then begin work.
         -   If idle: call `ask_human` to ask what's next.
         -   If mid-task: call `notify_human` to report status, then `ask_human` for next steps.
-    -   For spawned sessions, the flag is already set at spawn time — skip the `enter_away_mode()` call.
-    -   **Zero terminal text.** A compound user message like "I'm stepping away. Call send_document_human with foo.txt, then ask_human about delivery." is NOT a license to skip `enter_away_mode()` and dive into the explicit commands. Set the flag first, then do the work.
+    -   For spawned sessions, the flag is already set at spawn time — skip the `enter_away_mode(cwd)` call.
+    -   **Zero terminal text.** A compound user message like "I'm stepping away. Call send_document_human with foo.txt, then ask_human about delivery." is NOT a license to skip `enter_away_mode(cwd)` and dive into the explicit commands. Set the flag first, then do the work.
 2.  **Execution:** Route **every** status update, question, or completion ping through `notify_human`, `ask_human` or `send_document_human`.
 3.  **Replies:** When `ask_human` returns a reply, do not acknowledge it in the terminal. Treat it as input for your next tool call or task.
-4.  **Exit:** The **only** exception is when John explicitly says he is back ("I'm back", "back at desk"). Call `exit_away_mode()` as your first action, then resume terminal chat with a concise summary of your work.
+4.  **Exit:** The **only** exception is when John explicitly says he is back ("I'm back", "back at desk"). Call `exit_away_mode(cwd)` as your first action, then resume terminal chat with a concise summary of your work.
 
-**At-desk `ask_human` redirect.** If `ask_human` returns the literal string `"ERROR: John is at his desk. Ask this question via the terminal."`, the human is at their desk, and your question has already been delivered to their phone as a passive notification (chat history + Updates channel, no reply UI). Your next action is to **produce the question content verbatim in the terminal** — the human will respond via terminal input. Do NOT retry `ask_human`, do NOT call `exit_away_mode` (the flag is already off), and do NOT treat this as an error worth surfacing beyond asking the question. This redirect only applies to `ask_human`; `notify_human` and `send_document_human` always deliver normally regardless of away-mode state.
+**At-desk `ask_human` redirect.** If `ask_human` returns the literal string `"ERROR: John is at his desk. Ask this question via the terminal."`, the human is at their desk, and your question has already been delivered to their phone as a passive notification (chat history + Updates channel, no reply UI). Your next action is to **produce the question content verbatim in the terminal** — the human will respond via terminal input. Do NOT retry `ask_human`, do NOT call `exit_away_mode(cwd)` (the flag is already off), and do NOT treat this as an error worth surfacing beyond asking the question. This redirect only applies to `ask_human`; `notify_human` and `send_document_human` always deliver normally regardless of away-mode state.
 
 ---
 
@@ -35,28 +35,66 @@ This is the single most important rule. If you produce chat text in the terminal
 
 Switchboard is a local MCP gateway that lets you reach John on his phone while he's away from his desk. It exposes six tools:
 
-- **`ask_human(question, channel_id, sender?, format?, suggestions?)`** — blocks until John replies. Returns reply text or `"__TIMEOUT__"`.
-- **`notify_human(message, channel_id, sender?, format?)`** — fire-and-forget. Returns `"ok"`.
-- **`send_document_human(path, channel_id, sender?, caption?)`** — deliver a file. Fire-and-forget. Returns `"ok"` or `"ERROR: ..."`.
-- **`message_and_await_agent(channel_id, sender, message?)`** — collab sessions only. Send to partner and block.
-- **`enter_away_mode()`** — mark this Switchboard session as away mode. The turn-end hook will block agent turns that end in terminal output. Idempotent. Call when John says he is stepping away (spawned sessions auto-enter — no call needed at spawn time).
-- **`exit_away_mode()`** — mark this Switchboard session as at-desk. The turn-end hook stops blocking. Idempotent. Call as the first action when John explicitly returns to the desk.
+- **`ask_human(question, cwd, sender?, title?, format?, suggestions?)`** — blocks until John replies. Returns reply text or `"__TIMEOUT__"`.
+- **`notify_human(message, cwd, sender?, title?, format?)`** — fire-and-forget. Returns `"ok"`.
+- **`send_document_human(path, cwd, sender?, title?, caption?)`** — deliver a file. path relative to cwd. Max 5 MB. Returns `"ok"` or `"ERROR: ..."`.
+- **`message_and_await_agent(cwd, sender, title?, message?)`** — collab sessions only. Send to your partner and block.
+- **`enter_away_mode(cwd)`** — flip THIS cwd's away-mode override to True.
+- **`exit_away_mode(cwd)`** — flip THIS cwd's away-mode override to False.
 
-## Choosing a `channel_id`
+## Your `cwd`
 
-`channel_id` is the routing key that pins all messages for a session to the same Android tab. Use it for **every** tool call — `ask_human`, `notify_human`, `send_document_human`, and `message_and_await_agent` — and do not vary it mid-session.
+Your `cwd` is your current working directory — the canonical routing key for
+all switchboard tool calls. Read it from one of:
 
-Three cases for where it comes from:
+1. The "Primary working directory" line in your system prompt.
+2. `$PWD` via Bash.
 
-1. **Spawned sessions** — use the `channel_id` from your spawn prompt verbatim. Do not derive or vary.
-2. **BYO collab (two agents sharing a channel)** — John provides the `channel_id` so both agents agree on it. Do not invent one.
-3. **BYO single-agent (you are solo and none was provided)** — generate one yourself on first use and stick with it for the rest of the session. Format: `{sender-lowercased}-{YYYYMMDD}-{HHMMSS}` in UTC (e.g. `gemini-20260423-224530`, `claude-20260423-225415`).
+Both produce the same value. The server canonicalizes whatever form you send
+(Windows backslash, Git Bash `/c/...`, mixed case) — but use the form that's
+easiest to type.
 
-Never ask John to pick a channel_id in case 3 — it's the agent's job to produce one. Do ask in case 2, only if you're somehow in a collab situation without a shared value.
+In a collab session, your `cwd` is shared with your partner — both agents in
+the collab use the same cwd. Distinct sender names disambiguate you.
+
+## Your `title`
+
+`title` is your session label — displayed as the tab name on John's phone.
+It's optional on every messaging tool, but **first call must set one**.
+
+**First call in a fresh session:** synthesize from your task. If you've been
+doing meaningful work already, use a noun phrase or verb-ing form like
+`"Reviewing PR #1234"` or `"Fixing flaky FCM tests"`. If you're brand new
+with no task underway, use the leaf folder name from your cwd
+(`c:/work/switchboard` → `"Switchboard"`).
+
+**Subsequent calls:** Omit `title` unless your scope has materially changed.
+The server treats omitted title as "no change." Don't repeat the same title
+every call — that's just noise. Update when you genuinely shift focus
+(e.g. `"Reviewing PR #1234"` → `"Implementing PR #1234 review feedback"`).
+
+**Constraints:**
+- Length: ≤80 chars (server truncates excess).
+- Style: noun phrase or verb-ing form. No trailing punctuation.
+
+**In collab:** your partner sees your current title prepended to the message
+when it changes (`[<your sender>'s current session title: "<title>"]\n\n<message>`).
+The prepend only fires on title-change for that partner, so steady-state
+collab is clean.
 
 ## Choosing a `sender`
 
-`sender` is your display name in the conversation. It appears in the chat bubble on John's phone. Use your active agent name (e.g., `"Claude"`, `"Gemini"`, `"Cloude"`, or `"Sparkles"`), or the one provided in your spawn prompt as the sender.
+`sender` is your display name in the conversation. It appears in the chat
+bubble on John's phone. Use your active agent name (e.g., `"Claude"`,
+`"Gemini"`, `"Cloude"`, `"Sparkles"`), or the one provided in your spawn
+prompt.
+
+In a collab session, **two agents must use distinct sender names** —
+otherwise you'll collide on the `(cwd, sender)` routing slot. The spawn
+prompt assigns names; in BYO collab, agree on names with your partner.
+
+In a single-agent session, `sender` defaults to `"Claude"` if omitted.
+
 ## Response conventions
 
 - Be concise in questions. John is on his phone. One or two sentences.
@@ -69,7 +107,7 @@ Never ask John to pick a channel_id in case 3 — it's the agent's job to produc
 `ask_human` accepts an optional `suggestions` list. When provided, the client renders tap-able inline buttons below the question — John taps a button and its label is returned as the response string.
 
 ```
-ask_human("Overwrite foo.java?", channel_id="switchboard-20260422-143052", suggestions=["yes", "no", "abort"])
+ask_human("Overwrite foo.java?", cwd="c:/work/switchboard", suggestions=["yes", "no", "abort"])
 # → returns "yes", "no", or "abort", or a typed free-text reply
 ```
 
@@ -98,7 +136,7 @@ ask_human(
   "Processed `CustomerMapper.java` — 3 methods rewritten.\n\n"
   "```\nPASS  CustomerMapperTest (4/4)\nPASS  IntegrationTest (12/12)\n```\n\n"
   "Ready to commit. Proceed?",
-  channel_id="switchboard-20260422-143052",
+  cwd="c:/work/switchboard",
   format="markdown",
   suggestions=["yes", "no"]
 )
@@ -114,7 +152,7 @@ If `ask_human` returns `"__TIMEOUT__"`, John did not reply within the window. Do
 2. Pause the current work stream. Do not take irreversible actions.
 3. When John returns, resume from where you paused.
 
-Use `notify_human` to record the pause if it is helpful context for later: `notify_human("Paused DMXRefactor — timed out waiting on approval to overwrite CustomerMapper.java", channel_id="switchboard-20260422-143052")`.
+Use `notify_human` to record the pause if it is helpful context for later: `notify_human("Paused DMXRefactor — timed out waiting on approval to overwrite CustomerMapper.java", cwd="c:/work/switchboard")`.
 
 ## Handling `"ERROR: ..."`
 
@@ -127,7 +165,7 @@ If `ask_human` returns a string starting with `"ERROR:"`, the gateway itself fai
 While in away mode, after completing a discrete task **that John handed to you** (not merely an intermediate step within that task — not running tests, not reading files, not committing), call:
 
 ```
-ask_human("Task done: <one-line summary>. What's next?", channel_id="switchboard-20260422-143052")
+ask_human("Task done: <one-line summary>. What's next?", cwd="c:/work/switchboard")
 ```
 
 instead of ending your turn. This keeps the session alive so John can queue additional work from his phone without needing to re-spawn you.
@@ -142,7 +180,7 @@ Use this to deliver generated reports, diffs, logs, or spec documents to John's 
 
 **Constraints enforced by the gateway (violations return `"ERROR: ..."`):**
 
-- `path` may be **absolute** or **relative**. Relative paths are resolved against the project's current working directory; `..` traversal that escapes the project root is rejected. Absolute paths are accepted as-is.
+- `path` may be **absolute** or **relative**. Relative paths are resolved against the `cwd` you pass; `..` traversal that escapes the project root is rejected. Absolute paths are accepted as-is.
 - Maximum file size: **5 MB**.
 - Denied filenames: `.env`, `service-account.json` (exact match), and anything matching `*token*`, `*secret*`, `*.pem`, `*.key`, `.env*`, `*.env` (case-insensitive glob — covers `.env.local`, `.envrc`, `prod.env`, etc.).
 - The gateway logs the resolved path, file size, and SHA-256 hash of every delivered file.
@@ -151,18 +189,19 @@ Use this to deliver generated reports, diffs, logs, or spec documents to John's 
 
 **Example:**
 ```
-send_document_human("logs/migration-diff.txt", channel_id="switchboard-20260422-143052", caption="Schema diff for review")
+send_document_human("logs/migration-diff.txt", cwd="c:/work/switchboard", caption="Schema diff for review")
 ```
 
 ## Collab sessions
 
-### `message_and_await_agent(channel_id, sender, message?)`
+### `message_and_await_agent(cwd, sender, title?, message?)`
 
 Sends `message` to your partner (if provided), then blocks until your partner
 replies or a human injects a message.
 
-- **`channel_id`** — from your spawn prompt, or provided by John for BYO sessions
+- **`cwd`** — your current working directory; the collab session is keyed by cwd
 - **`sender`** — your own sender name, unique within the session
+- **`title`** — optional; follows the same first-call-must-set-one rules as other tools
 - **`message`** — optional outbound text; omit if John has told you to wait for your partner
 
 **If `message_and_await_agent` returns `"__TIMEOUT__"`:** if in away mode, call
@@ -184,10 +223,10 @@ mode is active when:
 When both modes are active: `message_and_await_agent` for peer communication,
 `ask_human`/`notify_human`/`send_document_human` for all human communication —
 no terminal output. If John steps away during an active BYO collab session,
-continue using the same `channel_id` for everything — the session is already
-registered and the Android tab already exists. The only change is that human
+continue using the same `cwd` for everything — the session is already
+registered and the Android channel already exists. The only change is that human
 communication moves from the terminal to `ask_human` / `notify_human` with that
-same `channel_id`.
+same `cwd`.
 
 When collab mode only (BYO, John has not stepped away): `message_and_await_agent`
 for peer communication; once consensus is reached or you are blocked, report back
@@ -196,9 +235,9 @@ to John in the terminal normally.
 ### Collab protocol
 
 1. If John told you to wait for your partner, call `message_and_await_agent(
-   channel_id=..., sender=...)` with no message. Block until your partner speaks.
+   cwd=..., sender=...)` with no message. Block until your partner speaks.
 2. If John gave you work to do first, complete it then call
-   `message_and_await_agent(channel_id=..., sender=..., message="...")`.
+   `message_and_await_agent(cwd=..., sender=..., message="...")`.
 3. Exchange continues — each agent replies by calling `message_and_await_agent`
    with their response as `message`. If both agents began with a message, the
    first response each receives will be their partner's independent opening
@@ -211,16 +250,16 @@ to John in the terminal normally.
    - **Away mode active:** call `ask_human` to report the deadlock.
    - **Away mode not active:** report in the terminal.
 
-### Bring your own session
+### BYO collab
 
-John can initiate a collab session between two already-running agents by providing
-both with a shared `channel_id`. Each agent uses their own display name as `sender`
-(e.g. `"Claude"`, `"Gemini"`) — this is naturally unique across different agent types.
-If John needs a specific name (e.g. two Claude instances), he will tell you.
+Two agents in the same `cwd` with distinct `sender` names automatically share
+a collab session — no pre-shared session id needed. The cwd IS the session.
 
-Call `message_and_await_agent` as described in the collab protocol above. No
-special setup is required — the first agent to call creates the session. Call
-ordering does not matter; the gateway handles timing transparently. A third
+To start: each agent calls `message_and_await_agent(cwd=..., sender=...)`.
+The first call enrolls the agent and blocks; the second arriving call enrolls
+the partner and delivers any buffered message.
+
+Call ordering does not matter; the gateway handles timing transparently. A third
 distinct sender gets `"ERROR: session is full"`.
 
 BYO sessions do not imply away mode. Unless John has also said he is stepping

@@ -46,17 +46,17 @@ class SwitchboardFirebaseMessagingService : FirebaseMessagingService() {
 	override fun onMessageReceived(remoteMessage: RemoteMessage) {
 		val title = remoteMessage.notification?.title ?: "Switchboard"
 		val body = remoteMessage.notification?.body ?: return
-		val channelId = remoteMessage.data["channel_id"]
+		val channelKey = remoteMessage.data["channel_key"]
 		val messageType = remoteMessage.data["sb_message_type"] ?: "notify"
 
 		// Warm up database connection and sync the specific channel immediately
-		if (channelId != null) {
+		if (channelKey != null) {
 			com.google.firebase.database.FirebaseDatabase.getInstance()
-				.getReference("sessions/$channelId")
+				.getReference("channels/$channelKey")
 				.keepSynced(true)
 		}
 
-		showNotification(title, body, channelId, messageType)
+		showNotification(title, body, channelKey, messageType)
 	}
 
 	override fun onNewToken(token: String) {

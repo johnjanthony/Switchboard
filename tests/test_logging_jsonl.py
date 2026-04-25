@@ -172,3 +172,73 @@ def test_away_mode_exited_without_reason(tmp_path):
 	event = json.loads(contents.splitlines()[-1])
 	assert event["event"] == "away_mode_exited"
 	assert "reason" not in event
+
+
+def test_cwd_canonicalized_writes_expected_fields(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.cwd_canonicalized("/C/Work/Foo", "c:/work/foo")
+	ev = read_events(tmp_path / "log.jsonl")[0]
+	assert ev["event"] == "cwd_canonicalized"
+	assert ev["raw"] == "/C/Work/Foo"
+	assert ev["canonical"] == "c:/work/foo"
+	assert "ts" in ev
+
+
+def test_pending_superseded_writes_expected_fields(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.pending_superseded("c:/work/foo", "Claude", "req-old", "req-new")
+	ev = read_events(tmp_path / "log.jsonl")[0]
+	assert ev["event"] == "pending_superseded"
+	assert ev["cwd"] == "c:/work/foo"
+	assert ev["sender"] == "Claude"
+	assert ev["prior_request_id"] == "req-old"
+	assert ev["new_request_id"] == "req-new"
+	assert "ts" in ev
+
+
+def test_away_mode_global_changed_true(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.away_mode_global_changed(True)
+	ev = read_events(tmp_path / "log.jsonl")[0]
+	assert ev["event"] == "away_mode_global_changed"
+	assert ev["active"] is True
+	assert "ts" in ev
+
+
+def test_away_mode_global_changed_false(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.away_mode_global_changed(False)
+	ev = read_events(tmp_path / "log.jsonl")[0]
+	assert ev["active"] is False
+
+
+def test_away_mode_cwd_changed_writes_expected_fields(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.away_mode_cwd_changed("c:/work/switchboard", True)
+	ev = read_events(tmp_path / "log.jsonl")[0]
+	assert ev["event"] == "away_mode_cwd_changed"
+	assert ev["cwd"] == "c:/work/switchboard"
+	assert ev["active"] is True
+	assert "ts" in ev
+
+
+def test_spawn_collision_detected_writes_expected_fields(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	logger.spawn_collision_detected("c:/work/rpdm", "spawn-id-abc123")
+	ev = read_events(tmp_path / "log.jsonl")[0]
+	assert ev["event"] == "spawn_collision_detected"
+	assert ev["cwd"] == "c:/work/rpdm"
+	assert ev["spawn_id"] == "spawn-id-abc123"
+	assert "ts" in ev
+
+
+def test_title_truncated_writes_expected_fields(tmp_path):
+	logger = JsonlLogger(tmp_path / "log.jsonl")
+	long_title = "x" * 120
+	logger.title_truncated("c:/work/foo", 120, long_title[:80])
+	ev = read_events(tmp_path / "log.jsonl")[0]
+	assert ev["event"] == "title_truncated"
+	assert ev["cwd"] == "c:/work/foo"
+	assert ev["original_length"] == 120
+	assert ev["truncated"] == long_title[:80]
+	assert "ts" in ev

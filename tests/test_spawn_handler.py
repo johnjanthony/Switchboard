@@ -70,7 +70,7 @@ async def test_form1_no_args_uses_spawn_root_and_default_prompt(spawn_dirs):
 	channel_id = pending["channel_id"]
 	assert _re.match(r".+-\d{8}-\d{6}$", channel_id)
 
-	expected = f"{_BASE_INSTRUCTION.format(channel_id=channel_id)} {_DEFAULT_PROMPT}"
+	expected = f"{_BASE_INSTRUCTION.format(sender_default='Claude')} {_DEFAULT_PROMPT}"
 	assert pending["prompt"] == expected
 	assert pending["project_path"] == str(spawn_dirs)
 	mock_run.assert_called_once()
@@ -87,8 +87,7 @@ async def test_form2_subdir_no_prompt(spawn_dirs):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen")
 	pending = json.loads(_pending_path(cfg).read_text())
-	channel_id = pending["channel_id"]
-	expected = f"{_BASE_INSTRUCTION.format(channel_id=channel_id)} {_DEFAULT_PROMPT}"
+	expected = f"{_BASE_INSTRUCTION.format(sender_default='Claude')} {_DEFAULT_PROMPT}"
 	assert pending["prompt"] == expected
 	assert pending["project_path"] == str(spawn_dirs / "rpdm" / "next-gen")
 	backend.send_spawn_ack.assert_called_once()
@@ -103,8 +102,7 @@ async def test_form3_no_path_with_prompt(spawn_dirs):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn fix the migration")
 	pending = json.loads(_pending_path(cfg).read_text())
-	channel_id = pending["channel_id"]
-	expected = f"{_BASE_INSTRUCTION.format(channel_id=channel_id)} fix the migration"
+	expected = f"{_BASE_INSTRUCTION.format(sender_default='Claude')} fix the migration"
 	assert pending["prompt"] == expected
 	assert pending["project_path"] == str(spawn_dirs)
 	backend.send_spawn_ack.assert_called_once()
@@ -119,8 +117,7 @@ async def test_form4_subdir_with_prompt(spawn_dirs):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen fix the migration")
 	pending = json.loads(_pending_path(cfg).read_text())
-	channel_id = pending["channel_id"]
-	expected = f"{_BASE_INSTRUCTION.format(channel_id=channel_id)} fix the migration"
+	expected = f"{_BASE_INSTRUCTION.format(sender_default='Claude')} fix the migration"
 	assert pending["prompt"] == expected
 	assert pending["project_path"] == str(spawn_dirs / "rpdm" / "next-gen")
 	backend.send_spawn_ack.assert_called_once()
@@ -235,7 +232,7 @@ async def test_single_spawn_auto_enters_away_mode(spawn_dirs):
 	with patch("server.spawn.subprocess.run"):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen do stuff")
-	assert registry.is_away_mode_active() is True
+	assert registry.global_away() is True
 
 
 @pytest.mark.asyncio
@@ -247,7 +244,7 @@ async def test_collab_spawn_auto_enters_away_mode(spawn_dirs):
 	with patch("server.spawn.subprocess.run"):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen --collab review this")
-	assert registry.is_away_mode_active() is True
+	assert registry.global_away() is True
 
 
 @pytest.mark.asyncio
@@ -259,7 +256,7 @@ async def test_single_spawn_does_not_set_away_mode_on_schtasks_failure(spawn_dir
 	with patch("server.spawn.subprocess.run", side_effect=RuntimeError("schtasks boom")):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen do stuff")
-	assert registry.is_away_mode_active() is False
+	assert registry.global_away() is False
 
 
 # --- /away-mode command dispatch ---
@@ -278,11 +275,11 @@ async def test_away_mode_on_command_sets_flag_and_audits(tmp_path):
 	backend = make_backend()
 	registry = Registry(away_mode_path=tmp_path / "away.json")
 	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
-	assert registry.is_away_mode_active() is False
+	assert registry.global_away() is False
 
 	await handler.handle("/away-mode on")
 
-	assert registry.is_away_mode_active() is True
+	assert registry.global_away() is True
 	events = _read_events(cfg)
 	entered = [e for e in events if e.get("event") == "away_mode_entered"]
 	assert entered and entered[-1].get("reason") == "android"
@@ -294,12 +291,12 @@ async def test_away_mode_off_command_clears_flag_and_audits(tmp_path):
 	cfg = make_config(tmp_path, spawn_root=tmp_path)
 	backend = make_backend()
 	registry = Registry(away_mode_path=tmp_path / "away.json")
-	registry.set_away_mode(True)
+	registry.set_global_away(True)
 	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 
 	await handler.handle("/away-mode off")
 
-	assert registry.is_away_mode_active() is False
+	assert registry.global_away() is False
 	events = _read_events(cfg)
 	exited = [e for e in events if e.get("event") == "away_mode_exited"]
 	assert exited and exited[-1].get("reason") == "android"
@@ -315,7 +312,7 @@ async def test_away_mode_unknown_subcommand_is_ignored(tmp_path):
 
 	await handler.handle("/away-mode wobble")
 
-	assert registry.is_away_mode_active() is False
+	assert registry.global_away() is False
 	events = _read_events(cfg)
 	# Must not have emitted entered/exited audit events
 	assert not any(
@@ -332,7 +329,7 @@ async def test_away_mode_unknown_subcommand_is_ignored(tmp_path):
 
 @pytest.mark.asyncio
 async def test_spawn_command_still_works(spawn_dirs):
-	from server.spawn import SpawnHandler, _BASE_INSTRUCTION, _DEFAULT_PROMPT
+	from server.spawn import SpawnHandler
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
 	registry = Registry(away_mode_path=spawn_dirs / "away.json")
@@ -342,3 +339,136 @@ async def test_spawn_command_still_works(spawn_dirs):
 	# Sanity: /spawn still routes to the spawn path (pending file written).
 	pending = _pending_path(cfg)
 	assert pending.exists()
+
+
+# --- submit / resolve_collision ---
+
+def make_collision_backend(has_messages_result: bool = False, meta: dict | None = None) -> MagicMock:
+	backend = make_backend()
+	backend.has_messages = AsyncMock(return_value=has_messages_result)
+	backend.read_channel_meta = AsyncMock(return_value=meta or {
+		"title": "My Channel",
+		"last_activity_at": "2026-04-24T10:00:00+00:00",
+		"hidden": False,
+	})
+	backend.write_spawn_collision_prompt = AsyncMock()
+	backend.clear_spawn_collision_prompt = AsyncMock()
+	backend.wipe_channel = AsyncMock()
+	backend.set_channel_hidden = AsyncMock()
+	return backend
+
+
+@pytest.mark.asyncio
+async def test_submit_no_collision_proceeds_silently(tmp_path):
+	from server.spawn import SpawnHandler
+	cfg = make_config(tmp_path)
+	backend = make_collision_backend(has_messages_result=False)
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+	result = await handler.submit("c:/work/foo", ["claude"])
+	assert "collision" not in result
+	backend.write_spawn_collision_prompt.assert_not_called()
+	backend.clear_spawn_collision_prompt.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_submit_collision_returns_dialog_data(tmp_path):
+	from server.spawn import SpawnHandler
+	cfg = make_config(tmp_path)
+	backend = make_collision_backend(has_messages_result=True, meta={
+		"title": "RPDM Review",
+		"last_activity_at": "2026-04-24T09:00:00+00:00",
+		"hidden": False,
+	})
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+	result = await handler.submit("c:/work/rpdm", ["claude"])
+	assert result["collision"] is True
+	assert "spawn_id" in result
+	assert result["channel_title"] == "RPDM Review"
+	assert result["last_activity_at"] == "2026-04-24T09:00:00+00:00"
+	assert result["hidden"] is False
+	backend.write_spawn_collision_prompt.assert_called_once()
+	# pending entry stored
+	spawn_id = result["spawn_id"]
+	assert spawn_id in handler._pending_collisions
+
+
+@pytest.mark.asyncio
+async def test_submit_collision_logs_event(tmp_path):
+	from server.spawn import SpawnHandler
+	cfg = make_config(tmp_path)
+	backend = make_collision_backend(has_messages_result=True)
+	logger = JsonlLogger(cfg.log_path)
+	handler = SpawnHandler(cfg, backend, logger, Registry())
+	result = await handler.submit("c:/work/rpdm", ["claude"])
+	events = [json.loads(line) for line in Path(cfg.log_path).read_text().splitlines() if line]
+	collision_events = [e for e in events if e["event"] == "spawn_collision_detected"]
+	assert len(collision_events) == 1
+	assert collision_events[0]["spawn_id"] == result["spawn_id"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_collision_continue_launches_without_wiping(tmp_path):
+	from server.spawn import SpawnHandler
+	cfg = make_config(tmp_path)
+	backend = make_collision_backend(has_messages_result=True)
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+	collision = await handler.submit("c:/work/rpdm", ["claude"])
+	spawn_id = collision["spawn_id"]
+	result = await handler.resolve_collision(spawn_id, "continue")
+	assert "launched" in result
+	backend.wipe_channel.assert_not_called()
+	backend.clear_spawn_collision_prompt.assert_called_once()
+	assert spawn_id not in handler._pending_collisions
+
+
+@pytest.mark.asyncio
+async def test_resolve_collision_clear_wipes_and_launches(tmp_path):
+	from server.spawn import SpawnHandler
+	cfg = make_config(tmp_path)
+	backend = make_collision_backend(has_messages_result=True)
+	registry = Registry()
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+	collision = await handler.submit("c:/work/rpdm", ["claude"])
+	spawn_id = collision["spawn_id"]
+	result = await handler.resolve_collision(spawn_id, "clear")
+	assert "launched" in result
+	backend.wipe_channel.assert_called_once_with("c:/work/rpdm")
+	backend.set_channel_hidden.assert_called_once_with("c:/work/rpdm", False)
+	assert registry.is_away_mode_active("c:/work/rpdm") is True
+	backend.clear_spawn_collision_prompt.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_resolve_collision_cancel_aborts(tmp_path):
+	from server.spawn import SpawnHandler
+	cfg = make_config(tmp_path)
+	backend = make_collision_backend(has_messages_result=True)
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+	collision = await handler.submit("c:/work/rpdm", ["claude"])
+	spawn_id = collision["spawn_id"]
+	result = await handler.resolve_collision(spawn_id, "cancel")
+	assert result == {"cancelled": True}
+	backend.wipe_channel.assert_not_called()
+	backend.clear_spawn_collision_prompt.assert_called_once_with(spawn_id)
+	assert spawn_id not in handler._pending_collisions
+
+
+@pytest.mark.asyncio
+async def test_resolve_collision_unknown_spawn_id_returns_error(tmp_path):
+	from server.spawn import SpawnHandler
+	cfg = make_config(tmp_path)
+	backend = make_collision_backend()
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+	result = await handler.resolve_collision("nonexistent-id", "continue")
+	assert "error" in result
+	assert "unknown spawn_id" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_submit_invalid_cwd_returns_error(tmp_path):
+	from server.spawn import SpawnHandler
+	cfg = make_config(tmp_path)
+	backend = make_collision_backend()
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+	result = await handler.submit("not-absolute", ["claude"])
+	assert "error" in result

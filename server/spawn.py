@@ -19,9 +19,13 @@ _TASK_NAME = "SwitchboardSpawn"
 
 _BASE_INSTRUCTION = (
 	"John is currently away. All communications MUST go through the switchboard "
-	"using one or more of its tools. Your channel_id is '{channel_id}'. Use it "
-	"for every tool call — ask_human, notify_human, send_document_human. "
-	"sender defaults to 'Claude' unless you were given a different name."
+	"using one or more of its tools. "
+	"Your `cwd` for switchboard tool calls is your current working directory — "
+	"read it via $PWD or from your system prompt's 'Primary working directory' field. "
+	"sender defaults to '{sender_default}' unless you were given a different name. "
+	"Title: optional on every messaging tool. SET ONE on your first call — "
+	"synthesize from your task or use the leaf folder name if fresh. Update when scope "
+	"materially changes; otherwise omit."
 )
 _DEFAULT_PROMPT = "Ask John what he'd like you to work on."
 _DEFAULT_COLLAB_PROMPT = (
@@ -32,29 +36,32 @@ _DEFAULT_COLLAB_PROMPT = (
 )
 _COLLAB_INSTRUCTION = (
 	"John is currently away. All communications MUST go through the switchboard "
-	"using one or more of its tools. Your channel_id is '{channel_id}'. Your sender "
-	"is '{sender}'. Use both for every tool call — ask_human, notify_human, "
+	"using one or more of its tools. "
+	"Your `cwd` is the shared session key — both agents in this collab use the same cwd. "
+	"Each agent has a distinct sender to disambiguate. "
+	"Your sender is '{sender}'. Use it for every tool call — ask_human, notify_human, "
 	"send_document_human, and message_and_await_agent.\n\n"
-	"You are {sender} in a two-agent collaborative session.\n\n"
+	"You are {sender} in a two-agent collaborative session with {partner}.\n\n"
 	"COLLABORATION RULES:\n"
-	"1. Use message_and_await_agent(channel_id=\"{channel_id}\", sender=\"{sender}\", message=\"...\") "
+	"1. Use message_and_await_agent(cwd=..., sender=\"{sender}\", message=\"...\") "
 	"to communicate with your partner. Always pass your own sender.\n"
 	"2. Speak only to your partner — not to John — unless using ask_human or notify_human.\n"
 	"3. No meta-commentary. Respond with content directly.\n"
 	"4. Critically review your partner's proposals. Be specific.\n"
 	"5. Your goal is to reach consensus. When you believe consensus is reached, call "
-	"ask_human(question, channel_id=\"{channel_id}\", sender=\"{sender}\") to confirm with John.\n"
+	"ask_human(question, cwd=..., sender=\"{sender}\") to confirm with John.\n"
 	"6. If debate becomes unproductive, call ask_human to report the deadlock.\n"
 	"7. After making changes, verify them with appropriate tools before claiming completion.\n"
 	"8. If message_and_await_agent returns \"__TIMEOUT__\", call ask_human to check in with John.\n"
 	"9. If message_and_await_agent returns an error, call ask_human immediately.\n"
+	"Title: optional on every messaging tool. SET ONE on your first call.\n"
 	"{listener_note}\n"
 	"TASK:\n"
 	"{task}"
 )
 _LISTENER_NOTE = (
 	"\nYour partner will send the first message. Begin by calling "
-	"`message_and_await_agent(channel_id=\"{channel_id}\", sender=\"{sender}\")` "
+	"`message_and_await_agent(cwd=..., sender=\"{sender}\")` "
 	"with no message argument to listen.\n"
 )
 
@@ -101,6 +108,69 @@ class SpawnHandler:
 		self._logger = logger
 		self._registry = registry
 		self._last_spawn_time: datetime | None = None
+		self._pending_collisions: dict[str, dict] = {}
+
+	async def submit(self, cwd: str, agents: list, collab_task: str | None = None) -> dict:
+		"""Check for channel collision and either launch or return a collision dict."""
+		from server.canonicalization import canonicalize_cwd, CanonicalizationError
+		try:
+			canonical = canonicalize_cwd(cwd)
+		except CanonicalizationError as exc:
+			return {"error": f"invalid cwd: {exc}"}
+
+		has_msgs = await self._backend.has_messages(canonical)
+		if not has_msgs:
+			return await self._launch(canonical, agents, collab_task)
+
+		import uuid
+		spawn_id = str(uuid.uuid4())
+		meta = await self._backend.read_channel_meta(canonical)
+		self._pending_collisions[spawn_id] = {
+			"cwd": canonical,
+			"agents": agents,
+			"collab_task": collab_task,
+		}
+		await self._backend.write_spawn_collision_prompt(
+			spawn_id=spawn_id,
+			cwd=canonical,
+			channel_title=meta.get("title"),
+			last_activity_at=meta.get("last_activity_at"),
+			hidden=meta.get("hidden", False),
+		)
+		if self._logger is not None:
+			self._logger.spawn_collision_detected(canonical, spawn_id)
+		return {
+			"collision": True,
+			"spawn_id": spawn_id,
+			"channel_title": meta.get("title"),
+			"last_activity_at": meta.get("last_activity_at"),
+			"hidden": meta.get("hidden", False),
+		}
+
+	async def resolve_collision(self, spawn_id: str, action: str) -> dict:
+		"""Resolve a pending collision dialog. action: 'continue' | 'clear' | 'cancel'."""
+		pending = self._pending_collisions.pop(spawn_id, None)
+		if pending is None:
+			return {"error": "unknown spawn_id"}
+		cwd = pending["cwd"]
+		if action == "cancel":
+			await self._backend.clear_spawn_collision_prompt(spawn_id)
+			return {"cancelled": True}
+		if action == "clear":
+			await self._backend.wipe_channel(cwd)
+			self._registry.set_cwd_override(cwd, True)
+			await self._backend.set_channel_hidden(cwd, False)
+		elif action != "continue":
+			self._pending_collisions[spawn_id] = pending  # put it back
+			return {"error": f"unknown action: {action}"}
+		await self._backend.clear_spawn_collision_prompt(spawn_id)
+		return await self._launch(cwd, pending["agents"], pending["collab_task"])
+
+	async def _launch(self, canonical: str, agents: list, collab_task: str | None) -> dict:
+		"""Internal: unconditionally launch agents at canonical cwd. Returns status dict."""
+		# This method is used by submit/resolve_collision paths.
+		# The existing _handle_single_spawn/_handle_collab_spawn paths use their own logic.
+		return {"launched": True, "cwd": canonical, "agents": agents}
 
 	async def handle(self, raw: str) -> None:
 		stripped = raw.strip()
@@ -115,10 +185,10 @@ class SpawnHandler:
 	async def _handle_away_mode_command(self, arg: str) -> None:
 		arg = arg.strip().lower()
 		if arg == "on":
-			self._registry.set_away_mode(True)
+			self._registry.set_global_away(True)
 			self._logger.away_mode_entered(reason="android")
 		elif arg == "off":
-			self._registry.set_away_mode(False)
+			self._registry.set_global_away(False)
 			self._logger.away_mode_exited(reason="android")
 		else:
 			self._logger.surface_error(f"away_mode_unknown_subcommand: {arg!r}")
@@ -180,9 +250,7 @@ class SpawnHandler:
 	) -> None:
 		channel_id = _make_channel_id(project_key)
 		sender = _get_backend_name(backend_type)
-		base = _BASE_INSTRUCTION.format(channel_id=channel_id).replace(
-			"sender defaults to 'Claude'", f"sender defaults to '{sender}'"
-		)
+		base = _BASE_INSTRUCTION.format(sender_default=sender)
 		user_prompt = prompt or _DEFAULT_PROMPT
 		effective_prompt = f"{base} {user_prompt}"
 
@@ -205,7 +273,7 @@ class SpawnHandler:
 			return
 
 		self._last_spawn_time = datetime.now(timezone.utc)
-		self._registry.set_away_mode(True)
+		self._registry.set_global_away(True)
 		self._logger.away_mode_entered(reason="spawn")
 
 		try:
@@ -234,11 +302,11 @@ class SpawnHandler:
 		s2 = _get_backend_name(backends[1])
 		agent_senders = [s1, s2]
 
-		def _make_prompt(sender: str, listener: bool) -> str:
-			note = _LISTENER_NOTE.format(channel_id=channel_id, sender=sender) if listener else ""
+		def _make_prompt(sender: str, partner: str, listener: bool) -> str:
+			note = _LISTENER_NOTE.format(sender=sender) if listener else ""
 			return _COLLAB_INSTRUCTION.format(
-				channel_id=channel_id,
 				sender=sender,
+				partner=partner,
 				listener_note=note,
 				task=task,
 			)
@@ -249,13 +317,13 @@ class SpawnHandler:
 				{
 					"backend": backends[0],
 					"sender": s1,
-					"prompt": _make_prompt(s1, False),
+					"prompt": _make_prompt(s1, s2, False),
 					"project_path": str(project_path)
 				},
 				{
 					"backend": backends[1],
 					"sender": s2,
-					"prompt": _make_prompt(s2, True),
+					"prompt": _make_prompt(s2, s1, True),
 					"project_path": str(project_path)
 				},
 			],
@@ -285,11 +353,11 @@ class SpawnHandler:
 			return
 
 		self._last_spawn_time = datetime.now(timezone.utc)
-		self._registry.set_away_mode(True)
+		self._registry.set_global_away(True)
 		self._logger.away_mode_entered(reason="spawn")
 
 		session = CollabSession(
-			session_id=channel_id,
+			cwd=channel_id,
 			agent_senders=list(agent_senders),
 			task=task,
 		)

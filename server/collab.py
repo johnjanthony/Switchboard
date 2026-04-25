@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 @dataclass
 class CollabSession:
-	session_id: str
+	cwd: str
 	agent_senders: list[str]
 	task: str
 	is_byo: bool = False

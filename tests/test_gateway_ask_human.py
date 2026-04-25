@@ -1,14 +1,18 @@
-"""Happy-path test for the ask_human tool handler."""
+"""Happy-path and edge-case tests for the ask_human tool handler."""
 
 import asyncio
 
 import pytest
 
 from server.config import Config
-from server.gateway import build_tool_handlers
+from server.gateway import build_tool_handlers, dispatch_responses
 from server.logging_jsonl import JsonlLogger
+from server.messenger import IncomingResponse
 from server.registry import Registry
 from tests.test_gateway_notify_human import RecordingBackend
+
+_CWD = "c:/work/sw"
+_SENDER = "Claude"
 
 
 @pytest.fixture
@@ -30,24 +34,19 @@ def logger(cfg):
 async def test_ask_human_returns_response_when_resolved(cfg, logger):
 	backend = RecordingBackend()
 	registry = Registry()
-	registry.set_away_mode(True)
+	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	task = asyncio.create_task(handlers.ask_human("Overwrite foo?", "ir2-chan-001"))
+	task = asyncio.create_task(handlers.ask_human("Overwrite foo?", _CWD))
 	await asyncio.sleep(0)
-	resolved = registry.resolve_by_correlation(1000, "yes")
-	assert resolved is not None
+	req_id = registry.resolve(cwd=_CWD, sender=_SENDER, text="yes")
+	assert req_id is not None
 	result = await asyncio.wait_for(task, timeout=1.0)
 	assert result == "yes"
 	assert len(backend.sent_questions) == 1
 	assert len(backend.sent_confirmations) == 1
 	_, _, correlation, response_text = backend.sent_confirmations[0]
-	assert correlation == 1000
 	assert response_text == "yes"
-
-
-from server.gateway import dispatch_responses
-from server.messenger import IncomingResponse
 
 
 class YieldingBackend(RecordingBackend):
@@ -64,11 +63,12 @@ class YieldingBackend(RecordingBackend):
 @pytest.mark.asyncio
 async def test_dispatch_loop_routes_responses_to_registry(cfg, logger):
 	registry = Registry()
-	registry.set_away_mode(True)
-	backend = YieldingBackend([IncomingResponse(correlation=1000, text="yes")])
+	registry.set_cwd_override(_CWD, True)
+	# Dispatch uses tuple correlation (cwd, sender)
+	backend = YieldingBackend([IncomingResponse(correlation=(_CWD, _SENDER), text="yes")])
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	ask_task = asyncio.create_task(handlers.ask_human("q", "ir2-chan-001"))
+	ask_task = asyncio.create_task(handlers.ask_human("q", _CWD))
 	await asyncio.sleep(0)  # let ask_human register
 	dispatch_task = asyncio.create_task(
 		dispatch_responses(registry, backend, logger)
@@ -89,7 +89,7 @@ async def test_dispatch_loop_routes_responses_to_registry(cfg, logger):
 async def test_dispatch_loop_logs_unknown_correlation(cfg, logger, tmp_path):
 	registry = Registry()
 	backend = YieldingBackend(
-		[IncomingResponse(correlation=9999, text="stray")]
+		[IncomingResponse(correlation=("c:/unknown", "Ghost"), text="stray")]
 	)
 	dispatch_task = asyncio.create_task(
 		dispatch_responses(registry, backend, logger)
@@ -104,15 +104,28 @@ async def test_dispatch_loop_logs_unknown_correlation(cfg, logger, tmp_path):
 
 	log_text = (tmp_path / "log.jsonl").read_text()
 	assert "surface_error" in log_text
-	assert "9999" in log_text
 
 
-class RaisingBackend(RecordingBackend):
-	async def poll_responses(self):
-		yield IncomingResponse(correlation=1000, text="first")
-		yield IncomingResponse(correlation=1000, text="second")
-		# Hang.
-		await asyncio.Event().wait()
+@pytest.mark.asyncio
+async def test_dispatch_loop_logs_legacy_correlation(cfg, logger, tmp_path):
+	"""Non-tuple correlations are logged as legacy_correlation_dropped."""
+	registry = Registry()
+	backend = YieldingBackend(
+		[IncomingResponse(correlation=9999, text="stray")]
+	)
+	dispatch_task = asyncio.create_task(
+		dispatch_responses(registry, backend, logger)
+	)
+	await asyncio.sleep(0.05)
+	dispatch_task.cancel()
+	try:
+		await dispatch_task
+	except asyncio.CancelledError:
+		pass
+
+	log_text = (tmp_path / "log.jsonl").read_text()
+	assert "surface_error" in log_text
+	assert "legacy_correlation_dropped" in log_text
 
 
 @pytest.mark.asyncio
@@ -121,18 +134,21 @@ async def test_dispatch_loop_continues_after_iteration_exception(
 ):
 	"""If an iteration raises unexpectedly, the loop logs surface_error and keeps running."""
 	registry = Registry()
-	backend = RaisingBackend()
+	backend = YieldingBackend([
+		IncomingResponse(correlation=(_CWD, _SENDER), text="first"),
+		IncomingResponse(correlation=(_CWD, _SENDER), text="second"),
+	])
 
 	call_count = {"n": 0}
-	original_resolve = registry.resolve_by_correlation
+	original_resolve = registry.resolve
 
-	def flaky_resolve(correlation, text):
+	def flaky_resolve(cwd, sender, text):
 		call_count["n"] += 1
 		if call_count["n"] == 1:
 			raise RuntimeError("kaboom")
-		return original_resolve(correlation, text)
+		return original_resolve(cwd=cwd, sender=sender, text=text)
 
-	monkeypatch.setattr(registry, "resolve_by_correlation", flaky_resolve)
+	monkeypatch.setattr(registry, "resolve", flaky_resolve)
 
 	dispatch_task = asyncio.create_task(
 		dispatch_responses(registry, backend, logger)
@@ -147,8 +163,6 @@ async def test_dispatch_loop_continues_after_iteration_exception(
 
 	log_text = (tmp_path / "log.jsonl").read_text()
 	assert "kaboom" in log_text or "surface_error" in log_text
-	# The loop saw two responses; first raised, second was processed by the
-	# real resolve (no pending request, so surface_error for unknown).
 	assert call_count["n"] == 2
 
 
@@ -158,24 +172,20 @@ async def test_ask_human_cleans_up_registry_on_cancellation(cfg, logger):
 	entry must not be left behind."""
 	backend = RecordingBackend()
 	registry = Registry()
-	registry.set_away_mode(True)
+	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	task = asyncio.create_task(handlers.ask_human("q", "IR2"))
+	task = asyncio.create_task(handlers.ask_human("q", _CWD))
 	await asyncio.sleep(0)  # let it register
-	# Confirm the request registered.
-	assert registry.resolve_by_correlation(1000, "placeholder") is not None
-	# That resolution just popped the entry, so re-add for the real test:
-	task = asyncio.create_task(handlers.ask_human("q2", "IR2"))
-	await asyncio.sleep(0)
-	# Now cancel mid-wait.
+	assert registry.pending_count == 1
+	# Cancel mid-wait.
 	task.cancel()
 	try:
 		await task
 	except asyncio.CancelledError:
 		pass
-	# Registry must be clean — correlation 1001 was used for the second call.
-	assert registry.resolve_by_correlation(1001, "late") is None
+	# Registry must be clean.
+	assert registry.pending_count == 0
 
 
 class FirstCallCrashesBackend(RecordingBackend):
@@ -214,19 +224,22 @@ async def test_dispatch_loop_restarts_after_iterator_crash(cfg, logger, tmp_path
 
 @pytest.mark.asyncio
 async def test_concurrent_ask_human_calls_resolve_independently(cfg, logger):
-	"""Two concurrent ask_human calls, resolved out of order via the
+	"""Two concurrent ask_human calls (different cwds), resolved out of order via the
 	dispatch loop, each return their own reply."""
+	_CWD_A = "c:/work/chan-a"
+	_CWD_B = "c:/work/chan-b"
 	registry = Registry()
-	registry.set_away_mode(True)
+	registry.set_cwd_override(_CWD_A, True)
+	registry.set_cwd_override(_CWD_B, True)
 	backend = YieldingBackend([
-		IncomingResponse(correlation=1001, text="answer-to-second"),
-		IncomingResponse(correlation=1000, text="answer-to-first"),
+		IncomingResponse(correlation=(_CWD_B, _SENDER), text="answer-to-second"),
+		IncomingResponse(correlation=(_CWD_A, _SENDER), text="answer-to-first"),
 	])
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	first = asyncio.create_task(handlers.ask_human("q1", "chan-a"))
+	first = asyncio.create_task(handlers.ask_human("q1", _CWD_A))
 	await asyncio.sleep(0)
-	second = asyncio.create_task(handlers.ask_human("q2", "chan-b"))
+	second = asyncio.create_task(handlers.ask_human("q2", _CWD_B))
 	await asyncio.sleep(0)
 
 	dispatch_task = asyncio.create_task(
@@ -249,15 +262,15 @@ async def test_concurrent_ask_human_calls_resolve_independently(cfg, logger):
 
 @pytest.mark.asyncio
 async def test_ask_human_at_desk_returns_redirect_and_delivers_as_notify(cfg, logger):
-	"""When away mode is off, ask_human delivers a passive notify and returns the
-	at-desk redirect error so the agent produces the question in the terminal."""
+	"""When away mode is off for this cwd, ask_human delivers a passive notify and
+	returns the at-desk redirect error so the agent produces the question in the terminal."""
 	backend = RecordingBackend()
 	registry = Registry()
-	# away_mode_active defaults to False — no set_away_mode call needed.
+	# is_away_mode_active(_CWD) defaults to False — no override needed.
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
 	result = await handlers.ask_human(
-		"Should I overwrite foo.java?", "chan-atdesk-001", suggestions=["yes", "no"]
+		"Should I overwrite foo.java?", _CWD, suggestions=["yes", "no"]
 	)
 
 	# Returns the redirect sentinel.
@@ -277,15 +290,30 @@ async def test_ask_human_at_desk_returns_redirect_and_delivers_as_notify(cfg, lo
 
 
 @pytest.mark.asyncio
-async def test_ask_human_away_mode_blocks_as_before(cfg, logger):
-	"""When away mode is active, ask_human registers a pending request and blocks
-	until a response arrives — existing behavior is preserved."""
+async def test_ask_human_per_cwd_at_desk_redirect(cfg, logger):
+	"""Global away=True but cwd override=False → at-desk redirect for that cwd."""
 	backend = RecordingBackend()
 	registry = Registry()
-	registry.set_away_mode(True)
+	registry.set_global_away(True)
+	registry.set_cwd_override(_CWD, False)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	task = asyncio.create_task(handlers.ask_human("Proceed with migration?", "chan-away-001"))
+	result = await handlers.ask_human("question?", _CWD)
+
+	assert result == "ERROR: John is at his desk. Ask this question via the terminal."
+	assert registry.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_ask_human_away_mode_blocks_as_before(cfg, logger):
+	"""When away mode is active for this cwd, ask_human registers a pending request
+	and blocks until a response arrives — existing behavior is preserved."""
+	backend = RecordingBackend()
+	registry = Registry()
+	registry.set_cwd_override(_CWD, True)
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	task = asyncio.create_task(handlers.ask_human("Proceed with migration?", _CWD))
 	await asyncio.sleep(0)
 
 	# A question was written to the backend.
@@ -293,8 +321,153 @@ async def test_ask_human_away_mode_blocks_as_before(cfg, logger):
 	# A pending request was registered.
 	assert registry.pending_count == 1
 
-	# Resolve via the recorded correlation token.
-	resolved = registry.resolve_by_correlation(1000, "yes")
+	# Resolve via (cwd, sender).
+	resolved = registry.resolve(cwd=_CWD, sender=_SENDER, text="yes")
 	assert resolved is not None
 	result = await asyncio.wait_for(task, timeout=1.0)
 	assert result == "yes"
+
+
+@pytest.mark.asyncio
+async def test_ask_human_invalid_cwd_returns_error(cfg, logger):
+	"""Non-absolute cwd returns an error string without registering a pending request."""
+	backend = RecordingBackend()
+	registry = Registry()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	result = await handlers.ask_human("question?", "not-absolute")
+
+	assert result.startswith("ERROR: invalid cwd:")
+	assert registry.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_ask_human_supersede_marks_prior_cancelled(cfg, logger):
+	"""When a new ask_human for the same (cwd, sender) supersedes a prior one,
+	mark_question_cancelled is called on the backend for the prior request_id."""
+
+	class RecordingCancelBackend(RecordingBackend):
+		def __init__(self):
+			super().__init__()
+			self.cancelled_ids: list[tuple[str, str]] = []
+
+		async def mark_question_cancelled(self, cwd: str, request_id: str) -> None:
+			self.cancelled_ids.append((cwd, request_id))
+
+	backend = RecordingCancelBackend()
+	registry = Registry()
+	registry.set_cwd_override(_CWD, True)
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	# First ask — registers and blocks
+	first_task = asyncio.create_task(handlers.ask_human("first question", _CWD))
+	await asyncio.sleep(0)
+	assert registry.pending_count == 1
+	first_req_id = list(registry._pending.values())[0].request_id
+
+	# Second ask for same (cwd, sender) — supersedes first
+	second_task = asyncio.create_task(handlers.ask_human("second question", _CWD))
+	await asyncio.sleep(0)
+
+	# mark_question_cancelled must have been called for the first request_id
+	assert any(rid == first_req_id for _, rid in backend.cancelled_ids)
+
+	# Resolve the second
+	registry.resolve(cwd=_CWD, sender=_SENDER, text="answer")
+	await asyncio.wait_for(second_task, timeout=1.0)
+
+	# First task was cancelled
+	try:
+		await asyncio.wait_for(first_task, timeout=0.1)
+	except (asyncio.CancelledError, asyncio.TimeoutError):
+		pass
+
+
+@pytest.mark.asyncio
+async def test_ask_human_cancel_marks_firebase(cfg, logger):
+	"""Cancelling ask_human mid-wait calls mark_question_cancelled."""
+
+	class RecordingCancelBackend(RecordingBackend):
+		def __init__(self):
+			super().__init__()
+			self.cancelled_ids: list[tuple[str, str]] = []
+
+		async def mark_question_cancelled(self, cwd: str, request_id: str) -> None:
+			self.cancelled_ids.append((cwd, request_id))
+
+	backend = RecordingCancelBackend()
+	registry = Registry()
+	registry.set_cwd_override(_CWD, True)
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	task = asyncio.create_task(handlers.ask_human("cancel me", _CWD))
+	await asyncio.sleep(0)
+	req_id = list(registry._pending.values())[0].request_id
+
+	task.cancel()
+	try:
+		await task
+	except asyncio.CancelledError:
+		pass
+
+	assert any(rid == req_id for _, rid in backend.cancelled_ids)
+	assert registry.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_ask_human_title_passthrough(cfg, logger):
+	"""title kwarg is forwarded to backend.write_channel_message for both
+	the question and the at-desk notify paths."""
+	backend = RecordingBackend()
+	registry = Registry()
+	registry.set_cwd_override(_CWD, True)
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	task = asyncio.create_task(handlers.ask_human("q?", _CWD, title="My Task"))
+	await asyncio.sleep(0)
+
+	assert backend.channel_messages[0]["title"] == "My Task"
+
+	registry.resolve(cwd=_CWD, sender=_SENDER, text="yes")
+	await asyncio.wait_for(task, timeout=1.0)
+
+
+class StaleNoticeBackend(RecordingBackend):
+	"""Records send_stale_reply_notice calls."""
+
+	def __init__(self):
+		super().__init__()
+		self.stale_notices: list[tuple[str, str]] = []
+
+	async def send_stale_reply_notice(self, cwd: str, sender: str) -> None:
+		self.stale_notices.append((cwd, sender))
+
+
+@pytest.mark.asyncio
+async def test_dispatch_loop_calls_stale_reply_notice_on_unknown_correlation(cfg, logger):
+	"""When registry.resolve returns None, send_stale_reply_notice is called."""
+	registry = Registry()
+	# No pending request registered — any response is stale.
+	backend = YieldingBackend([
+		IncomingResponse(correlation=(_CWD, _SENDER), text="stray reply")
+	])
+	stale_backend = StaleNoticeBackend()
+
+	class CombinedBackend(StaleNoticeBackend):
+		async def poll_responses(self):
+			for r in [IncomingResponse(correlation=(_CWD, _SENDER), text="stray reply")]:
+				yield r
+			await asyncio.Event().wait()
+
+	combined = CombinedBackend()
+	dispatch_task = asyncio.create_task(
+		dispatch_responses(registry, combined, logger)
+	)
+	await asyncio.sleep(0.05)
+	dispatch_task.cancel()
+	try:
+		await dispatch_task
+	except asyncio.CancelledError:
+		pass
+
+	assert combined.stale_notices == [(_CWD, _SENDER)]
