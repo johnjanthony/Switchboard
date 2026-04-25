@@ -101,6 +101,26 @@ If you encounter issues pairing your device over Wifi (e.g., "protocol fault" or
 
 The app uses Firebase Cloud Messaging (FCM) for instant push notifications and Realtime Database for two-way communication.
 
+### Pair with Watch
+
+In Android Studio, look at the device dropdown (top center) and select "Pair Devices Using Wi-Fi".
+
+On your watch, in the Wireless debugging screen, tap "Pair new device". You will see a 6-digit pairing code and an IP address.
+
+In Android Studio, select the "Pair using pairing code" tab.
+
+Wait for your watch to appear in the list (it usually shows up as Google Pixel Watch), click it, and enter the 6-digit code shown on the watch.
+
+Once the "Pairing successful" message appears, your watch will show up as a connected device in the target dropdown.
+
+### Troubleshooting Tips
+
+The "Invisible" Watch: If the watch doesn't show up in the pairing list, toggle the Wi-Fi on your watch off and back on. Sometimes the broadcast gets stuck.
+
+Battery Saver: Ensure Battery Saver is off on the watch. It will often kill the ADB process to save juice.
+
+Prompt for Authorization: Keep an eye on your watch face when you first click Run; it will ask you to "Always allow debugging from this computer?" Tap Allow.
+
 ## Using
 
 ### Away mode
