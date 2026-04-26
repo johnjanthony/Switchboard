@@ -40,6 +40,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _channels = MutableStateFlow<Map<String, Channel>>(emptyMap())
 	val channels: StateFlow<Map<String, Channel>> = _channels.asStateFlow()
 
+	private val _projectMru = MutableStateFlow<List<String>>(emptyList())
+	val projectMru: StateFlow<List<String>> = _projectMru.asStateFlow()
+
 	private val _globalAway = MutableStateFlow(false)
 	val globalAway: StateFlow<Boolean> = _globalAway.asStateFlow()
 
@@ -76,6 +79,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		setupAwayModeListener()
 		setupSpawnCollisionsListener()
 		setupBulkRespondListener()
+		loadProjectMru()
+	}
+
+	private fun loadProjectMru() {
+		val prefs = getApplication<Application>().getSharedPreferences("switchboard_prefs", Context.MODE_PRIVATE)
+		val mruString = prefs.getString("project_mru", "") ?: ""
+		if (mruString.isNotEmpty()) {
+			_projectMru.value = mruString.split("|").filter { it.isNotBlank() }
+		}
+	}
+
+	private fun saveProjectMru(mru: List<String>) {
+		val prefs = getApplication<Application>().getSharedPreferences("switchboard_prefs", Context.MODE_PRIVATE)
+		prefs.edit().putString("project_mru", mru.joinToString("|")).apply()
+	}
+
+	private fun updateProjectMru(project: String) {
+		if (project.isBlank()) return
+		val current = _projectMru.value.toMutableList()
+		current.remove(project)
+		current.add(0, project)
+		val limited = current.take(10)
+		_projectMru.value = limited
+		saveProjectMru(limited)
+	}
+
+	fun removeFromProjectMru(project: String) {
+		val current = _projectMru.value.toMutableList()
+		if (current.remove(project)) {
+			_projectMru.value = current
+			saveProjectMru(current)
+		}
 	}
 
 	fun isAwayActive(cwdKey: String): Boolean {
@@ -322,6 +357,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	fun spawnSession(project: String, prompt: String, useClaude: Boolean, useGemini: Boolean) {
+		updateProjectMru(project)
 		val sb = StringBuilder("/spawn")
 		if (useClaude) sb.append(" --claude")
 		if (useGemini) sb.append(" --gemini")

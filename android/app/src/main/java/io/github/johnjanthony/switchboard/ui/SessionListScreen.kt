@@ -1,12 +1,16 @@
 ﻿package io.github.johnjanthony.switchboard.ui
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Divider
@@ -16,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,6 +45,7 @@ fun SessionListScreen(
 	onExitGlobalAway: () -> Unit,
 	onHideChannel: (Channel) -> Unit,
 	onUnhideChannel: (Channel) -> Unit,
+	onSpawnClick: () -> Unit,
 ) {
 	var menuExpanded by remember { mutableStateOf(false) }
 
@@ -52,6 +58,9 @@ fun SessionListScreen(
 						active = globalAway,
 						onLongPress = if (globalAway) onExitGlobalAway else onEnterGlobalAway,
 					)
+					IconButton(onClick = onSpawnClick) {
+						Icon(Icons.Default.Add, contentDescription = "Spawn")
+					}
 					IconButton(onClick = { menuExpanded = true }) {
 						Icon(Icons.Default.MoreVert, contentDescription = "More")
 					}
@@ -69,7 +78,15 @@ fun SessionListScreen(
 		val displayed = if (showHidden) (channels + hiddenChannels) else channels
 		if (displayed.isEmpty()) {
 			Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-				Text("No conversations yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+				Column(
+					horizontalAlignment = Alignment.CenterHorizontally,
+					verticalArrangement = Arrangement.spacedBy(12.dp),
+				) {
+					Text("No conversations yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+					Button(onClick = onSpawnClick) {
+						Text("Spawn new session")
+					}
+				}
 			}
 		} else {
 			LazyColumn(modifier = Modifier.fillMaxSize().padding(padding)) {

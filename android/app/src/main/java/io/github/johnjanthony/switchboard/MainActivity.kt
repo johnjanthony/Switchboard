@@ -42,6 +42,7 @@ import io.github.johnjanthony.switchboard.ui.BulkRespondDialog
 import io.github.johnjanthony.switchboard.ui.SessionListScreen
 import io.github.johnjanthony.switchboard.ui.SessionViewScreen
 import io.github.johnjanthony.switchboard.ui.SpawnCollisionDialog
+import io.github.johnjanthony.switchboard.ui.SpawnSessionDialog
 import io.github.johnjanthony.switchboard.ui.TabInfoPopover
 import io.github.johnjanthony.switchboard.ui.theme.SwitchboardTheme
 
@@ -90,7 +91,9 @@ private fun SwitchboardNavHost(viewModel: MainViewModel, deepLinkCwdKey: Mutable
 	val cwdOverrides by viewModel.cwdOverrides.collectAsState()
 	val pendingCollision by viewModel.pendingCollision.collectAsState()
 	val bulkRespond by viewModel.bulkRespondDialog.collectAsState()
+	val projectMru by viewModel.projectMru.collectAsState()
 	var showHidden by remember { mutableStateOf(false) }
+	var showSpawnDialog by remember { mutableStateOf(false) }
 
 	// K5: deep-link navigation from FCM tap
 	val cwdKey by deepLinkCwdKey
@@ -123,6 +126,7 @@ private fun SwitchboardNavHost(viewModel: MainViewModel, deepLinkCwdKey: Mutable
 				onExitGlobalAway = { viewModel.requestAwayModeToggle(null, false) },
 				onHideChannel = { viewModel.hideChannel(it.cwdKey) },
 				onUnhideChannel = { viewModel.unhideChannel(it.cwdKey) },
+				onSpawnClick = { showSpawnDialog = true },
 			)
 		}
 		composable(
@@ -182,6 +186,17 @@ private fun SwitchboardNavHost(viewModel: MainViewModel, deepLinkCwdKey: Mutable
 			onSendToAll = { text -> viewModel.submitBulkRespond("send_to_all", text) },
 			onSkip = { viewModel.submitBulkRespond("skip") },
 			onCancel = { viewModel.submitBulkRespond("cancel") },
+		)
+	}
+	if (showSpawnDialog) {
+		SpawnSessionDialog(
+			mruList = projectMru,
+			onDismiss = { showSpawnDialog = false },
+			onSpawn = { project, prompt, useClaude, useGemini ->
+				viewModel.spawnSession(project, prompt, useClaude, useGemini)
+				showSpawnDialog = false
+			},
+			onRemoveFromMru = { viewModel.removeFromProjectMru(it) },
 		)
 	}
 }
