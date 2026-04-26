@@ -14,6 +14,10 @@ Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task an
 - **Bring-Your-Own Sessions**: Pair two already-running agents into a collab channel without spawning — just share a `channel_id`.
 - **Rich Markdown**: Full support for bold, italic, code blocks, checklists, and tables.
 
+## Design & Architecture
+
+For a deep dive into Switchboard's design, architecture, and operational principles, see the [Comprehensive Design Specification](docs/switchboard-design-spec-comprehensive.md).
+
 ## Install
 
 ```bash
@@ -67,16 +71,16 @@ The project includes a native Android app in the `android/` directory.
 
 ### Build and Install
 1.  **Credentials**: Download `google-services.json` from your Firebase project and place it in `android/app/`.
-2.  **Deploy**: Connect your phone via USB or Wi-Fi (with Debugging enabled) and run:
+2.  **Deploy**: Connect your phone via USB or Wifi (with Debugging enabled) and run:
     ```powershell
     .\scripts\install-client.ps1
     ```
     This script builds the debug APK, installs it, and launches the app automatically.
 3.  **Alternative**: Open the `android/` folder in Android Studio and deploy to your phone.
 
-### Troubleshooting & Manual Wi-Fi Pairing
+### Troubleshooting & Manual Wifi Pairing
 
-If you encounter issues pairing your device over Wi-Fi (e.g., "protocol fault" or the device not appearing in Android Studio), follow these manual steps:
+If you encounter issues pairing your device over Wifi (e.g., "protocol fault" or the device not appearing in Android Studio), follow these manual steps:
 
 1.  **Restart ADB Server**:
     ```powershell
@@ -100,6 +104,26 @@ If you encounter issues pairing your device over Wi-Fi (e.g., "protocol fault" o
     - **Forget Old Pairings**: If issues persist, select "Forget all paired devices" in the Wireless Debugging settings and start over.
 
 The app uses Firebase Cloud Messaging (FCM) for instant push notifications and Realtime Database for two-way communication.
+
+### Pair with Watch
+
+In Android Studio, look at the device dropdown (top center) and select "Pair Devices Using Wi-Fi".
+
+On your watch, in the Wireless debugging screen, tap "Pair new device". You will see a 6-digit pairing code and an IP address.
+
+In Android Studio, select the "Pair using pairing code" tab.
+
+Wait for your watch to appear in the list (it usually shows up as Google Pixel Watch), click it, and enter the 6-digit code shown on the watch.
+
+Once the "Pairing successful" message appears, your watch will show up as a connected device in the target dropdown.
+
+### Troubleshooting Tips
+
+The "Invisible" Watch: If the watch doesn't show up in the pairing list, toggle the Wi-Fi on your watch off and back on. Sometimes the broadcast gets stuck.
+
+Battery Saver: Ensure Battery Saver is off on the watch. It will often kill the ADB process to save juice.
+
+Prompt for Authorization: Keep an eye on your watch face when you first click Run; it will ask you to "Always allow debugging from this computer?" Tap Allow.
 
 ## Using
 
