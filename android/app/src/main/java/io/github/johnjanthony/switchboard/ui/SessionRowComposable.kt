@@ -59,9 +59,10 @@ fun SessionRow(
 					maxLines = 1,
 					overflow = TextOverflow.Ellipsis,
 				)
-				if (!channel.preview.isNullOrBlank()) {
+				val preview = channel.preview
+				if (!preview.isNullOrBlank()) {
 					Text(
-						text = channel.preview,
+						text = preview,
 						style = MaterialTheme.typography.bodySmall,
 						color = MaterialTheme.colorScheme.onSurfaceVariant,
 						maxLines = 1,

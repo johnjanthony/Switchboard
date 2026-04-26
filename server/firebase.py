@@ -89,10 +89,6 @@ class FirebaseBackend(MessengerBackend):
 			elif path and isinstance(event.data, str):
 				self._loop.call_soon_threadsafe(self._enqueue_command, path, event.data)
 
-    def _cleanup():
-        self._resp_ref.child(request_id).delete()
-        self._loop.run_in_executor(None, _cleanup)
-
 	def _enqueue_command(self, command_id: str, text: str):
 		asyncio.create_task(self._command_queue.put(text))
 		def _cleanup():
@@ -403,7 +399,13 @@ class FirebaseBackend(MessengerBackend):
 		correlation: CorrelationToken,
 		response_text: str | None = None,
 	) -> None:
-		pass
+		from server.canonicalization import to_firebase_key
+		if isinstance(correlation, tuple) and len(correlation) == 2:
+			cwd, sender = correlation
+			slot = f"{to_firebase_key(cwd)}__{sender}"
+			def _cleanup():
+				self._resp_ref.child(slot).delete()
+			await self._loop.run_in_executor(None, _cleanup)
 
 	async def write_response_text(self, channel_id: str, msg_id: str, text: str) -> None:
 		from server.canonicalization import to_firebase_key
