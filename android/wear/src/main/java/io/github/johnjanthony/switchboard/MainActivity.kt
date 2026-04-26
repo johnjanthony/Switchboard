@@ -17,7 +17,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.wear.compose.material3.*
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
@@ -65,8 +64,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleNotificationIntent(intent: Intent?) {
-        intent?.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_AGENT_ID)?.let { channelId ->
-            viewModel.selectChannel(channelId)
+        intent?.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_AGENT_ID)?.let { cwdKey ->
+            viewModel.selectChannel(cwdKey)
         }
     }
 }
@@ -74,14 +73,14 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun WearApp(viewModel: MainViewModel) {
     val navController = rememberSwipeDismissableNavController()
-    val selectedChannelId by viewModel.selectedChannelId.collectAsState()
+    val selectedCwdKey by viewModel.selectedCwdKey.collectAsState()
 
-    LaunchedEffect(selectedChannelId) {
-        selectedChannelId?.let { channelId ->
+    LaunchedEffect(selectedCwdKey) {
+        selectedCwdKey?.let { cwdKey ->
             // Check if we're not already on the message list for this channel
             val currentRoute = navController.currentBackStackEntry?.destination?.route
-            if (currentRoute != "message_list/$channelId") {
-                navController.navigate("message_list/$channelId")
+            if (currentRoute != "message_list/$cwdKey") {
+                navController.navigate("message_list/$cwdKey")
             }
         }
     }
@@ -95,15 +94,15 @@ fun WearApp(viewModel: MainViewModel) {
                 composable("channel_list") {
                     ChannelListScreen(viewModel, navController)
                 }
-                composable("message_list/{channelId}") { backStackEntry ->
-                    val channelId = backStackEntry.arguments?.getString("channelId") ?: ""
-                    MessageListScreen(channelId, viewModel, navController)
+                composable("message_list/{cwdKey}") { backStackEntry ->
+                    val cwdKey = backStackEntry.arguments?.getString("cwdKey") ?: ""
+                    MessageListScreen(cwdKey, viewModel, navController)
                 }
-                composable("reply/{channelId}/{msgId}/{requestId}") { backStackEntry ->
-                    val channelId = backStackEntry.arguments?.getString("channelId") ?: ""
-                    val msgId = backStackEntry.arguments?.getString("msgId") ?: ""
+                composable("reply/{cwdKey}/{requestId}/{sender}") { backStackEntry ->
+                    val cwdKey = backStackEntry.arguments?.getString("cwdKey") ?: ""
                     val requestId = backStackEntry.arguments?.getString("requestId") ?: ""
-                    ReplyScreen(channelId, msgId, requestId, viewModel, navController)
+                    val sender = backStackEntry.arguments?.getString("sender") ?: ""
+                    ReplyScreen(cwdKey, requestId, sender, viewModel, navController)
                 }
             }
         }
@@ -113,8 +112,7 @@ fun WearApp(viewModel: MainViewModel) {
 @Composable
 fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController) {
     val channels by viewModel.channels.collectAsState()
-    val awayModeActive by viewModel.awayModeActive.collectAsState()
-    val pendingQuestions by viewModel.pendingQuestions.collectAsState()
+    val awayModeActive by viewModel.globalAway.collectAsState()
     val unseenChannels by viewModel.unseenChannels.collectAsState()
     
     val listState = rememberScalingLazyListState()
@@ -140,29 +138,29 @@ fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController
             item {
                 SwitchButton(
                     checked = awayModeActive,
-                    onCheckedChange = { viewModel.requestAwayModeToggle(it) },
+                    onCheckedChange = { viewModel.requestAwayModeToggle(null, it) },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                     label = { Text("Away Mode") }
                 )
             }
             
-            items(channels.values.toList().sortedBy { it.channelId }, key = { it.channelId }) { channel ->
-                // Use channelId for consistency with the phone app
-                val displayName = if (channel.channelId.length > 20) {
-                    channel.channelId.substring(0, 17) + "..."
+            items(channels.values.toList().sortedBy { it.cwdKey }, key = { it.cwdKey }) { channel ->
+                // Use cwdKey for consistency with the phone app
+                val displayName = if (channel.cwdKey.length > 20) {
+                    channel.cwdKey.substring(0, 17) + "..."
                 } else {
-                    channel.channelId
+                    channel.cwdKey
                 }
                 
-                val hasPending = pendingQuestions.containsKey(channel.channelId)
-                val isUnseen = unseenChannels.contains(channel.channelId)
+                val hasPending = channel.pendingQuestions.isNotEmpty()
+                val isUnseen = unseenChannels.contains(channel.cwdKey)
                 
-                android.util.Log.d("MainActivity", "Rendering channel: ${channel.channelId} (projectKey=${channel.projectKey}, hidden=${channel.hidden})")
+                android.util.Log.d("MainActivity", "Rendering channel: ${channel.cwdKey} (cwdCanonical=${channel.cwdCanonical}, hidden=${channel.hidden})")
                 
                 Button(
                     onClick = { 
-                        viewModel.selectChannel(channel.channelId)
-                        navController.navigate("message_list/${channel.channelId}") 
+                        viewModel.selectChannel(channel.cwdKey)
+                        navController.navigate("message_list/${channel.cwdKey}") 
                     },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
                     colors = if (hasPending) ButtonDefaults.filledTonalButtonColors() 
@@ -186,9 +184,9 @@ fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController
 }
 
 @Composable
-fun MessageListScreen(channelId: String, viewModel: MainViewModel, navController: NavHostController) {
+fun MessageListScreen(cwdKey: String, viewModel: MainViewModel, navController: NavHostController) {
     val channels by viewModel.channels.collectAsState()
-    val channel = channels[channelId] ?: return
+    val channel = channels[cwdKey] ?: return
     val sortedMessages = remember(channel.messages) {
         channel.messages.sortedBy { it.second.timestamp }
     }
@@ -215,7 +213,7 @@ fun MessageListScreen(channelId: String, viewModel: MainViewModel, navController
         ) {
             item {
                 Text(
-                    text = channel.projectKey,
+                    text = channel.title ?: channel.cwdCanonical,
                     style = MaterialTheme.typography.titleSmall,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(bottom = 8.dp)
@@ -223,12 +221,12 @@ fun MessageListScreen(channelId: String, viewModel: MainViewModel, navController
             }
             
             items(sortedMessages) { (_, msg) ->
-                val isQuestion = msg.message_type == "question" && msg.response_text == null
+                val isQuestion = msg.type == "question" && msg.response_text == null
                 
                 Card(
                     onClick = { 
                         if (isQuestion) {
-                            navController.navigate("reply/${channelId}/${msg.request_id}/${msg.request_id}")
+                            navController.navigate("reply/${cwdKey}/${msg.request_id}/${msg.sender}")
                         }
                     },
                     modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
@@ -240,7 +238,7 @@ fun MessageListScreen(channelId: String, viewModel: MainViewModel, navController
                             color = MaterialTheme.colorScheme.primary
                         )
                         MarkdownText(
-                            content = msg.content,
+                            content = msg.text,
                             format = msg.format,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -260,10 +258,12 @@ fun MessageListScreen(channelId: String, viewModel: MainViewModel, navController
 }
 
 @Composable
-fun ReplyScreen(channelId: String, msgId: String, requestId: String, viewModel: MainViewModel, navController: NavHostController) {
-    val pendingQuestions by viewModel.pendingQuestions.collectAsState()
-    val pendingMsg = pendingQuestions[channelId]?.second
-    val suggestions = pendingMsg?.suggestions ?: listOf("Yes", "No", "Maybe", "On it!", "Done")
+fun ReplyScreen(cwdKey: String, requestId: String, sender: String, viewModel: MainViewModel, navController: NavHostController) {
+    val channels by viewModel.channels.collectAsState()
+    val channel = channels[cwdKey]
+    val pending = channel?.pendingQuestions?.get(requestId)
+    val suggestions = channel?.messages?.find { it.first == pending?.msgId }?.second?.suggestions
+        ?: listOf("Yes", "No", "Maybe", "On it!", "Done")
     
     val listState = rememberScalingLazyListState()
     
@@ -284,7 +284,7 @@ fun ReplyScreen(channelId: String, msgId: String, requestId: String, viewModel: 
             items(suggestions) { text ->
                 Button(
                     onClick = { 
-                        viewModel.replyToQuestion(channelId, msgId, requestId, text)
+                        viewModel.submitReply(cwdKey, sender, text)
                         navController.popBackStack()
                     },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
