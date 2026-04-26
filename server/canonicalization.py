@@ -49,12 +49,7 @@ def canonicalize_cwd(raw: str) -> str:
 
 	normalized = os.path.normpath(str(win))
 
-	forward = normalized.replace("\\", "/")
-
-	if len(forward) >= 2 and forward[1] == ":":
-		forward = forward[0].lower() + forward[1:]
-
-	forward = forward.lower()
+	forward = normalized.replace("\\", "/").lower()
 
 	if len(forward) > 3 and forward.endswith("/"):
 		forward = forward.rstrip("/")
