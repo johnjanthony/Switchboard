@@ -14,6 +14,10 @@ Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task an
 - **Bring-Your-Own Sessions**: Pair two already-running agents into a collab channel without spawning — just share a `channel_id`.
 - **Rich Markdown**: Full support for bold, italic, code blocks, checklists, and tables.
 
+## Design & Architecture
+
+For a deep dive into Switchboard's design, architecture, and operational principles, see the [Comprehensive Design Specification](docs/switchboard-design-spec-comprehensive.md).
+
 ## Install
 
 ```bash
