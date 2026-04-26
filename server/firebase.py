@@ -80,6 +80,9 @@ class FirebaseBackend(MessengerBackend):
 		asyncio.create_task(self._response_queue.put(
 			IncomingResponse(correlation=f"firebase_{request_id}", text=text)
 		))
+		def _cleanup():
+			self._resp_ref.child(request_id).delete()
+		self._loop.run_in_executor(None, _cleanup)
 
 	def _enqueue_command(self, command_id: str, text: str):
 		asyncio.create_task(self._command_queue.put(text))
@@ -329,6 +332,10 @@ class FirebaseBackend(MessengerBackend):
 		if prompt:
 			msg += f"\n{prompt[:80]}"
 		await self.write_channel_message(channel_id, "system", "notify", msg, format="markdown")
+
+	async def send_text(self, text: str) -> None:
+		# Use 'switchboard' as the default administrative channel for global errors/notifies
+		await self.write_channel_message("switchboard", "system", "notify", text)
 
 	async def write_session_meta(
 		self,

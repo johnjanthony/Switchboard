@@ -92,6 +92,10 @@ class AndroidBackend(MessengerBackend):
 		if self._logger:
 			self._logger.surface_error(f"ANDROID_SEND_SPAWN_ACK: {channel_id}")
 
+	async def send_text(self, text: str) -> None:
+		if self._logger:
+			self._logger.surface_error(f"ANDROID_SEND_TEXT: {text}")
+
 	# Method for testing/development to simulate a response from the Android app
 	async def simulate_response(self, correlation: CorrelationToken, text: str) -> None:
 		await self._response_queue.put(IncomingResponse(correlation=correlation, text=text))

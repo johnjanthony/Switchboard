@@ -67,6 +67,10 @@ class MessengerBackend(ABC):
 	) -> None:
 		"""Confirm to the developer that their response was received."""
 
+	async def send_text(self, text: str) -> None:
+		"""Send a simple text notification to the primary administrative channel."""
+		pass
+
 	@abstractmethod
 	def poll_responses(self) -> "AsyncIterator[IncomingResponse]":
 		"""Yield IncomingResponse as replies arrive. Infinite async iterator."""
@@ -173,6 +177,9 @@ class MultiBackend(MessengerBackend):
 				b.send_resolution_confirmation(request_id, channel_id, correlation, response_text=response_text)
 				for b in self._backends
 			))
+
+	async def send_text(self, text: str) -> None:
+		await asyncio.gather(*(b.send_text(text) for b in self._backends))
 
 	async def write_response_text(self, channel_id: str, msg_id: str, text: str) -> None:
 		await asyncio.gather(*(
