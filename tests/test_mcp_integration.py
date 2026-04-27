@@ -45,6 +45,7 @@ async def test_mcp_notify_human_tool_is_registered_and_invocable(cfg):
 		"notify_human",
 		"send_document_human",
 		"message_and_await_agent",
+		"end_collab",
 		"enter_away_mode",
 		"exit_away_mode",
 	}

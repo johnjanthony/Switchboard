@@ -33,6 +33,9 @@ class PendingRequest:
 class Registry:
 	def __init__(self, away_mode_path: Path | None = None) -> None:
 		self._sessions: dict[str, "CollabSession"] = {}
+		# Breadcrumbs for recently ended sessions to handle simultaneous call races (E1).
+		# Keyed by canonical_cwd, value is a list of agent_senders.
+		self._recently_ended: dict[str, list[str]] = {}
 		self._pending: dict[tuple[str, str], PendingRequest] = {}
 		self.total_answered: int = 0
 		self._away_mode_path = away_mode_path
@@ -133,12 +136,29 @@ class Registry:
 
 	def add_session(self, session: "CollabSession") -> None:
 		self._sessions[session.cwd] = session
+		# A new session on a cwd that was recently ended means agents have
+		# resumed; clear the breadcrumb so a future end_collab races report
+		# correctly against the new session, not the prior.
+		self._recently_ended.pop(session.cwd, None)
 
 	def get_session(self, cwd: str) -> "CollabSession | None":
 		return self._sessions.get(cwd)
 
 	def remove_session(self, cwd: str) -> None:
 		self._sessions.pop(cwd, None)
+
+	def mark_session_ended(self, cwd: str, members: list[str]) -> None:
+		"""Record that this cwd had an end_collab call, including who was in the
+		session. Used to distinguish 'partner ended first' (E1) from 'never a
+		member' (E4) when a second end_collab arrives after the session is
+		already purged."""
+		self._recently_ended[cwd] = members
+
+	def get_recently_ended_members(self, cwd: str) -> list[str] | None:
+		return self._recently_ended.get(cwd)
+
+	def was_recently_ended(self, cwd: str) -> bool:
+		return cwd in self._recently_ended
 
 	def is_away_mode_active(self, cwd: str) -> bool:
 		# Walk up the canonical path looking for the nearest registered ancestor

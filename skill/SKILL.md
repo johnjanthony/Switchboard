@@ -39,12 +39,13 @@ Spawned sessions auto-enter on spawn — do not call `enter_away_mode(cwd)` redu
 
 # Switchboard MCP Tools
 
-Switchboard is a local MCP gateway that lets you reach John on his phone while he's away from his desk. It exposes six tools:
+Switchboard is a local MCP gateway that lets you reach John on his phone while he's away from his desk. It exposes seven tools:
 
 - **`ask_human(question, cwd, sender?, title?, format?, suggestions?)`** — blocks until John replies. Returns reply text or `"__TIMEOUT__"`.
 - **`notify_human(message, cwd, sender?, title?, format?)`** — fire-and-forget. Returns `"ok"`.
 - **`send_document_human(path, cwd, sender?, title?, caption?)`** — deliver a file. path relative to cwd. Max 5 MB. Returns `"ok"` or `"ERROR: ..."`.
 - **`message_and_await_agent(cwd, sender, title?, message?)`** — collab sessions only. Send to your partner and block.
+- **`end_collab(cwd, sender, message?, hand_off_to_human?)`** — collab sessions only. Non-blocking. Terminate the session and decide who reports to John.
 - **`enter_away_mode(cwd)`** — flip THIS cwd's away-mode override to True.
 - **`exit_away_mode(cwd)`** — flip THIS cwd's away-mode override to False.
 
@@ -198,30 +199,87 @@ Use this to deliver generated reports, diffs, logs, or spec documents to John's 
 send_document_human("logs/migration-diff.txt", cwd="c:/work/switchboard", caption="Schema diff for review")
 ```
 
-## Collab sessions
+## Collab mode
 
-### `message_and_await_agent(cwd, sender, title?, message?)`
+Collab mode = two agents working together on a task in the same `cwd`,
+exchanging messages via `message_and_await_agent`. Sessions begin two ways:
 
-Sends `message` to your partner (if provided), then blocks until your partner
-replies or a human injects a message.
+- **Spawned** — `/spawn --collab` from the Android UI launches both agents
+  simultaneously into the same `cwd`. Spawned sessions are away-mode by default
+  (John is on his phone if he's spawning).
+- **Ad-hoc / BYO** — John starts two agents manually (e.g. via a future
+  `/collab` slash command, or by pasting a collab prompt into two terminal
+  sessions himself). They share a `cwd` (typically the project root) and pick
+  distinct `sender` names. The first agent to call
+  `message_and_await_agent(cwd, sender)` enrolls; the second arriving call
+  enrolls the partner. BYO sessions are NOT away-mode by default.
 
-- **`cwd`** — your current working directory; the collab session is keyed by cwd
-- **`sender`** — your own sender name, unique within the session
-- **`title`** — optional; follows the same first-call-must-set-one rules as other tools
-- **`message`** — optional outbound text; omit if John has told you to wait for your partner
+In both cases the rules below apply. Spawn vs BYO is irrelevant to the rules
+themselves — at-desk vs away-mode (which can flip at any time) is what matters.
 
-**If `message_and_await_agent` returns `"__TIMEOUT__"`:** if in away mode, call
-`ask_human` to check in with John. If not in away mode, report in the terminal.
-**If `message_and_await_agent` returns an error string (starts with `"ERROR:"`):**
-handle the same way as a timeout.
+### Sender and partner
+
+Use your own agent name (e.g. `Claude`, `Gemini`, `Sparkles`) as the `sender`
+on every Switchboard tool call — `ask_human`, `notify_human`,
+`send_document_human`, `message_and_await_agent`, and `end_collab`. If John
+gave you a different name in the prompt, use that. Two distinct senders share
+a session; a third arriving sender gets `"ERROR: session is full"`.
+
+You don't need to know your partner's name in advance — you'll see it in the
+first message you receive from them.
+
+### Collaboration rules
+
+1. Use `message_and_await_agent(cwd=..., sender="<you>", message="...")` to
+   communicate with your partner. Always pass your own sender.
+2. Use `message_and_await_agent` only to speak to your partner — not to John.
+   For human communication use `ask_human` (away mode) or terminal output
+   (at-desk), with `notify_human` for non-blocking status updates to John.
+3. No meta-commentary. Respond with content directly.
+4. Critically review your partner's proposals. Be specific. Push back when you
+   disagree, with concrete reasoning. Rubber-stamping is a failure mode.
+5. Your goal is consensus on the task. When consensus is reached or debate
+   becomes unproductive, terminate via `end_collab` (see "Ending a collab
+   session" below). Exactly one agent reports the outcome to John.
+6. After making changes (code, files, configuration), verify them with
+   appropriate tools (run tests, re-read the file, etc.) before claiming
+   completion.
+7. If `message_and_await_agent` returns `"__COLLAB_ENDED__\n..."`, your
+   partner has terminated the session. Do NOT call `message_and_await_agent`
+   again for this `cwd`. Either end your turn (if your partner took the
+   reporter role) or report to John (if you were handed the reporter role).
+8. If `message_and_await_agent` returns `"__TIMEOUT__"`, ping John for a
+   status check (terminal if at-desk, `ask_human` if away-mode). Do not
+   silently abandon the partner.
+9. If `message_and_await_agent` returns any other `"ERROR: ..."`, surface it
+   to John immediately.
+
+Title: optional on every Switchboard tool. SET ONE on your first call.
+
+### Parallel openings on session start
+
+By default, both agents start in parallel. Each does its own initial research
+or analysis, then sends an opening position via `message_and_await_agent`.
+Each receives the partner's independent opening as its first delivery — treat
+that opening as the partner's opening position (not a reply to yours) and
+respond to it.
+
+This intentional parallelism prevents one agent from anchoring on the other's
+framing, surfaces real disagreement at first contact, and roughly halves the
+wall-clock time before substantive exchange begins.
+
+If John explicitly tells one agent to "listen first" or "wait for your
+partner," that agent begins by calling `message_and_await_agent(cwd=...,
+sender="<you>")` with NO `message` argument and blocks until the other speaks.
+Use this only when explicitly directed — it's the exception, not the default.
 
 ### Away mode and collab mode are independent
 
 **Away mode** means John is not at the desk. ALL output must go through
 `notify_human`, `ask_human`, or `send_document_human` — no terminal text. Away
 mode is active when:
-- You were spawned by Switchboard (single-agent or collab)
-- John explicitly says he is stepping away
+- You were spawned by Switchboard (single-agent or collab).
+- John explicitly says he is stepping away.
 
 **Collab mode** means you are paired with a second agent via
 `message_and_await_agent`. Collab mode does NOT imply away mode.
@@ -230,36 +288,90 @@ When both modes are active: `message_and_await_agent` for peer communication,
 `ask_human`/`notify_human`/`send_document_human` for all human communication —
 no terminal output. If John steps away during an active BYO collab session,
 continue using the same `cwd` for everything — the session is already
-registered and the Android channel already exists. The only change is that human
-communication moves from the terminal to `ask_human` / `notify_human` with that
-same `cwd`.
+registered and the Android channel already exists. The only change is that
+human communication moves from the terminal to `ask_human` / `notify_human`
+with that same `cwd`.
 
-When collab mode only (BYO, John has not stepped away): `message_and_await_agent`
-for peer communication; once consensus is reached or you are blocked, report back
-to John in the terminal normally.
+When collab mode only (BYO, John has not stepped away):
+`message_and_await_agent` for peer communication; once consensus is reached or
+you are blocked, report back to John in the terminal normally.
 
-### Collab protocol
+### Ending a collab session
 
-1. If John told you to wait for your partner, call `message_and_await_agent(
-   cwd=..., sender=...)` with no message. Block until your partner speaks.
-2. If John gave you work to do first, complete it then call
-   `message_and_await_agent(cwd=..., sender=..., message="...")`.
-3. Exchange continues — each agent replies by calling `message_and_await_agent`
-   with their response as `message`. If both agents began with a message, the
-   first response each receives will be their partner's independent opening
-   position rather than a reply to theirs — this is normal, treat it as their
-   opening position and respond to it.
-4. When consensus is reached:
-   - **Away mode active:** call `ask_human` to confirm with John.
-   - **Away mode not active:** respond in the terminal.
-5. If debate becomes unproductive:
-   - **Away mode active:** call `ask_human` to report the deadlock.
-   - **Away mode not active:** report in the terminal.
+When you believe consensus has been reached (or debate is deadlocked), do not
+call `message_and_await_agent` again. Instead, decide who reports to John and
+terminate the session via `end_collab`.
+
+- If you want to be the one who reports, call:
+  `end_collab(cwd=..., sender="<you>", message="<final summary for partner>", hand_off_to_human=true)`
+  Returns `"ok. You are the designated reporter. Report consensus to John."`
+- If you want your partner to report, call:
+  `end_collab(cwd=..., sender="<you>", message="<handoff note>", hand_off_to_human=false)`
+  Returns `"ok. Collab ended. Partner is reporting."` and you exit silently.
+
+The other agent's pending `message_and_await_agent` resolves immediately with
+the sentinel `"__COLLAB_ENDED__\n<your message>"`. They MUST NOT call
+`message_and_await_agent` again for this `cwd` unless they are starting a new
+collab session.
+
+**Reporting to John (designated reporter only):**
+
+The choice between phone and terminal is driven by the **live away-mode state**
+at the moment you report — NOT by how the session started. Away-mode can flip
+at any time during a session (John steps away mid-debate, John returns just as
+consensus lands).
+
+Use `ask_human` as your single entry point. The server tells you which channel
+applies via its return value:
+
+1. Call `ask_human(question=<consensus summary>, cwd=..., sender="<you>")`.
+2. If it blocks and returns John's reply text, away-mode was active — you're
+   done.
+3. If it returns the literal string
+   `"ERROR: John is at his desk. Ask this question via the terminal."`,
+   away-mode is off. The summary has already been delivered to John's phone as
+   a passive notification; now repeat it verbatim in the terminal — that's
+   where John is watching.
+
+This single mechanic works regardless of session origin (spawned, BYO,
+spawned-then-John-returned, BYO-then-John-stepped-away). Do NOT branch on
+spawned-vs-BYO; branch on the at-desk redirect string.
+
+**Hard rule:** Exactly one agent reports per consensus. The non-reporting
+agent ends its turn after `end_collab` returns. The reporter ends its turn
+after reporting. Neither agent calls `message_and_await_agent` again for this
+`cwd` unless a new collab session is being started.
+
+**Resuming on the same `cwd`:** `end_collab` purges the session immediately
+after resolving in-flight calls. A subsequent `message_and_await_agent` for
+the same `cwd` (BYO retry, or a fresh `/spawn --collab`) creates a brand-new
+session, independent of the prior one.
+
+**`end_collab` error returns:**
+
+- `"ERROR: not a member of this session"` — you called `end_collab` for a
+  `cwd` where you were never enrolled (typo'd sender, or you were not a
+  participant). Do not retry.
+- `"ok. You are NOT the reporter; partner already ended. Collab closed."` —
+  your partner called `end_collab` first. You are not the reporter. End your
+  turn.
+- `"ERROR: human inject queue is non-empty. Drain pending injects via message_and_await_agent before ending collab."` — John injected a
+  message while you were preparing to end. Call `message_and_await_agent` (no
+  message) to receive the inject, address it, then re-attempt `end_collab`.
 
 ### BYO collab
 
 Two agents in the same `cwd` with distinct `sender` names automatically share
 a collab session — no pre-shared session id needed. The cwd IS the session.
+
+**Naming caveat for same-type BYO pairs.** When two BYO agents of the same
+type (e.g., two Claude Code sessions running the CLI `/collab` slash
+command) both default `sender` to `"Claude"`, the first to call
+`message_and_await_agent` enrolls. The second sees
+`"ERROR: sender 'Claude' is already enrolled — use a unique sender name"`
+and must retry with a distinct name (e.g., `"Claude-A"`, `"Claude-B"`, or
+something context-specific). The phone-spawn `/spawn --collab` path always
+pairs Claude with Gemini and never hits this case.
 
 To start: each agent calls `message_and_await_agent(cwd=..., sender=...)`.
 The first call enrolls the agent and blocks; the second arriving call enrolls

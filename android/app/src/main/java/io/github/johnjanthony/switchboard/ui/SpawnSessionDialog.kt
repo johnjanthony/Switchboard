@@ -103,7 +103,7 @@ fun SpawnSessionDialog(
 				OutlinedTextField(
 					value = prompt,
 					onValueChange = { prompt = it },
-					label = { Text("Initial Prompt / Instructions") },
+					label = { Text("Initial Prompt / Instructions (optional)") },
 					modifier = Modifier.fillMaxWidth(),
 					minLines = 2,
 				)
@@ -122,7 +122,7 @@ fun SpawnSessionDialog(
 		confirmButton = {
 			Button(
 				onClick = { onSpawn(project.trim(), prompt.trim(), useClaude, useGemini) },
-				enabled = prompt.isNotBlank() && (useClaude || useGemini),
+				enabled = (useClaude || useGemini),
 			) { Text("Spawn") }
 		},
 		dismissButton = {

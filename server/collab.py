@@ -73,3 +73,17 @@ class CollabSession:
 				future.set_result(text)
 				return
 		self._pending.setdefault("__inject__", []).append(text)
+
+	def has_pending_inject(self) -> bool:
+		return bool(self._pending.get("__inject__"))
+
+	def terminate(self, sentinel: str) -> None:
+		"""Resolve every pending _waiting future with the sentinel.
+
+		Called by gateway.end_collab before purging the session. Resolution is
+		synchronous from each partner's perspective: their await returns the
+		sentinel string immediately."""
+		for sender, future in list(self._waiting.items()):
+			if not future.done():
+				future.set_result(sentinel)
+		self._waiting.clear()

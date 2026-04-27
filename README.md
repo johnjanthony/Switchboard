@@ -62,7 +62,10 @@ gemini skills link .\skill
 
 ```bash
 claude mcp add switchboard --scope user --transport http http://localhost:9876/mcp
-# Copy skill/SKILL.md to ~/.claude/skills/switchboard/SKILL.md
+# Symlink the skill so edits in the repo flow live to the installed copy:
+MSYS=winsymlinks:nativestrict ln -s "$(pwd)/skill" ~/.claude/skills/switchboard
+# (Plain `ln -s` from Git Bash silently falls back to a deep copy on Windows
+# without the MSYS prefix or Developer Mode enabled.)
 ```
 
 ## Android App

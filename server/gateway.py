@@ -132,6 +132,7 @@ class ToolHandlers:
 	notify_human: Callable[..., Coroutine[None, None, str]]
 	send_document_human: Callable[..., Coroutine[None, None, str]]
 	message_and_await_agent: Callable[..., Coroutine[None, None, str]]
+	end_collab: Callable[..., Coroutine[None, None, str]]
 	enter_away_mode: Callable[..., Coroutine[None, None, str]]
 	exit_away_mode: Callable[..., Coroutine[None, None, str]]
 	build_bulk_respond_payload: Callable[..., Coroutine[None, None, dict]]
@@ -425,6 +426,61 @@ def build_tool_handlers(
 			session.cancel_waiting(sender)
 			raise
 
+	async def end_collab(
+		cwd: str,
+		sender: str,
+		message: str | None = None,
+		hand_off_to_human: bool = True,
+	) -> str:
+		try:
+			canonical = canonicalize_cwd(cwd)
+		except CanonicalizationError as exc:
+			return f"ERROR: invalid cwd: {exc}"
+
+		session = registry.get_session(canonical)
+		if session is None:
+			# If the session is gone, check if it was recently ended AND if this
+			# sender was actually a member of that session. We store the members
+			# in the recently_ended breadcrumb to prevent strangers from getting
+			# the "already ended" reporter-status message.
+			ended_members = registry.get_recently_ended_members(canonical)
+			if ended_members is not None:
+				if sender in ended_members:
+					return "ok. You are NOT the reporter; partner already ended. Collab closed."
+			return "ERROR: not a member of this session"
+
+		if sender not in session.agent_senders:
+			return "ERROR: not a member of this session"
+
+		if session.has_pending_inject():
+			return (
+				"ERROR: human inject queue is non-empty. Drain pending injects via "
+				"message_and_await_agent before ending collab."
+			)
+
+		sentinel = "__COLLAB_ENDED__"
+		if message:
+			sentinel = f"__COLLAB_ENDED__\n{message}"
+
+		# Resolve any partner futures BEFORE removing the session so in-flight
+		# message_and_await_agent calls receive the sentinel deterministically.
+		session.terminate(sentinel)
+		registry.mark_session_ended(canonical, list(session.agent_senders))
+		registry.remove_session(canonical)
+
+		logger.collab_message_sent(
+			canonical, sender,
+			f"[end_collab hand_off_to_human={hand_off_to_human}] {message or ''}",
+		)
+		await _append_session_log(
+			config.log_path, canonical, "→",
+			f"{sender}: [end_collab hand_off_to_human={hand_off_to_human}] {message or ''}",
+		)
+
+		if hand_off_to_human:
+			return "ok. You are the designated reporter. Report consensus to John."
+		return "ok. Collab ended. Partner is reporting."
+
 	async def enter_away_mode(cwd: str) -> str:
 		try:
 			canonical = canonicalize_cwd(cwd)
@@ -518,6 +574,7 @@ def build_tool_handlers(
 		notify_human=notify_human,
 		send_document_human=send_document_human,
 		message_and_await_agent=message_and_await_agent,
+		end_collab=end_collab,
 		enter_away_mode=enter_away_mode,
 		exit_away_mode=exit_away_mode,
 		build_bulk_respond_payload=build_bulk_respond_payload,

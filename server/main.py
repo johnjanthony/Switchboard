@@ -127,6 +127,23 @@ def _build_fastmcp(handlers) -> FastMCP:
 		return await handlers.message_and_await_agent(cwd, sender, title, message)
 
 	@mcp.tool()
+	async def end_collab(
+		cwd: str,
+		sender: str,
+		message: str | None = None,
+		hand_off_to_human: bool = True,
+	) -> str:
+		"""End the collab session for this cwd. Non-blocking. Resolves any
+		partner's pending message_and_await_agent with sentinel
+		'__COLLAB_ENDED__\\n<message>' then purges the session so future calls
+		create a fresh session.
+
+		hand_off_to_human=True (default): caller is the designated reporter.
+		hand_off_to_human=False: partner is the reporter; caller exits silently.
+		See skill/SKILL.md 'Ending a collab session' for full protocol."""
+		return await handlers.end_collab(cwd, sender, message, hand_off_to_human)
+
+	@mcp.tool()
 	async def enter_away_mode(cwd: str) -> str:
 		"""Mark this Switchboard session (cwd) as 'John is away'. Sets the
 		per-cwd override True. Idempotent."""

@@ -81,8 +81,8 @@ async def test_spawn_collab_legacy_flag(spawn_dirs):
 	assert "agents" in pending
 	assert pending["agents"][0]["backend"] == "claude"
 	assert pending["agents"][0]["sender"] == "Claude"
-	assert pending["agents"][1]["backend"] == "claude"
-	assert pending["agents"][1]["sender"] == "Claude"
+	assert pending["agents"][1]["backend"] == "gemini"
+	assert pending["agents"][1]["sender"] == "Gemini"
 	backend.send_spawn_ack.assert_called_once()
 
 @pytest.mark.asyncio

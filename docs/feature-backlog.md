@@ -24,12 +24,6 @@ Periodically clean up old questions, responses, and documents from Firebase (e.g
 
 ---
 
-## Symmetric spawned collab sessions
-
-Remove `_LISTENER_NOTE` from Agent 2's spawn prompt in `spawn.py` so both spawned collab agents receive the same task prompt and work in parallel before exchanging findings — matching the BYO session model. Currently Agent 2 is explicitly told to call `message_and_await_agent` with no message, which prevents parallel work. The `_pending` queue in `CollabSession` already handles the both-with-messages case correctly, so this is purely a prompt change. The collab protocol hint in SKILL.md ("the first response you receive may be your partner's independent opening position") already documents the expected behaviour.
-
----
-
 # Client
 
 ## Web Dashboard for Conversation Monitoring & Interaction
@@ -164,7 +158,7 @@ Add an automated check to ensure that every agent response in away mode starts w
 
 ## Skill Instruction Polish
 
-Periodically review and harden `SKILL.md` based on failure patterns (e.g., the 2026-04-23 terminal leak incident). Touches both the in-repo `skill/SKILL.md` and the user-level copy at `~/.claude/skills/switchboard/SKILL.md` that agents consume.
+Periodically review and harden `SKILL.md` based on failure patterns (e.g., the 2026-04-23 terminal leak incident). Edit only the in-repo `skill/SKILL.md` — the user-level installs at `~/.claude/skills/switchboard/` and `~/.gemini/skills/switchboard/` are symlinks to it, so changes flow through automatically.
 
 ---
 

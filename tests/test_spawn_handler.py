@@ -718,4 +718,3 @@ async def test_spawn_collision_continue_with_collab(spawn_dirs):
 	mock_run.assert_called_once()
 	backend.send_spawn_ack.assert_called_once()
 
-

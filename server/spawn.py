@@ -36,34 +36,19 @@ _DEFAULT_COLLAB_PROMPT = (
 	"change, then implement those changes and verify them."
 )
 _COLLAB_INSTRUCTION = (
-	"John is currently away. All communications MUST go through the switchboard "
-	"using one or more of its tools. "
+	"John is currently away. All communications MUST go through the Switchboard MCP. "
+	"Follow the \"Collab mode\" protocol in skill/SKILL.md for every collab rule, "
+	"including how to terminate via end_collab and how the designated reporter "
+	"reaches John.\n\n"
 	"Your `cwd` is the shared session key — both agents in this collab use the same cwd. "
-	"Each agent has a distinct sender to disambiguate. "
-	"Your sender is '{sender}'. Use it for every tool call — ask_human, notify_human, "
-	"send_document_human, and message_and_await_agent.\n\n"
-	"You are {sender} in a two-agent collaborative session with {partner}.\n\n"
-	"COLLABORATION RULES:\n"
-	"1. Use message_and_await_agent(cwd=..., sender=\"{sender}\", message=\"...\") "
-	"to communicate with your partner. Always pass your own sender.\n"
-	"2. Speak only to your partner — not to John — unless using ask_human or notify_human.\n"
-	"3. No meta-commentary. Respond with content directly.\n"
-	"4. Critically review your partner's proposals. Be specific.\n"
-	"5. Your goal is to reach consensus. When you believe consensus is reached, call "
-	"ask_human(question, cwd=..., sender=\"{sender}\") to confirm with John.\n"
-	"6. If debate becomes unproductive, call ask_human to report the deadlock.\n"
-	"7. After making changes, verify them with appropriate tools before claiming completion.\n"
-	"8. If message_and_await_agent returns \"__TIMEOUT__\", call ask_human to check in with John.\n"
-	"9. If message_and_await_agent returns an error, call ask_human immediately.\n"
-	"Title: optional on every messaging tool. SET ONE on your first call.\n"
-	"{listener_note}\n"
+	"Read it from $PWD or your system prompt's 'Primary working directory' field. "
+	"Use your own agent name as the `sender` for every Switchboard tool call.\n\n"
+	"Both agents start in parallel. Do your initial research / analysis, then send "
+	"your opening position via message_and_await_agent. You will receive your "
+	"partner's independent opening as your first delivery — treat it as their "
+	"opening position and respond to it.\n\n"
 	"TASK:\n"
 	"{task}"
-)
-_LISTENER_NOTE = (
-	"\nYour partner will send the first message. Begin by calling "
-	"`message_and_await_agent(cwd=..., sender=\"{sender}\")` "
-	"with no message argument to listen.\n"
 )
 
 
@@ -77,7 +62,7 @@ def _parse_spawn_flags(text: str) -> tuple[str, list[str]]:
 		elif part == "--gemini":
 			backends.append("gemini")
 		elif part == "--collab":
-			backends.extend(["claude", "claude"])
+			backends.extend(["claude", "gemini"])
 		elif re.match(r"--agents=\d+$", part):
 			raise ValueError("--agents is no longer supported; use --claude, --gemini, or --collab flags")
 		elif part == "--relay":
@@ -361,20 +346,14 @@ class SpawnHandler:
 		channel_id = canonicalize_cwd(str(project_path))
 
 		await self._cancel_prior_pending(channel_id)
-		
-		# Sender names derived directly from backends
-		s1 = _get_backend_name(backends[0])
-		s2 = _get_backend_name(backends[1])
-		agent_senders = [s1, s2]
 
-		def _make_prompt(sender: str, partner: str, listener: bool) -> str:
-			note = _LISTENER_NOTE.format(sender=sender) if listener else ""
-			return _COLLAB_INSTRUCTION.format(
-				sender=sender,
-				partner=partner,
-				listener_note=note,
-				task=task,
-			)
+		# `--collab` defaults to claude+gemini, so agent_senders are distinct
+		# by construction. Explicit `--claude --claude` is allowed but a
+		# sharp edge — the duplicate-sender error path is documented in the
+		# SKILL's BYO caveat for that case.
+		agent_senders = [_get_backend_name(b) for b in backends]
+		s1, s2 = agent_senders
+		prompt_text = _COLLAB_INSTRUCTION.format(task=task)
 
 		pending = {
 			"channel_id": channel_id,
@@ -382,14 +361,14 @@ class SpawnHandler:
 				{
 					"backend": backends[0],
 					"sender": s1,
-					"prompt": _make_prompt(s1, s2, False),
-					"project_path": str(project_path)
+					"prompt": prompt_text,
+					"project_path": str(project_path),
 				},
 				{
 					"backend": backends[1],
 					"sender": s2,
-					"prompt": _make_prompt(s2, s1, True),
-					"project_path": str(project_path)
+					"prompt": prompt_text,
+					"project_path": str(project_path),
 				},
 			],
 		}
