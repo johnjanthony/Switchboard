@@ -1,9 +1,11 @@
 package io.github.johnjanthony.switchboard
 
 import android.app.Application
+import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.webkit.MimeTypeMap
@@ -55,6 +57,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 	private val _bulkRespondDialog = MutableStateFlow<BulkRespondPayload?>(null)
 	val bulkRespondDialog: StateFlow<BulkRespondPayload?> = _bulkRespondDialog.asStateFlow()
+
+	private val _markdownViewerContent = MutableStateFlow<Pair<String, String>?>(null) // fileName to content
+	val markdownViewerContent: StateFlow<Pair<String, String>?> = _markdownViewerContent.asStateFlow()
 
 	private val _selectedCwdKey = MutableStateFlow<String?>(null)
 	val selectedCwdKey: StateFlow<String?> = _selectedCwdKey.asStateFlow()
@@ -196,7 +201,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 						android.util.Log.e("MainViewModel", "Error: ${e.message}")
 					}
 				}
-				override fun onChildRemoved(snap: DataSnapshot) {}
+				override fun onChildRemoved(snap: DataSnapshot) {
+					val msgId = snap.key ?: return
+					removeMessage(cwdKey, msgId)
+				}
 				override fun onChildMoved(snap: DataSnapshot, prev: String?) {}
 				override fun onCancelled(error: DatabaseError) {}
 			}
@@ -252,6 +260,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		if (_selectedCwdKey.value == null && !channel.hidden) {
 			_selectedCwdKey.value = cwdKey
 		}
+	}
+
+	private fun removeMessage(cwdKey: String, msgId: String) {
+		val channel = _channels.value[cwdKey] ?: return
+		val newMessages = channel.messages.filterNot { it.first == msgId }
+		if (newMessages.size == channel.messages.size) return
+		// If the removed message was a pending question, drop it from the pending map too.
+		val removed = channel.messages.firstOrNull { it.first == msgId }?.second
+		val newPending = channel.pendingQuestions.toMutableMap()
+		if (removed?.type == "question" && removed.request_id != null) {
+			newPending.remove(removed.request_id)
+		}
+		val updated = channel.copy(messages = newMessages, pendingQuestions = newPending)
+		val newMap = _channels.value.toMutableMap()
+		newMap[cwdKey] = updated
+		_channels.value = newMap
 	}
 
 	private fun setupAwayModeListener() {
@@ -328,6 +352,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		_unseenChannels.value = _unseenChannels.value - cwdKey
 	}
 
+	fun clearSelectedChannel() {
+		_selectedCwdKey.value = null
+	}
+
+	fun closeMarkdownViewer() {
+		_markdownViewerContent.value = null
+	}
+
 	fun hasAnyPendingQuestions(): Boolean {
 		return _channels.value.values.any { it.pendingQuestions.isNotEmpty() }
 	}
@@ -366,7 +398,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	fun resolveSpawnCollision(spawnId: String, action: String) {
-		spawnCollisionsRef.child(spawnId).child("decision").setValue(action)
+		spawnCollisionsRef.child(spawnId).child("decision").setValue(mapOf("action" to action))
 	}
 
 	fun submitBulkRespond(action: String, defaultText: String? = null) {
@@ -404,6 +436,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	// --- Utilities ---
+
+	fun saveFileToDownloads(context: Context, url: String, fileName: String) {
+		if (!url.startsWith("http://") && !url.startsWith("https://")) {
+			Toast.makeText(context, "Invalid URL", Toast.LENGTH_SHORT).show()
+			return
+		}
+		try {
+			val request = DownloadManager.Request(Uri.parse(url))
+				.setTitle(fileName)
+				.setDescription("Downloading file from Switchboard")
+				.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+				.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+				.setAllowedOverMetered(true)
+				.setAllowedOverRoaming(true)
+
+			val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+			downloadManager.enqueue(request)
+			Toast.makeText(context, "Download started...", Toast.LENGTH_SHORT).show()
+		} catch (e: Exception) {
+			Toast.makeText(context, "Failed to start download: ${e.message}", Toast.LENGTH_LONG).show()
+		}
+	}
 
 	fun downloadAndOpenFile(context: Context, url: String, fileName: String) {
 		if (!url.startsWith("http://") && !url.startsWith("https://")) {
@@ -445,6 +499,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	private fun openFile(context: Context, file: File) {
+		val fileName = file.name
+		if (fileName.endsWith(".md", ignoreCase = true) || fileName.endsWith(".txt", ignoreCase = true)) {
+			try {
+				val content = file.readText()
+				_markdownViewerContent.value = fileName to content
+				return
+			} catch (e: Exception) {
+				android.util.Log.e("MainViewModel", "Failed to read file for viewer: ${e.message}")
+			}
+		}
+
 		try {
 			val uri: Uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
 			val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"

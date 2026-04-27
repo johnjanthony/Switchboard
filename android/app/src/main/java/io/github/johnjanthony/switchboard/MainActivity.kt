@@ -39,6 +39,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import io.github.johnjanthony.switchboard.fcm.SwitchboardFirebaseMessagingService
 import io.github.johnjanthony.switchboard.ui.BulkRespondDialog
+import io.github.johnjanthony.switchboard.ui.MarkdownViewerScreen
 import io.github.johnjanthony.switchboard.ui.SessionListScreen
 import io.github.johnjanthony.switchboard.ui.SessionViewScreen
 import io.github.johnjanthony.switchboard.ui.SpawnCollisionDialog
@@ -85,12 +86,14 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun SwitchboardNavHost(viewModel: MainViewModel, deepLinkCwdKey: MutableState<String?>) {
+	val context = androidx.compose.ui.platform.LocalContext.current
 	val navController = rememberNavController()
 	val channels by viewModel.channels.collectAsState()
 	val globalAway by viewModel.globalAway.collectAsState()
 	val cwdOverrides by viewModel.cwdOverrides.collectAsState()
 	val pendingCollision by viewModel.pendingCollision.collectAsState()
 	val bulkRespond by viewModel.bulkRespondDialog.collectAsState()
+	val markdownViewerContent by viewModel.markdownViewerContent.collectAsState()
 	val projectMru by viewModel.projectMru.collectAsState()
 	var showHidden by remember { mutableStateOf(false) }
 	var showSpawnDialog by remember { mutableStateOf(false) }
@@ -102,6 +105,13 @@ private fun SwitchboardNavHost(viewModel: MainViewModel, deepLinkCwdKey: Mutable
 		if (key != null) {
 			navController.navigate("session/$key") { launchSingleTop = true }
 			deepLinkCwdKey.value = null
+		}
+	}
+
+	// Navigation to markdown viewer when content is loaded
+	LaunchedEffect(markdownViewerContent) {
+		if (markdownViewerContent != null) {
+			navController.navigate("markdown_viewer") { launchSingleTop = true }
 		}
 	}
 
@@ -154,6 +164,8 @@ private fun SwitchboardNavHost(viewModel: MainViewModel, deepLinkCwdKey: Mutable
 				onTapPill = { viewModel.requestAwayModeToggle(cwdKey, !awayActive) },
 				onLongPressPillConfirm = { viewModel.requestAwayModeToggle(cwdKey, !awayActive) },
 				onSubmitReply = { sender, text -> viewModel.submitReply(cwdKey, sender, text) },
+				onDownloadFile = { url, filename -> viewModel.downloadAndOpenFile(context, url, filename) },
+				onLongPressDownloadFile = { url, filename -> viewModel.saveFileToDownloads(context, url, filename) },
 				onShowTabInfo = { infoOpen = true },
 			)
 			if (infoOpen) {
@@ -166,6 +178,19 @@ private fun SwitchboardNavHost(viewModel: MainViewModel, deepLinkCwdKey: Mutable
 						else viewModel.hideChannel(cwdKey)
 					},
 					onToggleAway = { viewModel.requestAwayModeToggle(cwdKey, !awayActive) },
+				)
+			}
+		}
+		composable("markdown_viewer") {
+			val content = markdownViewerContent
+			if (content != null) {
+				MarkdownViewerScreen(
+					title = content.first,
+					content = content.second,
+					onBack = {
+						navController.popBackStack()
+						viewModel.closeMarkdownViewer()
+					},
 				)
 			}
 		}
@@ -227,7 +252,12 @@ fun AwayModePillChip(active: Boolean, onLongPress: () -> Unit) {
 
 
 @Composable
-fun MarkdownText(content: String, format: String, color: Color = Color.Unspecified) {
+fun MarkdownText(
+	content: String,
+	format: String,
+	color: Color = Color.Unspecified,
+	onInternalLinkClick: ((TextView, String) -> Unit)? = null,
+) {
 	if (format == "markdown") {
 		val textColor = color.toArgb()
 		AndroidView(
@@ -242,6 +272,23 @@ fun MarkdownText(content: String, format: String, color: Color = Color.Unspecifi
 				}
 				val markwon = io.noties.markwon.Markwon.builder(view.context)
 					.usePlugin(io.noties.markwon.html.HtmlPlugin.create())
+					.usePlugin(io.noties.markwon.ext.tables.TablePlugin.create(view.context))
+					.usePlugin(io.noties.markwon.ext.tasklist.TaskListPlugin.create(view.context))
+					.usePlugin(io.noties.markwon.ext.strikethrough.StrikethroughPlugin.create())
+					.usePlugin(io.noties.markwon.simple.ext.SimpleExtPlugin.create())
+					.usePlugin(object : io.noties.markwon.AbstractMarkwonPlugin() {
+						override fun configureConfiguration(builder: io.noties.markwon.MarkwonConfiguration.Builder) {
+							builder.linkResolver(object : io.noties.markwon.LinkResolver {
+								override fun resolve(v: android.view.View, link: String) {
+									if (link.startsWith("#") && onInternalLinkClick != null) {
+										onInternalLinkClick(v as TextView, link)
+									} else {
+										io.noties.markwon.LinkResolverDef().resolve(v, link)
+									}
+								}
+							})
+						}
+					})
 					.build()
 				markwon.setMarkdown(view, content)
 			}

@@ -15,13 +15,13 @@ private val DarkColorScheme = darkColorScheme(
     primary = DarkPrimary,
     secondary = DarkSecondary,
     tertiary = Pink80,
-    background = DarkBackground,
-    surface = DarkSurface,
+    background = DarkSurfaceLighter,
+    surface = DarkBackground,
     onPrimary = Color.Black,
     onSecondary = Color.Black,
     onBackground = DarkTextPrimary,
     onSurface = DarkTextPrimary,
-    surfaceVariant = DarkSurfaceLighter,
+    surfaceVariant = DarkSurface,
     onSurfaceVariant = DarkTextSecondary
 )
 

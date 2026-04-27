@@ -2,6 +2,7 @@ plugins {
     id 'com.android.application'
     id 'com.google.gms.google-services'
     id 'org.jetbrains.kotlin.plugin.compose' version '2.1.10'
+    id 'kotlin-kapt'
 }
 
 android {
@@ -69,6 +70,13 @@ dependencies {
     // Markdown/HTML rendering
     implementation 'io.noties.markwon:core:4.6.2'
     implementation 'io.noties.markwon:html:4.6.2'
+    implementation 'io.noties.markwon:ext-tables:4.6.2'
+    implementation 'io.noties.markwon:ext-tasklist:4.6.2'
+    implementation 'io.noties.markwon:ext-strikethrough:4.6.2'
+    implementation 'io.noties.markwon:simple-ext:4.6.2'
+    implementation 'io.noties.markwon:syntax-highlight:4.6.2'
+    implementation 'io.noties:prism4j:2.0.0'
+    kapt 'io.noties:prism4j-bundler:2.0.0'
 
     // Networking
     implementation 'com.squareup.retrofit2:retrofit:2.9.0'

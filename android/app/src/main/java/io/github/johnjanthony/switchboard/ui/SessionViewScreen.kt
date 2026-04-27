@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Info
@@ -55,8 +56,18 @@ fun SessionViewScreen(
 	onTapPill: () -> Unit,
 	onLongPressPillConfirm: () -> Unit,
 	onSubmitReply: (sender: String, text: String) -> Unit,
+	onDownloadFile: (url: String, filename: String) -> Unit,
+	onLongPressDownloadFile: (url: String, filename: String) -> Unit,
 	onShowTabInfo: () -> Unit,
 ) {
+	val listState = rememberLazyListState()
+
+	androidx.compose.runtime.LaunchedEffect(messages.size) {
+		if (messages.isNotEmpty()) {
+			listState.scrollToItem(messages.size - 1)
+		}
+	}
+
 	Scaffold(
 		topBar = {
 			TopAppBar(
@@ -107,6 +118,7 @@ fun SessionViewScreen(
 		},
 	) { padding ->
 		LazyColumn(
+			state = listState,
 			modifier = Modifier.fillMaxSize().padding(padding),
 			contentPadding = PaddingValues(8.dp),
 		) {
@@ -129,7 +141,11 @@ fun SessionViewScreen(
 						)
 					}
 				}
-				MessageBubble(message = msg)
+				MessageBubble(
+					message = msg,
+					onDownloadClick = onDownloadFile,
+					onDownloadLongClick = onLongPressDownloadFile,
+				)
 			}
 		}
 	}

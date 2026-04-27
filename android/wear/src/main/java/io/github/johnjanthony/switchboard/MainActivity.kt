@@ -12,13 +12,19 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -85,16 +91,21 @@ fun WearApp(viewModel: MainViewModel) {
     val selectedCwdKey by viewModel.selectedCwdKey.collectAsState()
     val bulkRespond by viewModel.bulkRespondDialog.collectAsState()
 
-    var showEnterAwayConfirm by remember { mutableStateOf(false) }
-    var showExitAwayConfirm by remember { mutableStateOf(false) }
-
     LaunchedEffect(selectedCwdKey) {
-        selectedCwdKey?.let { cwdKey ->
-            // Check if we're not already on the message list for this channel
+        val key = selectedCwdKey
+        if (key != null) {
             val currentRoute = navController.currentBackStackEntry?.destination?.route
-            if (currentRoute != "message_list/$cwdKey") {
-                navController.navigate("message_list/$cwdKey")
+            if (currentRoute != "message_list/$key") {
+                navController.navigate("message_list/$key") {
+                    // Pop up to the start destination to avoid building a deep stack
+                    popUpTo("channel_list") {
+                        saveState = true
+                    }
+                    launchSingleTop = true
+                    restoreState = true
+                }
             }
+            viewModel.clearSelectedChannel()
         }
     }
     
@@ -109,11 +120,7 @@ fun WearApp(viewModel: MainViewModel) {
                         viewModel = viewModel, 
                         navController = navController,
                         onToggleAway = { desired ->
-                            if (desired) {
-                                showEnterAwayConfirm = true
-                            } else {
-                                showExitAwayConfirm = true
-                            }
+                            viewModel.requestAwayModeToggle(null, desired)
                         }
                     )
                 }
@@ -129,73 +136,12 @@ fun WearApp(viewModel: MainViewModel) {
                 }
             }
 
-            if (showEnterAwayConfirm) {
-                WearConfirmationDialog(
-                    show = showEnterAwayConfirm,
-                    onDismissRequest = { showEnterAwayConfirm = false },
-                    onConfirm = {
-                        viewModel.requestAwayModeToggle(null, true)
-                        showEnterAwayConfirm = false
-                    },
-                    title = "Away Mode",
-                    text = "Turn Away Mode ON?"
-                )
-            }
-
-            if (showExitAwayConfirm) {
-                WearConfirmationDialog(
-                    show = showExitAwayConfirm,
-                    onDismissRequest = { showExitAwayConfirm = false },
-                    onConfirm = {
-                        viewModel.requestAwayModeToggle(null, false)
-                        showExitAwayConfirm = false
-                    },
-                    title = "Away Mode",
-                    text = "Turn Away Mode OFF?"
-                )
-            }
-
             if (bulkRespond != null) {
                 WearBulkRespondDialog(
                     payload = bulkRespond!!,
                     onSendToAll = { viewModel.submitBulkRespond("send_to_all", it) },
                     onSkip = { viewModel.submitBulkRespond("skip") },
                     onCancel = { viewModel.submitBulkRespond("cancel") }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun WearConfirmationDialog(
-    show: Boolean,
-    onDismissRequest: () -> Unit,
-    onConfirm: () -> Unit,
-    title: String,
-    text: String
-) {
-    AlertDialog(
-        visible = show,
-        onDismissRequest = onDismissRequest,
-        title = { Text(title, textAlign = TextAlign.Center) },
-        text = { Text(text, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) }
-    ) {
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Button(
-                    onClick = onDismissRequest,
-                    colors = ButtonDefaults.filledTonalButtonColors(),
-                    label = { Icon(Icons.Default.Clear, contentDescription = "Cancel") }
-                )
-                Spacer(Modifier.width(16.dp))
-                Button(
-                    onClick = onConfirm,
-                    label = { Icon(Icons.Default.Check, contentDescription = "Confirm") }
                 )
             }
         }
@@ -295,23 +241,18 @@ fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             item {
-                Text(
-                    text = "Switchboard",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(bottom = 8.dp)
+                AwayModePillChip(
+                    active = awayModeActive,
+                    onLongPress = { onToggleAway(!awayModeActive) }
                 )
             }
             
-            item {
-                SwitchButton(
-                    checked = awayModeActive,
-                    onCheckedChange = { onToggleAway(it) },
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                    label = { Text("Away Mode") }
-                )
-            }
-            
-            items(channels.values.toList().sortedBy { it.cwdKey }, key = { it.cwdKey }) { channel ->
+            items(
+                channels.values
+                    .filter { !it.hidden }
+                    .sortedByDescending { it.lastActivityAt ?: "" },
+                key = { it.cwdKey }
+            ) { channel ->
                 val hasPending = channel.pendingQuestions.isNotEmpty()
                 val isUnseen = unseenChannels.contains(channel.cwdKey)
                 
@@ -323,12 +264,13 @@ fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController
                         navController.navigate("message_list/${channel.cwdKey}") 
                     },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
-                    colors = if (hasPending) ButtonDefaults.filledTonalButtonColors() 
-                             else ButtonDefaults.buttonColors(),
+                    colors = if (hasPending) ButtonDefaults.buttonColors() 
+                             else ButtonDefaults.filledTonalButtonColors(),
                     label = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (isUnseen) {
-                                Text("• ", color = MaterialTheme.colorScheme.primary)
+                                val countText = if (channel.unreadCount > 0) "[${channel.unreadCount}] " else "• "
+                                Text(countText, color = MaterialTheme.colorScheme.primary)
                             }
                             Column {
                                 Text(
@@ -343,7 +285,8 @@ fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController
                                         overflow = TextOverflow.Ellipsis,
                                         maxLines = 1,
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = if (hasPending) Color(0xFFAAAAAA) // Slightly darker subtle on white
+                                                else Color(0xFF555555) // Subtle light on grey
                                     )
                                 }
                             }
@@ -502,6 +445,10 @@ fun MarkdownText(content: String, format: String, color: androidx.compose.ui.gra
                 }
                 val markwon = io.noties.markwon.Markwon.builder(view.context)
                     .usePlugin(io.noties.markwon.html.HtmlPlugin.create())
+                    .usePlugin(io.noties.markwon.ext.tables.TablePlugin.create(view.context))
+                    .usePlugin(io.noties.markwon.ext.tasklist.TaskListPlugin.create(view.context))
+                    .usePlugin(io.noties.markwon.ext.strikethrough.StrikethroughPlugin.create())
+                    .usePlugin(io.noties.markwon.simple.ext.SimpleExtPlugin.create())
                     .build()
                 markwon.setMarkdown(view, content)
             }
@@ -513,4 +460,31 @@ fun MarkdownText(content: String, format: String, color: androidx.compose.ui.gra
 
 private fun leafName(cwdCanonical: String): String {
     return cwdCanonical.trimEnd('/').substringAfterLast('/')
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun AwayModePillChip(active: Boolean, onLongPress: () -> Unit) {
+    val bg = if (active) MaterialTheme.colorScheme.error else Color.Transparent
+    val borderColor = if (active) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+    val textColor = if (active) Color.White else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+    val label = if (active) "AWAY" else "AT DESK"
+
+    Box(
+        modifier = Modifier
+            .padding(bottom = 12.dp)
+            .border(1.dp, borderColor, RoundedCornerShape(50))
+            .background(bg, RoundedCornerShape(50))
+            .combinedClickable(
+                onClick = { /* No-op */ },
+                onLongClick = onLongPress,
+            )
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = textColor
+        )
+    }
 }
