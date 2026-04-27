@@ -6,17 +6,19 @@ Open/proposed features for Switchboard, grouped by where the work lives. Shipped
 
 # Server
 
-## `decision` UnboundLocalError in away-mode dispatch
+## Wire spawn-collision dialog into the `/spawn` command path
 
-**Surfaced 2026-04-26** during cwd-as-channel post-merge testing (test 5 side-thread). At `server/gateway.py:619` the closing `logger.surface_error(f"away_mode_commands: exit_global applied action={decision.get('action','none')}")` line lives *outside* the `if payload["sections"]:` block — so the `else` branch (no pending questions) runs `set_global_away(False)` without defining `decision`, and the log line then raises `UnboundLocalError: cannot access local variable 'decision' where it is not associated with a value`. The outer `except Exception` swallows it into a `surface_error`, so the toggle still completes, but the dispatch path is noisy and any downstream code after the log statement is skipped.
+**Surfaced 2026-04-26** during cwd-as-channel post-merge testing (tests A & B). The collision-detection plumbing is half-built and never gets invoked: `SpawnHandler.submit()` and `resolve_collision()` exist with the right logic (`has_messages` → `write_spawn_collision_prompt`, then on user decision `wipe_channel`/`set_channel_hidden`/launch), but `_handle_spawn` (the path `/spawn` commands take) goes straight to `_handle_single_spawn` / `_handle_collab_spawn`, bypassing the check entirely. Additionally, nothing on the server listens for the phone's decision write to `spawn_collisions/{spawn_id}/decision` — there's no `poll_spawn_collision_decision` analog to `poll_bulk_respond_decision`. So even if the dialog *were* fired, the user's choice would never be acted on.
 
-**Fix:** either move the log statement into both branches with the appropriate context, or default `decision = {"action": "none"}` before the `if`. One-line change.
+**Why this didn't surface before today:** pre-Fix-#2 (spawn channel routing), `channel_id` was always a unique synthetic `project-YYYYMMDD-HHMMSS` string, so `has_messages(canonical_cwd)` would never match an existing channel — the collision flow was unreachable. With deterministic cwd-keyed channel ids, re-spawning into the same cwd now genuinely collides, exposing the gap. Test A "passes" only by accident (no-collision-check fallthrough resembles the Continue path); test B (Clear) is fully blocked.
 
----
+**Scope of fix** (multi-file, comparable to one of the original Slices E–K):
 
-## Silence Detection at the Gateway
-
-*(Spec'd 2026-04-23 as "Away-Mode Enforcement" — Stop-hook + server-side flag approach replaces gateway transcript inspection. See [`superpowers/specs/2026-04-23-away-mode-enforcement-design.md`](superpowers/specs/2026-04-23-away-mode-enforcement-design.md).)*
+1. `spawn.py` — `_handle_spawn` calls `has_messages` / `write_spawn_collision_prompt` before delegating to `_handle_single_spawn` / `_handle_collab_spawn`; awaits the decision; routes to wipe-then-launch or just launch.
+2. New `poll_spawn_collision_decision` mechanism — Firebase listener on `spawn_collisions/{spawn_id}/decision`, future resolved when written.
+3. `messenger.py` — abstract method + MultiBackend fan-out.
+4. `firebase.py` — `_on_spawn_collision_decision` listener; queue-and-future plumbing mirroring `poll_bulk_respond_decision`.
+5. Server main loop — wire the spawn-handler's wait into the existing event flow.
 
 ---
 
@@ -66,6 +68,32 @@ Remove `_LISTENER_NOTE` from Agent 2's spawn prompt in `spawn.py` so both spawne
 
 ---
 
+## Android: multi-sender reply UX in BYO collab channels
+
+**Surfaced 2026-04-26** during cwd-as-channel post-merge testing (test F). When a single channel has multiple pending questions from distinct senders (BYO collab scenario), the reply bar in `SessionViewScreen.kt:87` picks one via `currentPending.values.firstOrNull { !it.cancelled }` and shows just that one in the bottom bar. The placeholder reads `"Reply to {sender}…"` but it's subtle, easy to miss, and the user has no agency over which pending to reply to first — the UI implicitly serializes them.
+
+**What needs to change:**
+
+- **Strong sender attribution in the reply UI.** Promote the sender from a placeholder hint to a prominent label or chip directly above/beside the reply input — e.g. a `→ Replying to: [Claude]` row with the sender styled like the message-bubble sender label.
+- **Agency over which pending to answer.** Options:
+  - Render an inline reply affordance directly beneath each pending question card in the scroll, not (only) a global bottom bar. Eliminates the ambiguity entirely — each question has its own visible reply box.
+  - Or: if keeping the single bottom bar, add a row of sender chips (`[Claude] [Sparkles]`) above it that the user can tap to switch which pending the bar targets.
+- **Test:** when two senders both have pending questions in the same channel, the user can pick which one to answer first, and the reply visibly routes to that sender (slot `responses/{cwdKey}__{sender}` for the chosen one).
+
+The data is already correct end-to-end (verified in test F: server's `(cwd, sender)` keying preserves both pendings, replies route correctly per slot). Pure UX work on the phone.
+
+---
+
+## Android: swipe gestures on channel rows
+
+Add directional swipe actions to `SessionRowComposable` on Page A:
+- **Swipe left** → hide the channel (equivalent to `viewModel.hideChannel(cwdKey)`).
+- **Swipe right** → exit away mode for that channel (equivalent to `viewModel.requestAwayModeToggle(cwdKey, false)`, setting the per-cwd override to at-desk).
+
+Both should reveal a colored action affordance during the swipe (red for hide, green/blue for at-desk) and commit on full swipe / snap back if released early — Material 3 `SwipeToDismissBox` or similar pattern. Long-press / context menu / TabInfoPopover access continues to work for the no-swipe path.
+
+---
+
 ## Android: suggestion buttons as notification actions
 
 When `ask_human` is called with suggestions, render them as tappable action buttons on the notification banner so the developer can reply without opening the app.
@@ -83,14 +111,14 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 
 # Combined (server + client)
 
-## Per-channel away-mode tracking — IN IMPLEMENTATION (Slices A–L complete in working tree, Slice M pending)
+## Per-channel away-mode tracking — IN IMPLEMENTATION (cwd-as-channel branch, post-Slice-M validation)
 
-This entry has graduated from backlog to active work. Implementation expanded in scope during brainstorming to **cwd-as-channel unification**: replacing `channel_id` with canonical-cwd as the namespace, re-keying blocking exchanges by `(cwd, sender)` with supersede semantics, two-tier away-mode (`_global_away` + `_cwd_overrides`), and an Android UI overhaul to a list-based two-page nav.
+This entry graduated from backlog to active work and expanded in scope during brainstorming to **cwd-as-channel unification**: replacing `channel_id` with canonical-cwd as the namespace, re-keying blocking exchanges by `(cwd, sender)` with supersede semantics, two-tier away-mode (`_global_away` + `_cwd_overrides`), and an Android UI overhaul to a list-based two-page nav.
 
 **Spec:** [`superpowers/specs/2026-04-24-cwd-as-channel-and-per-cwd-away-mode-design.md`](superpowers/specs/2026-04-24-cwd-as-channel-and-per-cwd-away-mode-design.md)
 **Plan:** `superpowers/plans/2026-04-25-cwd-as-channel-and-per-cwd-away-mode.md` (gitignored)
 **Branch:** `cwd-as-channel`
-**Status (2026-04-25):** Slices A–L complete in working tree (no commits per CLAUDE.md). 321 server tests passing, Android `compileDebugKotlin` clean. Slice M (manual phone validation, 10 scenarios) is the only remaining work. See `docs/project_next_session.md` for full handoff details.
+**Status (2026-04-26):** Slices A–L committed; today's spawn-correctness fixes shipped (cwd-override on spawn, deterministic cwd-keyed channel id, mirror sync on bulk-clear). Slice M validation walked end-to-end on phone and watch — most scenarios pass; gaps surfaced as separate backlog items (spawn-collision dialog wiring, withdraw-on-agent-death, multi-sender reply UX, swipe gestures, FCM notification suggestion actions). 321 server tests passing.
 
 The original concerns this entry tracked are all subsumed by the new spec:
 - Per-channel away state → covered by Slice B (two-tier `_global_away` + `_cwd_overrides`).
@@ -98,6 +126,8 @@ The original concerns this entry tracked are all subsumed by the new spec:
 - Reply-routing by current-pending pointer → covered by Slice C (re-key `_pending` by `(cwd, sender)` so the slot itself is the pointer; supersede on add).
 
 The bundled "hook captures leaked terminal text" enhancement is **not** included in the current spec — it remains a separate follow-up and could be bolted on later (the Stop hook now knows the cwd, so plumbing it through `notify_human` on the channel is straightforward).
+
+This entry moves to `PROJECT-JOURNAL.md` once the branch merges to main.
 
 ---
 

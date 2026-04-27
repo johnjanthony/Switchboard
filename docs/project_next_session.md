@@ -1,48 +1,65 @@
 # Next-session resumption notes — `cwd-as-channel` branch
 
-When picking up this branch in a fresh session, read this file first to understand state and the remaining work.
+Read this first when picking up the `cwd-as-channel` branch in a fresh session. The branch is in PR-ready shape pending one final commit and the merge decision.
 
-The 2026-04-24 brainstorm produced spec + plan; implementation completed 2026-04-25 via subagent-driven development.
+## Status (2026-04-26)
 
-**Status at handoff: Slices A–L done in working tree (no commits). Slice M = manual phone validation on device, the only remaining work.**
+The cwd-as-channel migration (Slices A–L of the 2026-04-24 spec) shipped in earlier commits. Slice M validation was walked end-to-end today on phone and watch; most scenarios pass, the rest are non-blocker gaps captured as separate backlog items.
 
-**Branch:** `cwd-as-channel`. Spec is staged + 1 unstaged refinement; plan is gitignored.
+## What landed today (commits on this branch, newest first)
 
-**Working tree:**
-- Server: 33 modified + 4 new files (`server/canonicalization.py`, `server/title_tracker.py`, `tests/test_canonicalization.py`, `tests/test_title.py`, `tests/test_bulk_respond.py`, `tests/test_away_mode_commands.py`).
-- Android: 7 modified files + 10 new UI files in `android/app/src/main/java/io/github/johnjanthony/switchboard/ui/`.
-- Docs: `skill/SKILL.md`, `AGENTS.md`, `PROJECT-JOURNAL.md`, `docs/feature-backlog.md` all updated.
-- Server tests: **321 passing**. Android `compileDebugKotlin`: clean.
+- *(latest commit)* — `decision` UnboundLocalError fix + doc cleanup. `gateway.py` initializes `decision = {"action": "skip"}` before the `if payload["sections"]:` block so the trailing log statement can't raise; reply-mirror sender renamed `"Human"` → `"John"`. `.gitignore` picks up `.artifacts/*` and `__work*.log`. `docs/feature-backlog.md` reorganized post-Slice-M (Server/Client/Combined sections, stale entries removed, three new ones added). `PROJECT-JOURNAL.md` 2026-04-23 entry now notes it superseded the older Silence Detection idea. This very file rewritten for resumption.
+- `a4410e2` — restore suggestion buttons rendering on the phone (regression from the cwd-as-channel UI rewrite).
+- `c76332d` — three correctness fixes for spawn + away-mode:
+  1. **Spawn no longer flips global away.** `_handle_single_spawn` / `_handle_collab_spawn` now call `registry.set_cwd_override(canonical_cwd, True)` instead of `set_global_away(True)`. Previously, every spawn wiped any explicit per-cwd at-desk overrides the user had set on other channels.
+  2. **Spawn channel routing uses canonical cwd.** `_make_channel_id(project_key)` removed; both spawn paths use `canonicalize_cwd(str(project_path))`. Eliminates the duplicate-orphan `project-YYYYMMDD-HHMMSS` channel previously created on every spawn.
+  3. **Mirror sync on bulk-clear.** When `set_global_away` clears `_cwd_overrides`, the registry now fires per-cwd callbacks with `active=None`; `FirebaseBackend.write_away_mode_mirror` deletes the override node on `None`. Closes the long-standing divergence where Firebase retained stale override entries invisible to the local Registry.
 
-**Slice M validation checklist (see `docs/superpowers/plans/2026-04-25-cwd-as-channel-and-per-cwd-away-mode.md` Slice M for full details):**
-1. Spawn into fresh cwd (no collision dialog).
-2. Spawn into existing cwd → Continue path (state preserved).
-3. Spawn into existing cwd → Clear path (wipes + forces away=true + hidden=false).
-4. Per-channel pill toggle on Page B.
-5. Global pill toggle + bulk-respond dialog (Send-to-all / Skip / Cancel).
-6. Withdrawn-question UX (Ctrl-C an `ask_human`, observe phone update).
-7. Title rendering on Page A row and Page B per-message subheader.
-8. Hidden channel hide/show/unhide flow.
-9. BYO collab via shared cwd with distinct senders.
-10. FCM tap deep-link to Page B.
+## Slice M validation outcomes
 
-**Cutover prerequisite (already done):** Firebase data wipe (run by John 2026-04-24 evening before implementation began).
+| # | Scenario | Result |
+|---|---|---|
+| 1 | Spawn into fresh cwd | ✓ |
+| 2 | Spawn collision Continue | ⚠ blocked → backlog *Wire spawn-collision dialog into the `/spawn` command path* |
+| 3 | Spawn collision Clear | ⚠ same as 2 |
+| 4 | Per-channel pill toggle | ✓ |
+| 5 | Global pill + bulk-respond | ✓ (surfaced `decision` UnboundLocalError, fixed in pending commit) |
+| 6a/b | Reply round-trip | ✓ |
+| 6c | `responses/` slot lifecycle at idle | ✓ (ephemeral by design — empty is correct) |
+| 6d | Withdrawn-question on agent death | ⚠ pre-existing transport gap → backlog *Withdraw pending questions when the agent process dies* |
+| 7 | Title rendering Page A + B | ✓ |
+| 8 | Hidden channel hide/show/unhide | ✓ |
+| E | FCM tap deep-link | ✓ (note: Android Force Stop suppresses FCM until app relaunch — methodology trap, not a bug) |
+| F | BYO collab two senders | ✓ mechanically; UX gap → backlog *Android: multi-sender reply UX in BYO collab channels* |
 
-**Why:** Heavy refactor — `channel_id` → `cwd` everywhere; two-tier away-mode; Android list-based UI replaces tab UI. After Slice M passes, this is a clean PR-able state. The previous 2026-04-24 work landed as 2 commits (impl + polish); this is comparable in scope.
+## Next steps
 
-**Deployment readiness for Slice M validation.** The working tree has V2 code, but the running environment may still be V1 if the branch was last left and main was used in between. Before running Slice M scenarios, redeploy:
+1. **Verify state**:
+   ```
+   git status                     # should be clean
+   python -m pytest tests/ -q     # 321 should pass
+   cd android && ./gradlew :app:compileDebugKotlin :wear:compileDebugKotlin
+   ```
 
-1. **Server:** `.\scripts\restart-service.ps1 -SkipTests` (picks up V2 from `server/`).
-2. **Android APK:** rebuild and install — `.\scripts\install-client.ps1` (or the equivalent Gradle command + `adb install`).
-3. **Skill:** copy the branch-V2 SKILL.md to the user-level location — `Copy-Item skill\SKILL.md $env:USERPROFILE\.claude\skills\switchboard\SKILL.md -Force`.
-4. **Hook script:** already V2 in `scripts/turn-end-hook-away-mode.py` and registered via `settings.json`; the service restart picks it up via the new `/away-mode?cwd=` endpoint shape.
+2. **Decide whether to merge to main.** Open backlog items are follow-ups, not regressions. If merging, this file should be deleted (or rewritten for whatever the next branch is).
 
-If Slice M is being run for the first time after a context switch back to this branch, expect the agent (you) to use the V2 tool signatures. The running server must be V2 for those calls to succeed.
+3. **Or take on a backlog item.** Top candidates surfaced this session:
+   - *Wire spawn-collision dialog into the `/spawn` command path* (Server, multi-file).
+   - *Android: multi-sender reply UX in BYO collab channels* (Client, pure UX).
+   - *Withdraw pending questions when the agent process dies* (Combined; recommended approach: cancel-on-spawn).
+   - *Android: swipe gestures on channel rows* (Client, pure UX).
+   - *Away-mode Firebase schema reorganization* (Combined, schema cleanup).
 
-**How to apply:** Run Slice M on device. If anything fails, file follow-up tasks. If everything passes, commit the work (likely 1-3 logical commits) and merge to main.
+## Design memory — non-obvious things future-you might re-question
 
-**Open quality items for the code-review pass before merge:**
-- `server/canonicalization.py:54-55` — drive-letter-only lowercase is redundant with line 57's full-string lowercase. Pre-existing, not buggy.
-- Verify all `MessengerBackend` subclasses implement (or no-op default) the new methods added in Slices E, H, I, K1 (`mark_question_cancelled`, `send_stale_reply_notice`, `update_channel_title`, `update_last_activity`, `has_messages`, `read_channel_meta`, `write_spawn_collision_prompt`, `clear_spawn_collision_prompt`, `wipe_channel`, `set_channel_hidden`, `fetch_message_text`, `write_bulk_respond_dialog`, `clear_bulk_respond_dialog`, `poll_away_mode_commands`, `poll_bulk_respond_decision`).
+- **`set_global_away` wiping `_cwd_overrides` is by design** (`registry.py:135`). Confirmed by user 2026-04-26: changing the global setting trumps per-channel state; individual channels can override after each global change but only until the next global change. **Spawn must NOT call `set_global_away`** — use `set_cwd_override(canonical_cwd, True)` instead.
+- **MCP streamable-HTTP transport doesn't reliably surface mid-call client disconnects** to in-flight tool handlers on the server. This is the root cause of the test 6d cancellation gap and may affect any other "client died mid-call" scenario. `asyncio.CancelledError` in `gateway.ask_human` only fires on graceful shutdown or explicit supersede.
+- **The `responses/{cwdKey}__{sender}` slot is ephemeral.** Phone writes it, server reads + deletes it via `send_resolution_confirmation` within milliseconds. Empty `responses/` node at idle is correct.
+- **Spawn-collision plumbing exists but isn't wired** to the `/spawn` command path. `SpawnHandler.submit()` and `resolve_collision()` look correct; `_handle_spawn` simply doesn't invoke them. See backlog entry for the multi-file fix scope.
 
-**Note on this run's flow:** mid-run I unilaterally exited away mode in response to "power through" — that was over-correction. The Stop hook only fires when an assistant response has no tool calls (the actual "stop" point), so power-through is achievable without leaving away mode by ensuring every checkpoint pairs `notify_human` with the next subagent dispatch. Only the final wrap-up turn needs `ask_human`. The same lesson applies to any future autonomous run.
+## Reference
+
+- Spec: `docs/superpowers/specs/2026-04-24-cwd-as-channel-and-per-cwd-away-mode-design.md`
+- Plan: `docs/superpowers/plans/2026-04-25-cwd-as-channel-and-per-cwd-away-mode.md` (gitignored)
+- Backlog: `docs/feature-backlog.md` (organized as Server / Client / Combined since 2026-04-26)
+- Journal: `PROJECT-JOURNAL.md`

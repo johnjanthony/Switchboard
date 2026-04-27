@@ -12,6 +12,7 @@ dist/
 # Secrets and runtime
 .env
 logs/
+__work*.log
 serviceAccountKey.json
 google-services.json
 
@@ -32,3 +33,4 @@ docs/superpowers/plans/
 # MCP stuff
 .repomap.tags.cache.v1/*
 android/.artifacts/*
+.artifacts/*
