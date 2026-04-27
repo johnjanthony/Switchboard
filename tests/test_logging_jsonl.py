@@ -12,9 +12,10 @@ def read_events(path: Path) -> list[dict]:
 	return [json.loads(line) for line in path.read_text().splitlines() if line]
 
 
-def test_request_created_writes_expected_fields(tmp_path):
+@pytest.mark.asyncio
+async def test_request_created_writes_expected_fields(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.request_created("a3f1", "IR2", "Overwrite foo.java?")
+	await logger.request_created("a3f1", "IR2", "Overwrite foo.java?")
 	events = read_events(tmp_path / "log.jsonl")
 	assert len(events) == 1
 	ev = events[0]
@@ -25,9 +26,10 @@ def test_request_created_writes_expected_fields(tmp_path):
 	assert "ts" in ev
 
 
-def test_request_resolved_records_duration_and_source(tmp_path):
+@pytest.mark.asyncio
+async def test_request_resolved_records_duration_and_source(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.request_resolved(
+	await logger.request_resolved(
 		"a3f1", "IR2", response_text="yes", source="firebase", duration_ms=123
 	)
 	ev = read_events(tmp_path / "log.jsonl")[0]
@@ -37,41 +39,46 @@ def test_request_resolved_records_duration_and_source(tmp_path):
 	assert ev["duration_ms"] == 123
 
 
-def test_timeout_event(tmp_path):
+@pytest.mark.asyncio
+async def test_timeout_event(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.timeout("a3f1", "IR2", timeout_seconds=86400)
+	await logger.timeout("a3f1", "IR2", timeout_seconds=86400)
 	ev = read_events(tmp_path / "log.jsonl")[0]
 	assert ev["event"] == "timeout"
 	assert ev["timeout_seconds"] == 86400
 
 
-def test_notify_sent_truncates_long_message(tmp_path):
+@pytest.mark.asyncio
+async def test_notify_sent_truncates_long_message(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
 	long_msg = "x" * 500
-	logger.notify_sent("IR2", long_msg)
+	await logger.notify_sent("IR2", long_msg)
 	ev = read_events(tmp_path / "log.jsonl")[0]
 	assert ev["event"] == "notify_sent"
 	assert len(ev["message_preview"]) == 100
 
 
-def test_tool_error_event(tmp_path):
+@pytest.mark.asyncio
+async def test_tool_error_event(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.tool_error("a3f1", "IR2", "boom")
+	await logger.tool_error("a3f1", "IR2", "boom")
 	ev = read_events(tmp_path / "log.jsonl")[0]
 	assert ev["event"] == "tool_error"
 	assert ev["error"] == "boom"
 
 
-def test_creates_parent_directory(tmp_path):
+@pytest.mark.asyncio
+async def test_creates_parent_directory(tmp_path):
 	path = tmp_path / "logs" / "nested" / "log.jsonl"
 	logger = JsonlLogger(path)
-	logger.request_created("a3f1", "IR2", "q")
+	await logger.request_created("a3f1", "IR2", "q")
 	assert path.exists()
 
 
-def test_spawn_started_writes_expected_fields(tmp_path):
+@pytest.mark.asyncio
+async def test_spawn_started_writes_expected_fields(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.spawn_started("a1b2c3d4", "rpdm/next-gen", "/Work/rpdm/next-gen", "fix migration")
+	await logger.spawn_started("a1b2c3d4", "rpdm/next-gen", "/Work/rpdm/next-gen", "fix migration")
 	events = read_events(tmp_path / "log.jsonl")
 	assert len(events) == 1
 	ev = events[0]
@@ -83,9 +90,10 @@ def test_spawn_started_writes_expected_fields(tmp_path):
 	assert "ts" in ev
 
 
-def test_spawn_invalid_path_writes_expected_fields(tmp_path):
+@pytest.mark.asyncio
+async def test_spawn_invalid_path_writes_expected_fields(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.spawn_invalid_path("../evil", "/Work/../evil")
+	await logger.spawn_invalid_path("../evil", "/Work/../evil")
 	events = read_events(tmp_path / "log.jsonl")
 	assert len(events) == 1
 	ev = events[0]
@@ -95,9 +103,10 @@ def test_spawn_invalid_path_writes_expected_fields(tmp_path):
 	assert "ts" in ev
 
 
-def test_document_sent_writes_required_fields(tmp_path):
+@pytest.mark.asyncio
+async def test_document_sent_writes_required_fields(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.document_sent(
+	await logger.document_sent(
 		"IR2", "/work/report.txt", 1024, "abc123def456", caption="Here's the report"
 	)
 	ev = read_events(tmp_path / "log.jsonl")[0]
@@ -110,24 +119,27 @@ def test_document_sent_writes_required_fields(tmp_path):
 	assert "ts" in ev
 
 
-def test_document_sent_omits_caption_preview_when_none(tmp_path):
+@pytest.mark.asyncio
+async def test_document_sent_omits_caption_preview_when_none(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.document_sent("IR2", "/work/report.txt", 512, "deadbeef", caption=None)
+	await logger.document_sent("IR2", "/work/report.txt", 512, "deadbeef", caption=None)
 	ev = read_events(tmp_path / "log.jsonl")[0]
 	assert "caption_preview" not in ev
 
 
-def test_document_sent_truncates_long_caption(tmp_path):
+@pytest.mark.asyncio
+async def test_document_sent_truncates_long_caption(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
 	long_caption = "c" * 500
-	logger.document_sent("IR2", "/work/report.txt", 512, "deadbeef", caption=long_caption)
+	await logger.document_sent("IR2", "/work/report.txt", 512, "deadbeef", caption=long_caption)
 	ev = read_events(tmp_path / "log.jsonl")[0]
 	assert len(ev["caption_preview"]) == 100
 
 
-def test_away_mode_entered_writes_event(tmp_path):
+@pytest.mark.asyncio
+async def test_away_mode_entered_writes_event(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.away_mode_entered()
+	await logger.away_mode_entered()
 	lines = (tmp_path / "log.jsonl").read_text(encoding="utf-8").strip().splitlines()
 	assert len(lines) == 1
 	event = json.loads(lines[0])
@@ -136,47 +148,52 @@ def test_away_mode_entered_writes_event(tmp_path):
 	assert "reason" not in event
 
 
-def test_away_mode_entered_with_reason(tmp_path):
+@pytest.mark.asyncio
+async def test_away_mode_entered_with_reason(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.away_mode_entered(reason="spawn")
+	await logger.away_mode_entered(reason="spawn")
 	event = json.loads((tmp_path / "log.jsonl").read_text(encoding="utf-8").strip())
 	assert event["event"] == "away_mode_entered"
 	assert event["reason"] == "spawn"
 
 
-def test_away_mode_exited_writes_event(tmp_path):
+@pytest.mark.asyncio
+async def test_away_mode_exited_writes_event(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.away_mode_exited()
+	await logger.away_mode_exited()
 	event = json.loads((tmp_path / "log.jsonl").read_text(encoding="utf-8").strip())
 	assert event["event"] == "away_mode_exited"
 	assert "ts" in event
 
 
-def test_away_mode_exited_with_reason(tmp_path):
+@pytest.mark.asyncio
+async def test_away_mode_exited_with_reason(tmp_path):
 	from server.logging_jsonl import JsonlLogger
 	log = tmp_path / "audit.jsonl"
 	logger = JsonlLogger(log)
-	logger.away_mode_exited(reason="android")
+	await logger.away_mode_exited(reason="android")
 	contents = log.read_text(encoding="utf-8").strip()
 	event = json.loads(contents.splitlines()[-1])
 	assert event["event"] == "away_mode_exited"
 	assert event["reason"] == "android"
 
 
-def test_away_mode_exited_without_reason(tmp_path):
+@pytest.mark.asyncio
+async def test_away_mode_exited_without_reason(tmp_path):
 	from server.logging_jsonl import JsonlLogger
 	log = tmp_path / "audit.jsonl"
 	logger = JsonlLogger(log)
-	logger.away_mode_exited()
+	await logger.away_mode_exited()
 	contents = log.read_text(encoding="utf-8").strip()
 	event = json.loads(contents.splitlines()[-1])
 	assert event["event"] == "away_mode_exited"
 	assert "reason" not in event
 
 
-def test_cwd_canonicalized_writes_expected_fields(tmp_path):
+@pytest.mark.asyncio
+async def test_cwd_canonicalized_writes_expected_fields(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.cwd_canonicalized("/C/Work/Foo", "c:/work/foo")
+	await logger.cwd_canonicalized("/C/Work/Foo", "c:/work/foo")
 	ev = read_events(tmp_path / "log.jsonl")[0]
 	assert ev["event"] == "cwd_canonicalized"
 	assert ev["raw"] == "/C/Work/Foo"
@@ -184,9 +201,10 @@ def test_cwd_canonicalized_writes_expected_fields(tmp_path):
 	assert "ts" in ev
 
 
-def test_pending_superseded_writes_expected_fields(tmp_path):
+@pytest.mark.asyncio
+async def test_pending_superseded_writes_expected_fields(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.pending_superseded("c:/work/foo", "Claude", "req-old", "req-new")
+	await logger.pending_superseded("c:/work/foo", "Claude", "req-old", "req-new")
 	ev = read_events(tmp_path / "log.jsonl")[0]
 	assert ev["event"] == "pending_superseded"
 	assert ev["cwd"] == "c:/work/foo"
@@ -196,25 +214,28 @@ def test_pending_superseded_writes_expected_fields(tmp_path):
 	assert "ts" in ev
 
 
-def test_away_mode_global_changed_true(tmp_path):
+@pytest.mark.asyncio
+async def test_away_mode_global_changed_true(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.away_mode_global_changed(True)
+	await logger.away_mode_global_changed(True)
 	ev = read_events(tmp_path / "log.jsonl")[0]
 	assert ev["event"] == "away_mode_global_changed"
 	assert ev["active"] is True
 	assert "ts" in ev
 
 
-def test_away_mode_global_changed_false(tmp_path):
+@pytest.mark.asyncio
+async def test_away_mode_global_changed_false(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.away_mode_global_changed(False)
+	await logger.away_mode_global_changed(False)
 	ev = read_events(tmp_path / "log.jsonl")[0]
 	assert ev["active"] is False
 
 
-def test_away_mode_cwd_changed_writes_expected_fields(tmp_path):
+@pytest.mark.asyncio
+async def test_away_mode_cwd_changed_writes_expected_fields(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.away_mode_cwd_changed("c:/work/switchboard", True)
+	await logger.away_mode_cwd_changed("c:/work/switchboard", True)
 	ev = read_events(tmp_path / "log.jsonl")[0]
 	assert ev["event"] == "away_mode_cwd_changed"
 	assert ev["cwd"] == "c:/work/switchboard"
@@ -222,9 +243,10 @@ def test_away_mode_cwd_changed_writes_expected_fields(tmp_path):
 	assert "ts" in ev
 
 
-def test_spawn_collision_detected_writes_expected_fields(tmp_path):
+@pytest.mark.asyncio
+async def test_spawn_collision_detected_writes_expected_fields(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
-	logger.spawn_collision_detected("c:/work/rpdm", "spawn-id-abc123")
+	await logger.spawn_collision_detected("c:/work/rpdm", "spawn-id-abc123")
 	ev = read_events(tmp_path / "log.jsonl")[0]
 	assert ev["event"] == "spawn_collision_detected"
 	assert ev["cwd"] == "c:/work/rpdm"
@@ -232,10 +254,11 @@ def test_spawn_collision_detected_writes_expected_fields(tmp_path):
 	assert "ts" in ev
 
 
-def test_title_truncated_writes_expected_fields(tmp_path):
+@pytest.mark.asyncio
+async def test_title_truncated_writes_expected_fields(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
 	long_title = "x" * 120
-	logger.title_truncated("c:/work/foo", 120, long_title[:80])
+	await logger.title_truncated("c:/work/foo", 120, long_title[:80])
 	ev = read_events(tmp_path / "log.jsonl")[0]
 	assert ev["event"] == "title_truncated"
 	assert ev["cwd"] == "c:/work/foo"

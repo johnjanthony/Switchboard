@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import secrets
@@ -105,10 +106,10 @@ class SpawnHandler:
 			try:
 				await self._backend.mark_question_cancelled(canonical_cwd, request_id)
 			except Exception as exc:
-				self._logger.surface_error(
+				await self._logger.surface_error(
 					f"mark_cancelled_failed_on_spawn: cwd={canonical_cwd} req={request_id} {exc}"
 				)
-		self._logger.pending_cancelled_on_spawn(canonical_cwd, cancelled)
+		await self._logger.pending_cancelled_on_spawn(canonical_cwd, cancelled)
 
 	async def handle(self, raw: str) -> None:
 		stripped = raw.strip()
@@ -124,12 +125,13 @@ class SpawnHandler:
 		arg = arg.strip().lower()
 		if arg == "on":
 			self._registry.set_global_away(True)
-			self._logger.away_mode_entered(reason="android")
+			await self._logger.away_mode_entered(reason="android")
 		elif arg == "off":
 			self._registry.set_global_away(False)
-			self._logger.away_mode_exited(reason="android")
+			await self._logger.away_mode_exited(reason="android")
 		else:
-			self._logger.surface_error(f"away_mode_unknown_subcommand: {arg!r}")
+			await self._logger.surface_error(f"away_mode_unknown_subcommand: {arg!r}")
+
 
 	async def _handle_spawn(self, text: str) -> None:
 		if self._spawn_root is None:
@@ -178,7 +180,7 @@ class SpawnHandler:
 					suggestions = ", ".join(
 						p.relative_to(self._spawn_root).as_posix() for p in nested
 					)
-					self._logger.spawn_invalid_path(tokens[0], f"ambiguous: {suggestions}")
+					await self._logger.spawn_invalid_path(tokens[0], f"ambiguous: {suggestions}")
 					await self._backend.send_text(
 						f"Ambiguous project '{tokens[0]}'. Multiple matches: {suggestions}. "
 						f"Use the full relative path."
@@ -192,12 +194,12 @@ class SpawnHandler:
 		try:
 			project_path.resolve().relative_to(self._spawn_root.resolve())
 		except ValueError:
-			self._logger.spawn_invalid_path(project_key, str(project_path.resolve()))
+			await self._logger.spawn_invalid_path(project_key, str(project_path.resolve()))
 			await self._backend.send_text(f"Unknown project: {project_key}.")
 			return
 
 		if not project_path.is_dir():
-			self._logger.spawn_invalid_path(project_key, str(project_path.resolve()))
+			await self._logger.spawn_invalid_path(project_key, str(project_path.resolve()))
 			await self._backend.send_text(f"Unknown project: {project_key}.")
 			return
 
@@ -229,7 +231,7 @@ class SpawnHandler:
 			has_msgs = await self._backend.has_messages(canonical_cwd)
 		except Exception as exc:
 			# Includes the test-double case where has_messages isn't a real coroutine.
-			self._logger.surface_error(f"spawn_collision_check_failed: {exc}")
+			await self._logger.surface_error(f"spawn_collision_check_failed: {exc}")
 			return None
 
 		if not has_msgs:
@@ -240,7 +242,7 @@ class SpawnHandler:
 		try:
 			meta = await self._backend.read_channel_meta(canonical_cwd)
 		except Exception as exc:
-			self._logger.surface_error(f"spawn_collision_meta_read_failed: {exc}")
+			await self._logger.surface_error(f"spawn_collision_meta_read_failed: {exc}")
 			meta = {"title": None, "last_activity_at": None, "hidden": False}
 
 		try:
@@ -252,10 +254,10 @@ class SpawnHandler:
 				hidden=meta.get("hidden", False),
 			)
 		except Exception as exc:
-			self._logger.surface_error(f"spawn_collision_dialog_write_failed: {exc}")
+			await self._logger.surface_error(f"spawn_collision_dialog_write_failed: {exc}")
 			return None
 
-		self._logger.spawn_collision_detected(canonical_cwd, spawn_id)
+		await self._logger.spawn_collision_detected(canonical_cwd, spawn_id)
 
 		try:
 			decision = await self._backend.poll_spawn_collision_decision(spawn_id)
@@ -264,7 +266,7 @@ class SpawnHandler:
 			await self._safe_clear_spawn_collision_prompt(spawn_id)
 			return None
 		except Exception as exc:
-			self._logger.surface_error(f"spawn_collision_decision_poll_failed: {exc}")
+			await self._logger.surface_error(f"spawn_collision_decision_poll_failed: {exc}")
 			await self._safe_clear_spawn_collision_prompt(spawn_id)
 			return None
 
@@ -278,20 +280,20 @@ class SpawnHandler:
 				await self._backend.wipe_channel(canonical_cwd)
 				await self._backend.set_channel_hidden(canonical_cwd, False)
 			except Exception as exc:
-				self._logger.surface_error(f"spawn_collision_wipe_failed: {exc}")
+				await self._logger.surface_error(f"spawn_collision_wipe_failed: {exc}")
 				# Wipe failed but user wanted to proceed — fall through as continue.
 				return "continue"
 			return "clear"
 		if action == "continue":
 			return "continue"
-		self._logger.surface_error(f"spawn_collision_unknown_action: {action!r}")
+		await self._logger.surface_error(f"spawn_collision_unknown_action: {action!r}")
 		return "cancel"
 
 	async def _safe_clear_spawn_collision_prompt(self, spawn_id: str) -> None:
 		try:
 			await self._backend.clear_spawn_collision_prompt(spawn_id)
 		except Exception as exc:
-			self._logger.surface_error(f"spawn_collision_clear_failed: {exc}")
+			await self._logger.surface_error(f"spawn_collision_clear_failed: {exc}")
 
 	async def _handle_single_spawn(
 		self, project_path: Path, project_key: str, prompt: str | None, backend_type: str
@@ -312,29 +314,34 @@ class SpawnHandler:
 		}
 		try:
 			self._pending_path.write_text(json.dumps(pending), encoding="utf-8")
-			subprocess.run(
-				["schtasks", "/run", "/tn", _TASK_NAME],
-				check=True, capture_output=True,
+			proc = await asyncio.create_subprocess_exec(
+				"schtasks", "/run", "/tn", _TASK_NAME,
+				stdout=asyncio.subprocess.PIPE,
+				stderr=asyncio.subprocess.PIPE,
 			)
+			stdout, stderr = await proc.communicate()
+			if proc.returncode != 0:
+				error_msg = stderr.decode().strip() or f"exit code {proc.returncode}"
+				raise RuntimeError(error_msg)
 		except Exception as exc:
 			self._pending_path.unlink(missing_ok=True)
-			self._logger.spawn_failed(project_key, str(project_path), [_TASK_NAME], str(exc))
+			await self._logger.spawn_failed(project_key, str(project_path), [_TASK_NAME], str(exc))
 			await self._backend.send_text(f"Failed to spawn: {exc}.")
 			return
 
 		self._last_spawn_time = datetime.now(timezone.utc)
 		self._registry.set_cwd_override(channel_id, True)
-		self._logger.away_mode_cwd_changed(channel_id, True)
+		await self._logger.away_mode_cwd_changed(channel_id, True)
 
 		try:
 			await self._backend.write_session_meta(
 				channel_id, "single", project_key,
 			)
 		except Exception as exc:
-			self._logger.surface_error(f"single_meta_write_error: {exc}")
+			await self._logger.surface_error(f"single_meta_write_error: {exc}")
 
 		spawn_id = secrets.token_hex(4)
-		self._logger.spawn_started(
+		await self._logger.spawn_started(
 			spawn_id, project_key, str(project_path),
 			prompt if prompt is not None else "(ask on start)",
 		)
@@ -380,7 +387,7 @@ class SpawnHandler:
 			try:
 				existing = json.loads(self._sidecar_path.read_text(encoding="utf-8"))
 			except Exception as exc:
-				self._logger.surface_error(f"collab_sidecar_read_error: {exc}")
+				await self._logger.surface_error(f"collab_sidecar_read_error: {exc}")
 		existing.append({
 			"channel_id": channel_id,
 			"agent_senders": agent_senders,
@@ -391,16 +398,34 @@ class SpawnHandler:
 
 		try:
 			self._pending_path.write_text(json.dumps(pending), encoding="utf-8")
-			subprocess.run(["schtasks", "/run", "/tn", _TASK_NAME], check=True, capture_output=True)
+			proc = await asyncio.create_subprocess_exec(
+				"schtasks", "/run", "/tn", _TASK_NAME,
+				stdout=asyncio.subprocess.PIPE,
+				stderr=asyncio.subprocess.PIPE,
+			)
+			stdout, stderr = await proc.communicate()
+			if proc.returncode != 0:
+				error_msg = stderr.decode().strip() or f"exit code {proc.returncode}"
+				raise RuntimeError(error_msg)
 		except Exception as exc:
 			self._pending_path.unlink(missing_ok=True)
-			self._logger.spawn_failed(project_key, str(project_path), [_TASK_NAME], str(exc))
+			# Roll back the sidecar entry we appended at line 397; without this,
+			# a failed spawn leaves a phantom session record that survives until
+			# the next service restart and triggers a "session was lost" notice
+			# for a session that never existed.
+			try:
+				current = json.loads(self._sidecar_path.read_text(encoding="utf-8"))
+				current = [e for e in current if e.get("channel_id") != channel_id]
+				self._sidecar_path.write_text(json.dumps(current, indent=2), encoding="utf-8")
+			except Exception as rb_exc:
+				await self._logger.surface_error(f"collab_sidecar_rollback_error: {rb_exc}")
+			await self._logger.spawn_failed(project_key, str(project_path), [_TASK_NAME], str(exc))
 			await self._backend.send_text(f"Failed to spawn collab: {exc}.")
 			return
 
 		self._last_spawn_time = datetime.now(timezone.utc)
 		self._registry.set_cwd_override(channel_id, True)
-		self._logger.away_mode_cwd_changed(channel_id, True)
+		await self._logger.away_mode_cwd_changed(channel_id, True)
 
 		session = CollabSession(
 			cwd=channel_id,
@@ -415,13 +440,13 @@ class SpawnHandler:
 				agent_senders=agent_senders, task=task,
 			)
 		except Exception as exc:
-			self._logger.surface_error(f"collab_meta_write_error: {exc}")
+			await self._logger.surface_error(f"collab_meta_write_error: {exc}")
 
 		try:
 			await self._backend.start_inject_listener(channel_id)
 		except Exception as exc:
-			self._logger.surface_error(f"collab_inject_listener_error: {exc}")
+			await self._logger.surface_error(f"collab_inject_listener_error: {exc}")
 
 		spawn_id = secrets.token_hex(4)
-		self._logger.spawn_started(spawn_id, project_key, str(project_path), f"[collab] {task[:60]}")
+		await self._logger.spawn_started(spawn_id, project_key, str(project_path), f"[collab] {task[:60]}")
 		await self._backend.send_spawn_ack(channel_id, f"[collab] {task[:60]}")

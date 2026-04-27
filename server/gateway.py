@@ -40,12 +40,14 @@ def _new_request_id() -> str:
 	return uuid.uuid4().hex[:8]
 
 
-def _sha256_hex(path: Path) -> str:
-	h = hashlib.sha256()
-	with path.open("rb") as f:
-		for chunk in iter(lambda: f.read(65536), b""):
-			h.update(chunk)
-	return h.hexdigest()
+async def _sha256_hex(path: Path) -> str:
+	def _do_sha256():
+		h = hashlib.sha256()
+		with path.open("rb") as f:
+			for chunk in iter(lambda: f.read(65536), b""):
+				h.update(chunk)
+		return h.hexdigest()
+	return await asyncio.to_thread(_do_sha256)
 
 
 def _validate_path(path_str: str, cwd: Path | None = None) -> Path:
@@ -123,7 +125,35 @@ async def _safe_mark_cancelled(backend: MessengerBackend, cwd: str, request_id: 
 	try:
 		await backend.mark_question_cancelled(cwd, request_id)
 	except Exception as exc:
-		logger.surface_error(f"mark_cancelled_failed: {exc}")
+		await logger.surface_error(f"mark_cancelled_failed: {exc}")
+
+
+_LOOP_CRASH_ALERT_THRESHOLD = 5
+_LOOP_BACKOFF_MAX = 60.0
+
+
+async def _loop_crash_backoff(
+	backend: Any,
+	logger: JsonlLogger,
+	label: str,
+	consecutive_failures: int,
+	backoff: float,
+	exc: Exception,
+) -> float:
+	"""Log a dispatch-loop crash, escalate to the admin channel after the
+	threshold is hit, sleep `backoff` seconds, and return the next backoff."""
+	await logger.surface_error(
+		f"{label}_loop_crashed: {exc} (count={consecutive_failures}, sleep={backoff:.1f}s)"
+	)
+	if consecutive_failures == _LOOP_CRASH_ALERT_THRESHOLD:
+		try:
+			await backend.send_text(
+				f"Switchboard {label} loop has failed {consecutive_failures} times in a row — check service logs."
+			)
+		except Exception as alert_exc:
+			await logger.surface_error(f"{label}_loop_alert_failed: {alert_exc}")
+	await asyncio.sleep(backoff)
+	return min(backoff * 2, _LOOP_BACKOFF_MAX)
 
 
 @dataclass
@@ -150,6 +180,11 @@ def build_tool_handlers(
 ) -> ToolHandlers:
 	title_tracker = TitleTracker()
 
+	def _validate_sender(sender: str) -> str | None:
+		if "__" in sender:
+			return f"ERROR: sender name '{sender}' contains restricted characters '__'."
+		return None
+
 	async def notify_human(
 		message: str,
 		cwd: str,
@@ -157,12 +192,14 @@ def build_tool_handlers(
 		title: str | None = None,
 		format: str = "plain",
 	) -> str:
+		if err := _validate_sender(sender):
+			return err
 		try:
 			canonical = canonicalize_cwd(cwd)
 		except CanonicalizationError as exc:
 			return f"ERROR: invalid cwd: {exc}"
 		if limiter is not None and not limiter.consume(canonical):
-			logger.rate_limited(canonical, "notify_human")
+			await logger.rate_limited(canonical, "notify_human")
 			return (
 				f"ERROR: rate limit exceeded — you are sending too fast.\n"
 				f"Limit is {limiter.rate_per_minute} messages/min per channel.\n"
@@ -170,11 +207,11 @@ def build_tool_handlers(
 			)
 		try:
 			await backend.write_channel_message(canonical, sender, "notify", message, format=format, title=title)
-			logger.notify_sent(canonical, message)
+			await logger.notify_sent(canonical, message)
 			await _append_session_log(config.log_path, canonical, "→", message)
 			return "ok"
 		except Exception as exc:
-			logger.tool_error(None, canonical, str(exc))
+			await logger.tool_error(None, canonical, str(exc))
 			return f"ERROR: {exc}"
 
 	async def ask_human(
@@ -185,6 +222,8 @@ def build_tool_handlers(
 		format: str = "plain",
 		suggestions: list[str] | None = None,
 	) -> str:
+		if err := _validate_sender(sender):
+			return err
 		try:
 			canonical = canonicalize_cwd(cwd)
 		except CanonicalizationError as exc:
@@ -199,10 +238,10 @@ def build_tool_handlers(
 				await backend.write_channel_message(
 					canonical, sender, "notify", question, format=format, title=title,
 				)
-				logger.notify_sent(canonical, question)
+				await logger.notify_sent(canonical, question)
 				await _append_session_log(config.log_path, canonical, "→", question)
 			except Exception as exc:
-				logger.tool_error(None, canonical, str(exc))
+				await logger.tool_error(None, canonical, str(exc))
 				return f"ERROR: {exc}"
 			return "ERROR: John is at his desk. Ask this question via the terminal."
 
@@ -218,38 +257,35 @@ def build_tool_handlers(
 				cwd=canonical, sender=sender, request_id=request_id, msg_id=msg_id, return_superseded=True,
 			)
 			if prior_request_id is not None:
-				try:
-					await backend.mark_question_cancelled(canonical, prior_request_id)
-				except Exception as exc:
-					logger.surface_error(f"mark_cancelled_failed: {exc}")
-			logger.request_created(request_id, canonical, question)
+				await _safe_mark_cancelled(backend, canonical, prior_request_id, logger)
+			await logger.request_created(request_id, canonical, question)
 			await _append_session_log(config.log_path, canonical, "→", question)
 		except asyncio.CancelledError:
 			await _safe_mark_cancelled(backend, canonical, request_id, logger)
 			registry.remove(canonical, sender)
 			raise
 		except Exception as exc:
-			logger.tool_error(request_id, canonical, str(exc))
+			await logger.tool_error(request_id, canonical, str(exc))
 			return f"ERROR: {exc}"
 
 		try:
 			result = await asyncio.wait_for(future, timeout=config.timeout_seconds)
 		except asyncio.TimeoutError:
-			logger.timeout(request_id, canonical, config.timeout_seconds)
+			await logger.timeout(request_id, canonical, config.timeout_seconds)
 			registry.remove(canonical, sender)
 			try:
 				await backend.send_timeout_followup(
 					request_id, canonical, config.timeout_seconds, correlation,
 				)
 			except Exception as exc:
-				logger.surface_error(f"timeout_followup_failed: {exc}", correlation=str(correlation))
+				await logger.surface_error(f"timeout_followup_failed: {exc}", correlation=str(correlation))
 			return TIMEOUT_SENTINEL
 		except asyncio.CancelledError:
 			await _safe_mark_cancelled(backend, canonical, request_id, logger)
 			registry.remove(canonical, sender)
 			raise
 		except Exception as exc:
-			logger.tool_error(request_id, canonical, str(exc))
+			await logger.tool_error(request_id, canonical, str(exc))
 			registry.remove(canonical, sender)
 			return f"ERROR: {exc}"
 
@@ -262,11 +298,11 @@ def build_tool_handlers(
 			source = "firebase"
 		elif str(correlation).startswith("android_"):
 			source = "android_rest"
-		logger.request_resolved(request_id, canonical, response_text=result, source=source, duration_ms=duration_ms)
+		await logger.request_resolved(request_id, canonical, response_text=result, source=source, duration_ms=duration_ms)
 		try:
 			await backend.send_resolution_confirmation(request_id, canonical, correlation, response_text=result)
 		except Exception as exc:
-			logger.surface_error(f"resolution_confirmation_failed: {exc}", correlation=str(correlation))
+			await logger.surface_error(f"resolution_confirmation_failed: {exc}", correlation=str(correlation))
 		return result
 
 	async def send_document_human(
@@ -278,6 +314,8 @@ def build_tool_handlers(
 		*,
 		_cwd_path: Path | None = None,
 	) -> str:
+		if err := _validate_sender(sender):
+			return err
 		try:
 			canonical = canonicalize_cwd(cwd)
 		except CanonicalizationError as exc:
@@ -286,11 +324,11 @@ def build_tool_handlers(
 		try:
 			resolved = _validate_path(path, cwd=cwd_path)
 		except ValueError as exc:
-			logger.tool_error(None, canonical, str(exc))
+			await logger.tool_error(None, canonical, str(exc))
 			return f"ERROR: {exc}"
 
 		if limiter is not None and not limiter.consume(canonical):
-			logger.rate_limited(canonical, "send_document_human")
+			await logger.rate_limited(canonical, "send_document_human")
 			return (
 				f"ERROR: rate limit exceeded — you are sending too fast.\n"
 				f"Limit is {limiter.rate_per_minute} messages/min per channel.\n"
@@ -299,7 +337,7 @@ def build_tool_handlers(
 
 		try:
 			size_bytes = resolved.stat().st_size
-			sha256 = _sha256_hex(resolved)
+			sha256 = await _sha256_hex(resolved)
 			await backend.write_channel_message(
 				canonical, sender, "document",
 				caption or resolved.name,
@@ -308,13 +346,13 @@ def build_tool_handlers(
 				title=title,
 			)
 		except Exception as exc:
-			logger.tool_error(None, canonical, str(exc))
+			await logger.tool_error(None, canonical, str(exc))
 			return f"ERROR: {exc}"
 
 		try:
-			logger.document_sent(canonical, str(resolved), size_bytes, sha256, caption)
+			await logger.document_sent(canonical, str(resolved), size_bytes, sha256, caption)
 		except Exception as exc:
-			logger.surface_error(f"document_audit_failed: {exc}")
+			await logger.surface_error(f"document_audit_failed: {exc}")
 		entry = f"[document: {resolved.name}] {caption}" if caption else f"[document: {resolved.name}]"
 		await _append_session_log(config.log_path, canonical, "→", entry)
 		return "ok"
@@ -325,6 +363,8 @@ def build_tool_handlers(
 		title: str | None = None,
 		message: str | None = None,
 	) -> str:
+		if err := _validate_sender(sender):
+			return err
 		try:
 			canonical = canonicalize_cwd(cwd)
 		except CanonicalizationError as exc:
@@ -350,7 +390,7 @@ def build_tool_handlers(
 
 		try:
 			if message is not None:
-				logger.collab_message_sent(channel_id, sender, message)
+				await logger.collab_message_sent(channel_id, sender, message)
 				await _append_session_log(config.log_path, channel_id, "→", f"{sender}: {message}")
 
 			deliveries = session.handle_message(sender, message, title, title_tracker)
@@ -360,22 +400,22 @@ def build_tool_handlers(
 					try:
 						await backend.write_channel_message(cid, s, "agent", msg)
 					except Exception as exc:
-						logger.surface_error(f"collab_relay_error: {exc}")
+						await logger.surface_error(f"collab_relay_error: {exc}")
 				asyncio.create_task(_relay())
 
 			future = session.start_waiting(sender)
 		except Exception as exc:
-			logger.tool_error(None, sender, str(exc))
+			await logger.tool_error(None, sender, str(exc))
 			return f"ERROR: {exc}"
 
 		try:
 			result = await asyncio.wait_for(future, timeout=config.timeout_seconds)
-			logger.collab_message_received(channel_id, sender, result)
+			await logger.collab_message_received(channel_id, sender, result)
 			await _append_session_log(config.log_path, channel_id, "←", f"{sender}: {result}")
 			return result
 		except asyncio.TimeoutError:
 			session.cancel_waiting(sender)
-			logger.surface_error(f"collab_timeout: channel={channel_id} sender={sender}")
+			await logger.surface_error(f"collab_timeout: channel={channel_id} sender={sender}")
 			try:
 				await backend.write_channel_message(
 					channel_id, "system", "notify",
@@ -383,7 +423,7 @@ def build_tool_handlers(
 					format="markdown",
 				)
 			except Exception as exc:
-				logger.surface_error(f"collab_timeout_notify_error: {exc}")
+				await logger.surface_error(f"collab_timeout_notify_error: {exc}")
 			return TIMEOUT_SENTINEL
 		except asyncio.CancelledError:
 			session.cancel_waiting(sender)
@@ -395,6 +435,8 @@ def build_tool_handlers(
 		message: str | None = None,
 		hand_off_to_human: bool = True,
 	) -> str:
+		if err := _validate_sender(sender):
+			return err
 		try:
 			canonical = canonicalize_cwd(cwd)
 		except CanonicalizationError as exc:
@@ -431,7 +473,7 @@ def build_tool_handlers(
 		registry.mark_session_ended(canonical, list(session.agent_senders))
 		registry.remove_session(canonical)
 
-		logger.collab_message_sent(
+		await logger.collab_message_sent(
 			canonical, sender,
 			f"[end_collab hand_off_to_human={hand_off_to_human}] {message or ''}",
 		)
@@ -451,10 +493,10 @@ def build_tool_handlers(
 			return f"ERROR: invalid cwd: {exc}"
 		try:
 			registry.set_cwd_override(canonical, True)
-			logger.away_mode_cwd_changed(canonical, True)
+			await logger.away_mode_cwd_changed(canonical, True)
 			return "ok"
 		except Exception as exc:
-			logger.tool_error(None, canonical, str(exc))
+			await logger.tool_error(None, canonical, str(exc))
 			return f"ERROR: {exc}"
 
 	async def exit_away_mode(cwd: str) -> str:
@@ -464,10 +506,10 @@ def build_tool_handlers(
 			return f"ERROR: invalid cwd: {exc}"
 		try:
 			registry.set_cwd_override(canonical, False)
-			logger.away_mode_cwd_changed(canonical, False)
+			await logger.away_mode_cwd_changed(canonical, False)
 			return "ok"
 		except Exception as exc:
-			logger.tool_error(None, canonical, str(exc))
+			await logger.tool_error(None, canonical, str(exc))
 			return f"ERROR: {exc}"
 
 	async def build_bulk_respond_payload() -> dict:
@@ -519,9 +561,9 @@ def build_tool_handlers(
 					tasks.append(backend.write_response_text(p.cwd, p.msg_id, default_text))
 				tasks.append(backend.write_channel_message(p.cwd, "John", "human", default_text))
 				await asyncio.gather(*tasks)
-				logger.notify_sent(p.cwd, f"Bulk Reply: {default_text}")
+				await logger.notify_sent(p.cwd, f"Bulk Reply: {default_text}")
 			except Exception as exc:
-				logger.surface_error(f"bulk_resolve_failed: cwd={p.cwd} sender={p.sender} err={exc}")
+				await logger.surface_error(f"bulk_resolve_failed: cwd={p.cwd} sender={p.sender} err={exc}")
 
 		if pending:
 			await asyncio.gather(*[_resolve_one(p) for p in pending])
@@ -552,9 +594,13 @@ async def dispatch_responses(
 	backend: MessengerBackend,
 	logger: JsonlLogger,
 ) -> None:
+	consecutive_failures = 0
+	backoff = 1.0
 	while True:
 		try:
 			async for response in backend.poll_responses():
+				consecutive_failures = 0
+				backoff = 1.0
 				try:
 					corr = response.correlation
 					if isinstance(corr, tuple) and len(corr) == 2:
@@ -562,11 +608,11 @@ async def dispatch_responses(
 						record = registry.get((cwd, sender))
 						req_id = registry.resolve(cwd=cwd, sender=sender, text=response.text)
 						if req_id is None:
-							logger.surface_error(f"unknown_correlation: cwd={cwd} sender={sender}")
+							await logger.surface_error(f"unknown_correlation: cwd={cwd} sender={sender}")
 							try:
 								await backend.send_stale_reply_notice(cwd, sender)
 							except Exception as exc:
-								logger.surface_error(f"stale_reply_notice_failed: {exc}")
+								await logger.surface_error(f"stale_reply_notice_failed: {exc}")
 						elif record is not None:
 							if record.msg_id and hasattr(backend, "write_response_text"):
 								# Update original question so it stays answered across restarts
@@ -577,24 +623,26 @@ async def dispatch_responses(
 							async def _write_history(cid=cwd, txt=response.text):
 								try:
 									await backend.write_channel_message(cid, "John", "human", txt)
-									logger.notify_sent(cid, f"Reply: {txt}")
+									await logger.notify_sent(cid, f"Reply: {txt}")
 								except Exception as exc:
-									logger.surface_error(f"history_write_failed: {exc}")
+									await logger.surface_error(f"history_write_failed: {exc}")
 							asyncio.create_task(_write_history())
 					else:
-						logger.surface_error(f"legacy_correlation_dropped: {corr}")
+						await logger.surface_error(f"legacy_correlation_dropped: {corr}")
 				except asyncio.CancelledError:
 					raise
 				except Exception as exc:
-					logger.surface_error(
+					await logger.surface_error(
 						f"dispatch_iteration_error: {exc}",
 						correlation=str(response.correlation),
 					)
 		except asyncio.CancelledError:
 			raise
 		except Exception as exc:
-			logger.surface_error(f"dispatch_loop_crashed: {exc}")
-			await asyncio.sleep(1.0)
+			consecutive_failures += 1
+			backoff = await _loop_crash_backoff(
+				backend, logger, "dispatch_responses", consecutive_failures, backoff, exc,
+			)
 
 
 async def dispatch_commands(
@@ -602,20 +650,27 @@ async def dispatch_commands(
 	backend: Any,
 	logger: JsonlLogger,
 ) -> None:
+	consecutive_failures = 0
+	backoff = 1.0
 	while True:
 		try:
 			async for raw in backend.poll_commands():
+				consecutive_failures = 0
+				backoff = 1.0
 				try:
 					await spawn_handler.handle(raw)
 				except asyncio.CancelledError:
 					raise
 				except Exception as exc:
-					logger.surface_error(f"dispatch_commands_error: {exc}")
+					await logger.surface_error(f"dispatch_commands_error: {exc}")
+
 		except asyncio.CancelledError:
 			raise
 		except Exception as exc:
-			logger.surface_error(f"dispatch_commands_loop_crashed: {exc}")
-			await asyncio.sleep(1.0)
+			consecutive_failures += 1
+			backoff = await _loop_crash_backoff(
+				backend, logger, "dispatch_commands", consecutive_failures, backoff, exc,
+			)
 
 
 async def dispatch_away_mode_commands(
@@ -631,14 +686,18 @@ async def dispatch_away_mode_commands(
 	if poll is None:
 		return
 
+	consecutive_failures = 0
+	backoff = 1.0
 	while True:
 		try:
 			async for cmd in poll():
+				consecutive_failures = 0
+				backoff = 1.0
 				cmd_type = cmd.get("type", "")
 				try:
 					if cmd_type == "enter_global":
 						registry.set_global_away(True)
-						logger.info(f"away_mode_commands: enter_global applied")
+						await logger.info(f"away_mode_commands: enter_global applied")
 
 					elif cmd_type == "exit_global":
 						# User intent: exit global away. Honor unless the dialog flow returned an
@@ -657,19 +716,19 @@ async def dispatch_away_mode_commands(
 									action = decision.get("action", "skip")
 									default_text = decision.get("default_text", default_text)
 								except Exception as exc:
-									logger.surface_error(f"away_mode_commands: exit_global decision poll error: {exc}")
+									await logger.surface_error(f"away_mode_commands: exit_global decision poll error: {exc}")
 								try:
 									await backend.clear_bulk_respond_dialog()
 								except Exception as exc:
-									logger.surface_error(f"away_mode_commands: clear_bulk_respond_dialog error: {exc}")
+									await logger.surface_error(f"away_mode_commands: clear_bulk_respond_dialog error: {exc}")
 						except Exception as exc:
-							logger.surface_error(f"away_mode_commands: exit_global dialog setup error: {exc}")
+							await logger.surface_error(f"away_mode_commands: exit_global dialog setup error: {exc}")
 
 						if action == "send_to_all":
 							try:
 								await handlers.bulk_respond_send_to_all(default_text)
 							except Exception as exc:
-								logger.surface_error(f"away_mode_commands: bulk_respond_send_to_all error: {exc}")
+								await logger.surface_error(f"away_mode_commands: bulk_respond_send_to_all error: {exc}")
 							registry.set_global_away(False)
 						elif action == "skip":
 							registry.set_global_away(False)
@@ -677,41 +736,43 @@ async def dispatch_away_mode_commands(
 							try:
 								await handlers.bulk_respond_cancel()
 							except Exception as exc:
-								logger.surface_error(f"away_mode_commands: bulk_respond_cancel error: {exc}")
-						logger.info(f"away_mode_commands: exit_global applied (action={action})")
+								await logger.surface_error(f"away_mode_commands: bulk_respond_cancel error: {exc}")
+						await logger.info(f"away_mode_commands: exit_global applied (action={action})")
 
 					elif cmd_type == "enter_cwd":
 						raw_cwd = cmd.get("cwd") or ""
 						try:
 							canonical = canonicalize_cwd(raw_cwd)
 						except CanonicalizationError as exc:
-							logger.surface_error(f"away_mode_commands: enter_cwd bad cwd={raw_cwd!r} {exc}")
+							await logger.surface_error(f"away_mode_commands: enter_cwd bad cwd={raw_cwd!r} {exc}")
 							continue
 						registry.set_cwd_override(canonical, True)
-						logger.info(f"away_mode_commands: enter_cwd {canonical}")
+						await logger.info(f"away_mode_commands: enter_cwd {canonical}")
 
 					elif cmd_type == "exit_cwd":
 						raw_cwd = cmd.get("cwd") or ""
 						try:
 							canonical = canonicalize_cwd(raw_cwd)
 						except CanonicalizationError as exc:
-							logger.surface_error(f"away_mode_commands: exit_cwd bad cwd={raw_cwd!r} {exc}")
+							await logger.surface_error(f"away_mode_commands: exit_cwd bad cwd={raw_cwd!r} {exc}")
 							continue
 						registry.set_cwd_override(canonical, False)
-						logger.info(f"away_mode_commands: exit_cwd {canonical}")
+						await logger.info(f"away_mode_commands: exit_cwd {canonical}")
 
 					else:
-						logger.surface_error(f"away_mode_commands: unknown type={cmd_type!r}")
+						await logger.surface_error(f"away_mode_commands: unknown type={cmd_type!r}")
 
 				except asyncio.CancelledError:
 					raise
 				except Exception as exc:
-					logger.surface_error(f"away_mode_commands_dispatch_error: {exc}")
+					await logger.surface_error(f"away_mode_commands_dispatch_error: {exc}")
 		except asyncio.CancelledError:
 			raise
 		except Exception as exc:
-			logger.surface_error(f"away_mode_commands_loop_crashed: {exc}")
-			await asyncio.sleep(1.0)
+			consecutive_failures += 1
+			backoff = await _loop_crash_backoff(
+				backend, logger, "away_mode_commands", consecutive_failures, backoff, exc,
+			)
 
 
 async def dispatch_inject_queue(
@@ -723,21 +784,27 @@ async def dispatch_inject_queue(
 	poll = getattr(backend, "poll_inject_messages", None)
 	if poll is None:
 		return
+	consecutive_failures = 0
+	backoff = 1.0
 	while True:
 		try:
 			async for session_id, inject_id, text in poll():
+				consecutive_failures = 0
+				backoff = 1.0
 				try:
 					session = registry.get_session(session_id)
 					if session is None:
-						logger.surface_error(f"inject_unknown_session: {session_id} inject_id={inject_id}")
+						await logger.surface_error(f"inject_unknown_session: {session_id} inject_id={inject_id}")
 					else:
 						session.deliver_inject(text)
 				except asyncio.CancelledError:
 					raise
 				except Exception as exc:
-					logger.surface_error(f"inject_dispatch_error: inject_id={inject_id} {exc}")
+					await logger.surface_error(f"inject_dispatch_error: inject_id={inject_id} {exc}")
 		except asyncio.CancelledError:
 			raise
 		except Exception as exc:
-			logger.surface_error(f"inject_queue_crashed: {exc}")
-			await asyncio.sleep(1.0)
+			consecutive_failures += 1
+			backoff = await _loop_crash_backoff(
+				backend, logger, "inject_queue", consecutive_failures, backoff, exc,
+			)

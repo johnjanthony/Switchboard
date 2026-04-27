@@ -69,10 +69,14 @@ class FirebaseBackend(MessengerBackend):
 								self._enqueue_response_by_slot, slot, data['text']
 							)
 						elif self._logger:
-							self._logger.surface_error(f"firebase_malformed_response_entry: {slot} -> {type(data)}")
+							self._loop.call_soon_threadsafe(
+								lambda: asyncio.create_task(self._logger.surface_error(f"firebase_malformed_response_entry: {slot} -> {type(data)}"))
+							)
 				else:
 					if self._logger:
-						self._logger.surface_error(f"firebase_malformed_response_root: {type(event.data)}")
+						self._loop.call_soon_threadsafe(
+							lambda: asyncio.create_task(self._logger.surface_error(f"firebase_malformed_response_root: {type(event.data)}"))
+						)
 			elif path:
 				if isinstance(event.data, dict) and 'text' in event.data:
 					self._loop.call_soon_threadsafe(
@@ -80,7 +84,9 @@ class FirebaseBackend(MessengerBackend):
 					)
 				else:
 					if self._logger:
-						self._logger.surface_error(f"firebase_malformed_response_path: {path} -> {type(event.data)}")
+						self._loop.call_soon_threadsafe(
+							lambda: asyncio.create_task(self._logger.surface_error(f"firebase_malformed_response_path: {path} -> {type(event.data)}"))
+						)
 
 	def _enqueue_response_by_slot(self, slot: str, text: str):
 		from server.canonicalization import from_firebase_key
@@ -100,14 +106,20 @@ class FirebaseBackend(MessengerBackend):
 						if isinstance(text, str):
 							self._loop.call_soon_threadsafe(self._enqueue_command, cmd_id, text)
 						elif self._logger:
-							self._logger.surface_error(f"firebase_malformed_command_entry: {cmd_id} -> {type(text)}")
+							self._loop.call_soon_threadsafe(
+								lambda: asyncio.create_task(self._logger.surface_error(f"firebase_malformed_command_entry: {cmd_id} -> {type(text)}"))
+							)
 				elif self._logger:
-					self._logger.surface_error(f"firebase_malformed_command_root: {type(event.data)}")
+					self._loop.call_soon_threadsafe(
+						lambda: asyncio.create_task(self._logger.surface_error(f"firebase_malformed_command_root: {type(event.data)}"))
+					)
 			elif path:
 				if isinstance(event.data, str):
 					self._loop.call_soon_threadsafe(self._enqueue_command, path, event.data)
 				elif self._logger:
-					self._logger.surface_error(f"firebase_malformed_command_path: {path} -> {type(event.data)}")
+					self._loop.call_soon_threadsafe(
+						lambda: asyncio.create_task(self._logger.surface_error(f"firebase_malformed_command_path: {path} -> {type(event.data)}"))
+					)
 
 	def _enqueue_command(self, command_id: str, text: str):
 		asyncio.create_task(self._command_queue.put(text))
@@ -116,19 +128,23 @@ class FirebaseBackend(MessengerBackend):
 		self._loop.run_in_executor(None, _cleanup)
 
 	async def aclose(self) -> None:
-		if self._resp_listener:
-			self._resp_listener.close()
-		if self._cmd_listener:
-			self._cmd_listener.close()
-		if self._away_mode_cmd_listener:
-			self._away_mode_cmd_listener.close()
-		if self._bulk_decision_listener:
-			self._bulk_decision_listener.close()
-		if self._spawn_decision_listener:
-			self._spawn_decision_listener.close()
-		for listener in self._inject_listeners.values():
-			listener.close()
+		# listener.close() blocks for many seconds while the SSE stream tears down
+		# (see comments in poll_bulk_respond_decision / poll_spawn_collision_decision).
+		# Run them in the default executor so shutdown doesn't stall the event loop.
+		listeners = []
+		for attr in (
+			"_resp_listener", "_cmd_listener", "_away_mode_cmd_listener",
+			"_bulk_decision_listener", "_spawn_decision_listener",
+		):
+			lst = getattr(self, attr)
+			if lst:
+				listeners.append(lst)
+		listeners.extend(self._inject_listeners.values())
 		self._inject_listeners.clear()
+		if listeners:
+			await asyncio.gather(*(
+				asyncio.to_thread(l.close) for l in listeners
+			), return_exceptions=True)
 
 	async def write_channel_message(
 		self,
@@ -158,10 +174,10 @@ class FirebaseBackend(MessengerBackend):
 				if effective_filename is None:
 					effective_filename = path.name
 				if self._logger:
-					self._logger.info(f"firebase_upload_success: {effective_url}")
+					await self._logger.info(f"firebase_upload_success: {effective_url}")
 			except Exception as exc:
 				if self._logger:
-					self._logger.surface_error(f"firebase_upload_failed: {exc}")
+					await self._logger.surface_error(f"firebase_upload_failed: {exc}")
 
 		key = to_firebase_key(cwd)
 		now = datetime.now(timezone.utc).isoformat()
@@ -188,7 +204,7 @@ class FirebaseBackend(MessengerBackend):
 			payload["suggestions"] = list(suggestions)
 
 		if self._logger:
-			self._logger.info(f"firebase_write_message: {key}/{msg_id}")
+			await self._logger.info(f"firebase_write_message: {key}/{msg_id}")
 
 		# Auto-unhide on question writes only
 		if message_type == "question":

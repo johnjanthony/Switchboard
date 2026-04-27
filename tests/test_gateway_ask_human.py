@@ -219,7 +219,7 @@ async def test_dispatch_loop_restarts_after_iterator_crash(cfg, logger, tmp_path
 		pass
 	assert backend._calls >= 2
 	log_text = (tmp_path / "log.jsonl").read_text()
-	assert "dispatch_loop_crashed" in log_text
+	assert "dispatch_responses_loop_crashed" in log_text
 
 
 @pytest.mark.asyncio

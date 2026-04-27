@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -28,25 +29,31 @@ class JsonlLogger:
 	def __init__(self, path: str | Path) -> None:
 		self._path = Path(path)
 		self._path.parent.mkdir(parents=True, exist_ok=True)
+		self._lock = asyncio.Lock()
 
-	def _write(self, event: dict[str, Any]) -> None:
+	async def _write(self, event: dict[str, Any]) -> None:
 		event["ts"] = datetime.now(timezone.utc).isoformat()
 		line = json.dumps(event, ensure_ascii=False)
-		with self._path.open("a", encoding="utf-8") as fh:
-			fh.write(line + "\n")
-		_stderr_logger.info(line)
 
-	def request_created(
+		def _do_write():
+			with self._path.open("a", encoding="utf-8") as fh:
+				fh.write(line + "\n")
+
+		async with self._lock:
+			await asyncio.to_thread(_do_write)
+			_stderr_logger.info(line)
+
+	async def request_created(
 		self, request_id: str, channel_id: str, question: str
 	) -> None:
-		self._write({
+		await self._write({
 			"event": "request_created",
 			"request_id": request_id,
 			"channel_id": channel_id,
 			"question_preview": _preview(question),
 		})
 
-	def request_resolved(
+	async def request_resolved(
 		self,
 		request_id: str,
 		channel_id: str,
@@ -54,7 +61,7 @@ class JsonlLogger:
 		source: str,
 		duration_ms: int,
 	) -> None:
-		self._write({
+		await self._write({
 			"event": "request_resolved",
 			"request_id": request_id,
 			"channel_id": channel_id,
@@ -63,54 +70,54 @@ class JsonlLogger:
 			"duration_ms": duration_ms,
 		})
 
-	def notify_sent(self, channel_id: str, message: str) -> None:
-		self._write({
+	async def notify_sent(self, channel_id: str, message: str) -> None:
+		await self._write({
 			"event": "notify_sent",
 			"channel_id": channel_id,
 			"message_preview": _preview(message),
 		})
 
-	def timeout(
+	async def timeout(
 		self, request_id: str, channel_id: str, timeout_seconds: int
 	) -> None:
-		self._write({
+		await self._write({
 			"event": "timeout",
 			"request_id": request_id,
 			"channel_id": channel_id,
 			"timeout_seconds": timeout_seconds,
 		})
 
-	def tool_error(
+	async def tool_error(
 		self, request_id: str | None, channel_id: str | None, error: str
 	) -> None:
-		self._write({
+		await self._write({
 			"event": "tool_error",
 			"request_id": request_id,
 			"channel_id": channel_id,
 			"error": error,
 		})
 
-	def surface_error(self, detail: str, correlation: str | None = None) -> None:
-		self._write({
+	async def surface_error(self, detail: str, correlation: str | None = None) -> None:
+		await self._write({
 			"event": "surface_error",
 			"detail": detail,
 			"correlation": correlation,
 		})
 
-	def info(self, detail: str) -> None:
-		self._write({
+	async def info(self, detail: str) -> None:
+		await self._write({
 			"event": "info",
 			"detail": detail,
 		})
 
-	def spawn_started(
+	async def spawn_started(
 		self,
 		spawn_id: str,
 		project_key: str,
 		project_path: str,
 		prompt_preview: str,
 	) -> None:
-		self._write({
+		await self._write({
 			"event": "spawn_started",
 			"spawn_id": spawn_id,
 			"project_key": project_key,
@@ -118,21 +125,21 @@ class JsonlLogger:
 			"prompt_preview": prompt_preview,
 		})
 
-	def spawn_invalid_path(self, project_key: str, resolved_path: str) -> None:
-		self._write({
+	async def spawn_invalid_path(self, project_key: str, resolved_path: str) -> None:
+		await self._write({
 			"event": "spawn_invalid_path",
 			"project_key": project_key,
 			"resolved_path": resolved_path,
 		})
 
-	def spawn_failed(
+	async def spawn_failed(
 		self,
 		project_key: str,
 		project_path: str,
 		argv: list[str],
 		error: str,
 	) -> None:
-		self._write({
+		await self._write({
 			"event": "spawn_failed",
 			"project_key": project_key,
 			"project_path": project_path,
@@ -140,23 +147,23 @@ class JsonlLogger:
 			"error": error,
 		})
 
-	def collab_message_sent(self, channel_id: str, sender: str, message: str) -> None:
-		self._write({
+	async def collab_message_sent(self, channel_id: str, sender: str, message: str) -> None:
+		await self._write({
 			"event": "collab_message_sent",
 			"channel_id": channel_id,
 			"sender": sender,
 			"message_preview": _preview(message),
 		})
 
-	def collab_message_received(self, channel_id: str, sender: str, result: str) -> None:
-		self._write({
+	async def collab_message_received(self, channel_id: str, sender: str, result: str) -> None:
+		await self._write({
 			"event": "collab_message_received",
 			"channel_id": channel_id,
 			"sender": sender,
 			"response_preview": _preview(result),
 		})
 
-	def document_sent(
+	async def document_sent(
 		self,
 		channel_id: str,
 		resolved_path: str,
@@ -173,55 +180,55 @@ class JsonlLogger:
 		}
 		if caption is not None:
 			event["caption_preview"] = _preview(caption)
-		self._write(event)
+		await self._write(event)
 
-	def rate_limited(self, channel_id: str, tool: str) -> None:
-		self._write({
+	async def rate_limited(self, channel_id: str, tool: str) -> None:
+		await self._write({
 			"event": "rate_limited",
 			"channel_id": channel_id,
 			"tool": tool,
 		})
 
-	def away_mode_entered(self, reason: str | None = None) -> None:
+	async def away_mode_entered(self, reason: str | None = None) -> None:
 		event: dict[str, Any] = {"event": "away_mode_entered"}
 		if reason is not None:
 			event["reason"] = reason
-		self._write(event)
+		await self._write(event)
 
-	def away_mode_exited(self, reason: str | None = None) -> None:
+	async def away_mode_exited(self, reason: str | None = None) -> None:
 		event: dict[str, Any] = {"event": "away_mode_exited"}
 		if reason is not None:
 			event["reason"] = reason
-		self._write(event)
+		await self._write(event)
 
-	def cwd_canonicalized(self, raw: str, canonical: str) -> None:
-		self._write({"event": "cwd_canonicalized", "raw": raw, "canonical": canonical})
+	async def cwd_canonicalized(self, raw: str, canonical: str) -> None:
+		await self._write({"event": "cwd_canonicalized", "raw": raw, "canonical": canonical})
 
-	def pending_superseded(self, cwd: str, sender: str, prior_request_id: str, new_request_id: str) -> None:
-		self._write({
+	async def pending_superseded(self, cwd: str, sender: str, prior_request_id: str, new_request_id: str) -> None:
+		await self._write({
 			"event": "pending_superseded", "cwd": cwd, "sender": sender,
 			"prior_request_id": prior_request_id, "new_request_id": new_request_id,
 		})
 
-	def away_mode_global_changed(self, active: bool) -> None:
-		self._write({"event": "away_mode_global_changed", "active": active})
+	async def away_mode_global_changed(self, active: bool) -> None:
+		await self._write({"event": "away_mode_global_changed", "active": active})
 
-	def away_mode_cwd_changed(self, cwd: str, active: bool) -> None:
-		self._write({"event": "away_mode_cwd_changed", "cwd": cwd, "active": active})
+	async def away_mode_cwd_changed(self, cwd: str, active: bool) -> None:
+		await self._write({"event": "away_mode_cwd_changed", "cwd": cwd, "active": active})
 
-	def spawn_collision_detected(self, cwd: str, spawn_id: str) -> None:
-		self._write({"event": "spawn_collision_detected", "cwd": cwd, "spawn_id": spawn_id})
+	async def spawn_collision_detected(self, cwd: str, spawn_id: str) -> None:
+		await self._write({"event": "spawn_collision_detected", "cwd": cwd, "spawn_id": spawn_id})
 
-	def pending_cancelled_on_spawn(self, cwd: str, request_ids: list[str]) -> None:
-		self._write({
+	async def pending_cancelled_on_spawn(self, cwd: str, request_ids: list[str]) -> None:
+		await self._write({
 			"event": "pending_cancelled_on_spawn",
 			"cwd": cwd,
 			"request_ids": request_ids,
 			"count": len(request_ids),
 		})
 
-	def title_truncated(self, cwd: str, original_length: int, truncated: str) -> None:
-		self._write({
+	async def title_truncated(self, cwd: str, original_length: int, truncated: str) -> None:
+		await self._write({
 			"event": "title_truncated", "cwd": cwd,
 			"original_length": original_length, "truncated": truncated,
 		})

@@ -30,12 +30,17 @@ class PendingRequest:
 	msg_id: str | None = None
 
 
+_RECENTLY_ENDED_MAX_AGE_SECONDS = 60.0
+
+
 class Registry:
 	def __init__(self, away_mode_path: Path | None = None) -> None:
 		self._sessions: dict[str, "CollabSession"] = {}
 		# Breadcrumbs for recently ended sessions to handle simultaneous call races (E1).
-		# Keyed by canonical_cwd, value is a list of agent_senders.
-		self._recently_ended: dict[str, list[str]] = {}
+		# Keyed by canonical_cwd, value is (members, ended_at_monotonic). Entries
+		# older than _RECENTLY_ENDED_MAX_AGE_SECONDS are pruned on next access —
+		# the race window is sub-second; a minute of slack is plenty.
+		self._recently_ended: dict[str, tuple[list[str], float]] = {}
 		self._pending: dict[tuple[str, str], PendingRequest] = {}
 		self.total_answered: int = 0
 		self._away_mode_path = away_mode_path
@@ -152,12 +157,26 @@ class Registry:
 		session. Used to distinguish 'partner ended first' (E1) from 'never a
 		member' (E4) when a second end_collab arrives after the session is
 		already purged."""
-		self._recently_ended[cwd] = members
+		import time as _time
+		self._recently_ended[cwd] = (members, _time.monotonic())
+
+	def _prune_recently_ended(self) -> None:
+		import time as _time
+		now = _time.monotonic()
+		stale = [
+			k for k, (_, ts) in self._recently_ended.items()
+			if (now - ts) > _RECENTLY_ENDED_MAX_AGE_SECONDS
+		]
+		for k in stale:
+			self._recently_ended.pop(k, None)
 
 	def get_recently_ended_members(self, cwd: str) -> list[str] | None:
-		return self._recently_ended.get(cwd)
+		self._prune_recently_ended()
+		entry = self._recently_ended.get(cwd)
+		return entry[0] if entry is not None else None
 
 	def was_recently_ended(self, cwd: str) -> bool:
+		self._prune_recently_ended()
 		return cwd in self._recently_ended
 
 	def is_away_mode_active(self, cwd: str) -> bool:
@@ -171,9 +190,27 @@ class Registry:
 		while probe:
 			if probe in self._cwd_overrides:
 				return self._cwd_overrides[probe]
-			parent = probe.rsplit("/", 1)[0]
-			if parent == probe or len(parent) <= 2:  # reached drive root like 'c:'
+			
+			if "/" not in probe:
+				# Single-component name or empty (already handled by while-loop), 
+				# nothing left to split.
 				break
+
+			parent = probe.rsplit("/", 1)[0]
+			
+			if parent == probe:
+				break
+			
+			# Drive root check: 'c:/'. After rsplit("/", 1) on 'c:/foo', parent is 'c:'.
+			# We want to check 'c:/' if 'c:' is hit, but rsplit doesn't give us the slash.
+			# If parent is just a drive letter (e.g. 'c:'), it means we reached the root.
+			if len(parent) <= 2 and parent.endswith(":"):
+				# Check the root override if it exists
+				root = parent + "/"
+				if root in self._cwd_overrides:
+					return self._cwd_overrides[root]
+				break
+
 			probe = parent
 		return self._global_away
 
@@ -187,7 +224,7 @@ class Registry:
 		cleared = list(self._cwd_overrides.keys())
 		self._global_away = active
 		self._cwd_overrides = {}
-		self._persist_away_mode()
+		self._schedule_persist()
 		for cwd in cleared:
 			# active=None signals "override removed; clear the mirror entry"
 			self._fire_callback(cwd, None)
@@ -200,7 +237,7 @@ class Registry:
 		if prior == new:
 			# Resolution unchanged: skip persist + callback to avoid churn.
 			return
-		self._persist_away_mode()
+		self._schedule_persist()
 		self._fire_callback(cwd, new)
 
 	def remove_cwd_override(self, cwd: str) -> None:
@@ -209,9 +246,31 @@ class Registry:
 		prior_value = self._cwd_overrides[cwd]
 		del self._cwd_overrides[cwd]
 		new = self.is_away_mode_active(cwd)
-		self._persist_away_mode()
+		self._schedule_persist()
 		# active=None signals "override removed; clear the mirror entry"
 		self._fire_callback(cwd, None)
+
+	def _schedule_persist(self) -> None:
+		try:
+			loop = asyncio.get_running_loop()
+			if loop.is_running():
+				loop.create_task(self._persist_away_mode())
+				return
+		except RuntimeError:
+			pass
+		
+		# No running loop (e.g. synchronous unit test): fall back to sync write.
+		# This is safe because unit tests are single-threaded and non-concurrent.
+		if self._away_mode_path is not None:
+			data = {
+				"global": self._global_away,
+				"overrides": dict(self._cwd_overrides),
+			}
+			self._away_mode_path.parent.mkdir(parents=True, exist_ok=True)
+			self._away_mode_path.write_text(
+				json.dumps(data, indent=2, sort_keys=True),
+				encoding="utf-8",
+			)
 
 	def cwd_overrides(self) -> dict[str, bool]:
 		return dict(self._cwd_overrides)
@@ -250,15 +309,17 @@ class Registry:
 		overrides = {k: bool(v) for k, v in overrides_raw.items() if isinstance(k, str)}
 		return global_away, overrides
 
-	def _persist_away_mode(self) -> None:
+	async def _persist_away_mode(self) -> None:
 		if self._away_mode_path is None:
 			return
 		data = {
 			"global": self._global_away,
 			"overrides": dict(self._cwd_overrides),
 		}
-		self._away_mode_path.parent.mkdir(parents=True, exist_ok=True)
-		self._away_mode_path.write_text(
-			json.dumps(data, indent=2, sort_keys=True),
-			encoding="utf-8",
-		)
+		def _do_write():
+			self._away_mode_path.parent.mkdir(parents=True, exist_ok=True)
+			self._away_mode_path.write_text(
+				json.dumps(data, indent=2, sort_keys=True),
+				encoding="utf-8",
+			)
+		await asyncio.to_thread(_do_write)

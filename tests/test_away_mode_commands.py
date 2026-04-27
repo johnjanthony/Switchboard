@@ -77,11 +77,13 @@ async def _run_one_cmd(registry: Registry, backend: FakeBackend, cmd: dict, tmp_
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 	backend.push_command(cmd)
 	task = asyncio.create_task(dispatch_away_mode_commands(registry, backend, handlers, logger))
-	# Give the loop a generous number of iterations to process — bulk-respond send_to_all
-	# fans out send_resolution_confirmation + write_channel_message per pending, so the
-	# await chain is longer than a simple set_global_away.
-	for _ in range(50):
-		await asyncio.sleep(0)
+	# Give the loop time to process. Bulk-respond send_to_all fans out
+	# send_resolution_confirmation + write_channel_message per pending plus
+	# now-async logger calls per stage; the await chain is far longer than a
+	# simple set_global_away. A 100ms wall-clock sleep is more reliable than
+	# counting `sleep(0)` ticks because to_thread-backed logger writes return
+	# from a worker thread, not a single event-loop yield.
+	await asyncio.sleep(0.1)
 	task.cancel()
 	try:
 		await task

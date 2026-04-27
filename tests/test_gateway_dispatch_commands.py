@@ -65,7 +65,10 @@ async def test_dispatch_commands_continues_after_handler_exception(logger):
 	backend.poll_commands = fake_poll_commands
 
 	task = asyncio.create_task(dispatch_commands(spawn_handler, backend, logger))
-	await asyncio.sleep(0)
+	# Sleep 50ms — long enough for the to_thread-based async logger writes
+	# (now triggered on the exception path) to complete and the loop to
+	# advance to the second item.
+	await asyncio.sleep(0.05)
 	task.cancel()
 	with pytest.raises(asyncio.CancelledError):
 		await task
@@ -94,7 +97,9 @@ async def test_dispatch_commands_logs_handler_exception(tmp_path, logger):
 	backend.poll_commands = fake_poll_commands
 
 	task = asyncio.create_task(dispatch_commands(spawn_handler, backend, logger))
-	await asyncio.sleep(0)
+	# Sleep 50ms — long enough for the to_thread-based async logger
+	# write to flush to disk before we read the log file.
+	await asyncio.sleep(0.05)
 	task.cancel()
 	with pytest.raises(asyncio.CancelledError):
 		await task
