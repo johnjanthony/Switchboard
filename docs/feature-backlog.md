@@ -22,6 +22,22 @@ Open/proposed features for Switchboard, grouped by where the work lives. Shipped
 
 ---
 
+## `exit_global` partial-failure leaves global away stuck
+
+**Surfaced 2026-04-26** during a `test_away_mode_commands` test fix. In `gateway.py` the `exit_global` dispatch path executes `await handlers.bulk_respond_send_to_all(default_text)` followed by `registry.set_global_away(False)` *inside* the `try` block. If anything in the bulk-respond fan-out (resolution-confirmation write, response-text update, history write) raises, control jumps to the outer `except Exception` which logs the error and clears the dialog — but the global flag stays `True`. The user toggled "exit global → send to all" and the system silently fails to honor the toggle.
+
+**Reproduction observed:** the test's `FakeBackend` lacked `write_channel_message`, so the fan-out raised `AttributeError` and `set_global_away(False)` was never reached. Test was fixed by adding the method, but the production code path remains brittle to any partial sub-task failure (Firebase momentarily down, a single message-id missing, etc.).
+
+**Fix options:**
+
+- **(a)** Move the `registry.set_global_away(False)` calls outside the try/except, into a finally or a follow-up unconditional block. Honors the user's exit-global intent regardless of which sub-task failed; partial failures still log via `surface_error`.
+- **(b)** Wrap the fan-out inside `bulk_respond_send_to_all` so its `asyncio.gather` doesn't propagate per-task failures (use `return_exceptions=True`, log per-task failures, return success). Matches the existing `try/except` inside `_resolve_one`.
+- **(c)** Both — defense in depth.
+
+`gateway.py:624-647` is the relevant range.
+
+---
+
 ## Log rotation
 
 `logs/switchboard.jsonl` grows forever. At low volume this is a months-out concern, but worth a simple size-based rotation (`logs/switchboard.jsonl.1`, `.2`, with a cap).
