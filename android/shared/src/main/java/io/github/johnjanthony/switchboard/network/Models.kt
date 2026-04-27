@@ -25,6 +25,7 @@ data class Pending(
 	val questionText: String,
 	val cancelled: Boolean = false,
 	val msgId: String,
+	val suggestions: List<String>? = null,
 )
 
 data class Channel(

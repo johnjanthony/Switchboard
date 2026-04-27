@@ -236,6 +236,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 					questionText = msg.text,
 					cancelled = msg.cancelled,
 					msgId = msgId,
+					suggestions = msg.suggestions,
 				)
 			}
 		}

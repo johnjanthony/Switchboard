@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Info
@@ -17,6 +19,7 @@ import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -125,18 +128,34 @@ private fun ReplyInputBar(
 	onSubmit: (String) -> Unit,
 ) {
 	var text by remember(pending.requestId) { mutableStateOf("") }
+	val suggestions = pending.suggestions ?: listOf("Yes", "No", "Maybe", "On it!", "Done")
+
 	Surface(tonalElevation = 2.dp) {
-		Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-			OutlinedTextField(
-				value = text,
-				onValueChange = { text = it },
-				modifier = Modifier.weight(1f),
-				placeholder = { Text("Reply to ${pending.sender}…") },
-				maxLines = 4,
-			)
-			Spacer(Modifier.width(8.dp))
-			IconButton(onClick = { if (text.isNotBlank()) { onSubmit(text); text = "" } }) {
-				Icon(Icons.Default.Send, contentDescription = "Send")
+		Column(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+			LazyRow(
+				modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+				contentPadding = PaddingValues(horizontal = 4.dp),
+			) {
+				items(suggestions) { suggestion ->
+					AssistChip(
+						onClick = { onSubmit(suggestion) },
+						label = { Text(suggestion) },
+						modifier = Modifier.padding(horizontal = 4.dp)
+					)
+				}
+			}
+			Row(verticalAlignment = Alignment.CenterVertically) {
+				OutlinedTextField(
+					value = text,
+					onValueChange = { text = it },
+					modifier = Modifier.weight(1f),
+					placeholder = { Text("Reply to ${pending.sender}…") },
+					maxLines = 4,
+				)
+				Spacer(Modifier.width(8.dp))
+				IconButton(onClick = { if (text.isNotBlank()) { onSubmit(text); text = "" } }) {
+					Icon(Icons.Default.Send, contentDescription = "Send")
+				}
 			}
 		}
 	}
