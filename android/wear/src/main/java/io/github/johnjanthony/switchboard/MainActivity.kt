@@ -82,6 +82,9 @@ class MainActivity : ComponentActivity() {
         intent?.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_AGENT_ID)?.let { cwdKey ->
             viewModel.selectChannel(cwdKey)
         }
+        intent?.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_MESSAGE_ID)?.let { messageId ->
+            viewModel.setPendingDeepLinkMessageId(messageId)
+        }
     }
 }
 
@@ -305,12 +308,24 @@ fun MessageListScreen(cwdKey: String, viewModel: MainViewModel, navController: N
     val sortedMessages = remember(channel.messages) {
         channel.messages.sortedBy { it.second.timestamp }
     }
-    
+    val pendingMessageId by viewModel.pendingDeepLinkMessageId.collectAsState()
+
     val listState = rememberScalingLazyListState()
 
-    LaunchedEffect(sortedMessages.size) {
+    LaunchedEffect(pendingMessageId, sortedMessages.size) {
+        val targetId = pendingMessageId
+        if (targetId != null) {
+            val idx = sortedMessages.indexOfFirst { it.first == targetId }
+            if (idx >= 0) {
+                // Header item is at index 0; messages start at index 1
+                listState.scrollToItem(idx + 1)
+                viewModel.clearPendingDeepLinkMessageId()
+            }
+            // Not yet present — wait for next message-load tick. Don't fall through.
+            return@LaunchedEffect
+        }
         if (sortedMessages.isNotEmpty()) {
-            // Scroll to the last item. Index 0 is the header, 
+            // Scroll to the last item. Index 0 is the header,
             // so last message is at index sortedMessages.size
             listState.scrollToItem(sortedMessages.size)
         }

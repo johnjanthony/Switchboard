@@ -52,6 +52,8 @@ fun SessionViewScreen(
 	isAwayOverride: Boolean,
 	globalAway: Boolean,
 	currentPending: Map<String, Pending>,
+	scrollToMessageId: String? = null,
+	onScrollConsumed: () -> Unit = {},
 	onBack: () -> Unit,
 	onTapPill: () -> Unit,
 	onLongPressPillConfirm: () -> Unit,
@@ -62,7 +64,18 @@ fun SessionViewScreen(
 ) {
 	val listState = rememberLazyListState()
 
-	androidx.compose.runtime.LaunchedEffect(messages.size) {
+	androidx.compose.runtime.LaunchedEffect(scrollToMessageId, messages.size) {
+		val targetId = scrollToMessageId
+		if (targetId != null) {
+			val idx = messages.indexOfFirst { it.first == targetId }
+			if (idx >= 0) {
+				listState.scrollToItem(idx)
+				onScrollConsumed()
+			}
+			// If not yet in the list (still syncing), wait — recomposition with a larger
+			// messages.size will retry. Don't fall through to scroll-to-bottom.
+			return@LaunchedEffect
+		}
 		if (messages.isNotEmpty()) {
 			listState.scrollToItem(messages.size - 1)
 		}

@@ -189,6 +189,24 @@ def test_away_mode_no_path_set_does_not_crash():
 	assert registry.is_away_mode_active("c:/work/switchboard") is False
 
 
+def test_cwd_override_inherited_by_subdirectory(tmp_path):
+	"""A descendant cwd inherits the nearest ancestor's override."""
+	registry = Registry(away_mode_path=tmp_path / "away.json")
+	registry.set_global_away(True)
+	# Project root has explicit at-desk override
+	registry.set_cwd_override("c:/work/switchboard", False)
+	# Subdirectory inherits the override even though it has no entry of its own
+	assert registry.is_away_mode_active("c:/work/switchboard/android") is False
+	assert registry.is_away_mode_active("c:/work/switchboard/server/firebase.py") is False
+	# Unrelated path falls through to global
+	assert registry.is_away_mode_active("c:/work/other") is True
+	# Direct subdir override wins over ancestor
+	registry.set_cwd_override("c:/work/switchboard/android", True)
+	assert registry.is_away_mode_active("c:/work/switchboard/android") is True
+	assert registry.is_away_mode_active("c:/work/switchboard/android/app") is True
+	assert registry.is_away_mode_active("c:/work/switchboard/server") is False  # still inherits root
+
+
 def test_set_away_mode_invokes_callback(tmp_path):
 	registry = Registry(away_mode_path=tmp_path / "away.json")
 	calls: list = []

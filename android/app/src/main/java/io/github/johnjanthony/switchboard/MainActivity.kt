@@ -50,6 +50,7 @@ import io.github.johnjanthony.switchboard.ui.theme.SwitchboardTheme
 class MainActivity : ComponentActivity() {
 	private val viewModel: MainViewModel by viewModels()
 	private val pendingDeepLinkCwdKey = mutableStateOf<String?>(null)
+	private val pendingDeepLinkMessageId = mutableStateOf<String?>(null)
 
 	private val requestPermissionLauncher = registerForActivityResult(
 		ActivityResultContracts.RequestPermission()
@@ -59,9 +60,10 @@ class MainActivity : ComponentActivity() {
 		super.onCreate(savedInstanceState)
 		requestNotificationPermission()
 		pendingDeepLinkCwdKey.value = intent.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_AGENT_ID)
+		pendingDeepLinkMessageId.value = intent.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_MESSAGE_ID)
 		setContent {
 			SwitchboardTheme {
-				SwitchboardNavHost(viewModel, pendingDeepLinkCwdKey)
+				SwitchboardNavHost(viewModel, pendingDeepLinkCwdKey, pendingDeepLinkMessageId)
 			}
 		}
 	}
@@ -70,7 +72,9 @@ class MainActivity : ComponentActivity() {
 		super.onNewIntent(intent)
 		setIntent(intent)
 		val cwdKey = intent.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_AGENT_ID)
+		val messageId = intent.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_MESSAGE_ID)
 		if (cwdKey != null) pendingDeepLinkCwdKey.value = cwdKey
+		if (messageId != null) pendingDeepLinkMessageId.value = messageId
 	}
 
 	private fun requestNotificationPermission() {
@@ -85,7 +89,11 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun SwitchboardNavHost(viewModel: MainViewModel, deepLinkCwdKey: MutableState<String?>) {
+private fun SwitchboardNavHost(
+	viewModel: MainViewModel,
+	deepLinkCwdKey: MutableState<String?>,
+	deepLinkMessageId: MutableState<String?>,
+) {
 	val context = androidx.compose.ui.platform.LocalContext.current
 	val navController = rememberNavController()
 	val channels by viewModel.channels.collectAsState()
@@ -146,7 +154,20 @@ private fun SwitchboardNavHost(viewModel: MainViewModel, deepLinkCwdKey: Mutable
 			val cwdKey = backStackEntry.arguments?.getString("cwdKey") ?: return@composable
 			val channel = channels[cwdKey]
 			if (channel == null) {
-				LaunchedEffect(Unit) { navController.popBackStack() }
+				// Cold-start race: notification deep link can navigate here before
+				// the Firebase channels listener has populated. Show a brief loading
+				// state and let recomposition pick up the channel once it lands.
+				// Don't popBackStack — that would yank the user back to the list and
+				// strand the deep link.
+				androidx.compose.foundation.layout.Box(
+					modifier = Modifier.padding(24.dp),
+				) {
+					Text(
+						text = "Loading…",
+						style = MaterialTheme.typography.bodyMedium,
+						color = MaterialTheme.colorScheme.onSurfaceVariant,
+					)
+				}
 				return@composable
 			}
 			val awayActive = viewModel.isAwayActive(cwdKey)
@@ -160,6 +181,8 @@ private fun SwitchboardNavHost(viewModel: MainViewModel, deepLinkCwdKey: Mutable
 				isAwayOverride = isOverride,
 				globalAway = globalAway,
 				currentPending = channel.pendingQuestions,
+				scrollToMessageId = deepLinkMessageId.value,
+				onScrollConsumed = { deepLinkMessageId.value = null },
 				onBack = { navController.popBackStack() },
 				onTapPill = { viewModel.requestAwayModeToggle(cwdKey, !awayActive) },
 				onLongPressPillConfirm = { viewModel.requestAwayModeToggle(cwdKey, !awayActive) },

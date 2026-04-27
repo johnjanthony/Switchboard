@@ -64,6 +64,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _selectedCwdKey = MutableStateFlow<String?>(null)
 	val selectedCwdKey: StateFlow<String?> = _selectedCwdKey.asStateFlow()
 
+	private val _pendingDeepLinkMessageId = MutableStateFlow<String?>(null)
+	val pendingDeepLinkMessageId: StateFlow<String?> = _pendingDeepLinkMessageId.asStateFlow()
+
 	private val _unseenChannels = MutableStateFlow<Set<String>>(emptySet())
 	val unseenChannels: StateFlow<Set<String>> = _unseenChannels.asStateFlow()
 
@@ -354,6 +357,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 	fun clearSelectedChannel() {
 		_selectedCwdKey.value = null
+	}
+
+	fun setPendingDeepLinkMessageId(messageId: String?) {
+		_pendingDeepLinkMessageId.value = messageId
+	}
+
+	fun clearPendingDeepLinkMessageId() {
+		_pendingDeepLinkMessageId.value = null
 	}
 
 	fun closeMarkdownViewer() {

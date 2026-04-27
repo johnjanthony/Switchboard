@@ -213,6 +213,7 @@ class FirebaseBackend(MessengerBackend):
 			fcm_data: dict = {
 				"channel_key": key,
 				"sb_message_type": message_type,
+				"message_id": msg_id,
 			}
 			if message_type == "question" and request_id is not None:
 				fcm_data["request_id"] = request_id
@@ -365,29 +366,22 @@ class FirebaseBackend(MessengerBackend):
 		content: str,
 		fcm_data: dict,
 	) -> None:
-		android_channel_id = {
-			"question": "switchboard_questions",
-			"document": "switchboard_documents",
-		}.get(message_type, "switchboard_updates")
+		# Data-only FCM messages: onMessageReceived runs on the client in foreground,
+		# background, AND killed states, so the client always controls the PendingIntent
+		# and its extras. Any android.notification field (even just channel_id) flips
+		# FCM into "notification message" mode and lets Android render the tray entry
+		# itself, bypassing our service — so we do NOT set AndroidNotification here.
 		android_cfg = messaging.AndroidConfig(
-			notification=messaging.AndroidNotification(channel_id=android_channel_id),
+			priority="high",  # data-only requires high to avoid doze deferral
 		)
-		if message_type == "question":
-			notif = messaging.Notification(
-				title=f"Question from {sender}",
-				body=content[:100] + ("..." if len(content) > 100 else ""),
-			)
-			msg = messaging.Message(
-				notification=notif, topic="questions", data=fcm_data, android=android_cfg,
-			)
-		else:
-			notif = messaging.Notification(
-				title=f"Update from {sender}",
-				body=content[:100] + ("..." if len(content) > 100 else ""),
-			)
-			msg = messaging.Message(
-				notification=notif, topic="notifications", data=fcm_data, android=android_cfg,
-			)
+		title = (
+			f"Question from {sender}" if message_type == "question"
+			else f"Update from {sender}"
+		)
+		body = content[:100] + ("..." if len(content) > 100 else "")
+		fcm_data = {**fcm_data, "title": title, "body": body}
+		topic = "questions" if message_type == "question" else "notifications"
+		msg = messaging.Message(topic=topic, data=fcm_data, android=android_cfg)
 
 		await asyncio.to_thread(lambda: messaging.send(msg))
 

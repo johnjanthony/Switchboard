@@ -141,8 +141,20 @@ class Registry:
 		self._sessions.pop(cwd, None)
 
 	def is_away_mode_active(self, cwd: str) -> bool:
-		if cwd in self._cwd_overrides:
-			return self._cwd_overrides[cwd]
+		# Walk up the canonical path looking for the nearest registered ancestor
+		# override. Canonical cwds are forward-slash, lowercased, drive-prefixed
+		# (e.g. 'c:/work/switchboard'). A query for 'c:/work/switchboard/android'
+		# inherits the override on 'c:/work/switchboard' if no override is set
+		# directly on the subdirectory. This matches user mental model: setting
+		# at-desk on a project applies to all bash subshells inside it.
+		probe = cwd
+		while probe:
+			if probe in self._cwd_overrides:
+				return self._cwd_overrides[probe]
+			parent = probe.rsplit("/", 1)[0]
+			if parent == probe or len(parent) <= 2:  # reached drive root like 'c:'
+				break
+			probe = parent
 		return self._global_away
 
 	def set_global_away(self, active: bool) -> None:

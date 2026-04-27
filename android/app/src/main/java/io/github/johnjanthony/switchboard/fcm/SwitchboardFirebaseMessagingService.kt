@@ -18,7 +18,13 @@ class SwitchboardFirebaseMessagingService : FirebaseMessagingService() {
 		const val CHANNEL_QUESTIONS = "switchboard_questions"
 		const val CHANNEL_DOCUMENTS = "switchboard_documents"
 		const val CHANNEL_UPDATES = "switchboard_updates"
-		const val EXTRA_AGENT_ID = "agent_id"
+		// Values intentionally match the server's FCM data keys (server/firebase.py).
+		// When the app is in foreground, our showNotification() attaches these as
+		// intent extras. When the app is in background/killed, Android handles the
+		// notification itself and attaches the FCM data fields as intent extras
+		// using the original key names — so we must read the same names in both paths.
+		const val EXTRA_AGENT_ID = "channel_key"
+		const val EXTRA_MESSAGE_ID = "message_id"
 		private val notificationId = AtomicInteger(1)
 
 		fun ensureChannels(context: Context) {
@@ -44,9 +50,12 @@ class SwitchboardFirebaseMessagingService : FirebaseMessagingService() {
 	}
 
 	override fun onMessageReceived(remoteMessage: RemoteMessage) {
-		val title = remoteMessage.notification?.title ?: "Switchboard"
-		val body = remoteMessage.notification?.body ?: return
+		// Server sends data-only messages so this runs in foreground, background,
+		// and killed states. Title/body live in the data dict, not remoteMessage.notification.
+		val title = remoteMessage.data["title"] ?: "Switchboard"
+		val body = remoteMessage.data["body"] ?: return
 		val channelKey = remoteMessage.data["channel_key"]
+		val messageId = remoteMessage.data["message_id"]
 		val messageType = remoteMessage.data["sb_message_type"] ?: "notify"
 
 		// Warm up database connection and sync the specific channel immediately
@@ -56,17 +65,18 @@ class SwitchboardFirebaseMessagingService : FirebaseMessagingService() {
 				.keepSynced(true)
 		}
 
-		showNotification(title, body, channelKey, messageType)
+		showNotification(title, body, channelKey, messageId, messageType)
 	}
 
 	override fun onNewToken(token: String) {
 		// Topic-based messaging — token not needed by server
 	}
 
-	private fun showNotification(title: String, body: String, channelId: String?, messageType: String) {
+	private fun showNotification(title: String, body: String, channelId: String?, messageId: String?, messageType: String) {
 		val intent = Intent(this, MainActivity::class.java).apply {
 			addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
 			if (channelId != null) putExtra(EXTRA_AGENT_ID, channelId)
+			if (messageId != null) putExtra(EXTRA_MESSAGE_ID, messageId)
 		}
 		val pendingIntent = PendingIntent.getActivity(
 			this, notificationId.get(), intent,
