@@ -1,0 +1,94 @@
+"""Path canonicalization for cwd-as-channel routing.
+
+Every cwd ingress (MCP tool calls, hook queries, phone reply paths,
+spawn submissions) is normalized via canonicalize_cwd. Firebase keys
+are derived via to_firebase_key.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from pathlib import PureWindowsPath
+
+
+class CanonicalizationError(ValueError):
+	"""Raised when a path cannot be canonicalized."""
+
+
+_GIT_BASH_PREFIX = re.compile(r"^/([a-zA-Z])/(.*)$")
+
+
+def canonicalize_cwd(raw: str) -> str:
+	"""Normalize raw cwd to the canonical form used as a routing key.
+
+	Rules:
+	1. Reject empty / non-absolute / syntactically invalid paths.
+	2. Convert Git-Bash-style /c/... to c:/...
+	3. Backslashes -> forward slashes.
+	4. Lowercase drive letter on Windows.
+	5. Resolve . and .. segments.
+	6. Strip trailing slash.
+
+	Returns: 'c:/work/switchboard' style string.
+	"""
+	if not raw or not isinstance(raw, str):
+		raise CanonicalizationError(f"cwd must be a non-empty string, got: {raw!r}")
+
+	gb = _GIT_BASH_PREFIX.match(raw)
+	if gb:
+		raw = f"{gb.group(1)}:/{gb.group(2)}"
+
+	if len(raw) < 2 or raw[1] != ":":
+		raise CanonicalizationError(f"cwd must be absolute (with drive letter), got: {raw!r}")
+
+	try:
+		win = PureWindowsPath(raw)
+	except (ValueError, TypeError) as exc:
+		raise CanonicalizationError(f"invalid path syntax: {raw!r}") from exc
+
+	normalized = os.path.normpath(str(win))
+
+	forward = normalized.replace("\\", "/").lower()
+
+	if len(forward) > 3 and forward.endswith("/"):
+		forward = forward.rstrip("/")
+
+	return forward
+
+
+def to_firebase_key(canonical_cwd: str) -> str:
+	"""Convert canonical cwd to Firebase-safe key by flattening slashes.
+
+	Each existing underscore is escaped to four underscores first; then each
+	slash becomes two underscores. The decoder distinguishes the two by
+	preferring the four-underscore match.
+
+	Examples:
+	    c:/work/foo   -> c:__work__foo
+	    c:/work_foo   -> c:__work____foo
+	    c:/work__foo  -> c:__work________foo
+	"""
+	escaped = canonical_cwd.replace("_", "____")
+	return escaped.replace("/", "__")
+
+
+def from_firebase_key(key: str) -> str:
+	"""Reverse to_firebase_key; recovers canonical cwd from Firebase key.
+
+	Walks the string left-to-right so ____ (literal _) is decoded before
+	__ (slash) and they cannot be confused with overlapping replacements.
+	"""
+	result = []
+	i = 0
+	while i < len(key):
+		if key[i:i + 4] == "____":
+			result.append("_")
+			i += 4
+		elif key[i:i + 2] == "__":
+			result.append("/")
+			i += 2
+		else:
+			result.append(key[i])
+			i += 1
+	return "".join(result)

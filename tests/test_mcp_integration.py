@@ -17,6 +17,8 @@ from server.main import _build_fastmcp
 from server.registry import Registry
 from tests.test_gateway_notify_human import RecordingBackend
 
+_CWD = "c:/work/sw"
+
 
 @pytest.fixture
 def cfg(tmp_path):
@@ -49,7 +51,7 @@ async def test_mcp_notify_human_tool_is_registered_and_invocable(cfg):
 
 	content, structured = await mcp.call_tool(
 		"notify_human",
-		{"message": "hello world", "channel_id": "ir2-20260422-143052"},
+		{"message": "hello world", "cwd": _CWD},
 	)
 
 	assert structured == {"result": "ok"}
@@ -65,20 +67,20 @@ async def test_mcp_enter_away_mode_tool_flips_registry(cfg, tmp_path):
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 	mcp = _build_fastmcp(handlers)
 
-	_, structured = await mcp.call_tool("enter_away_mode", {})
+	_, structured = await mcp.call_tool("enter_away_mode", {"cwd": _CWD})
 	assert structured == {"result": "ok"}
-	assert registry.is_away_mode_active() is True
+	assert registry.is_away_mode_active(_CWD) is True
 
 
 @pytest.mark.asyncio
 async def test_mcp_exit_away_mode_tool_flips_registry(cfg, tmp_path):
 	logger = JsonlLogger(cfg.log_path)
 	registry = Registry(away_mode_path=tmp_path / "away-mode.json")
-	registry.set_away_mode(True)
+	registry.set_cwd_override(_CWD, True)
 	backend = RecordingBackend()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 	mcp = _build_fastmcp(handlers)
 
-	_, structured = await mcp.call_tool("exit_away_mode", {})
+	_, structured = await mcp.call_tool("exit_away_mode", {"cwd": _CWD})
 	assert structured == {"result": "ok"}
-	assert registry.is_away_mode_active() is False
+	assert registry.is_away_mode_active(_CWD) is False

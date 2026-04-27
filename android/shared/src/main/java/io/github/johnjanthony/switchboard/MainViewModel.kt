@@ -1,9 +1,11 @@
 package io.github.johnjanthony.switchboard
 
 import android.app.Application
+import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.webkit.MimeTypeMap
@@ -15,8 +17,13 @@ import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
+import io.github.johnjanthony.switchboard.network.BulkRespondEntry
+import io.github.johnjanthony.switchboard.network.BulkRespondPayload
+import io.github.johnjanthony.switchboard.network.BulkRespondSection
 import io.github.johnjanthony.switchboard.network.Channel
 import io.github.johnjanthony.switchboard.network.ChannelMessage
+import io.github.johnjanthony.switchboard.network.Pending
+import io.github.johnjanthony.switchboard.network.SpawnCollisionData
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,392 +32,525 @@ import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val _channels = MutableStateFlow<Map<String, Channel>>(emptyMap())
-    val channels: StateFlow<Map<String, Channel>> = _channels.asStateFlow()
+	// Keyed by cwdKey (Firebase form, e.g. "c:__work__switchboard")
+	private val _channels = MutableStateFlow<Map<String, Channel>>(emptyMap())
+	val channels: StateFlow<Map<String, Channel>> = _channels.asStateFlow()
 
-    private val _projectMru = MutableStateFlow<List<String>>(emptyList())
-    val projectMru: StateFlow<List<String>> = _projectMru.asStateFlow()
+	private val _projectMru = MutableStateFlow<List<String>>(emptyList())
+	val projectMru: StateFlow<List<String>> = _projectMru.asStateFlow()
 
-    // Per-channel: the current pending question (msgId, message), or null
-    private val _pendingQuestions = MutableStateFlow<Map<String, Pair<String, ChannelMessage>>>(emptyMap())
-    val pendingQuestions: StateFlow<Map<String, Pair<String, ChannelMessage>>> = _pendingQuestions.asStateFlow()
+	private val _globalAway = MutableStateFlow(false)
+	val globalAway: StateFlow<Boolean> = _globalAway.asStateFlow()
 
-    private val _selectedChannelId = MutableStateFlow<String?>(null)
-    val selectedChannelId: StateFlow<String?> = _selectedChannelId.asStateFlow()
+	// Keys are cwdKey
+	private val _cwdOverrides = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+	val cwdOverrides: StateFlow<Map<String, Boolean>> = _cwdOverrides.asStateFlow()
 
-    private val _unseenChannels = MutableStateFlow<Set<String>>(emptySet())
-    val unseenChannels: StateFlow<Set<String>> = _unseenChannels.asStateFlow()
+	private val _pendingCollision = MutableStateFlow<SpawnCollisionData?>(null)
+	val pendingCollision: StateFlow<SpawnCollisionData?> = _pendingCollision.asStateFlow()
 
-    private val _hiddenChannels = MutableStateFlow<Map<String, Channel>>(emptyMap())
-    val hiddenChannels: StateFlow<Map<String, Channel>> = _hiddenChannels.asStateFlow()
+	private val _bulkRespondDialog = MutableStateFlow<BulkRespondPayload?>(null)
+	val bulkRespondDialog: StateFlow<BulkRespondPayload?> = _bulkRespondDialog.asStateFlow()
 
-    private val _awayModeActive = MutableStateFlow(false)
-    val awayModeActive: StateFlow<Boolean> = _awayModeActive.asStateFlow()
-    private var lastAppliedAwayModeUpdate: Long = 0L
+	private val _markdownViewerContent = MutableStateFlow<Pair<String, String>?>(null) // fileName to content
+	val markdownViewerContent: StateFlow<Pair<String, String>?> = _markdownViewerContent.asStateFlow()
 
-    private val database = FirebaseDatabase.getInstance()
-    private val sessionsRef = database.getReference("sessions")
-    private val responsesRef = database.getReference("responses")
-    private val commandsRef = database.getReference("commands")
-    private val awayModeRef = database.getReference("away_mode")
+	private val _selectedCwdKey = MutableStateFlow<String?>(null)
+	val selectedCwdKey: StateFlow<String?> = _selectedCwdKey.asStateFlow()
 
-    private val messageListeners = mutableMapOf<String, ChildEventListener>()
+	private val _pendingDeepLinkMessageId = MutableStateFlow<String?>(null)
+	val pendingDeepLinkMessageId: StateFlow<String?> = _pendingDeepLinkMessageId.asStateFlow()
 
-    init {
-        sessionsRef.keepSynced(true)
-        setupChannelsListener()
-        setupAwayModeListener()
-        loadProjectMru()
-    }
+	private val _unseenChannels = MutableStateFlow<Set<String>>(emptySet())
+	val unseenChannels: StateFlow<Set<String>> = _unseenChannels.asStateFlow()
 
-    private fun loadProjectMru() {
-        val prefs = getApplication<Application>().getSharedPreferences("switchboard_prefs", Context.MODE_PRIVATE)
-        val mruString = prefs.getString("project_mru", "") ?: ""
-        if (mruString.isNotEmpty()) {
-            _projectMru.value = mruString.split("|").filter { it.isNotBlank() }
-        }
-    }
+	private val database = FirebaseDatabase.getInstance()
+	private val channelsRef = database.getReference("channels")
+	private val responsesRef = database.getReference("responses")
+	private val commandsRef = database.getReference("commands")
+	private val awayModeRef = database.getReference("away_mode")
+	private val awayCommandsRef = database.getReference("away_mode_commands")
+	private val spawnCollisionsRef = database.getReference("spawn_collisions")
+	private val bulkRespondRef = database.getReference("bulk_respond_dialog")
 
-    private fun saveProjectMru(mru: List<String>) {
-        val prefs = getApplication<Application>().getSharedPreferences("switchboard_prefs", Context.MODE_PRIVATE)
-        prefs.edit().putString("project_mru", mru.joinToString("|")).apply()
-    }
+	private val messageListeners = mutableMapOf<String, ChildEventListener>()
 
-    private fun updateProjectMru(project: String) {
-        if (project.isBlank()) return
-        val current = _projectMru.value.toMutableList()
-        current.remove(project)
-        current.add(0, project)
-        val limited = current.take(10)
-        _projectMru.value = limited
-        saveProjectMru(limited)
-    }
+	init {
+		channelsRef.keepSynced(true)
+		setupChannelsListener()
+		setupAwayModeListener()
+		setupSpawnCollisionsListener()
+		setupBulkRespondListener()
+		loadProjectMru()
+	}
 
-    fun removeFromProjectMru(project: String) {
-        val current = _projectMru.value.toMutableList()
-        if (current.remove(project)) {
-            _projectMru.value = current
-            saveProjectMru(current)
-        }
-    }
+	private fun loadProjectMru() {
+		val prefs = getApplication<Application>().getSharedPreferences("switchboard_prefs", Context.MODE_PRIVATE)
+		val mruString = prefs.getString("project_mru", "") ?: ""
+		if (mruString.isNotEmpty()) {
+			_projectMru.value = mruString.split("|").filter { it.isNotBlank() }
+		}
+	}
 
-    private fun setupChannelsListener() {
-        sessionsRef.addChildEventListener(object : ChildEventListener {
-            override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
-                val channelId = snapshot.key ?: return
-                ensureSessionSynchronized(channelId, snapshot)
-            }
+	private fun saveProjectMru(mru: List<String>) {
+		val prefs = getApplication<Application>().getSharedPreferences("switchboard_prefs", Context.MODE_PRIVATE)
+		prefs.edit().putString("project_mru", mru.joinToString("|")).apply()
+	}
 
-            override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {
-                val channelId = snapshot.key ?: return
-                ensureSessionSynchronized(channelId, snapshot)
-            }
+	private fun updateProjectMru(project: String) {
+		if (project.isBlank()) return
+		val current = _projectMru.value.toMutableList()
+		current.remove(project)
+		current.add(0, project)
+		val limited = current.take(10)
+		_projectMru.value = limited
+		saveProjectMru(limited)
+	}
 
-            override fun onChildRemoved(snapshot: DataSnapshot) {
-                val channelId = snapshot.key ?: return
-                cleanupSession(channelId)
-            }
-            override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
-            override fun onCancelled(error: DatabaseError) {}
-        })
-    }
+	fun removeFromProjectMru(project: String) {
+		val current = _projectMru.value.toMutableList()
+		if (current.remove(project)) {
+			_projectMru.value = current
+			saveProjectMru(current)
+		}
+	}
 
-    private fun setupAwayModeListener() {
-        awayModeRef.addValueEventListener(object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                // Guard against out-of-order delivery during Firebase reconnect.
-                // If updated_at is present AND strictly older than the last
-                // applied value, discard. Missing updated_at (legacy/malformed)
-                // falls through and is applied — we cannot prove it stale.
-                val updatedAt = snapshot.child("updated_at").getValue(Long::class.java)
-                if (updatedAt != null && updatedAt < lastAppliedAwayModeUpdate) return
-                if (updatedAt != null) lastAppliedAwayModeUpdate = updatedAt
-                _awayModeActive.value = snapshot.child("active").getValue(Boolean::class.java) == true
-            }
-            override fun onCancelled(error: DatabaseError) {}
-        })
-    }
+	fun isAwayActive(cwdKey: String): Boolean {
+		val override = _cwdOverrides.value[cwdKey]
+		return override ?: _globalAway.value
+	}
 
-    private fun ensureSessionSynchronized(channelId: String, snapshot: DataSnapshot) {
-        val state = snapshot.child("state").getValue(String::class.java)
-        val hiddenField = snapshot.child("hidden").getValue(Boolean::class.java)
-        val isHidden = hiddenField == true || state == "closed"
+	// --- Firebase listeners ---
 
-        val metaSnap = snapshot.child("meta")
-        if (!metaSnap.exists()) return
+	private fun setupChannelsListener() {
+		channelsRef.addChildEventListener(object : ChildEventListener {
+			override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
+				val cwdKey = snapshot.key ?: return
+				syncChannel(cwdKey, snapshot)
+			}
+			override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {
+				val cwdKey = snapshot.key ?: return
+				syncChannel(cwdKey, snapshot)
+			}
+			override fun onChildRemoved(snapshot: DataSnapshot) {
+				val cwdKey = snapshot.key ?: return
+				removeChannel(cwdKey)
+			}
+			override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
+			override fun onCancelled(error: DatabaseError) {}
+		})
+	}
 
-        val type = metaSnap.child("type").getValue(String::class.java) ?: "single"
-        val projectKey = metaSnap.child("project_key").getValue(String::class.java) ?: channelId
-        val agentSenders = metaSnap.child("agent_senders").children
-            .mapNotNull { it.getValue(String::class.java) }
-        val task = metaSnap.child("task").getValue(String::class.java) ?: ""
+	private fun syncChannel(cwdKey: String, snapshot: DataSnapshot) {
+		val hidden = snapshot.child("hidden").getValue(Boolean::class.java) == true
+		val title = snapshot.child("title").getValue(String::class.java)
+		val cwdCanonical = snapshot.child("cwd_canonical").getValue(String::class.java) ?: ""
+		val lastActivityAt = snapshot.child("last_activity_at").getValue(String::class.java)
+		val preview = snapshot.child("preview").getValue(String::class.java)
+		val unreadCount = snapshot.child("unread_count").getValue(Int::class.java) ?: 0
+		val cwd = cwdCanonical.ifBlank { fromFirebaseKey(cwdKey) }
 
-        val existing = _channels.value[channelId] ?: _hiddenChannels.value[channelId]
+		val existing = _channels.value[cwdKey]
+		val updated = (existing ?: Channel(cwd = cwd, cwdKey = cwdKey)).copy(
+			cwd = cwd,
+			cwdKey = cwdKey,
+			title = title,
+			cwdCanonical = cwdCanonical,
+			hidden = hidden,
+			lastActivityAt = lastActivityAt,
+			preview = preview,
+			unreadCount = unreadCount,
+		)
+		val newMap = _channels.value.toMutableMap()
+		newMap[cwdKey] = updated
+		_channels.value = newMap
 
-        if (existing != null) {
-            val updated = existing.copy(
-                type = type,
-                projectKey = projectKey,
-                agentSenders = agentSenders,
-                task = task,
-                hidden = isHidden,
-            )
-            movePartition(channelId, updated, isHidden)
-        } else {
-            val channel = Channel(
-                channelId = channelId,
-                type = type,
-                projectKey = projectKey,
-                agentSenders = agentSenders,
-                task = task,
-                messages = emptyList(),
-                hidden = isHidden,
-            )
-            movePartition(channelId, channel, isHidden)
-            if (!isHidden && _selectedChannelId.value == null) {
-                _selectedChannelId.value = channelId
-            }
-        }
+		if (_selectedCwdKey.value == null && !hidden) {
+			_selectedCwdKey.value = cwdKey
+		}
+		if (hidden && _selectedCwdKey.value == cwdKey) {
+			_selectedCwdKey.value = _channels.value.entries.firstOrNull { !it.value.hidden }?.key
+		}
 
-        // Attach message listener if not already present
-        if (!messageListeners.containsKey(channelId)) {
-            val listener = object : ChildEventListener {
-                override fun onChildAdded(snap: DataSnapshot, prev: String?) {
-                    val msgId = snap.key ?: return
-                    val msg = snap.getValue(ChannelMessage::class.java) ?: return
-                    addChannelMessage(channelId, msgId, msg)
-                }
-                override fun onChildChanged(snap: DataSnapshot, prev: String?) {
-                    val msgId = snap.key ?: return
-                    val msg = snap.getValue(ChannelMessage::class.java) ?: return
-                    addChannelMessage(channelId, msgId, msg)
-                }
-                override fun onChildRemoved(snap: DataSnapshot) {}
-                override fun onChildMoved(snap: DataSnapshot, prev: String?) {}
-                override fun onCancelled(error: DatabaseError) {}
-            }
-            messageListeners[channelId] = listener
-            snapshot.child("messages").ref.addChildEventListener(listener)
-        }
-    }
+		if (!messageListeners.containsKey(cwdKey)) {
+			val listener = object : ChildEventListener {
+				override fun onChildAdded(snap: DataSnapshot, prev: String?) {
+					val msgId = snap.key ?: return
+					try {
+						val msg = snap.getValue(ChannelMessage::class.java) ?: return
+						addMessage(cwdKey, msgId, msg)
+					} catch (e: Exception) {
+						android.util.Log.e("MainViewModel", "MALFORMED MESSAGE at channels/$cwdKey/messages/$msgId")
+						android.util.Log.e("MainViewModel", "Value Type: ${snap.value?.javaClass?.name}")
+						android.util.Log.e("MainViewModel", "Value Content: ${snap.value}")
+						android.util.Log.e("MainViewModel", "Error: ${e.message}")
+					}
+				}
+				override fun onChildChanged(snap: DataSnapshot, prev: String?) {
+					val msgId = snap.key ?: return
+					try {
+						val msg = snap.getValue(ChannelMessage::class.java) ?: return
+						addMessage(cwdKey, msgId, msg)
+					} catch (e: Exception) {
+						android.util.Log.e("MainViewModel", "MALFORMED MESSAGE (update) at channels/$cwdKey/messages/$msgId")
+						android.util.Log.e("MainViewModel", "Value Type: ${snap.value?.javaClass?.name}")
+						android.util.Log.e("MainViewModel", "Value Content: ${snap.value}")
+						android.util.Log.e("MainViewModel", "Error: ${e.message}")
+					}
+				}
+				override fun onChildRemoved(snap: DataSnapshot) {
+					val msgId = snap.key ?: return
+					removeMessage(cwdKey, msgId)
+				}
+				override fun onChildMoved(snap: DataSnapshot, prev: String?) {}
+				override fun onCancelled(error: DatabaseError) {}
+			}
+			messageListeners[cwdKey] = listener
+			snapshot.child("messages").ref.addChildEventListener(listener)
+		}
+	}
 
-    private fun cleanupSession(channelId: String) {
-        val listener = messageListeners.remove(channelId)
-        if (listener != null) {
-            sessionsRef.child(channelId).child("messages").removeEventListener(listener)
-        }
-        
-        val current = _channels.value.toMutableMap()
-        if (current.containsKey(channelId)) {
-            current.remove(channelId)
-            _channels.value = current
-            if (_selectedChannelId.value == channelId) {
-                _selectedChannelId.value = _channels.value.keys.firstOrNull()
-            }
-        }
-    }
+	private fun removeChannel(cwdKey: String) {
+		val listener = messageListeners.remove(cwdKey)
+		if (listener != null) {
+			channelsRef.child(cwdKey).child("messages").removeEventListener(listener)
+		}
+		val newMap = _channels.value.toMutableMap()
+		if (newMap.remove(cwdKey) != null) {
+			_channels.value = newMap
+			if (_selectedCwdKey.value == cwdKey) {
+				_selectedCwdKey.value = newMap.entries.firstOrNull { !it.value.hidden }?.key
+			}
+		}
+	}
 
-    private fun movePartition(channelId: String, channel: Channel, hidden: Boolean) {
-        val visible = _channels.value.toMutableMap()
-        val hiddenMap = _hiddenChannels.value.toMutableMap()
-        if (hidden) {
-            visible.remove(channelId)
-            hiddenMap[channelId] = channel
-        } else {
-            hiddenMap.remove(channelId)
-            visible[channelId] = channel
-        }
-        _channels.value = visible
-        _hiddenChannels.value = hiddenMap
+	private fun addMessage(cwdKey: String, msgId: String, msg: ChannelMessage) {
+		val channel = _channels.value[cwdKey] ?: return
+		val newMessages = channel.messages.toMutableList()
+		val idx = newMessages.indexOfFirst { it.first == msgId }
+		if (idx >= 0) newMessages[idx] = msgId to msg else newMessages.add(msgId to msg)
 
-        if (hidden && _selectedChannelId.value == channelId) {
-            _selectedChannelId.value = _channels.value.keys.firstOrNull()
-        }
-    }
+		var newPending = channel.pendingQuestions.toMutableMap()
+		if (msg.type == "question" && msg.request_id != null) {
+			if (msg.response_text != null || msg.cancelled) {
+				newPending.remove(msg.request_id!!)
+			} else {
+				newPending[msg.request_id!!] = Pending(
+					sender = msg.sender,
+					requestId = msg.request_id!!,
+					questionText = msg.text,
+					cancelled = msg.cancelled,
+					msgId = msgId,
+					suggestions = msg.suggestions,
+				)
+			}
+		}
 
-    fun hideChannel(channelId: String) {
-        sessionsRef.child(channelId).child("hidden").setValue(true)
-    }
+		val updated = channel.copy(messages = newMessages, pendingQuestions = newPending)
+		val newMap = _channels.value.toMutableMap()
+		newMap[cwdKey] = updated
+		_channels.value = newMap
 
-    fun unhideChannel(channelId: String) {
-        sessionsRef.child(channelId).child("hidden").setValue(false)
-        // Select the channel so the user goes straight to it after unhiding.
-        _selectedChannelId.value = channelId
-    }
+		if (msg.sender != "Human" && cwdKey != _selectedCwdKey.value) {
+			_unseenChannels.value = _unseenChannels.value + cwdKey
+		}
+		if (_selectedCwdKey.value == null && !channel.hidden) {
+			_selectedCwdKey.value = cwdKey
+		}
+	}
 
-    private fun addChannelMessage(channelId: String, msgId: String, msg: ChannelMessage) {
-        val visible = _channels.value.toMutableMap()
-        val hiddenMap = _hiddenChannels.value.toMutableMap()
+	private fun removeMessage(cwdKey: String, msgId: String) {
+		val channel = _channels.value[cwdKey] ?: return
+		val newMessages = channel.messages.filterNot { it.first == msgId }
+		if (newMessages.size == channel.messages.size) return
+		// If the removed message was a pending question, drop it from the pending map too.
+		val removed = channel.messages.firstOrNull { it.first == msgId }?.second
+		val newPending = channel.pendingQuestions.toMutableMap()
+		if (removed?.type == "question" && removed.request_id != null) {
+			newPending.remove(removed.request_id)
+		}
+		val updated = channel.copy(messages = newMessages, pendingQuestions = newPending)
+		val newMap = _channels.value.toMutableMap()
+		newMap[cwdKey] = updated
+		_channels.value = newMap
+	}
 
-        val inVisible = visible[channelId]
-        val inHidden = hiddenMap[channelId]
-        val channel = inVisible ?: inHidden ?: return
+	private fun setupAwayModeListener() {
+		awayModeRef.child("global").addValueEventListener(object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				_globalAway.value = snapshot.getValue(Boolean::class.java) == true
+			}
+			override fun onCancelled(error: DatabaseError) {}
+		})
+		awayModeRef.child("overrides").addValueEventListener(object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				val map = mutableMapOf<String, Boolean>()
+				for (child in snapshot.children) {
+					val key = child.key ?: continue
+					val value = child.getValue(Boolean::class.java) ?: continue
+					map[key] = value
+				}
+				_cwdOverrides.value = map
+			}
+			override fun onCancelled(error: DatabaseError) {}
+		})
+	}
 
-        val newMessages = channel.messages.toMutableList()
-        val existingIndex = newMessages.indexOfFirst { it.first == msgId }
-        if (existingIndex != -1) {
-            newMessages[existingIndex] = msgId to msg
-        } else {
-            newMessages.add(msgId to msg)
-        }
+	private fun setupSpawnCollisionsListener() {
+		spawnCollisionsRef.addChildEventListener(object : ChildEventListener {
+			override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
+				val spawnId = snapshot.key ?: return
+				val cwd = snapshot.child("cwd").getValue(String::class.java) ?: return
+				val cwdKey = snapshot.child("cwd_key").getValue(String::class.java) ?: return
+				val channelTitle = snapshot.child("channel_title").getValue(String::class.java)
+				val lastActivityAt = snapshot.child("last_activity_at").getValue(String::class.java)
+				val hidden = snapshot.child("hidden").getValue(Boolean::class.java) == true
+				_pendingCollision.value = SpawnCollisionData(spawnId, cwd, cwdKey, channelTitle, lastActivityAt, hidden)
+			}
+			override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {}
+			override fun onChildRemoved(snapshot: DataSnapshot) {
+				if (_pendingCollision.value?.spawnId == snapshot.key) {
+					_pendingCollision.value = null
+				}
+			}
+			override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
+			override fun onCancelled(error: DatabaseError) {}
+		})
+	}
 
-        val updated = channel.copy(messages = newMessages)
-        if (inVisible != null) {
-            visible[channelId] = updated
-            _channels.value = visible
-        } else {
-            hiddenMap[channelId] = updated
-            _hiddenChannels.value = hiddenMap
-        }
+	private fun setupBulkRespondListener() {
+		bulkRespondRef.child("active").addValueEventListener(object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				if (!snapshot.exists()) {
+					_bulkRespondDialog.value = null
+					return
+				}
+				val defaultText = snapshot.child("default_text").getValue(String::class.java) ?: ""
+				val sections = snapshot.child("sections").children.mapNotNull { sectionSnap ->
+					val cwd = sectionSnap.child("cwd").getValue(String::class.java) ?: return@mapNotNull null
+					val entries = sectionSnap.child("entries").children.mapNotNull { entrySnap ->
+						val requestId = entrySnap.child("request_id").getValue(String::class.java) ?: return@mapNotNull null
+						val sender = entrySnap.child("sender").getValue(String::class.java) ?: return@mapNotNull null
+						val questionText = entrySnap.child("question_text").getValue(String::class.java) ?: ""
+						BulkRespondEntry(requestId, sender, questionText)
+					}
+					BulkRespondSection(cwd, entries)
+				}
+				_bulkRespondDialog.value = BulkRespondPayload(sections, defaultText)
+			}
+			override fun onCancelled(error: DatabaseError) {}
+		})
+	}
 
-        // Track unseen status — apply to hidden channels too; the Hidden Channels
-        // dialog uses _unseenChannels to render the subtle primary-colour adornment.
-        if (msg.sender != "Human" && channelId != _selectedChannelId.value) {
-            _unseenChannels.value = _unseenChannels.value + channelId
-        }
+	// --- Public actions ---
 
-        if (msg.message_type == "question" && msg.request_id != null) {
-            val pending = _pendingQuestions.value.toMutableMap()
-            if (msg.response_text != null) {
-                // If it's answered, remove from pending if it was there
-                if (pending[channelId]?.first == msgId) {
-                    pending.remove(channelId)
-                    _pendingQuestions.value = pending
-                }
-            } else {
-                // Update or add pending question — tracks for BOTH visible and
-                // hidden channels so the bulk-respond flow (Slice J) can reach them.
-                pending[channelId] = msgId to msg
-                _pendingQuestions.value = pending
-            }
-        }
+	fun selectChannel(cwdKey: String) {
+		_selectedCwdKey.value = cwdKey
+		_unseenChannels.value = _unseenChannels.value - cwdKey
+	}
 
-        if (_selectedChannelId.value == null && inVisible != null) {
-            // Only auto-select visible channels on first-message arrival.
-            _selectedChannelId.value = channelId
-        }
-    }
+	fun clearSelectedChannel() {
+		_selectedCwdKey.value = null
+	}
 
+	fun setPendingDeepLinkMessageId(messageId: String?) {
+		_pendingDeepLinkMessageId.value = messageId
+	}
 
-    fun replyToQuestion(channelId: String, msgId: String, requestId: String, text: String) {
-        responsesRef.child(requestId).setValue(
-            mapOf("text" to text, "timestamp" to System.currentTimeMillis())
-        )
-        val current = _pendingQuestions.value.toMutableMap()
-        current.remove(channelId)
-        _pendingQuestions.value = current
-    }
+	fun clearPendingDeepLinkMessageId() {
+		_pendingDeepLinkMessageId.value = null
+	}
 
-    fun sendInjectMessage(channelId: String, text: String) {
-        val injectRef = database.getReference("sessions/$channelId/inject_queue")
-        injectRef.push().setValue(mapOf("content" to text, "timestamp" to System.currentTimeMillis()))
-    }
+	fun closeMarkdownViewer() {
+		_markdownViewerContent.value = null
+	}
 
-    fun selectChannel(channelId: String) {
-        _selectedChannelId.value = channelId
-        _unseenChannels.value = _unseenChannels.value - channelId
-    }
+	fun hasAnyPendingQuestions(): Boolean {
+		return _channels.value.values.any { it.pendingQuestions.isNotEmpty() }
+	}
 
-    fun spawnSession(project: String, prompt: String, useClaude: Boolean, useGemini: Boolean) {
-        updateProjectMru(project)
-        val sb = StringBuilder("/spawn")
-        if (useClaude) sb.append(" --claude")
-        if (useGemini) sb.append(" --gemini")
-        if (project.isNotBlank()) sb.append(" $project")
-        sb.append(" $prompt")
-        commandsRef.push().setValue(sb.toString())
-    }
+	fun submitReply(cwdKey: String, sender: String, text: String) {
+		responsesRef.child("${cwdKey}__$sender").setValue(mapOf(
+			"text" to text,
+			"written_at" to nowIso(),
+		))
+		// Remove from pending optimistically
+		val channel = _channels.value[cwdKey] ?: return
+		val newPending = channel.pendingQuestions.filterValues { it.sender != sender }
+		_channels.value = _channels.value.toMutableMap().also { it[cwdKey] = channel.copy(pendingQuestions = newPending) }
+	}
 
-    fun requestAwayModeToggle(desired: Boolean) {
-        // Optimistic UI update — the pill flips immediately. The Firebase listener
-        // will reconcile to the authoritative server value when the mirror write
-        // round-trips back (typically within 2-3 seconds).
-        _awayModeActive.value = desired
-        val cmd = if (desired) "/away-mode on" else "/away-mode off"
-        commandsRef.push().setValue(cmd)
-    }
+	fun requestAwayModeToggle(cwdKey: String?, desired: Boolean) {
+		if (cwdKey == null) {
+			_globalAway.value = desired
+			if (desired) enterGlobalAway() else exitGlobalAway()
+		} else {
+			val newOverrides = _cwdOverrides.value.toMutableMap()
+			newOverrides[cwdKey] = desired
+			_cwdOverrides.value = newOverrides
+			val cwd = _channels.value[cwdKey]?.cwd ?: return
+			if (desired) enterCwdAway(cwd) else exitCwdAway(cwd)
+		}
+	}
 
-    fun bulkRespondAndExit(text: String) {
-        // Snapshot the pending questions to iterate a stable view; also covers
-        // hidden channels because Slice E's addChannelMessage fix tracks
-        // _pendingQuestions for both partitions.
-        val snapshot = _pendingQuestions.value.toMap()
-        snapshot.forEach { (_, pair) ->
-            val (_, msg) = pair
-            val reqId = msg.request_id
-            if (!reqId.isNullOrEmpty()) {
-                responsesRef.child(reqId).setValue(
-                    mapOf("text" to text, "timestamp" to System.currentTimeMillis())
-                )
-            }
-        }
-        _pendingQuestions.value = emptyMap()
-        requestAwayModeToggle(false)
-    }
+	fun hideChannel(cwdKey: String) {
+		channelsRef.child(cwdKey).child("hidden").setValue(true)
+	}
 
-    fun downloadAndOpenFile(context: Context, url: String, fileName: String) {
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            Toast.makeText(context, "Invalid URL", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val client = OkHttpClient()
-        val request = Request.Builder().url(url).build()
-        client.newCall(request).enqueue(object : okhttp3.Callback {
-            override fun onFailure(call: okhttp3.Call, e: IOException) {
-                Handler(Looper.getMainLooper()).post {
-                    Toast.makeText(context, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
-                }
-            }
-            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
-                val body = response.body
-                if (!response.isSuccessful || body == null) {
-                    val errorMsg = try { body?.string()?.take(100) ?: "" } catch (e: Exception) { "" }
-                    Handler(Looper.getMainLooper()).post {
-                        Toast.makeText(context, "Server error: ${response.code} $errorMsg", Toast.LENGTH_LONG).show()
-                    }
-                    return
-                }
-                
-                // Sanitize filename while preserving extension
-                val ext = fileName.substringAfterLast('.', "")
-                val nameWithoutExt = fileName.substringBeforeLast('.')
-                val safeBase = nameWithoutExt.replace(Regex("[^a-zA-Z0-9.\\-_]"), "_").take(50)
-                val safeFileName = if (ext.isNotEmpty() && ext != fileName) "$safeBase.$ext" else safeBase
-                
-                val file = File(context.cacheDir, safeFileName)
-                try {
-                    FileOutputStream(file).use { output -> body.byteStream().copyTo(output) }
-                    Handler(Looper.getMainLooper()).post { openFile(context, file) }
-                } catch (e: IOException) {
-                    Handler(Looper.getMainLooper()).post {
-                        Toast.makeText(context, "Save failed: ${e.message}", Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
-        })
-    }
+	fun unhideChannel(cwdKey: String) {
+		channelsRef.child(cwdKey).child("hidden").setValue(false)
+		_selectedCwdKey.value = cwdKey
+	}
 
-    private fun openFile(context: Context, file: File) {
-        try {
-            val uri: Uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-            val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
+	fun resolveSpawnCollision(spawnId: String, action: String) {
+		spawnCollisionsRef.child(spawnId).child("decision").setValue(mapOf("action" to action))
+	}
 
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, mimeType)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            
-            val chooser = Intent.createChooser(intent, "Open ${file.name}")
-            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(chooser)
-        } catch (e: Exception) {
-            Handler(Looper.getMainLooper()).post {
-                Toast.makeText(context, "Cannot open file: ${e.message}", Toast.LENGTH_LONG).show()
-            }
-        }
-    }
+	fun submitBulkRespond(action: String, defaultText: String? = null) {
+		val payload = mutableMapOf<String, Any>("action" to action)
+		if (defaultText != null) payload["default_text"] = defaultText
+		bulkRespondRef.child("decision").setValue(payload)
+	}
+
+	fun spawnSession(project: String, prompt: String, useClaude: Boolean, useGemini: Boolean) {
+		updateProjectMru(project)
+		val sb = StringBuilder("/spawn")
+		if (useClaude) sb.append(" --claude")
+		if (useGemini) sb.append(" --gemini")
+		if (project.isNotBlank()) sb.append(" $project")
+		sb.append(" $prompt")
+		commandsRef.push().setValue(sb.toString())
+	}
+
+	// --- Away mode command emitters ---
+
+	private fun enterGlobalAway() {
+		awayCommandsRef.push().setValue(mapOf("type" to "enter_global", "issued_at" to nowIso()))
+	}
+
+	private fun exitGlobalAway() {
+		awayCommandsRef.push().setValue(mapOf("type" to "exit_global", "issued_at" to nowIso()))
+	}
+
+	private fun enterCwdAway(cwd: String) {
+		awayCommandsRef.push().setValue(mapOf("type" to "enter_cwd", "cwd" to cwd, "issued_at" to nowIso()))
+	}
+
+	private fun exitCwdAway(cwd: String) {
+		awayCommandsRef.push().setValue(mapOf("type" to "exit_cwd", "cwd" to cwd, "issued_at" to nowIso()))
+	}
+
+	// --- Utilities ---
+
+	fun saveFileToDownloads(context: Context, url: String, fileName: String) {
+		if (!url.startsWith("http://") && !url.startsWith("https://")) {
+			Toast.makeText(context, "Invalid URL", Toast.LENGTH_SHORT).show()
+			return
+		}
+		try {
+			val request = DownloadManager.Request(Uri.parse(url))
+				.setTitle(fileName)
+				.setDescription("Downloading file from Switchboard")
+				.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+				.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+				.setAllowedOverMetered(true)
+				.setAllowedOverRoaming(true)
+
+			val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+			downloadManager.enqueue(request)
+			Toast.makeText(context, "Download started...", Toast.LENGTH_SHORT).show()
+		} catch (e: Exception) {
+			Toast.makeText(context, "Failed to start download: ${e.message}", Toast.LENGTH_LONG).show()
+		}
+	}
+
+	fun downloadAndOpenFile(context: Context, url: String, fileName: String) {
+		if (!url.startsWith("http://") && !url.startsWith("https://")) {
+			Toast.makeText(context, "Invalid URL", Toast.LENGTH_SHORT).show()
+			return
+		}
+		val client = OkHttpClient()
+		val request = Request.Builder().url(url).build()
+		client.newCall(request).enqueue(object : okhttp3.Callback {
+			override fun onFailure(call: okhttp3.Call, e: IOException) {
+				Handler(Looper.getMainLooper()).post {
+					Toast.makeText(context, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
+				}
+			}
+			override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+				val body = response.body
+				if (!response.isSuccessful || body == null) {
+					val errorMsg = try { body?.string()?.take(100) ?: "" } catch (e: Exception) { "" }
+					Handler(Looper.getMainLooper()).post {
+						Toast.makeText(context, "Server error: ${response.code} $errorMsg", Toast.LENGTH_LONG).show()
+					}
+					return
+				}
+				val ext = fileName.substringAfterLast('.', "")
+				val nameWithoutExt = fileName.substringBeforeLast('.')
+				val safeBase = nameWithoutExt.replace(Regex("[^a-zA-Z0-9.\\-_]"), "_").take(50)
+				val safeFileName = if (ext.isNotEmpty() && ext != fileName) "$safeBase.$ext" else safeBase
+				val file = File(context.cacheDir, safeFileName)
+				try {
+					FileOutputStream(file).use { output -> body.byteStream().copyTo(output) }
+					Handler(Looper.getMainLooper()).post { openFile(context, file) }
+				} catch (e: IOException) {
+					Handler(Looper.getMainLooper()).post {
+						Toast.makeText(context, "Save failed: ${e.message}", Toast.LENGTH_LONG).show()
+					}
+				}
+			}
+		})
+	}
+
+	private fun openFile(context: Context, file: File) {
+		val fileName = file.name
+		if (fileName.endsWith(".md", ignoreCase = true) || fileName.endsWith(".txt", ignoreCase = true)) {
+			try {
+				val content = file.readText()
+				_markdownViewerContent.value = fileName to content
+				return
+			} catch (e: Exception) {
+				android.util.Log.e("MainViewModel", "Failed to read file for viewer: ${e.message}")
+			}
+		}
+
+		try {
+			val uri: Uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+			val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
+			val intent = Intent(Intent.ACTION_VIEW).apply {
+				setDataAndType(uri, mimeType)
+				addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+				addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+			}
+			val chooser = Intent.createChooser(intent, "Open ${file.name}")
+			chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+			context.startActivity(chooser)
+		} catch (e: Exception) {
+			Handler(Looper.getMainLooper()).post {
+				Toast.makeText(context, "Cannot open file: ${e.message}", Toast.LENGTH_LONG).show()
+			}
+		}
+	}
+
+	private fun nowIso(): String = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
+
+	private fun fromFirebaseKey(key: String): String {
+		val result = StringBuilder()
+		var i = 0
+		while (i < key.length) {
+			when {
+				key.startsWith("____", i) -> { result.append('_'); i += 4 }
+				key.startsWith("__", i) -> { result.append('/'); i += 2 }
+				else -> { result.append(key[i]); i++ }
+			}
+		}
+		return result.toString()
+	}
 }

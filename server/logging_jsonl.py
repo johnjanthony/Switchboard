@@ -187,3 +187,35 @@ class JsonlLogger:
 		if reason is not None:
 			event["reason"] = reason
 		self._write(event)
+
+	def cwd_canonicalized(self, raw: str, canonical: str) -> None:
+		self._write({"event": "cwd_canonicalized", "raw": raw, "canonical": canonical})
+
+	def pending_superseded(self, cwd: str, sender: str, prior_request_id: str, new_request_id: str) -> None:
+		self._write({
+			"event": "pending_superseded", "cwd": cwd, "sender": sender,
+			"prior_request_id": prior_request_id, "new_request_id": new_request_id,
+		})
+
+	def away_mode_global_changed(self, active: bool) -> None:
+		self._write({"event": "away_mode_global_changed", "active": active})
+
+	def away_mode_cwd_changed(self, cwd: str, active: bool) -> None:
+		self._write({"event": "away_mode_cwd_changed", "cwd": cwd, "active": active})
+
+	def spawn_collision_detected(self, cwd: str, spawn_id: str) -> None:
+		self._write({"event": "spawn_collision_detected", "cwd": cwd, "spawn_id": spawn_id})
+
+	def pending_cancelled_on_spawn(self, cwd: str, request_ids: list[str]) -> None:
+		self._write({
+			"event": "pending_cancelled_on_spawn",
+			"cwd": cwd,
+			"request_ids": request_ids,
+			"count": len(request_ids),
+		})
+
+	def title_truncated(self, cwd: str, original_length: int, truncated: str) -> None:
+		self._write({
+			"event": "title_truncated", "cwd": cwd,
+			"original_length": original_length, "truncated": truncated,
+		})

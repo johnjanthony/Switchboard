@@ -32,7 +32,7 @@ class MessengerBackend(ABC):
 	@abstractmethod
 	async def write_channel_message(
 		self,
-		channel_id: str,
+		cwd: str,
 		sender: str,
 		message_type: str,
 		content: str,
@@ -42,6 +42,7 @@ class MessengerBackend(ABC):
 		format: str = "plain",
 		suggestions: list[str] | None = None,
 		filename: str | None = None,
+		title: str | None = None,
 	) -> "tuple[CorrelationToken | None, str | None]":
 		"""Write a message to the channel. Returns (correlation, msg_id).
 		correlation is used for message_type='question' to match responses.
@@ -104,11 +105,87 @@ class MessengerBackend(ABC):
 		if False:
 			yield
 
-	async def write_away_mode_mirror(self, active: bool) -> None:
-		"""Mirror the server's away-mode flag to Firebase for the Android app's
-		pill-chip listener. No-op by default; backends that expose a Firebase
-		surface override this."""
+	async def write_away_mode_mirror(self, cwd: str | None, active: bool | None) -> None:
+		"""Mirror away-mode state to Firebase.
+		cwd=None for global flag changes; cwd=<canonical> for per-cwd overrides.
+		active=None (only valid with cwd set) means the override entry should be
+		removed from the mirror.
+		No-op by default; FirebaseBackend overrides."""
 		pass
+
+	async def mark_question_cancelled(self, cwd: str, request_id: str) -> None:
+		"""Mark the question with this request_id as cancelled in storage.
+		No-op default; FirebaseBackend overrides."""
+		pass
+
+	async def send_stale_reply_notice(self, cwd: str, sender: str) -> None:
+		"""Write a system message indicating a stale reply landed.
+		No-op default; FirebaseBackend overrides."""
+		pass
+
+	async def update_channel_title(self, cwd: str, title: str) -> None:
+		"""Set the channel-level title (truncated to 80 chars).
+		No-op default; FirebaseBackend overrides."""
+		pass
+
+	async def update_last_activity(self, cwd: str, timestamp_iso: str, preview: str) -> None:
+		"""Update channel's last_activity_at and preview snippet.
+		No-op default; FirebaseBackend overrides."""
+		pass
+
+	async def has_messages(self, cwd: str) -> bool:
+		"""Return True if channels/<key>/messages contains any entries."""
+		return False
+
+	async def read_channel_meta(self, cwd: str) -> dict:
+		"""Return {'title': str|None, 'last_activity_at': str|None, 'hidden': bool}."""
+		return {"title": None, "last_activity_at": None, "hidden": False}
+
+	async def write_spawn_collision_prompt(
+		self, spawn_id: str, cwd: str,
+		channel_title: str | None, last_activity_at: str | None, hidden: bool,
+	) -> None:
+		"""Push a spawn-collision dialog to the phone via Firebase."""
+		pass
+
+	async def clear_spawn_collision_prompt(self, spawn_id: str) -> None:
+		"""Remove the spawn-collision dialog node."""
+		pass
+
+	async def wipe_channel(self, cwd: str) -> None:
+		"""Atomic wipe of channels/<key>/messages, responses/<key>__*, etc."""
+		pass
+
+	async def set_channel_hidden(self, cwd: str, hidden: bool) -> None:
+		"""Set the hidden flag on the channel."""
+		pass
+
+	async def fetch_message_text(self, cwd: str, msg_id: str) -> str | None:
+		"""Return the text of a message by msg_id, or None if not found."""
+		return None
+
+	async def write_bulk_respond_dialog(self, payload: dict) -> None:
+		"""Push the bulk-respond dialog to phone via Firebase node bulk_respond_dialog/active."""
+		pass
+
+	async def clear_bulk_respond_dialog(self) -> None:
+		"""Remove the bulk-respond dialog node."""
+		pass
+
+	async def poll_away_mode_commands(self) -> "AsyncIterator[dict]":
+		"""Yield away_mode_commands queue entries as they arrive. No-op by default."""
+		if False:
+			yield
+
+	async def poll_bulk_respond_decision(self) -> dict:
+		"""Block until bulk_respond_dialog/decision is written; return the decision dict."""
+		raise NotImplementedError
+
+	async def poll_spawn_collision_decision(self, spawn_id: str) -> dict:
+		"""Block until spawn_collisions/{spawn_id}/decision is written; return the decision dict.
+		Decision shape: {"action": "continue" | "clear" | "cancel"}.
+		Used by _handle_spawn to gate the collision-dialog flow."""
+		raise NotImplementedError
 
 	@abstractmethod
 	async def aclose(self) -> None:
@@ -120,14 +197,14 @@ class MultiBackend(MessengerBackend):
 		self._backends = backends
 
 	async def write_channel_message(
-		self, channel_id, sender, message_type, content,
-		*, request_id=None, url=None, format="plain", suggestions=None, filename=None,
+		self, cwd, sender, message_type, content,
+		*, request_id=None, url=None, format="plain", suggestions=None, filename=None, title=None,
 	) -> "tuple[CorrelationToken | None, str | None]":
 		results = await asyncio.gather(*(
 			b.write_channel_message(
-				channel_id, sender, message_type, content,
+				cwd, sender, message_type, content,
 				request_id=request_id, url=url, format=format, suggestions=suggestions,
-				filename=filename,
+				filename=filename, title=title,
 			)
 			for b in self._backends
 		))
@@ -234,8 +311,95 @@ class MultiBackend(MessengerBackend):
 	async def start_inject_listener(self, session_id) -> None:
 		await asyncio.gather(*(b.start_inject_listener(session_id) for b in self._backends))
 
-	async def write_away_mode_mirror(self, active: bool) -> None:
-		await asyncio.gather(*(b.write_away_mode_mirror(active) for b in self._backends))
+	async def write_away_mode_mirror(self, cwd: str | None, active: bool | None) -> None:
+		await asyncio.gather(*(b.write_away_mode_mirror(cwd, active) for b in self._backends))
+
+	async def mark_question_cancelled(self, cwd: str, request_id: str) -> None:
+		await asyncio.gather(*(b.mark_question_cancelled(cwd, request_id) for b in self._backends))
+
+	async def send_stale_reply_notice(self, cwd: str, sender: str) -> None:
+		await asyncio.gather(*(b.send_stale_reply_notice(cwd, sender) for b in self._backends))
+
+	async def update_channel_title(self, cwd: str, title: str) -> None:
+		await asyncio.gather(*(b.update_channel_title(cwd, title) for b in self._backends))
+
+	async def update_last_activity(self, cwd: str, timestamp_iso: str, preview: str) -> None:
+		await asyncio.gather(*(b.update_last_activity(cwd, timestamp_iso, preview) for b in self._backends))
+
+	async def has_messages(self, cwd: str) -> bool:
+		# Ask the first backend that can answer; fall back to False
+		for b in self._backends:
+			result = await b.has_messages(cwd)
+			if result:
+				return True
+		return False
+
+	async def read_channel_meta(self, cwd: str) -> dict:
+		# Use the first backend's answer
+		if self._backends:
+			return await self._backends[0].read_channel_meta(cwd)
+		return {"title": None, "last_activity_at": None, "hidden": False}
+
+	async def write_spawn_collision_prompt(self, spawn_id, cwd, channel_title, last_activity_at, hidden) -> None:
+		await asyncio.gather(*(
+			b.write_spawn_collision_prompt(spawn_id, cwd, channel_title, last_activity_at, hidden)
+			for b in self._backends
+		))
+
+	async def clear_spawn_collision_prompt(self, spawn_id: str) -> None:
+		await asyncio.gather(*(b.clear_spawn_collision_prompt(spawn_id) for b in self._backends))
+
+	async def wipe_channel(self, cwd: str) -> None:
+		await asyncio.gather(*(b.wipe_channel(cwd) for b in self._backends))
+
+	async def set_channel_hidden(self, cwd: str, hidden: bool) -> None:
+		await asyncio.gather(*(b.set_channel_hidden(cwd, hidden) for b in self._backends))
+
+	async def fetch_message_text(self, cwd: str, msg_id: str) -> str | None:
+		for b in self._backends:
+			result = await b.fetch_message_text(cwd, msg_id)
+			if result is not None:
+				return result
+		return None
+
+	async def write_bulk_respond_dialog(self, payload: dict) -> None:
+		await asyncio.gather(*(b.write_bulk_respond_dialog(payload) for b in self._backends))
+
+	async def clear_bulk_respond_dialog(self) -> None:
+		await asyncio.gather(*(b.clear_bulk_respond_dialog() for b in self._backends))
+
+	async def poll_away_mode_commands(self) -> "AsyncIterator[dict]":
+		combined: asyncio.Queue = asyncio.Queue()
+
+		async def _forward(b: MessengerBackend):
+			async for cmd in b.poll_away_mode_commands():
+				await combined.put(cmd)
+
+		tasks = [asyncio.create_task(_forward(b)) for b in self._backends]
+		try:
+			while True:
+				yield await combined.get()
+		finally:
+			for t in tasks:
+				t.cancel()
+
+	async def poll_bulk_respond_decision(self) -> dict:
+		# Delegate to the first backend that implements it
+		for b in self._backends:
+			try:
+				return await b.poll_bulk_respond_decision()
+			except NotImplementedError:
+				continue
+		raise NotImplementedError
+
+	async def poll_spawn_collision_decision(self, spawn_id: str) -> dict:
+		# Delegate to the first backend that implements it
+		for b in self._backends:
+			try:
+				return await b.poll_spawn_collision_decision(spawn_id)
+			except NotImplementedError:
+				continue
+		raise NotImplementedError
 
 	async def aclose(self) -> None:
 		await asyncio.gather(*(b.aclose() for b in self._backends))
