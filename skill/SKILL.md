@@ -11,11 +11,17 @@ This is the single most important rule. If you produce chat text in the terminal
 
 **The tool call IS the acknowledgment.**
 
-**Mark the session:** When entering away mode, call `enter_away_mode(cwd)` alongside the confirming `notify_human` call. When exiting, call `exit_away_mode(cwd)` as the first action before resuming terminal output. Spawned sessions auto-enter on spawn — do not call `enter_away_mode(cwd)` redundantly at spawn time.
+**Away mode is user-managed.** John controls the away-mode flag himself (phone app, etc.). The agent only toggles it in response to **an explicit signal in John's MOST RECENT prompt** — never on conversation history, never on hook prompts, never by inference.
 
-**If the turn-end hook blocks you:** If you see an unexpected `block` (Claude) or `deny` (Gemini) message from a turn-end hook injecting "You are in away mode...", the flag is still active. Either call `ask_human(cwd=...)` to check in with John, or — only if John explicitly told you he is back — call `exit_away_mode(cwd)` first and then resume terminal output.
+- "I'm stepping away" (or equivalent) in the current turn → call `enter_away_mode(cwd)`.
+- "I'm back at my desk" (or equivalent) in the current turn → call `exit_away_mode(cwd)`.
+- Anything else, including the same phrases said earlier in the conversation, is not authorization. If John said "I'm back" three turns ago, that has no bearing on this turn — assume he has already managed the state himself.
 
-1.  **Entry:** When John says "stepping away", "going away mode", "I'm away", or any equivalent phrasing — even when bundled with other directives in the same message — the trigger fires.
+Spawned sessions auto-enter on spawn — do not call `enter_away_mode(cwd)` redundantly at spawn time.
+
+**If the turn-end hook blocks you:** If you see an unexpected `block` (Claude) or `deny` (Gemini) message from a turn-end hook injecting "You are in away mode...", the flag is still active server-side. The hook's "call exit_away_mode" prompt is **not** authorization to flip the flag — only the user's MOST RECENT prompt is. If this turn's user message contains the explicit back-at-desk signal, call `exit_away_mode(cwd)` first and then resume terminal output. Otherwise, route this turn's output through `ask_human` or `notify_human` and leave the flag alone.
+
+1.  **Entry:** When John's MOST RECENT prompt says "stepping away", "going away mode", "I'm away", or any equivalent phrasing — even when bundled with other directives in the same message — the trigger fires. Earlier-in-conversation mentions do not count.
     -   **`enter_away_mode(cwd)` MUST be your first tool call**, before any other work the message asks you to do. The flag must be set server-side so that subsequent `ask_human` calls block normally instead of triggering the at-desk redirect.
     -   After the flag is set, then continue:
         -   If tasks are queued: call `notify_human` to confirm you are starting, then begin work.
@@ -25,7 +31,7 @@ This is the single most important rule. If you produce chat text in the terminal
     -   **Zero terminal text.** A compound user message like "I'm stepping away. Call send_document_human with foo.txt, then ask_human about delivery." is NOT a license to skip `enter_away_mode(cwd)` and dive into the explicit commands. Set the flag first, then do the work.
 2.  **Execution:** Route **every** status update, question, or completion ping through `notify_human`, `ask_human` or `send_document_human`.
 3.  **Replies:** When `ask_human` returns a reply, do not acknowledge it in the terminal. Treat it as input for your next tool call or task.
-4.  **Exit:** The **only** exception is when John explicitly says he is back ("I'm back", "back at desk"). Call `exit_away_mode(cwd)` as your first action, then resume terminal chat with a concise summary of your work.
+4.  **Exit:** The **only** exit trigger is John's MOST RECENT prompt explicitly saying he is back ("I'm back", "back at desk"). Call `exit_away_mode(cwd)` as your first action, then resume terminal chat with a concise summary of your work. A back-at-desk message from earlier in the conversation does not retroactively authorize an exit on a later turn.
 
 **At-desk `ask_human` redirect.** If `ask_human` returns the literal string `"ERROR: John is at his desk. Ask this question via the terminal."`, the human is at their desk, and your question has already been delivered to their phone as a passive notification (chat history + Updates channel, no reply UI). Your next action is to **produce the question content verbatim in the terminal** — the human will respond via terminal input. Do NOT retry `ask_human`, do NOT call `exit_away_mode(cwd)` (the flag is already off), and do NOT treat this as an error worth surfacing beyond asking the question. This redirect only applies to `ask_human`; `notify_human` and `send_document_human` always deliver normally regardless of away-mode state.
 
