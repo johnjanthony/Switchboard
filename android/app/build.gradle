@@ -1,8 +1,7 @@
 plugins {
     id 'com.android.application'
     id 'com.google.gms.google-services'
-    id 'org.jetbrains.kotlin.plugin.compose' version '2.1.10'
-    id 'kotlin-kapt'
+    id 'org.jetbrains.kotlin.plugin.compose' version '2.2.10'
 }
 
 android {
@@ -74,9 +73,9 @@ dependencies {
     implementation 'io.noties.markwon:ext-tasklist:4.6.2'
     implementation 'io.noties.markwon:ext-strikethrough:4.6.2'
     implementation 'io.noties.markwon:simple-ext:4.6.2'
-    implementation 'io.noties.markwon:syntax-highlight:4.6.2'
-    implementation 'io.noties:prism4j:2.0.0'
-    kapt 'io.noties:prism4j-bundler:2.0.0'
+
+    // Syntax highlighting backend for Markwon code blocks
+    implementation 'dev.snipme:highlights:1.1.0'
 
     // Networking
     implementation 'com.squareup.retrofit2:retrofit:2.9.0'

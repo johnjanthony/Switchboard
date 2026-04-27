@@ -276,6 +276,7 @@ fun MarkdownText(
 					.usePlugin(io.noties.markwon.ext.tasklist.TaskListPlugin.create(view.context))
 					.usePlugin(io.noties.markwon.ext.strikethrough.StrikethroughPlugin.create())
 					.usePlugin(io.noties.markwon.simple.ext.SimpleExtPlugin.create())
+					.usePlugin(io.github.johnjanthony.switchboard.ui.SwitchboardSyntaxHighlightPlugin())
 					.usePlugin(object : io.noties.markwon.AbstractMarkwonPlugin() {
 						override fun configureConfiguration(builder: io.noties.markwon.MarkwonConfiguration.Builder) {
 							builder.linkResolver(object : io.noties.markwon.LinkResolver {
