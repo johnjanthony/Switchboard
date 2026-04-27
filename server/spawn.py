@@ -105,69 +105,23 @@ class SpawnHandler:
 		self._logger = logger
 		self._registry = registry
 		self._last_spawn_time: datetime | None = None
-		self._pending_collisions: dict[str, dict] = {}
 
-	async def submit(self, cwd: str, agents: list, collab_task: str | None = None) -> dict:
-		"""Check for channel collision and either launch or return a collision dict."""
-		from server.canonicalization import canonicalize_cwd, CanonicalizationError
-		try:
-			canonical = canonicalize_cwd(cwd)
-		except CanonicalizationError as exc:
-			return {"error": f"invalid cwd: {exc}"}
-
-		has_msgs = await self._backend.has_messages(canonical)
-		if not has_msgs:
-			return await self._launch(canonical, agents, collab_task)
-
-		import uuid
-		spawn_id = str(uuid.uuid4())
-		meta = await self._backend.read_channel_meta(canonical)
-		self._pending_collisions[spawn_id] = {
-			"cwd": canonical,
-			"agents": agents,
-			"collab_task": collab_task,
-		}
-		await self._backend.write_spawn_collision_prompt(
-			spawn_id=spawn_id,
-			cwd=canonical,
-			channel_title=meta.get("title"),
-			last_activity_at=meta.get("last_activity_at"),
-			hidden=meta.get("hidden", False),
-		)
-		if self._logger is not None:
-			self._logger.spawn_collision_detected(canonical, spawn_id)
-		return {
-			"collision": True,
-			"spawn_id": spawn_id,
-			"channel_title": meta.get("title"),
-			"last_activity_at": meta.get("last_activity_at"),
-			"hidden": meta.get("hidden", False),
-		}
-
-	async def resolve_collision(self, spawn_id: str, action: str) -> dict:
-		"""Resolve a pending collision dialog. action: 'continue' | 'clear' | 'cancel'."""
-		pending = self._pending_collisions.pop(spawn_id, None)
-		if pending is None:
-			return {"error": "unknown spawn_id"}
-		cwd = pending["cwd"]
-		if action == "cancel":
-			await self._backend.clear_spawn_collision_prompt(spawn_id)
-			return {"cancelled": True}
-		if action == "clear":
-			await self._backend.wipe_channel(cwd)
-			self._registry.set_cwd_override(cwd, True)
-			await self._backend.set_channel_hidden(cwd, False)
-		elif action != "continue":
-			self._pending_collisions[spawn_id] = pending  # put it back
-			return {"error": f"unknown action: {action}"}
-		await self._backend.clear_spawn_collision_prompt(spawn_id)
-		return await self._launch(cwd, pending["agents"], pending["collab_task"])
-
-	async def _launch(self, canonical: str, agents: list, collab_task: str | None) -> dict:
-		"""Internal: unconditionally launch agents at canonical cwd. Returns status dict."""
-		# This method is used by submit/resolve_collision paths.
-		# The existing _handle_single_spawn/_handle_collab_spawn paths use their own logic.
-		return {"launched": True, "cwd": canonical, "agents": agents}
+	async def _cancel_prior_pending(self, canonical_cwd: str) -> None:
+		"""Cancel any pending ask_human requests left over for this cwd before launching
+		a new agent. Without this, a prior agent that died without reaching its tool-handler
+		cancellation path (common with MCP streamable-HTTP transport) leaves stale questions
+		hanging on phone and server until the 24h timeout."""
+		cancelled = self._registry.cancel_pending_for_cwd(canonical_cwd)
+		if not cancelled:
+			return
+		for request_id in cancelled:
+			try:
+				await self._backend.mark_question_cancelled(canonical_cwd, request_id)
+			except Exception as exc:
+				self._logger.surface_error(
+					f"mark_cancelled_failed_on_spawn: cwd={canonical_cwd} req={request_id} {exc}"
+				)
+		self._logger.pending_cancelled_on_spawn(canonical_cwd, cancelled)
 
 	async def handle(self, raw: str) -> None:
 		stripped = raw.strip()
@@ -221,9 +175,32 @@ class SpawnHandler:
 				project_key = tokens[0]
 				prompt = tokens[1] if len(tokens) > 1 else None
 			else:
-				project_path = self._spawn_root
-				project_key = self._spawn_root.name
-				prompt = remaining_text or None
+				# tokens[0] doesn't resolve as a direct child. Search one level down for
+				# matching subdirs (e.g. "develop" → rpdm/develop, rpg-one/develop).
+				# If exactly one match: use it. Multiple: ambiguous, error with suggestions.
+				# None: preserve the terminal-form fallback (treat full input as prompt).
+				try:
+					nested = [p for p in self._spawn_root.glob(f"*/{tokens[0]}") if p.is_dir()]
+				except OSError:
+					nested = []
+				if len(nested) == 1:
+					project_path = nested[0]
+					project_key = nested[0].relative_to(self._spawn_root).as_posix()
+					prompt = tokens[1] if len(tokens) > 1 else None
+				elif len(nested) > 1:
+					suggestions = ", ".join(
+						p.relative_to(self._spawn_root).as_posix() for p in nested
+					)
+					self._logger.spawn_invalid_path(tokens[0], f"ambiguous: {suggestions}")
+					await self._backend.send_text(
+						f"Ambiguous project '{tokens[0]}'. Multiple matches: {suggestions}. "
+						f"Use the full relative path."
+					)
+					return
+				else:
+					project_path = self._spawn_root
+					project_key = self._spawn_root.name
+					prompt = remaining_text or None
 
 		try:
 			project_path.resolve().relative_to(self._spawn_root.resolve())
@@ -237,10 +214,97 @@ class SpawnHandler:
 			await self._backend.send_text(f"Unknown project: {project_key}.")
 			return
 
+		canonical_cwd = canonicalize_cwd(str(project_path))
+		collision_outcome = await self._maybe_handle_spawn_collision(canonical_cwd)
+		if collision_outcome == "cancel":
+			# User cancelled at the collision dialog — don't launch and don't bump rate-limit.
+			return
+
 		if len(backends) > 1:
 			await self._handle_collab_spawn(project_path, project_key, prompt, backends[:2])
 		else:
 			await self._handle_single_spawn(project_path, project_key, prompt, backends[0])
+
+	async def _maybe_handle_spawn_collision(self, canonical_cwd: str) -> str | None:
+		"""Detect a channel-content collision and surface the spawn-collision dialog.
+
+		Returns:
+			- None — no collision, proceed normally
+			- "continue" — user kept the existing channel; spawn proceeds
+			- "clear" — user wiped the channel (already done here); spawn proceeds
+			- "cancel" — user cancelled; caller must not launch
+
+		Best-effort: if any step of the collision check fails (Firebase blip, missing
+		listener support, etc.), fall through to spawn rather than blocking the user."""
+		import uuid
+
+		try:
+			has_msgs = await self._backend.has_messages(canonical_cwd)
+		except Exception as exc:
+			# Includes the test-double case where has_messages isn't a real coroutine.
+			self._logger.surface_error(f"spawn_collision_check_failed: {exc}")
+			return None
+
+		if not has_msgs:
+			return None
+
+		spawn_id = str(uuid.uuid4())
+
+		try:
+			meta = await self._backend.read_channel_meta(canonical_cwd)
+		except Exception as exc:
+			self._logger.surface_error(f"spawn_collision_meta_read_failed: {exc}")
+			meta = {"title": None, "last_activity_at": None, "hidden": False}
+
+		try:
+			await self._backend.write_spawn_collision_prompt(
+				spawn_id=spawn_id,
+				cwd=canonical_cwd,
+				channel_title=meta.get("title"),
+				last_activity_at=meta.get("last_activity_at"),
+				hidden=meta.get("hidden", False),
+			)
+		except Exception as exc:
+			self._logger.surface_error(f"spawn_collision_dialog_write_failed: {exc}")
+			return None
+
+		self._logger.spawn_collision_detected(canonical_cwd, spawn_id)
+
+		try:
+			decision = await self._backend.poll_spawn_collision_decision(spawn_id)
+		except NotImplementedError:
+			# No listener support (e.g., local-only backend). Fall through to spawn.
+			await self._safe_clear_spawn_collision_prompt(spawn_id)
+			return None
+		except Exception as exc:
+			self._logger.surface_error(f"spawn_collision_decision_poll_failed: {exc}")
+			await self._safe_clear_spawn_collision_prompt(spawn_id)
+			return None
+
+		await self._safe_clear_spawn_collision_prompt(spawn_id)
+
+		action = (decision or {}).get("action", "cancel")
+		if action == "cancel":
+			return "cancel"
+		if action == "clear":
+			try:
+				await self._backend.wipe_channel(canonical_cwd)
+				await self._backend.set_channel_hidden(canonical_cwd, False)
+			except Exception as exc:
+				self._logger.surface_error(f"spawn_collision_wipe_failed: {exc}")
+				# Wipe failed but user wanted to proceed — fall through as continue.
+				return "continue"
+			return "clear"
+		if action == "continue":
+			return "continue"
+		self._logger.surface_error(f"spawn_collision_unknown_action: {action!r}")
+		return "cancel"
+
+	async def _safe_clear_spawn_collision_prompt(self, spawn_id: str) -> None:
+		try:
+			await self._backend.clear_spawn_collision_prompt(spawn_id)
+		except Exception as exc:
+			self._logger.surface_error(f"spawn_collision_clear_failed: {exc}")
 
 	async def _handle_single_spawn(
 		self, project_path: Path, project_key: str, prompt: str | None, backend_type: str
@@ -250,6 +314,8 @@ class SpawnHandler:
 		base = _BASE_INSTRUCTION.format(sender_default=sender)
 		user_prompt = prompt or _DEFAULT_PROMPT
 		effective_prompt = f"{base} {user_prompt}"
+
+		await self._cancel_prior_pending(channel_id)
 
 		pending = {
 			"channel_id": channel_id,
@@ -293,6 +359,8 @@ class SpawnHandler:
 		from server.collab import CollabSession
 		task = prompt or _DEFAULT_COLLAB_PROMPT
 		channel_id = canonicalize_cwd(str(project_path))
+
+		await self._cancel_prior_pending(channel_id)
 		
 		# Sender names derived directly from backends
 		s1 = _get_backend_name(backends[0])

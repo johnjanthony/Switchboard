@@ -55,6 +55,8 @@ class FirebaseBackend(MessengerBackend):
 		self._away_mode_cmd_listener = None
 		self._bulk_decision_future: asyncio.Future[dict] | None = None
 		self._bulk_decision_listener = None
+		self._spawn_decision_future: asyncio.Future[dict] | None = None
+		self._spawn_decision_listener = None
 
 	def _on_response(self, event):
 		if event.event_type == 'put' and event.data:
@@ -122,6 +124,8 @@ class FirebaseBackend(MessengerBackend):
 			self._away_mode_cmd_listener.close()
 		if self._bulk_decision_listener:
 			self._bulk_decision_listener.close()
+		if self._spawn_decision_listener:
+			self._spawn_decision_listener.close()
 		for listener in self._inject_listeners.values():
 			listener.close()
 		self._inject_listeners.clear()
@@ -484,7 +488,7 @@ class FirebaseBackend(MessengerBackend):
 	async def poll_bulk_respond_decision(self) -> dict:
 		self._bulk_decision_future = asyncio.get_running_loop().create_future()
 		if self._bulk_decision_listener:
-			self._bulk_decision_listener.close()
+			self._loop.run_in_executor(None, self._bulk_decision_listener.close)
 		self._bulk_decision_listener = db.reference('bulk_respond_dialog').listen(
 			self._on_bulk_decision
 		)
@@ -492,9 +496,51 @@ class FirebaseBackend(MessengerBackend):
 			return await self._bulk_decision_future
 		finally:
 			if self._bulk_decision_listener:
-				self._bulk_decision_listener.close()
+				listener = self._bulk_decision_listener
 				self._bulk_decision_listener = None
+				# Background close so the dispatch loop returns to clear_bulk_respond_dialog
+				# immediately rather than holding the event loop for the SSE teardown.
+				self._loop.run_in_executor(None, listener.close)
 			self._bulk_decision_future = None
+
+	def _on_spawn_decision(self, event):
+		# Resolves on the first 'decision' write under spawn_collisions/{spawn_id}.
+		# The dialog write itself is also a 'put' event (path=''), so guard on the
+		# decision payload shape rather than path alone.
+		if event.event_type != 'put' or not event.data:
+			return
+		path = event.path.strip('/')
+		data = event.data
+		decision = None
+		if path == 'decision' and isinstance(data, dict) and 'action' in data:
+			decision = data
+		elif not path and isinstance(data, dict):
+			# Root write — extract decision child if it landed in the same payload.
+			child = data.get('decision')
+			if isinstance(child, dict) and 'action' in child:
+				decision = child
+		if decision is not None and self._spawn_decision_future and not self._spawn_decision_future.done():
+			self._loop.call_soon_threadsafe(self._spawn_decision_future.set_result, decision)
+
+	async def poll_spawn_collision_decision(self, spawn_id: str) -> dict:
+		self._spawn_decision_future = asyncio.get_running_loop().create_future()
+		if self._spawn_decision_listener:
+			# Fire-and-forget; the SSE teardown can stall the event loop for many seconds.
+			self._loop.run_in_executor(None, self._spawn_decision_listener.close)
+		self._spawn_decision_listener = db.reference(f'spawn_collisions/{spawn_id}').listen(
+			self._on_spawn_decision
+		)
+		try:
+			return await self._spawn_decision_future
+		finally:
+			if self._spawn_decision_listener:
+				listener = self._spawn_decision_listener
+				self._spawn_decision_listener = None
+				# listener.close() blocks for many seconds while the SSE stream tears down.
+				# Run it in the executor so the dispatch loop can immediately proceed to the
+				# clear_spawn_collision_prompt call and dismiss the phone-side dialog.
+				self._loop.run_in_executor(None, listener.close)
+			self._spawn_decision_future = None
 
 	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
 		if not self._resp_listener:
@@ -515,8 +561,10 @@ class FirebaseBackend(MessengerBackend):
 		await self.write_channel_message(channel_id, "system", "notify", msg, format="markdown")
 
 	async def send_text(self, text: str) -> None:
-		# Use 'switchboard' as the default administrative channel for global errors/notifies
-		await self.write_channel_message("switchboard", "system", "notify", text)
+		# Admin/system channel for global errors/notifies that have no natural cwd.
+		# Leading underscore can't appear in any canonical cwd (which start with a drive
+		# letter), so this key never collides with a user-named workspace channel.
+		await self.write_channel_message("_admin", "system", "notify", text, title="Switchboard System")
 
 	async def write_session_meta(
 		self,

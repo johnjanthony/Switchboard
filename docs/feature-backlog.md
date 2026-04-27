@@ -6,38 +6,6 @@ Open/proposed features for Switchboard, grouped by where the work lives. Shipped
 
 # Server
 
-## Wire spawn-collision dialog into the `/spawn` command path
-
-**Surfaced 2026-04-26** during cwd-as-channel post-merge testing (tests A & B). The collision-detection plumbing is half-built and never gets invoked: `SpawnHandler.submit()` and `resolve_collision()` exist with the right logic (`has_messages` → `write_spawn_collision_prompt`, then on user decision `wipe_channel`/`set_channel_hidden`/launch), but `_handle_spawn` (the path `/spawn` commands take) goes straight to `_handle_single_spawn` / `_handle_collab_spawn`, bypassing the check entirely. Additionally, nothing on the server listens for the phone's decision write to `spawn_collisions/{spawn_id}/decision` — there's no `poll_spawn_collision_decision` analog to `poll_bulk_respond_decision`. So even if the dialog *were* fired, the user's choice would never be acted on.
-
-**Why this didn't surface before today:** pre-Fix-#2 (spawn channel routing), `channel_id` was always a unique synthetic `project-YYYYMMDD-HHMMSS` string, so `has_messages(canonical_cwd)` would never match an existing channel — the collision flow was unreachable. With deterministic cwd-keyed channel ids, re-spawning into the same cwd now genuinely collides, exposing the gap. Test A "passes" only by accident (no-collision-check fallthrough resembles the Continue path); test B (Clear) is fully blocked.
-
-**Scope of fix** (multi-file, comparable to one of the original Slices E–K):
-
-1. `spawn.py` — `_handle_spawn` calls `has_messages` / `write_spawn_collision_prompt` before delegating to `_handle_single_spawn` / `_handle_collab_spawn`; awaits the decision; routes to wipe-then-launch or just launch.
-2. New `poll_spawn_collision_decision` mechanism — Firebase listener on `spawn_collisions/{spawn_id}/decision`, future resolved when written.
-3. `messenger.py` — abstract method + MultiBackend fan-out.
-4. `firebase.py` — `_on_spawn_collision_decision` listener; queue-and-future plumbing mirroring `poll_bulk_respond_decision`.
-5. Server main loop — wire the spawn-handler's wait into the existing event flow.
-
----
-
-## `exit_global` partial-failure leaves global away stuck
-
-**Surfaced 2026-04-26** during a `test_away_mode_commands` test fix. In `gateway.py` the `exit_global` dispatch path executes `await handlers.bulk_respond_send_to_all(default_text)` followed by `registry.set_global_away(False)` *inside* the `try` block. If anything in the bulk-respond fan-out (resolution-confirmation write, response-text update, history write) raises, control jumps to the outer `except Exception` which logs the error and clears the dialog — but the global flag stays `True`. The user toggled "exit global → send to all" and the system silently fails to honor the toggle.
-
-**Reproduction observed:** the test's `FakeBackend` lacked `write_channel_message`, so the fan-out raised `AttributeError` and `set_global_away(False)` was never reached. Test was fixed by adding the method, but the production code path remains brittle to any partial sub-task failure (Firebase momentarily down, a single message-id missing, etc.).
-
-**Fix options:**
-
-- **(a)** Move the `registry.set_global_away(False)` calls outside the try/except, into a finally or a follow-up unconditional block. Honors the user's exit-global intent regardless of which sub-task failed; partial failures still log via `surface_error`.
-- **(b)** Wrap the fan-out inside `bulk_respond_send_to_all` so its `asyncio.gather` doesn't propagate per-task failures (use `return_exceptions=True`, log per-task failures, return success). Matches the existing `try/except` inside `_resolve_one`.
-- **(c)** Both — defense in depth.
-
-`gateway.py:624-647` is the relevant range.
-
----
-
 ## Log rotation
 
 `logs/switchboard.jsonl` grows forever. At low volume this is a months-out concern, but worth a simple size-based rotation (`logs/switchboard.jsonl.1`, `.2`, with a cap).
@@ -125,6 +93,12 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 
 ---
 
+## Android: investigate MALFORMED MESSAGE deserialization warnings
+
+**Surfaced 2026-04-27** while debugging spawn-collision. `MainViewModel.kt` lines 175-198 log `MALFORMED MESSAGE at channels/<key>/messages/<id>` with `Value Type: java.lang.String, Value Content: <empty>` when `getValue(ChannelMessage::class.java)` throws. Direct Firebase admin queries against the same paths return correctly-shaped dicts, so the data IS dict-shaped at rest — the phone's listener appears to fire on a transient state where `snap.value` is a String. The catch swallows the error, so it's log noise plus an occasional missed render rather than data loss. Low priority — investigate whether it's a Firebase SDK race, a partial-write listener fire, or something else, and either suppress the log noise or fix the deserialization path.
+
+---
+
 # Combined (server + client)
 
 ## Per-channel away-mode tracking — IN IMPLEMENTATION (cwd-as-channel branch, post-Slice-M validation)
@@ -147,25 +121,16 @@ This entry moves to `PROJECT-JOURNAL.md` once the branch merges to main.
 
 ---
 
-## Withdraw pending questions when the agent process dies
+## Withdraw pending questions when an unattended agent dies
 
-**Surfaced 2026-04-26** during cwd-as-channel post-merge testing (test 6d). Killing an agent mid-`ask_human` leaves the question hanging on the server and the phone — no "WITHDRAWN" indicator appears.
+**Surfaced 2026-04-26** during cwd-as-channel post-merge testing (test 6d). The common kill-and-respawn case is now covered by **cancel-on-spawn** (shipped 2026-04-27): `Registry.cancel_pending_for_cwd` + `SpawnHandler._cancel_prior_pending` write the WITHDRAWN marker via `mark_question_cancelled` before the new agent launches. Closes the typical dev workflow.
 
-**The mechanics already exist; the trigger doesn't fire:**
-- Server has the cancellation path at `gateway.py:226,246` (`except asyncio.CancelledError: await _safe_mark_cancelled(...)` → writes `cancelled: true` via `mark_question_cancelled`).
-- Phone renders it in `MessageBubble.kt:48-60` (WITHDRAWN badge + 0.5 alpha).
+**Still open** — agents that die *without* a respawn (unattended long-running crash) still leave their pending questions hanging until the 24h timeout fires `send_timeout_followup` rather than `mark_question_cancelled`. Two complementary approaches remain as future-insurance:
 
-**Why the trigger doesn't fire on process kill:** MCP transport is streamable HTTP. HTTP doesn't reliably surface mid-call client disconnects to the server handler, so `asyncio.CancelledError` is never raised. The pending future just hangs until `SWITCHBOARD_TIMEOUT_SECONDS` (default `86400` = 24h), at which point the **timeout** branch fires — `send_timeout_followup`, not `mark_question_cancelled`. Two different gateway paths, two different UX outcomes.
+1. **HTTP keepalive disconnect detection.** Investigate whether MCP's streamable-HTTP transport surfaces a disconnect signal to in-flight tool handlers (FastMCP / `streamable_http.py`). If yes, plumb that into a CancelledError on the awaiting future. May not be reachable depending on the MCP SDK.
+2. **Agent liveness pings.** Heartbeat protocol: agents send periodic keepalives; missing two in a row = mark all their pending questions cancelled. More moving parts, more state, but transport-agnostic.
 
-**What does trigger cancellation today:** supersede by a newer `ask_human(cwd=X, sender=Y, ...)` (`gateway.py:219-223`), and server shutdown (`_safe_mark_cancelled` in cleanup).
-
-**Possible approaches (smallest to largest scope):**
-
-1. **Cancel-on-spawn.** When a spawn lands on a cwd, walk `registry.cwd_overrides()` / pending requests for that cwd and mark any in-flight questions cancelled before the new agent starts. Solves the common "I killed the agent and respawned" case directly. Minimal change, no new infrastructure.
-2. **HTTP keepalive disconnect detection.** Investigate whether MCP's streamable-HTTP transport surfaces a disconnect signal to in-flight tool handlers (FastMCP / `streamable_http.py`). If yes, plumb that into a CancelledError on the awaiting future. May not be reachable depending on the MCP SDK.
-3. **Agent liveness pings.** Heartbeat protocol: agents send periodic keepalives; missing two in a row = mark all their pending questions cancelled. More moving parts, more state, but transport-agnostic.
-
-Approach 1 covers the testing scenario and most realistic dev workflows. Approaches 2/3 are insurance for unattended long-running agents that crash without a respawn.
+Both are insurance against unattended crashes; the common case is handled.
 
 ---
 
@@ -176,6 +141,8 @@ Approach 1 covers the testing scenario and most realistic dev workflows. Approac
 1. **Co-locate per-channel away-mode with the channel.** Move `away_mode/overrides/{cwdKey}` → `channels/{cwdKey}/away_mode`. The override conceptually belongs to the channel; co-locating gets lifecycle alignment for free (deleting/wiping a channel removes its override too, no orphan-on-channel-delete bug). Phone-side it removes one Firebase listener — the channel listener already covers it.
 
 2. **Group global settings.** Move `away_mode/global` → `global_settings/away_mode`. `global_settings/` becomes the home for any future top-level switches (notification quiet hours, default sender, etc.); today it has one tenant. Once both moves land, the `away_mode/` node can be deleted entirely.
+
+3. **Cross-device unseen state synchronization.** Move `unread_count` and `unseen` flags into the Firebase `channels/{key}/` node. Update `MainViewModel` to write to these nodes when a channel is selected. Update both apps to observe these remote values instead of local state. This ensures that reading a message on the phone correctly clears the indicator on the watch.
 
 **What it takes:**
 
@@ -198,6 +165,16 @@ Add an automated check to ensure that every agent response in away mode starts w
 ## Skill Instruction Polish
 
 Periodically review and harden `SKILL.md` based on failure patterns (e.g., the 2026-04-23 terminal leak incident). Touches both the in-repo `skill/SKILL.md` and the user-level copy at `~/.claude/skills/switchboard/SKILL.md` that agents consume.
+
+---
+
+## Multi-Surface Voice & Summary Integration
+
+**Proposed 2026-04-25.** Major multi-surface UX initiative spanning phone, Wear OS, and Android Auto. Introduces a Firebase Cloud Function (Gen 2) that uses Gemini 3.0 Flash to transform raw agent updates into a `display_metadata` object — surface-specific strings tuned for each device (`summary_phone`, `glance_wrist`, `speech_payload`, `progress_state`). Surfaces consume the metadata via `Notification.ProgressStyle` + `MessagingStyle`, with TTS read-aloud, RemoteInput voice-reply, an Android Auto messaging bridge, and a remote-session kill switch. Includes smart-throttling, offline cache for the last N speech payloads, and cross-surface notification cancel-sync.
+
+Requires Firebase Blaze plan upgrade (Cloud Functions Gen 2). Spec breaks into 10 work items SB-01 through SB-10.
+
+**Spec:** [`docs/Multi-Surface Voice and Summary Integration.md`](Multi-Surface%20Voice%20and%20Summary%20Integration.md).
 
 ---
 

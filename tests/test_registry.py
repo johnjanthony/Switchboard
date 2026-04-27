@@ -97,6 +97,35 @@ class TestPendingByKey:
 			assert req_ids == ["r1", "r2", "r3"]
 		asyncio.run(run())
 
+	def test_cancel_pending_for_cwd_cancels_matching_only(self):
+		"""Cancel-on-spawn: cancel + pop every pending whose cwd matches; leave siblings on
+		other cwds untouched. Returns the cancelled request_ids in registry-iteration order."""
+		async def run():
+			r = Registry()
+			fut1 = r.add(cwd="c:/work/foo", sender="Claude", request_id="req-1")
+			fut2 = r.add(cwd="c:/work/foo", sender="Sparkles", request_id="req-2")
+			fut3 = r.add(cwd="c:/work/bar", sender="Claude", request_id="req-3")
+
+			cancelled = r.cancel_pending_for_cwd("c:/work/foo")
+
+			assert sorted(cancelled) == ["req-1", "req-2"]
+			assert fut1.cancelled() and fut2.cancelled()
+			assert not fut3.cancelled()
+			assert r.get(("c:/work/foo", "Claude")) is None
+			assert r.get(("c:/work/foo", "Sparkles")) is None
+			assert r.get(("c:/work/bar", "Claude")) is not None
+		asyncio.run(run())
+
+	def test_cancel_pending_for_cwd_no_match_returns_empty(self):
+		async def run():
+			r = Registry()
+			r.add(cwd="c:/work/foo", sender="Claude", request_id="req-1")
+			cancelled = r.cancel_pending_for_cwd("c:/work/missing")
+			assert cancelled == []
+			# Existing entry untouched
+			assert r.get(("c:/work/foo", "Claude")) is not None
+		asyncio.run(run())
+
 
 def test_away_mode_defaults_false_when_no_path():
 	registry = Registry()

@@ -114,6 +114,23 @@ class Registry:
 		"""Snapshot for bulk-respond on global exit (Slice I)."""
 		return list(self._pending.values())
 
+	def cancel_pending_for_cwd(self, cwd: str) -> list[str]:
+		"""Pop and cancel every pending request whose cwd matches. Returns the
+		list of request_ids that were cancelled so the caller can mark each
+		question's Firebase entry cancelled (writing the WITHDRAWN marker).
+
+		Used by spawn-on-cwd to clear stale pendings from a prior agent that
+		died without surfacing CancelledError to its tool handler — the MCP
+		streamable-HTTP transport doesn't reliably propagate client disconnects."""
+		victims = [key for key, record in self._pending.items() if record.cwd == cwd]
+		cancelled_request_ids: list[str] = []
+		for key in victims:
+			record = self._pending.pop(key)
+			cancelled_request_ids.append(record.request_id)
+			if not record.future.done():
+				record.future.cancel()
+		return cancelled_request_ids
+
 	def add_session(self, session: "CollabSession") -> None:
 		self._sessions[session.cwd] = session
 
@@ -129,6 +146,10 @@ class Registry:
 		return self._global_away
 
 	def set_global_away(self, active: bool) -> None:
+		# Wiping _cwd_overrides is by design: a global toggle trumps all per-channel
+		# state. Channels can override again after each global flip, but only until
+		# the next one. Spawn must NOT call this — it would clobber unrelated channels'
+		# overrides; use set_cwd_override(canonical_cwd, True) instead.
 		if self._global_away == active and not self._cwd_overrides:
 			return
 		cleared = list(self._cwd_overrides.keys())

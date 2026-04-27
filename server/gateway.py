@@ -487,24 +487,22 @@ def build_tool_handlers(
 		pending = registry.all_pending()
 		
 		async def _resolve_one(p):
-			req_id = registry.resolve(cwd=p.cwd, sender=p.sender, text=default_text)
-			if req_id is not None:
-				tasks = []
-				# 1. Confirm resolution (cleans up /responses node)
-				tasks.append(backend.send_resolution_confirmation(req_id, p.cwd, (p.cwd, p.sender), response_text=default_text))
-				
-				# 2. Update original question with response text
+			# Wrap the whole body so attribute-access failures during task construction
+			# (e.g. backend missing write_channel_message) don't propagate and abort the fan-out.
+			try:
+				req_id = registry.resolve(cwd=p.cwd, sender=p.sender, text=default_text)
+				if req_id is None:
+					return
+				tasks = [
+					backend.send_resolution_confirmation(req_id, p.cwd, (p.cwd, p.sender), response_text=default_text),
+				]
 				if p.msg_id and hasattr(backend, "write_response_text"):
 					tasks.append(backend.write_response_text(p.cwd, p.msg_id, default_text))
-				
-				# 3. Add to chat history
 				tasks.append(backend.write_channel_message(p.cwd, "John", "human", default_text))
-				
-				try:
-					await asyncio.gather(*tasks)
-					logger.notify_sent(p.cwd, f"Bulk Reply: {default_text}")
-				except Exception as exc:
-					logger.surface_error(f"bulk_resolve_failed: cwd={p.cwd} sender={p.sender} err={exc}")
+				await asyncio.gather(*tasks)
+				logger.notify_sent(p.cwd, f"Bulk Reply: {default_text}")
+			except Exception as exc:
+				logger.surface_error(f"bulk_resolve_failed: cwd={p.cwd} sender={p.sender} err={exc}")
 
 		if pending:
 			await asyncio.gather(*[_resolve_one(p) for p in pending])
@@ -622,29 +620,44 @@ async def dispatch_away_mode_commands(
 						logger.surface_error(f"away_mode_commands: enter_global applied")
 
 					elif cmd_type == "exit_global":
-						payload = await handlers.build_bulk_respond_payload()
-						if payload["sections"]:
-							await backend.write_bulk_respond_dialog(payload)
+						# User intent: exit global away. Honor unless the dialog flow returned an
+						# explicit "cancel" decision. Default to "skip" (= exit, no replies) if any
+						# step of the bulk-respond confirmation flow fails — partial failures must
+						# not strand the user in away mode after they pressed exit.
+						action = "skip"
+						default_text = ""
+						try:
+							payload = await handlers.build_bulk_respond_payload()
+							if payload["sections"]:
+								default_text = payload.get("default_text", "")
+								await backend.write_bulk_respond_dialog(payload)
+								try:
+									decision = await backend.poll_bulk_respond_decision()
+									action = decision.get("action", "skip")
+									default_text = decision.get("default_text", default_text)
+								except Exception as exc:
+									logger.surface_error(f"away_mode_commands: exit_global decision poll error: {exc}")
+								try:
+									await backend.clear_bulk_respond_dialog()
+								except Exception as exc:
+									logger.surface_error(f"away_mode_commands: clear_bulk_respond_dialog error: {exc}")
+						except Exception as exc:
+							logger.surface_error(f"away_mode_commands: exit_global dialog setup error: {exc}")
+
+						if action == "send_to_all":
 							try:
-								decision = await backend.poll_bulk_respond_decision()
-								# Clear dialog IMMEDIATELY after decision is received
-								await backend.clear_bulk_respond_dialog()
-								
-								action = decision.get("action", "skip")
-								default_text = decision.get("default_text", payload.get("default_text", ""))
-								if action == "send_to_all":
-									await handlers.bulk_respond_send_to_all(default_text)
-									registry.set_global_away(False)
-								elif action == "skip":
-									registry.set_global_away(False)
-								else:
-									await handlers.bulk_respond_cancel()
+								await handlers.bulk_respond_send_to_all(default_text)
 							except Exception as exc:
-								logger.surface_error(f"away_mode_commands: exit_global processing error: {exc}")
-								await backend.clear_bulk_respond_dialog()
-						else:
+								logger.surface_error(f"away_mode_commands: bulk_respond_send_to_all error: {exc}")
 							registry.set_global_away(False)
-						logger.surface_error(f"away_mode_commands: exit_global applied")
+						elif action == "skip":
+							registry.set_global_away(False)
+						else:
+							try:
+								await handlers.bulk_respond_cancel()
+							except Exception as exc:
+								logger.surface_error(f"away_mode_commands: bulk_respond_cancel error: {exc}")
+						logger.surface_error(f"away_mode_commands: exit_global applied (action={action})")
 
 					elif cmd_type == "enter_cwd":
 						raw_cwd = cmd.get("cwd") or ""

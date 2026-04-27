@@ -146,6 +146,51 @@ async def test_exit_global_cancel_re_sets_global(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_exit_global_send_to_all_honors_exit_when_fan_out_fails(tmp_path):
+	"""Layer 1: a backend write failure inside _resolve_one must not abort the whole fan-out
+	or leave global away stuck on. Pre-fix this raised AttributeError out of bulk_respond_send_to_all
+	and the exit_global handler's outer except swallowed it without flipping the flag."""
+	registry = Registry()
+	registry.set_global_away(True)
+	fut1 = registry.add(cwd="c:/work/foo", sender="Claude", request_id="req-1", msg_id="msg-1")
+	fut2 = registry.add(cwd="c:/work/bar", sender="Claude", request_id="req-2", msg_id="msg-2")
+
+	class FanOutFailsBackend(FakeBackend):
+		async def write_channel_message(self, cwd, *args, **kwargs):
+			# First pending blows up; second should still complete cleanly.
+			if cwd == "c:/work/foo":
+				raise RuntimeError("simulated firebase blip")
+			return await super().write_channel_message(cwd, *args, **kwargs)
+
+	backend = FanOutFailsBackend(decision={"action": "send_to_all", "default_text": "Back at desk"})
+	await _run_one_cmd(registry, backend, {"type": "exit_global", "issued_at": "2026-01-01T00:00:00Z"}, tmp_path)
+	# Both pendings resolved (registry.resolve runs before the writes)
+	assert fut1.done() and fut1.result() == "Back at desk"
+	assert fut2.done() and fut2.result() == "Back at desk"
+	# Global flag honored exit despite the per-pending write failure
+	assert registry.global_away() is False
+	assert backend.dialog_cleared is True
+
+
+@pytest.mark.asyncio
+async def test_exit_global_honors_exit_when_dialog_write_fails(tmp_path):
+	"""Layer 2: if the dialog flow itself can't run (e.g. Firebase write fails), the user's
+	exit-global toggle must still flip the flag — they pressed exit, the system owes them exit."""
+	registry = Registry()
+	registry.set_global_away(True)
+	registry.add(cwd="c:/work/foo", sender="Claude", request_id="req-1")
+
+	class DialogWriteFailsBackend(FakeBackend):
+		async def write_bulk_respond_dialog(self, payload):
+			raise RuntimeError("firebase down")
+
+	backend = DialogWriteFailsBackend(decision={"action": "send_to_all"})
+	await _run_one_cmd(registry, backend, {"type": "exit_global", "issued_at": "2026-01-01T00:00:00Z"}, tmp_path)
+	# Couldn't show the dialog — fall back to "skip" semantics (exit, no replies)
+	assert registry.global_away() is False
+
+
+@pytest.mark.asyncio
 async def test_enter_cwd_sets_override(tmp_path):
 	registry = Registry()
 	backend = FakeBackend()

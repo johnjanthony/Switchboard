@@ -181,6 +181,12 @@ class MessengerBackend(ABC):
 		"""Block until bulk_respond_dialog/decision is written; return the decision dict."""
 		raise NotImplementedError
 
+	async def poll_spawn_collision_decision(self, spawn_id: str) -> dict:
+		"""Block until spawn_collisions/{spawn_id}/decision is written; return the decision dict.
+		Decision shape: {"action": "continue" | "clear" | "cancel"}.
+		Used by _handle_spawn to gate the collision-dialog flow."""
+		raise NotImplementedError
+
 	@abstractmethod
 	async def aclose(self) -> None:
 		"""Release any resources held by the backend."""
@@ -382,6 +388,15 @@ class MultiBackend(MessengerBackend):
 		for b in self._backends:
 			try:
 				return await b.poll_bulk_respond_decision()
+			except NotImplementedError:
+				continue
+		raise NotImplementedError
+
+	async def poll_spawn_collision_decision(self, spawn_id: str) -> dict:
+		# Delegate to the first backend that implements it
+		for b in self._backends:
+			try:
+				return await b.poll_spawn_collision_decision(spawn_id)
 			except NotImplementedError:
 				continue
 		raise NotImplementedError

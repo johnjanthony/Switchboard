@@ -43,8 +43,41 @@ def test_messenger_backend_new_methods_exist():
 		"update_channel_title",
 		"update_last_activity",
 		"write_away_mode_mirror",
+		"poll_spawn_collision_decision",
 	):
 		assert hasattr(MessengerBackend, method_name), f"Missing: {method_name}"
+
+
+def test_poll_spawn_collision_decision_signature():
+	"""poll_spawn_collision_decision must accept a spawn_id and return a decision dict."""
+	import asyncio
+	sig = inspect.signature(MessengerBackend.poll_spawn_collision_decision)
+	params = list(sig.parameters)
+	assert params == ["self", "spawn_id"]
+	# Default is NotImplementedError so callers know to opt in via FirebaseBackend.
+	with pytest.raises(NotImplementedError):
+		asyncio.run(_call_default_poll_spawn_collision_decision())
+
+
+async def _call_default_poll_spawn_collision_decision():
+	# Helper: instantiate a minimal subclass that doesn't override the method.
+	class _Stub(MessengerBackend):
+		async def write_channel_message(self, *a, **kw): return None, None
+		async def send_timeout_followup(self, *a, **kw): pass
+		async def send_resolution_confirmation(self, *a, **kw): pass
+		async def send_text(self, *a, **kw): pass
+		async def poll_responses(self):
+			if False:
+				yield
+		async def poll_commands(self):
+			if False:
+				yield
+		async def send_spawn_ack(self, *a, **kw): pass
+		async def write_session_meta(self, *a, **kw): pass
+		async def aclose(self): pass
+
+	stub = _Stub()
+	await stub.poll_spawn_collision_decision("any-spawn-id")
 
 
 def test_write_away_mode_mirror_signature():

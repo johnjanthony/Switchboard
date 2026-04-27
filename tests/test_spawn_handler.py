@@ -348,134 +348,374 @@ async def test_spawn_command_still_works(spawn_dirs):
 	assert pending.exists()
 
 
-# --- submit / resolve_collision ---
+# --- cancel-on-spawn (in-flight ask_human cleanup) ---
 
-def make_collision_backend(has_messages_result: bool = False, meta: dict | None = None) -> MagicMock:
+@pytest.mark.asyncio
+async def test_single_spawn_cancels_prior_pending_for_cwd(spawn_dirs):
+	"""Cancel-on-spawn: stale pendings from a dead prior agent get marked cancelled in
+	Firebase before the new agent launches. Closes test 6d's withdraw-on-respawn gap."""
+	from server.spawn import SpawnHandler
+	from server.canonicalization import canonicalize_cwd
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	backend.has_messages = AsyncMock(return_value=has_messages_result)
+	backend.mark_question_cancelled = AsyncMock()
+	registry = Registry()
+
+	target_cwd = canonicalize_cwd(str(spawn_dirs / "rpdm" / "next-gen"))
+	fut = registry.add(cwd=target_cwd, sender="Claude", request_id="prior-req-1")
+
+	with patch("server.spawn.subprocess.run"):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle("/spawn rpdm/next-gen do stuff")
+
+	backend.mark_question_cancelled.assert_called_once_with(target_cwd, "prior-req-1")
+	assert fut.cancelled()
+	assert registry.get((target_cwd, "Claude")) is None
+	# spawn still ran successfully
+	backend.send_spawn_ack.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_single_spawn_does_not_affect_pendings_for_other_cwds(spawn_dirs):
+	from server.spawn import SpawnHandler
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	backend.mark_question_cancelled = AsyncMock()
+	registry = Registry()
+
+	other_cwd = "c:/work/unrelated"
+	fut_other = registry.add(cwd=other_cwd, sender="Claude", request_id="other-req-1")
+
+	with patch("server.spawn.subprocess.run"):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle("/spawn rpdm/next-gen do stuff")
+
+	backend.mark_question_cancelled.assert_not_called()
+	assert not fut_other.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_single_spawn_no_prior_pending_skips_firebase_call(spawn_dirs):
+	from server.spawn import SpawnHandler
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	backend.mark_question_cancelled = AsyncMock()
+
+	with patch("server.spawn.subprocess.run"):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn rpdm/next-gen do stuff")
+
+	backend.mark_question_cancelled.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_collab_spawn_cancels_all_prior_pending_for_cwd(spawn_dirs):
+	"""Collab spawn: BYO collab can have multiple senders pending in the same channel — all of
+	them must be cancelled when a fresh collab session lands on that cwd."""
+	from server.spawn import SpawnHandler
+	from server.canonicalization import canonicalize_cwd
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	backend.mark_question_cancelled = AsyncMock()
+	backend.start_inject_listener = AsyncMock()
+	registry = Registry()
+
+	target_cwd = canonicalize_cwd(str(spawn_dirs / "rpdm" / "next-gen"))
+	registry.add(cwd=target_cwd, sender="Claude", request_id="prior-collab-1")
+	registry.add(cwd=target_cwd, sender="Sparkles", request_id="prior-collab-2")
+
+	with patch("server.spawn.subprocess.run"):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle("/spawn rpdm/next-gen --collab review this")
+
+	assert backend.mark_question_cancelled.call_count == 2
+	called_args = {call.args for call in backend.mark_question_cancelled.call_args_list}
+	assert (target_cwd, "prior-collab-1") in called_args
+	assert (target_cwd, "prior-collab-2") in called_args
+
+
+@pytest.mark.asyncio
+async def test_spawn_logs_pending_cancelled_event(spawn_dirs):
+	from server.spawn import SpawnHandler
+	from server.canonicalization import canonicalize_cwd
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	backend.mark_question_cancelled = AsyncMock()
+	registry = Registry()
+
+	target_cwd = canonicalize_cwd(str(spawn_dirs / "rpdm" / "next-gen"))
+	registry.add(cwd=target_cwd, sender="Claude", request_id="prior-1")
+
+	with patch("server.spawn.subprocess.run"):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle("/spawn rpdm/next-gen do stuff")
+
+	events = [json.loads(line) for line in Path(cfg.log_path).read_text().splitlines() if line]
+	cancelled_events = [e for e in events if e["event"] == "pending_cancelled_on_spawn"]
+	assert len(cancelled_events) == 1
+	assert cancelled_events[0]["cwd"] == target_cwd
+	assert cancelled_events[0]["request_ids"] == ["prior-1"]
+	assert cancelled_events[0]["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_spawn_continues_when_mark_cancelled_fails(spawn_dirs):
+	"""If the Firebase mark_question_cancelled write fails, the spawn must still proceed
+	(the prior pending is already cancelled in the registry — Firebase is a mirror)."""
+	from server.spawn import SpawnHandler
+	from server.canonicalization import canonicalize_cwd
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	backend.mark_question_cancelled = AsyncMock(side_effect=RuntimeError("firebase blip"))
+	registry = Registry()
+
+	target_cwd = canonicalize_cwd(str(spawn_dirs / "rpdm" / "next-gen"))
+	fut = registry.add(cwd=target_cwd, sender="Claude", request_id="prior-1")
+
+	with patch("server.spawn.subprocess.run"):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle("/spawn rpdm/next-gen do stuff")
+
+	# Spawn proceeded despite Firebase failure
+	backend.send_spawn_ack.assert_called_once()
+	assert fut.cancelled()
+	# Surface error logged
+	events = [json.loads(line) for line in Path(cfg.log_path).read_text().splitlines() if line]
+	surface_errors = [e for e in events if e["event"] == "surface_error"]
+	assert any("mark_cancelled_failed_on_spawn" in e.get("detail", "") for e in surface_errors)
+
+
+# --- nested project resolution ---
+
+@pytest.mark.asyncio
+async def test_nested_project_single_match_resolves(tmp_path):
+	"""When tokens[0] doesn't exist at root but exists exactly once one level down,
+	the spawn resolves to that nested path automatically (e.g. 'develop' → 'rpdm/develop')."""
+	from server.spawn import SpawnHandler
+	(tmp_path / "rpdm" / "develop").mkdir(parents=True)
+	cfg = make_config(tmp_path, spawn_root=tmp_path)
+	backend = make_backend()
+	with patch("server.spawn.subprocess.run"):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn develop just say hi")
+	pending = json.loads(_pending_path(cfg).read_text())
+	assert pending["project_path"] == str(tmp_path / "rpdm" / "develop")
+	# Prompt should NOT include the project token
+	assert "just say hi" in pending["prompt"]
+	assert "develop just say hi" not in pending["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_nested_project_ambiguous_match_errors_with_suggestions(tmp_path):
+	"""When tokens[0] matches multiple subdirs, spawn aborts with a suggestion list."""
+	from server.spawn import SpawnHandler
+	(tmp_path / "rpdm" / "develop").mkdir(parents=True)
+	(tmp_path / "rpg-one" / "develop").mkdir(parents=True)
+	(tmp_path / "rpdm_archive" / "develop").mkdir(parents=True)
+	cfg = make_config(tmp_path, spawn_root=tmp_path)
+	backend = make_backend()
+	with patch("server.spawn.subprocess.run") as mock_run:
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn develop just say hi")
+	mock_run.assert_not_called()
+	backend.send_text.assert_called_once()
+	msg = backend.send_text.call_args[0][0]
+	assert "Ambiguous project 'develop'" in msg
+	assert "rpdm/develop" in msg
+	assert "rpg-one/develop" in msg
+	assert "rpdm_archive/develop" in msg
+
+
+@pytest.mark.asyncio
+async def test_no_match_preserves_terminal_form_fallback(spawn_dirs):
+	"""'/spawn fix the migration' (where 'fix' is neither a top-level nor nested project)
+	must still fall through and treat the entire input as the prompt — preserves the
+	original terminal-form syntax."""
+	from server.spawn import SpawnHandler, _BASE_INSTRUCTION
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	with patch("server.spawn.subprocess.run"):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn fix the migration")
+	pending = json.loads(_pending_path(cfg).read_text())
+	assert pending["project_path"] == str(spawn_dirs)
+	assert "fix the migration" in pending["prompt"]
+
+
+# --- /spawn collision integration (Item 3 — wires dialog into /spawn command path) ---
+
+def make_spawn_with_collision_backend(decision: dict, meta: dict | None = None) -> MagicMock:
+	"""Backend that simulates a colliding cwd and a phone-side decision response."""
+	backend = make_backend()
+	backend.has_messages = AsyncMock(return_value=True)
 	backend.read_channel_meta = AsyncMock(return_value=meta or {
-		"title": "My Channel",
-		"last_activity_at": "2026-04-24T10:00:00+00:00",
+		"title": "Existing Channel",
+		"last_activity_at": "2026-04-26T10:00:00+00:00",
 		"hidden": False,
 	})
 	backend.write_spawn_collision_prompt = AsyncMock()
 	backend.clear_spawn_collision_prompt = AsyncMock()
+	backend.poll_spawn_collision_decision = AsyncMock(return_value=decision)
 	backend.wipe_channel = AsyncMock()
 	backend.set_channel_hidden = AsyncMock()
+	backend.mark_question_cancelled = AsyncMock()
 	return backend
 
 
 @pytest.mark.asyncio
-async def test_submit_no_collision_proceeds_silently(tmp_path):
+async def test_spawn_no_collision_proceeds_without_dialog(spawn_dirs):
+	"""When the target cwd has no prior messages, /spawn skips the dialog flow entirely."""
 	from server.spawn import SpawnHandler
-	cfg = make_config(tmp_path)
-	backend = make_collision_backend(has_messages_result=False)
-	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
-	result = await handler.submit("c:/work/foo", ["claude"])
-	assert "collision" not in result
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	backend.has_messages = AsyncMock(return_value=False)
+	backend.write_spawn_collision_prompt = AsyncMock()
+	backend.poll_spawn_collision_decision = AsyncMock()
+	with patch("server.spawn.subprocess.run"):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn rpdm/next-gen do stuff")
 	backend.write_spawn_collision_prompt.assert_not_called()
-	backend.clear_spawn_collision_prompt.assert_not_called()
+	backend.poll_spawn_collision_decision.assert_not_called()
+	backend.send_spawn_ack.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_submit_collision_returns_dialog_data(tmp_path):
+async def test_spawn_collision_cancel_aborts_launch(spawn_dirs):
+	"""User picks Cancel at the collision dialog → no spawn happens, channel untouched."""
 	from server.spawn import SpawnHandler
-	cfg = make_config(tmp_path)
-	backend = make_collision_backend(has_messages_result=True, meta={
-		"title": "RPDM Review",
-		"last_activity_at": "2026-04-24T09:00:00+00:00",
-		"hidden": False,
-	})
-	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
-	result = await handler.submit("c:/work/rpdm", ["claude"])
-	assert result["collision"] is True
-	assert "spawn_id" in result
-	assert result["channel_title"] == "RPDM Review"
-	assert result["last_activity_at"] == "2026-04-24T09:00:00+00:00"
-	assert result["hidden"] is False
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_spawn_with_collision_backend(decision={"action": "cancel"})
+	with patch("server.spawn.subprocess.run") as mock_run:
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn rpdm/next-gen do stuff")
+
+	# Dialog flow ran
 	backend.write_spawn_collision_prompt.assert_called_once()
-	# pending entry stored
-	spawn_id = result["spawn_id"]
-	assert spawn_id in handler._pending_collisions
+	backend.poll_spawn_collision_decision.assert_called_once()
+	backend.clear_spawn_collision_prompt.assert_called_once()
+	# Spawn was aborted
+	mock_run.assert_not_called()
+	backend.send_spawn_ack.assert_not_called()
+	backend.wipe_channel.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_submit_collision_logs_event(tmp_path):
+async def test_spawn_collision_continue_launches_without_wiping(spawn_dirs):
+	"""User picks Continue → spawn proceeds, channel keeps its existing history."""
 	from server.spawn import SpawnHandler
-	cfg = make_config(tmp_path)
-	backend = make_collision_backend(has_messages_result=True)
-	logger = JsonlLogger(cfg.log_path)
-	handler = SpawnHandler(cfg, backend, logger, Registry())
-	result = await handler.submit("c:/work/rpdm", ["claude"])
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_spawn_with_collision_backend(decision={"action": "continue"})
+	with patch("server.spawn.subprocess.run") as mock_run:
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn rpdm/next-gen do stuff")
+
+	backend.write_spawn_collision_prompt.assert_called_once()
+	backend.poll_spawn_collision_decision.assert_called_once()
+	backend.clear_spawn_collision_prompt.assert_called_once()
+	backend.wipe_channel.assert_not_called()
+	# Spawn proceeded
+	mock_run.assert_called_once()
+	backend.send_spawn_ack.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_spawn_collision_clear_wipes_and_launches(spawn_dirs):
+	"""User picks Clear → channel is wiped (incl. hidden flag reset) and spawn proceeds."""
+	from server.spawn import SpawnHandler
+	from server.canonicalization import canonicalize_cwd
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_spawn_with_collision_backend(
+		decision={"action": "clear"},
+		meta={"title": "Old", "last_activity_at": "2026-04-25T10:00Z", "hidden": True},
+	)
+	with patch("server.spawn.subprocess.run") as mock_run:
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn rpdm/next-gen do stuff")
+
+	canonical = canonicalize_cwd(str(spawn_dirs / "rpdm" / "next-gen"))
+	backend.wipe_channel.assert_called_once_with(canonical)
+	backend.set_channel_hidden.assert_called_once_with(canonical, False)
+	mock_run.assert_called_once()
+	backend.send_spawn_ack.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_spawn_collision_dialog_logged(spawn_dirs):
+	"""The collision-detection event is audit-logged."""
+	from server.spawn import SpawnHandler
+	from server.canonicalization import canonicalize_cwd
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_spawn_with_collision_backend(decision={"action": "cancel"})
+	with patch("server.spawn.subprocess.run"):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn rpdm/next-gen do stuff")
+
+	canonical = canonicalize_cwd(str(spawn_dirs / "rpdm" / "next-gen"))
 	events = [json.loads(line) for line in Path(cfg.log_path).read_text().splitlines() if line]
-	collision_events = [e for e in events if e["event"] == "spawn_collision_detected"]
-	assert len(collision_events) == 1
-	assert collision_events[0]["spawn_id"] == result["spawn_id"]
+	collisions = [e for e in events if e["event"] == "spawn_collision_detected"]
+	assert len(collisions) == 1
+	assert collisions[0]["cwd"] == canonical
 
 
 @pytest.mark.asyncio
-async def test_resolve_collision_continue_launches_without_wiping(tmp_path):
+async def test_spawn_collision_poll_not_implemented_falls_through(spawn_dirs):
+	"""Backend without listener support (NotImplementedError) → spawn proceeds best-effort."""
 	from server.spawn import SpawnHandler
-	cfg = make_config(tmp_path)
-	backend = make_collision_backend(has_messages_result=True)
-	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
-	collision = await handler.submit("c:/work/rpdm", ["claude"])
-	spawn_id = collision["spawn_id"]
-	result = await handler.resolve_collision(spawn_id, "continue")
-	assert "launched" in result
-	backend.wipe_channel.assert_not_called()
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_spawn_with_collision_backend(decision={"action": "cancel"})
+	backend.poll_spawn_collision_decision = AsyncMock(side_effect=NotImplementedError)
+	with patch("server.spawn.subprocess.run") as mock_run:
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn rpdm/next-gen do stuff")
+
+	# Dialog cleared even though decision couldn't be polled
 	backend.clear_spawn_collision_prompt.assert_called_once()
-	assert spawn_id not in handler._pending_collisions
+	# Spawn still proceeded
+	mock_run.assert_called_once()
+	backend.send_spawn_ack.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_resolve_collision_clear_wipes_and_launches(tmp_path):
+async def test_spawn_collision_dialog_write_fail_falls_through(spawn_dirs):
+	"""If the dialog can't even be written, spawn proceeds rather than blocking the user."""
 	from server.spawn import SpawnHandler
-	cfg = make_config(tmp_path)
-	backend = make_collision_backend(has_messages_result=True)
-	registry = Registry()
-	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
-	collision = await handler.submit("c:/work/rpdm", ["claude"])
-	spawn_id = collision["spawn_id"]
-	result = await handler.resolve_collision(spawn_id, "clear")
-	assert "launched" in result
-	backend.wipe_channel.assert_called_once_with("c:/work/rpdm")
-	backend.set_channel_hidden.assert_called_once_with("c:/work/rpdm", False)
-	assert registry.is_away_mode_active("c:/work/rpdm") is True
-	backend.clear_spawn_collision_prompt.assert_called_once()
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_spawn_with_collision_backend(decision={"action": "cancel"})
+	backend.write_spawn_collision_prompt = AsyncMock(side_effect=RuntimeError("firebase down"))
+	with patch("server.spawn.subprocess.run") as mock_run:
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn rpdm/next-gen do stuff")
+
+	# Spawn still happens
+	mock_run.assert_called_once()
+	backend.send_spawn_ack.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_resolve_collision_cancel_aborts(tmp_path):
+async def test_spawn_collision_cancel_does_not_bump_rate_limit(spawn_dirs):
+	"""Cancelling at the dialog must not consume the user's rate-limit slot — they should be
+	able to immediately try a different /spawn command without waiting 60s."""
 	from server.spawn import SpawnHandler
-	cfg = make_config(tmp_path)
-	backend = make_collision_backend(has_messages_result=True)
-	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
-	collision = await handler.submit("c:/work/rpdm", ["claude"])
-	spawn_id = collision["spawn_id"]
-	result = await handler.resolve_collision(spawn_id, "cancel")
-	assert result == {"cancelled": True}
-	backend.wipe_channel.assert_not_called()
-	backend.clear_spawn_collision_prompt.assert_called_once_with(spawn_id)
-	assert spawn_id not in handler._pending_collisions
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_spawn_with_collision_backend(decision={"action": "cancel"})
+	with patch("server.spawn.subprocess.run"):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn rpdm/next-gen do stuff")
+	# Rate limiter is set inside _handle_single_spawn, which never ran on cancel
+	assert handler._last_spawn_time is None
 
 
 @pytest.mark.asyncio
-async def test_resolve_collision_unknown_spawn_id_returns_error(tmp_path):
+async def test_spawn_collision_continue_with_collab(spawn_dirs):
+	"""Collision flow also covers --collab: continue should fan out the collab launch."""
 	from server.spawn import SpawnHandler
-	cfg = make_config(tmp_path)
-	backend = make_collision_backend()
-	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
-	result = await handler.resolve_collision("nonexistent-id", "continue")
-	assert "error" in result
-	assert "unknown spawn_id" in result["error"]
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_spawn_with_collision_backend(decision={"action": "continue"})
+	backend.start_inject_listener = AsyncMock()
+	with patch("server.spawn.subprocess.run") as mock_run:
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn rpdm/next-gen --collab review this")
+	mock_run.assert_called_once()
+	backend.send_spawn_ack.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_submit_invalid_cwd_returns_error(tmp_path):
-	from server.spawn import SpawnHandler
-	cfg = make_config(tmp_path)
-	backend = make_collision_backend()
-	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
-	result = await handler.submit("not-absolute", ["claude"])
-	assert "error" in result

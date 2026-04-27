@@ -206,6 +206,14 @@ class JsonlLogger:
 	def spawn_collision_detected(self, cwd: str, spawn_id: str) -> None:
 		self._write({"event": "spawn_collision_detected", "cwd": cwd, "spawn_id": spawn_id})
 
+	def pending_cancelled_on_spawn(self, cwd: str, request_ids: list[str]) -> None:
+		self._write({
+			"event": "pending_cancelled_on_spawn",
+			"cwd": cwd,
+			"request_ids": request_ids,
+			"count": len(request_ids),
+		})
+
 	def title_truncated(self, cwd: str, original_length: int, truncated: str) -> None:
 		self._write({
 			"event": "title_truncated", "cwd": cwd,
