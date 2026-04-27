@@ -32,6 +32,7 @@ class FakeBackend:
 		self.dialog_cleared = False
 		self.away_mirror_calls: list[tuple] = []
 		self.resolution_confirmations: list[tuple] = []
+		self.channel_writes: list[tuple] = []
 
 	def push_command(self, cmd: dict):
 		self._cmds.put_nowait(cmd)
@@ -60,6 +61,13 @@ class FakeBackend:
 	async def send_resolution_confirmation(self, request_id, channel_id, correlation, response_text=None):
 		self.resolution_confirmations.append((request_id, channel_id, response_text))
 
+	async def write_channel_message(
+		self, cwd, sender, message_type, content,
+		*, request_id=None, url=None, format="plain", suggestions=None, filename=None, title=None,
+	):
+		self.channel_writes.append((cwd, sender, message_type, content))
+		return None, None
+
 
 async def _run_one_cmd(registry: Registry, backend: FakeBackend, cmd: dict, tmp_path: Path):
 	"""Push one command, run the dispatch loop until it processes it, then cancel."""
@@ -69,8 +77,10 @@ async def _run_one_cmd(registry: Registry, backend: FakeBackend, cmd: dict, tmp_
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 	backend.push_command(cmd)
 	task = asyncio.create_task(dispatch_away_mode_commands(registry, backend, handlers, logger))
-	# Give the loop a few iterations to process
-	for _ in range(5):
+	# Give the loop a generous number of iterations to process — bulk-respond send_to_all
+	# fans out send_resolution_confirmation + write_channel_message per pending, so the
+	# await chain is longer than a simple set_global_away.
+	for _ in range(50):
 		await asyncio.sleep(0)
 	task.cancel()
 	try:
