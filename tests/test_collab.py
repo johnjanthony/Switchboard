@@ -501,7 +501,7 @@ async def test_ask_human_writes_channel_message(tmp_path):
 	backend = RecordingBackend()
 	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
 
-	task = asyncio.create_task(handlers.ask_human("Is this OK?", _ASK_CWD))
+	task = asyncio.create_task(handlers.ask_human("Is this OK?", _ASK_CWD, "Claude"))
 	await asyncio.sleep(0)
 
 	question_msgs = [m for m in backend.channel_messages if m["message_type"] == "question"]

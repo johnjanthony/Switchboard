@@ -75,7 +75,7 @@ def _build_fastmcp(handlers) -> FastMCP:
 	async def ask_human(
 		question: str,
 		cwd: str,
-		sender: str = "Claude",
+		sender: str,
 		title: str | None = None,
 		format: str = "plain",
 		suggestions: list[str] | None = None,
@@ -96,7 +96,7 @@ def _build_fastmcp(handlers) -> FastMCP:
 	async def notify_human(
 		message: str,
 		cwd: str,
-		sender: str = "Claude",
+		sender: str,
 		title: str | None = None,
 		format: str = "plain",
 	) -> str:
@@ -107,7 +107,7 @@ def _build_fastmcp(handlers) -> FastMCP:
 	async def send_document_human(
 		path: str,
 		cwd: str,
-		sender: str = "Claude",
+		sender: str,
 		title: str | None = None,
 		caption: str | None = None,
 	) -> str:

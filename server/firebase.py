@@ -143,6 +143,7 @@ class FirebaseBackend(MessengerBackend):
 		format: str = "plain",
 		suggestions: list[str] | None = None,
 		filename: str | None = None,
+		rejected: bool = False,
 	) -> tuple[CorrelationToken | None, str | None]:
 		from server.canonicalization import to_firebase_key
 		from datetime import datetime, timezone
@@ -157,7 +158,7 @@ class FirebaseBackend(MessengerBackend):
 				if effective_filename is None:
 					effective_filename = path.name
 				if self._logger:
-					self._logger.surface_error(f"firebase_upload_success: {effective_url}")
+					self._logger.info(f"firebase_upload_success: {effective_url}")
 			except Exception as exc:
 				if self._logger:
 					self._logger.surface_error(f"firebase_upload_failed: {exc}")
@@ -173,6 +174,7 @@ class FirebaseBackend(MessengerBackend):
 			"format": format,
 			"timestamp": now,
 			"cancelled": False,
+			"rejected": rejected,
 		}
 		if title is not None:
 			payload["title"] = title[:80]
@@ -186,7 +188,7 @@ class FirebaseBackend(MessengerBackend):
 			payload["suggestions"] = list(suggestions)
 
 		if self._logger:
-			self._logger.surface_error(f"firebase_write_message: {key}/{msg_id} -> {payload}")
+			self._logger.info(f"firebase_write_message: {key}/{msg_id}")
 
 		# Auto-unhide on question writes only
 		if message_type == "question":
@@ -250,6 +252,7 @@ class FirebaseBackend(MessengerBackend):
 			cwd, "system", "system",
 			f"Reply for {sender} couldn't be delivered — the question was withdrawn.",
 			format="plain",
+			rejected=True,
 		)
 
 	async def update_channel_title(self, cwd: str, title: str) -> None:

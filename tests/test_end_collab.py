@@ -186,8 +186,8 @@ async def test_end_collab_e6_pending_inject_blocks_termination(tmp_path):
 	"""E6: pending inject in queue prevents end_collab; agent must drain first."""
 	registry = Registry()
 	session = _make_session()
-	# Stash a pending inject in the session's __inject__ queue
-	session._pending["__inject__"] = ["urgent message from John"]
+	# Stash a pending inject in the session's inject queue
+	session._inject_pending.append("urgent message from John")
 	registry.add_session(session)
 	cfg = _make_config(tmp_path)
 	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), JsonlLogger(cfg.log_path))

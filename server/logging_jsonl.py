@@ -97,6 +97,12 @@ class JsonlLogger:
 			"correlation": correlation,
 		})
 
+	def info(self, detail: str) -> None:
+		self._write({
+			"event": "info",
+			"detail": detail,
+		})
+
 	def spawn_started(
 		self,
 		spawn_id: str,

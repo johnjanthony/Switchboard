@@ -34,7 +34,7 @@ async def test_ask_human_returns_sentinel_on_timeout(cfg, logger):
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.ask_human("Overwrite foo?", _CWD)
+	result = await handlers.ask_human("Overwrite foo?", _CWD, _SENDER)
 
 	assert result == TIMEOUT_SENTINEL
 	# Backend was asked to send a timeout follow-up.
@@ -58,7 +58,7 @@ async def test_ask_human_returns_error_sentinel_on_backend_failure(cfg, logger):
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.ask_human("q", _CWD)
+	result = await handlers.ask_human("q", _CWD, _SENDER)
 
 	assert result.startswith("ERROR:")
 	assert "boom" in result

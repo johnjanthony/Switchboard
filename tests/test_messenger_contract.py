@@ -99,6 +99,15 @@ def test_send_stale_reply_notice_signature():
 	assert params == ["self", "cwd", "sender"]
 
 
+def test_write_channel_message_accepts_rejected_kwarg():
+	"""FirebaseBackend.send_stale_reply_notice writes via write_channel_message
+	with rejected=True so the Android client can render the system message as a
+	transient toast. Lock the kwarg in on the ABC so future overrides can't
+	silently drop it (which would TypeError at runtime, untested today)."""
+	sig = inspect.signature(MessengerBackend.write_channel_message)
+	assert "rejected" in sig.parameters
+
+
 def test_update_channel_title_signature():
 	sig = inspect.signature(MessengerBackend.update_channel_title)
 	params = list(sig.parameters)
@@ -266,3 +275,48 @@ async def test_multibackend_forwards_update_last_activity():
 	await multi.update_last_activity("c:/work/proj", "2026-04-24T00:00:00+00:00", "preview text")
 	assert b1.activity_calls == [("c:/work/proj", "2026-04-24T00:00:00+00:00", "preview text")]
 	assert b2.activity_calls == [("c:/work/proj", "2026-04-24T00:00:00+00:00", "preview text")]
+
+
+@pytest.mark.asyncio
+async def test_multibackend_passes_response_correlation_through_unwrapped():
+	"""dispatch_responses unpacks correlation as (cwd, sender). MultiBackend must
+	pass the inner backend's correlation through unchanged — not wrap it as
+	(backend, correlation), which would break the unpack."""
+	import asyncio as _asyncio
+	from server.messenger import IncomingResponse, MultiBackend
+
+	class _SourceBackend(_RecordingBackend):
+		def __init__(self, items):
+			super().__init__()
+			self._items = list(items)
+
+		async def poll_responses(self):
+			for r in self._items:
+				yield r
+
+	r1 = IncomingResponse(correlation=("c:/work/proj", "Claude"), text="hello")
+	r2 = IncomingResponse(correlation=("c:/work/proj", "Gemini"), text="world")
+	b1 = _SourceBackend([r1])
+	b2 = _SourceBackend([r2])
+	multi = MultiBackend([b1, b2])
+
+	collected = []
+	async def _drain():
+		async for resp in multi.poll_responses():
+			collected.append(resp)
+			if len(collected) == 2:
+				return
+
+	await _asyncio.wait_for(_drain(), timeout=2.0)
+
+	correlations = sorted(c.correlation for c in collected)
+	assert correlations == [
+		("c:/work/proj", "Claude"),
+		("c:/work/proj", "Gemini"),
+	]
+	# Each correlation must unpack cleanly as (cwd, sender) — that's what
+	# dispatch_responses requires.
+	for resp in collected:
+		cwd, sender = resp.correlation
+		assert isinstance(cwd, str)
+		assert isinstance(sender, str)

@@ -128,7 +128,7 @@ async def test_send_document_human_success(cfg, logger, tmp_path):
 	f.write_text("hello world")
 
 	result = await handlers.send_document_human(
-		"report.txt", "c:/work/my-chan-001", caption="Here's the report", _cwd_path=tmp_path
+		"report.txt", "c:/work/my-chan-001", "Claude", caption="Here's the report", _cwd_path=tmp_path
 	)
 
 	assert result == "ok"
@@ -157,7 +157,7 @@ async def test_send_document_human_no_caption(cfg, logger, tmp_path):
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 	f = tmp_path / "report.txt"
 	f.write_text("hello")
-	result = await handlers.send_document_human("report.txt", "c:/work/my-chan-001", _cwd_path=tmp_path)
+	result = await handlers.send_document_human("report.txt", "c:/work/my-chan-001", "Claude", _cwd_path=tmp_path)
 	assert result == "ok"
 	assert backend.sent_documents[0][1] == "report.txt"  # filename used as content
 
@@ -167,7 +167,7 @@ async def test_send_document_human_path_error_returns_error_string(cfg, logger, 
 	backend = RecordingBackend()
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
-	result = await handlers.send_document_human("nonexistent.txt", "c:/work/my-chan-001", _cwd_path=tmp_path)
+	result = await handlers.send_document_human("nonexistent.txt", "c:/work/my-chan-001", "Claude", _cwd_path=tmp_path)
 	assert result.startswith("ERROR:")
 	assert backend.sent_documents == []
 
@@ -179,7 +179,7 @@ async def test_send_document_human_denylist_returns_error_string(cfg, logger, tm
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 	f = tmp_path / ".env"
 	f.write_text("SECRET=very_secret")
-	result = await handlers.send_document_human(".env", "c:/work/my-chan-001", _cwd_path=tmp_path)
+	result = await handlers.send_document_human(".env", "c:/work/my-chan-001", "Claude", _cwd_path=tmp_path)
 	assert result.startswith("ERROR:")
 	assert backend.sent_documents == []
 
@@ -197,7 +197,7 @@ async def test_send_document_human_backend_error_returns_error_string(cfg, logge
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 	f = tmp_path / "report.txt"
 	f.write_text("hello")
-	result = await handlers.send_document_human("report.txt", "c:/work/my-chan-001", _cwd_path=tmp_path)
+	result = await handlers.send_document_human("report.txt", "c:/work/my-chan-001", "Claude", _cwd_path=tmp_path)
 	assert result.startswith("ERROR:")
 	assert "telegram boom" in result
 
@@ -211,8 +211,8 @@ async def test_send_document_human_returns_error_when_rate_limited(cfg, logger, 
 	limiter = RateLimiter(rate_per_minute=1)
 	handlers = build_tool_handlers(cfg, registry, backend, logger, limiter)
 
-	first = await handlers.send_document_human("report.txt", "c:/work/rl-001", _cwd_path=tmp_path)
-	result = await handlers.send_document_human("report.txt", "c:/work/rl-001", _cwd_path=tmp_path)  # over limit
+	first = await handlers.send_document_human("report.txt", "c:/work/rl-001", "Claude", _cwd_path=tmp_path)
+	result = await handlers.send_document_human("report.txt", "c:/work/rl-001", "Claude", _cwd_path=tmp_path)  # over limit
 
 	assert first == "ok"
 	assert result.startswith("ERROR: rate limit exceeded")
@@ -230,9 +230,9 @@ async def test_send_document_human_path_error_bypasses_rate_limit(cfg, logger, t
 	f.write_text("hello")
 	limiter = RateLimiter(rate_per_minute=1)
 	handlers = build_tool_handlers(cfg, registry, backend, logger, limiter)
-	await handlers.send_document_human("report.txt", "c:/work/rl-002", _cwd_path=tmp_path)  # exhausts the bucket
+	await handlers.send_document_human("report.txt", "c:/work/rl-002", "Claude", _cwd_path=tmp_path)  # exhausts the bucket
 	# Channel is now rate-limited, but path error should still surface
-	result = await handlers.send_document_human("nonexistent.txt", "c:/work/rl-002", _cwd_path=tmp_path)
+	result = await handlers.send_document_human("nonexistent.txt", "c:/work/rl-002", "Claude", _cwd_path=tmp_path)
 	assert result.startswith("ERROR:")
 	assert "not found" in result
 
@@ -245,7 +245,7 @@ async def test_send_document_human_invalid_cwd_returns_error(cfg, logger, tmp_pa
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 	f = tmp_path / "report.txt"
 	f.write_text("hello")
-	result = await handlers.send_document_human("report.txt", "not-a-path", _cwd_path=tmp_path)
+	result = await handlers.send_document_human("report.txt", "not-a-path", "Claude", _cwd_path=tmp_path)
 	assert result.startswith("ERROR: invalid cwd:")
 	assert backend.sent_documents == []
 
@@ -259,7 +259,7 @@ async def test_send_document_human_title_passthrough(cfg, logger, tmp_path):
 	f = tmp_path / "report.txt"
 	f.write_text("hello")
 	result = await handlers.send_document_human(
-		"report.txt", "c:/work/my-chan-001", title="My Session", _cwd_path=tmp_path
+		"report.txt", "c:/work/my-chan-001", "Claude", title="My Session", _cwd_path=tmp_path
 	)
 	assert result == "ok"
 	assert backend.channel_messages[0]["title"] == "My Session"

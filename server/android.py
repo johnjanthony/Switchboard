@@ -38,10 +38,12 @@ class AndroidBackend(MessengerBackend):
 		format: str = "plain",
 		suggestions: list[str] | None = None,
 		filename: str | None = None,
+		title: str | None = None,
+		rejected: bool = False,
 	) -> tuple[CorrelationToken | None, str | None]:
 		msg_id = f"msg_{int(asyncio.get_event_loop().time() * 1000)}"
 		if message_type == "question":
-			correlation = f"android_{request_id}"
+			correlation = (channel_id, sender)
 			self._pending_questions[request_id] = {
 				"request_id": request_id,
 				"channel_id": channel_id,
@@ -50,12 +52,12 @@ class AndroidBackend(MessengerBackend):
 				"suggestions": suggestions,
 			}
 			if self._logger:
-				self._logger.surface_error(f"ANDROID_SEND_QUESTION: [{channel_id} | {request_id}] {content}")
+				self._logger.info(f"ANDROID_SEND_QUESTION: [{channel_id} | {request_id}] {content}")
 			return correlation, msg_id
 
 		if self._logger:
 			prefix = f"ANDROID_SEND_{message_type.upper()}"
-			self._logger.surface_error(f"{prefix}: [{channel_id}] {content}")
+			self._logger.info(f"{prefix}: [{channel_id}] {content}")
 		return None, msg_id
 
 	async def send_timeout_followup(
@@ -67,7 +69,7 @@ class AndroidBackend(MessengerBackend):
 	) -> None:
 		self._pending_questions.pop(request_id, None)
 		if self._logger:
-			self._logger.surface_error(f"ANDROID_SEND_TIMEOUT: [{channel_id} | {request_id}]")
+			self._logger.info(f"ANDROID_SEND_TIMEOUT: [{channel_id} | {request_id}]")
 
 	async def send_resolution_confirmation(
 		self,
@@ -78,7 +80,7 @@ class AndroidBackend(MessengerBackend):
 	) -> None:
 		self._pending_questions.pop(request_id, None)
 		if self._logger:
-			self._logger.surface_error(f"ANDROID_SEND_CONFIRMATION: [{channel_id} | {request_id}]")
+			self._logger.info(f"ANDROID_SEND_CONFIRMATION: [{channel_id} | {request_id}]")
 
 	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
 		while True:
@@ -90,11 +92,11 @@ class AndroidBackend(MessengerBackend):
 
 	async def send_spawn_ack(self, channel_id: str, prompt: str | None) -> None:
 		if self._logger:
-			self._logger.surface_error(f"ANDROID_SEND_SPAWN_ACK: {channel_id}")
+			self._logger.info(f"ANDROID_SEND_SPAWN_ACK: {channel_id}")
 
 	async def send_text(self, text: str) -> None:
 		if self._logger:
-			self._logger.surface_error(f"ANDROID_SEND_TEXT: {text}")
+			self._logger.info(f"ANDROID_SEND_TEXT: {text}")
 
 	# Method for testing/development to simulate a response from the Android app
 	async def simulate_response(self, correlation: CorrelationToken, text: str) -> None:

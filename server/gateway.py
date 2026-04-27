@@ -153,7 +153,7 @@ def build_tool_handlers(
 	async def notify_human(
 		message: str,
 		cwd: str,
-		sender: str = "Claude",
+		sender: str,
 		title: str | None = None,
 		format: str = "plain",
 	) -> str:
@@ -180,7 +180,7 @@ def build_tool_handlers(
 	async def ask_human(
 		question: str,
 		cwd: str,
-		sender: str = "Claude",
+		sender: str,
 		title: str | None = None,
 		format: str = "plain",
 		suggestions: list[str] | None = None,
@@ -272,7 +272,7 @@ def build_tool_handlers(
 	async def send_document_human(
 		path: str,
 		cwd: str,
-		sender: str = "Claude",
+		sender: str,
 		title: str | None = None,
 		caption: str | None = None,
 		*,
@@ -350,55 +350,18 @@ def build_tool_handlers(
 
 		try:
 			if message is not None:
-				entry = {
-					"speaker": sender,
-					"message": message,
-					"timestamp": datetime.now(timezone.utc).isoformat(),
-				}
-				session.transcript.append(entry)
 				logger.collab_message_sent(channel_id, sender, message)
 				await _append_session_log(config.log_path, channel_id, "→", f"{sender}: {message}")
 
-				if len(session.agent_senders) == 2:
-					if session._pre_enroll_msg is not None:
-						pre_msg = session._pre_enroll_msg
-						session._pre_enroll_msg = None
-						buf_sender = session.other_sender(sender)
-						buf_title = getattr(session, "_pre_enroll_title", None)
-						buf_relayed = title_tracker.maybe_prepend(canonical, buf_sender, sender, buf_title, pre_msg)
-						session.deliver(sender, buf_relayed)
-						async def _relay_buf(cid=channel_id, s=buf_sender, msg=pre_msg) -> None:
-							try:
-								await backend.write_channel_message(cid, s, "agent", msg)
-							except Exception as exc:
-								logger.surface_error(f"collab_relay_error: {exc}")
-						asyncio.create_task(_relay_buf())
-					other = session.other_sender(sender)
-					relayed = title_tracker.maybe_prepend(canonical, sender, other, title, message)
-					session.deliver(other, relayed)
-					async def _relay(cid=channel_id, s=sender, msg=message) -> None:
-						try:
-							await backend.write_channel_message(cid, s, "agent", msg)
-						except Exception as exc:
-							logger.surface_error(f"collab_relay_error: {exc}")
-					asyncio.create_task(_relay())
-				else:
-					session._pre_enroll_msg = message
-					session._pre_enroll_title = title
-			else:
-				if len(session.agent_senders) == 2 and session._pre_enroll_msg is not None:
-					pre_msg = session._pre_enroll_msg
-					session._pre_enroll_msg = None
-					buf_sender = session.other_sender(sender)
-					buf_title = getattr(session, "_pre_enroll_title", None)
-					buf_relayed = title_tracker.maybe_prepend(canonical, buf_sender, sender, buf_title, pre_msg)
-					session.deliver(sender, buf_relayed)
-					async def _relay_buf2(cid=channel_id, s=buf_sender, msg=pre_msg) -> None:
-						try:
-							await backend.write_channel_message(cid, s, "agent", msg)
-						except Exception as exc:
-							logger.surface_error(f"collab_relay_error: {exc}")
-					asyncio.create_task(_relay_buf2())
+			deliveries = session.handle_message(sender, message, title, title_tracker)
+			for actual_sender, payload in deliveries:
+				# Capture locals for the async task
+				async def _relay(cid=channel_id, s=actual_sender, msg=payload) -> None:
+					try:
+						await backend.write_channel_message(cid, s, "agent", msg)
+					except Exception as exc:
+						logger.surface_error(f"collab_relay_error: {exc}")
+				asyncio.create_task(_relay())
 
 			future = session.start_waiting(sender)
 		except Exception as exc:
@@ -604,11 +567,12 @@ async def dispatch_responses(
 								await backend.send_stale_reply_notice(cwd, sender)
 							except Exception as exc:
 								logger.surface_error(f"stale_reply_notice_failed: {exc}")
-						elif record is not None and record.msg_id and hasattr(backend, "write_response_text"):
-							# Update original question so it stays answered across restarts
-							asyncio.create_task(backend.write_response_text(
-								cwd, record.msg_id, response.text
-							))
+						elif record is not None:
+							if record.msg_id and hasattr(backend, "write_response_text"):
+								# Update original question so it stays answered across restarts
+								asyncio.create_task(backend.write_response_text(
+									cwd, record.msg_id, response.text
+								))
 							# Add a NEW message to the history so it shows up in-line in the app
 							async def _write_history(cid=cwd, txt=response.text):
 								try:
@@ -674,7 +638,7 @@ async def dispatch_away_mode_commands(
 				try:
 					if cmd_type == "enter_global":
 						registry.set_global_away(True)
-						logger.surface_error(f"away_mode_commands: enter_global applied")
+						logger.info(f"away_mode_commands: enter_global applied")
 
 					elif cmd_type == "exit_global":
 						# User intent: exit global away. Honor unless the dialog flow returned an
@@ -714,7 +678,7 @@ async def dispatch_away_mode_commands(
 								await handlers.bulk_respond_cancel()
 							except Exception as exc:
 								logger.surface_error(f"away_mode_commands: bulk_respond_cancel error: {exc}")
-						logger.surface_error(f"away_mode_commands: exit_global applied (action={action})")
+						logger.info(f"away_mode_commands: exit_global applied (action={action})")
 
 					elif cmd_type == "enter_cwd":
 						raw_cwd = cmd.get("cwd") or ""
@@ -724,7 +688,7 @@ async def dispatch_away_mode_commands(
 							logger.surface_error(f"away_mode_commands: enter_cwd bad cwd={raw_cwd!r} {exc}")
 							continue
 						registry.set_cwd_override(canonical, True)
-						logger.surface_error(f"away_mode_commands: enter_cwd {canonical}")
+						logger.info(f"away_mode_commands: enter_cwd {canonical}")
 
 					elif cmd_type == "exit_cwd":
 						raw_cwd = cmd.get("cwd") or ""
@@ -734,7 +698,7 @@ async def dispatch_away_mode_commands(
 							logger.surface_error(f"away_mode_commands: exit_cwd bad cwd={raw_cwd!r} {exc}")
 							continue
 						registry.set_cwd_override(canonical, False)
-						logger.surface_error(f"away_mode_commands: exit_cwd {canonical}")
+						logger.info(f"away_mode_commands: exit_cwd {canonical}")
 
 					else:
 						logger.surface_error(f"away_mode_commands: unknown type={cmd_type!r}")

@@ -52,7 +52,7 @@ async def test_mcp_notify_human_tool_is_registered_and_invocable(cfg):
 
 	content, structured = await mcp.call_tool(
 		"notify_human",
-		{"message": "hello world", "cwd": _CWD},
+		{"message": "hello world", "cwd": _CWD, "sender": "Claude"},
 	)
 
 	assert structured == {"result": "ok"}

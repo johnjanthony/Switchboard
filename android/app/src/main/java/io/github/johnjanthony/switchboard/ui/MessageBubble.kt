@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Divider
 import androidx.compose.material3.ElevatedButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -39,13 +40,16 @@ import io.github.johnjanthony.switchboard.ui.theme.SwitchboardTheme
 @Composable
 fun MessageBubble(
 	message: ChannelMessage,
+	isSelected: Boolean = false,
+	onClick: () -> Unit = {},
 	onDownloadClick: (url: String, filename: String) -> Unit = { _, _ -> },
 	onDownloadLongClick: (url: String, filename: String) -> Unit = { _, _ -> },
 ) {
 	val isHuman = message.type == "human"
 	val isQuestion = message.type == "question"
 	val isCancelled = message.cancelled
-	val isPending = (isQuestion && message.response_text == null && !isCancelled)
+	val isAnswered = isQuestion && message.response_text != null
+	val isPending = (isQuestion && !isAnswered && !isCancelled)
 
 	val alpha = if (isCancelled) 0.5f else 1f
 	val bgColor = if (isHuman) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
@@ -64,7 +68,13 @@ fun MessageBubble(
 		Surface(
 			shape = RoundedCornerShape(12.dp),
 			color = bgColor,
-			modifier = Modifier.fillMaxWidth(0.9f),
+			border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+			modifier = Modifier
+				.fillMaxWidth(0.9f)
+				.combinedClickable(
+					enabled = isPending,
+					onClick = onClick,
+				),
 		) {
 			Column(modifier = Modifier.padding(12.dp)) {
 				Row(verticalAlignment = Alignment.CenterVertically) {
@@ -74,6 +84,34 @@ fun MessageBubble(
 								.size(8.dp)
 								.background(MaterialTheme.colorScheme.primary, CircleShape),
 						)
+						Spacer(Modifier.width(8.dp))
+					}
+					if (isAnswered) {
+						Surface(
+							shape = RoundedCornerShape(4.dp),
+							color = MaterialTheme.colorScheme.secondaryContainer,
+						) {
+							Text(
+								text = "RESPONDED",
+								style = MaterialTheme.typography.labelSmall,
+								modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+								color = MaterialTheme.colorScheme.onSecondaryContainer,
+							)
+						}
+						Spacer(Modifier.width(8.dp))
+					}
+					if (message.rejected) {
+						Surface(
+							shape = RoundedCornerShape(4.dp),
+							color = MaterialTheme.colorScheme.errorContainer,
+						) {
+							Text(
+								text = "REJECTED",
+								style = MaterialTheme.typography.labelSmall,
+								modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+								color = MaterialTheme.colorScheme.onErrorContainer,
+							)
+						}
 						Spacer(Modifier.width(8.dp))
 					}
 					if (isCancelled) {
@@ -92,6 +130,24 @@ fun MessageBubble(
 					}
 				}
 				MarkdownText(content = message.text, format = message.format, color = textColor)
+
+				if (isAnswered && message.response_text != null) {
+					Spacer(Modifier.height(8.dp))
+					Divider(color = textColor.copy(alpha = 0.2f))
+					Spacer(Modifier.height(8.dp))
+					Row(verticalAlignment = Alignment.CenterVertically) {
+						Text(
+							text = "John: ",
+							style = MaterialTheme.typography.labelMedium,
+							color = textColor.copy(alpha = 0.7f),
+						)
+						Text(
+							text = message.response_text!!,
+							style = MaterialTheme.typography.bodyMedium,
+							color = textColor,
+						)
+					}
+				}
 
 				if (!message.url.isNullOrBlank() && !message.filename.isNullOrBlank()) {
 					Spacer(Modifier.height(8.dp))

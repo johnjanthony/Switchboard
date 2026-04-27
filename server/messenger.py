@@ -43,10 +43,13 @@ class MessengerBackend(ABC):
 		suggestions: list[str] | None = None,
 		filename: str | None = None,
 		title: str | None = None,
+		rejected: bool = False,
 	) -> "tuple[CorrelationToken | None, str | None]":
 		"""Write a message to the channel. Returns (correlation, msg_id).
 		correlation is used for message_type='question' to match responses.
-		msg_id is the unique ID of the message in the backend."""
+		msg_id is the unique ID of the message in the backend.
+		rejected=True marks system messages that the client should surface
+		as a transient toast (e.g. stale-reply notices)."""
 
 	@abstractmethod
 	async def send_timeout_followup(
@@ -199,12 +202,13 @@ class MultiBackend(MessengerBackend):
 	async def write_channel_message(
 		self, cwd, sender, message_type, content,
 		*, request_id=None, url=None, format="plain", suggestions=None, filename=None, title=None,
+		rejected=False,
 	) -> "tuple[CorrelationToken | None, str | None]":
 		results = await asyncio.gather(*(
 			b.write_channel_message(
 				cwd, sender, message_type, content,
 				request_id=request_id, url=url, format=format, suggestions=suggestions,
-				filename=filename, title=title,
+				filename=filename, title=title, rejected=rejected,
 			)
 			for b in self._backends
 		))
@@ -269,15 +273,16 @@ class MultiBackend(MessengerBackend):
 
 		async def _forward(b: MessengerBackend):
 			async for resp in b.poll_responses():
-				await combined.put((b, resp))
+				await combined.put(resp)
 
 		tasks = [asyncio.create_task(_forward(b)) for b in self._backends]
 		try:
 			while True:
-				backend, resp = await combined.get()
-				yield IncomingResponse(
-					correlation=(backend, resp.correlation), text=resp.text
-				)
+				# Pass the inner correlation through unchanged. Both real backends
+				# (Firebase, Android) use (cwd, sender) tuples, which dispatch_responses
+				# unpacks directly. Wrapping with the producing backend was useful only
+				# if dispatch needed to disambiguate origin — it doesn't.
+				yield await combined.get()
 		finally:
 			for t in tasks:
 				t.cancel()

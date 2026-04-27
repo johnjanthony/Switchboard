@@ -96,11 +96,17 @@ bubble on John's phone. Use your active agent name (e.g., `"Claude"`,
 `"Gemini"`, `"Cloude"`, `"Sparkles"`), or the one provided in your spawn
 prompt.
 
+`sender` is **required** on every messaging tool call — `notify_human`,
+`ask_human`, `send_document_human`, `message_and_await_agent`, and
+`end_collab`. Omitting it raises a schema error. There is no default; pass
+your name explicitly every time. (Historically `notify_human`, `ask_human`,
+and `send_document_human` defaulted to `"Claude"`; that default was removed
+after a collab session where Gemini's omitted `sender` defaulted to
+`"Claude"` and miscredited the message on John's phone.)
+
 In a collab session, **two agents must use distinct sender names** —
 otherwise you'll collide on the `(cwd, sender)` routing slot. The spawn
 prompt assigns names; in BYO collab, agree on names with your partner.
-
-In a single-agent session, `sender` defaults to `"Claude"` if omitted.
 
 ## Response conventions
 
@@ -301,6 +307,13 @@ you are blocked, report back to John in the terminal normally.
 When you believe consensus has been reached (or debate is deadlocked), do not
 call `message_and_await_agent` again. Instead, decide who reports to John and
 terminate the session via `end_collab`.
+
+**A verbal "I'm ending the collab" is NOT a session terminator.** Sending a
+message that says "I am ending the collab and reporting back to John" via
+`message_and_await_agent` does nothing structural — it just leaves you blocked
+awaiting your partner's reply, with the session still active and the partner
+still expected to respond. The session only ends when the **`end_collab` tool
+call returns**. If you mean to end, call the tool — then sign off.
 
 - If you want to be the one who reports, call:
   `end_collab(cwd=..., sender="<you>", message="<final summary for partner>", hand_off_to_human=true)`
