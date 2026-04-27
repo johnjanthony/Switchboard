@@ -312,13 +312,6 @@ fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController
             }
             
             items(channels.values.toList().sortedBy { it.cwdKey }, key = { it.cwdKey }) { channel ->
-                // Use cwdKey for consistency with the phone app
-                val displayName = if (channel.cwdKey.length > 20) {
-                    channel.cwdKey.substring(0, 17) + "..."
-                } else {
-                    channel.cwdKey
-                }
-                
                 val hasPending = channel.pendingQuestions.isNotEmpty()
                 val isUnseen = unseenChannels.contains(channel.cwdKey)
                 
@@ -337,11 +330,23 @@ fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController
                             if (isUnseen) {
                                 Text("• ", color = MaterialTheme.colorScheme.primary)
                             }
-                            Text(
-                                text = displayName,
-                                overflow = TextOverflow.Ellipsis,
-                                maxLines = 1
-                            )
+                            Column {
+                                Text(
+                                    text = channel.title ?: leafName(channel.cwdCanonical),
+                                    overflow = TextOverflow.Ellipsis,
+                                    maxLines = 1,
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                                if (channel.cwdCanonical.isNotEmpty()) {
+                                    Text(
+                                        text = leafName(channel.cwdCanonical),
+                                        overflow = TextOverflow.Ellipsis,
+                                        maxLines = 1,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
                         }
                     }
                 )
@@ -379,12 +384,22 @@ fun MessageListScreen(cwdKey: String, viewModel: MainViewModel, navController: N
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             item {
-                Text(
-                    text = channel.title ?: channel.cwdCanonical,
-                    style = MaterialTheme.typography.titleSmall,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = channel.title ?: leafName(channel.cwdCanonical),
+                        style = MaterialTheme.typography.titleSmall,
+                        textAlign = TextAlign.Center
+                    )
+                    if (channel.cwdCanonical.isNotEmpty()) {
+                        Text(
+                            text = leafName(channel.cwdCanonical),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                    }
+                }
             }
             
             items(sortedMessages) { (_, msg) ->
@@ -494,4 +509,8 @@ fun MarkdownText(content: String, format: String, color: androidx.compose.ui.gra
     } else {
         Text(content, style = MaterialTheme.typography.bodySmall, color = color)
     }
+}
+
+private fun leafName(cwdCanonical: String): String {
+    return cwdCanonical.trimEnd('/').substringAfterLast('/')
 }

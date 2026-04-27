@@ -33,8 +33,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import io.github.johnjanthony.switchboard.network.Channel
 import io.github.johnjanthony.switchboard.network.ChannelMessage
@@ -60,7 +62,18 @@ fun SessionViewScreen(
 			TopAppBar(
 				title = {
 					Text(
-						text = channel.title ?: leafName(channel.cwdCanonical),
+						text = buildAnnotatedString {
+							append(channel.title ?: leafName(channel.cwdCanonical))
+							if (channel.cwdCanonical.isNotEmpty()) {
+								withStyle(
+									style = MaterialTheme.typography.bodySmall.toSpanStyle().copy(
+										color = MaterialTheme.colorScheme.onSurfaceVariant
+									)
+								) {
+									append(" (${leafName(channel.cwdCanonical)})")
+								}
+							}
+						},
 						maxLines = 1, overflow = TextOverflow.Ellipsis,
 					)
 				},

@@ -26,8 +26,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import io.github.johnjanthony.switchboard.network.Channel
 
@@ -53,9 +56,21 @@ fun SessionRow(
 		) {
 			Column(modifier = Modifier.weight(1f)) {
 				Text(
-					text = channel.title ?: leafName(channel.cwdCanonical),
-					style = MaterialTheme.typography.titleMedium,
-					fontStyle = if (channel.hidden) FontStyle.Italic else FontStyle.Normal,
+					text = buildAnnotatedString {
+						withStyle(style = MaterialTheme.typography.titleMedium.toSpanStyle()) {
+							append(channel.title ?: leafName(channel.cwdCanonical))
+						}
+						if (channel.cwdCanonical.isNotEmpty()) {
+							withStyle(
+								style = MaterialTheme.typography.bodySmall.toSpanStyle().copy(
+									color = MaterialTheme.colorScheme.onSurfaceVariant,
+									fontStyle = if (channel.hidden) FontStyle.Italic else FontStyle.Normal,
+								)
+							) {
+								append(" (${leafName(channel.cwdCanonical)})")
+							}
+						}
+					},
 					maxLines = 1,
 					overflow = TextOverflow.Ellipsis,
 				)
