@@ -59,16 +59,26 @@ class FirebaseBackend(MessengerBackend):
 	def _on_response(self, event):
 		if event.event_type == 'put' and event.data:
 			path = event.path.strip('/')
-			if not path and isinstance(event.data, dict):
-				for slot, data in event.data.items():
-					if isinstance(data, dict) and 'text' in data:
-						self._loop.call_soon_threadsafe(
-							self._enqueue_response_by_slot, slot, data['text']
-						)
-			elif path and isinstance(event.data, dict) and 'text' in event.data:
-				self._loop.call_soon_threadsafe(
-					self._enqueue_response_by_slot, path, event.data['text']
-				)
+			if not path:
+				if isinstance(event.data, dict):
+					for slot, data in event.data.items():
+						if isinstance(data, dict) and 'text' in data:
+							self._loop.call_soon_threadsafe(
+								self._enqueue_response_by_slot, slot, data['text']
+							)
+						elif self._logger:
+							self._logger.surface_error(f"firebase_malformed_response_entry: {slot} -> {type(data)}")
+				else:
+					if self._logger:
+						self._logger.surface_error(f"firebase_malformed_response_root: {type(event.data)}")
+			elif path:
+				if isinstance(event.data, dict) and 'text' in event.data:
+					self._loop.call_soon_threadsafe(
+						self._enqueue_response_by_slot, path, event.data['text']
+					)
+				else:
+					if self._logger:
+						self._logger.surface_error(f"firebase_malformed_response_path: {path} -> {type(event.data)}")
 
 	def _enqueue_response_by_slot(self, slot: str, text: str):
 		from server.canonicalization import from_firebase_key
@@ -82,12 +92,20 @@ class FirebaseBackend(MessengerBackend):
 	def _on_command(self, event):
 		if event.event_type == 'put' and event.data:
 			path = event.path.strip('/')
-			if not path and isinstance(event.data, dict):
-				for cmd_id, text in event.data.items():
-					if isinstance(text, str):
-						self._loop.call_soon_threadsafe(self._enqueue_command, cmd_id, text)
-			elif path and isinstance(event.data, str):
-				self._loop.call_soon_threadsafe(self._enqueue_command, path, event.data)
+			if not path:
+				if isinstance(event.data, dict):
+					for cmd_id, text in event.data.items():
+						if isinstance(text, str):
+							self._loop.call_soon_threadsafe(self._enqueue_command, cmd_id, text)
+						elif self._logger:
+							self._logger.surface_error(f"firebase_malformed_command_entry: {cmd_id} -> {type(text)}")
+				elif self._logger:
+					self._logger.surface_error(f"firebase_malformed_command_root: {type(event.data)}")
+			elif path:
+				if isinstance(event.data, str):
+					self._loop.call_soon_threadsafe(self._enqueue_command, path, event.data)
+				elif self._logger:
+					self._logger.surface_error(f"firebase_malformed_command_path: {path} -> {type(event.data)}")
 
 	def _enqueue_command(self, command_id: str, text: str):
 		asyncio.create_task(self._command_queue.put(text))
@@ -162,6 +180,9 @@ class FirebaseBackend(MessengerBackend):
 			payload["filename"] = effective_filename
 		if suggestions:
 			payload["suggestions"] = list(suggestions)
+
+		if self._logger:
+			self._logger.surface_error(f"firebase_write_message: {key}/{msg_id} -> {payload}")
 
 		# Auto-unhide on question writes only
 		if message_type == "question":
@@ -321,13 +342,16 @@ class FirebaseBackend(MessengerBackend):
 			db.reference('bulk_respond_dialog').delete()
 		await asyncio.to_thread(_clear)
 
-	async def write_away_mode_mirror(self, cwd: str | None, active: bool) -> None:
+	async def write_away_mode_mirror(self, cwd: str | None, active: bool | None) -> None:
 		from server.canonicalization import to_firebase_key
 		if cwd is None:
 			await asyncio.to_thread(lambda: db.reference('away_mode/global').set(active))
 		else:
 			key = to_firebase_key(cwd)
-			await asyncio.to_thread(lambda: db.reference(f'away_mode/overrides/{key}').set(active))
+			if active is None:
+				await asyncio.to_thread(lambda: db.reference(f'away_mode/overrides/{key}').delete())
+			else:
+				await asyncio.to_thread(lambda: db.reference(f'away_mode/overrides/{key}').set(active))
 
 	async def _send_fcm(
 		self,

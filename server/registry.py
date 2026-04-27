@@ -131,9 +131,13 @@ class Registry:
 	def set_global_away(self, active: bool) -> None:
 		if self._global_away == active and not self._cwd_overrides:
 			return
+		cleared = list(self._cwd_overrides.keys())
 		self._global_away = active
 		self._cwd_overrides = {}
 		self._persist_away_mode()
+		for cwd in cleared:
+			# active=None signals "override removed; clear the mirror entry"
+			self._fire_callback(cwd, None)
 		self._fire_callback(None, active)
 
 	def set_cwd_override(self, cwd: str, active: bool) -> None:
@@ -152,9 +156,9 @@ class Registry:
 		prior_value = self._cwd_overrides[cwd]
 		del self._cwd_overrides[cwd]
 		new = self.is_away_mode_active(cwd)
-		if prior_value != new:
-			self._persist_away_mode()
-			self._fire_callback(cwd, new)
+		self._persist_away_mode()
+		# active=None signals "override removed; clear the mirror entry"
+		self._fire_callback(cwd, None)
 
 	def cwd_overrides(self) -> dict[str, bool]:
 		return dict(self._cwd_overrides)
@@ -164,11 +168,11 @@ class Registry:
 
 	def set_away_mode_callback(self, callback) -> None:
 		"""Callback receives (cwd_or_None, active). cwd=None on global flips,
-		otherwise the canonical_cwd whose override changed. Fires only when the
-		resolution actually changes (not on no-op repeats)."""
+		otherwise the canonical_cwd whose override changed. active=None signals
+		that the override entry was removed (mirror should clear it)."""
 		self._away_mode_callback = callback
 
-	def _fire_callback(self, cwd: str | None, active: bool) -> None:
+	def _fire_callback(self, cwd: str | None, active: bool | None) -> None:
 		if self._away_mode_callback is None:
 			return
 		try:

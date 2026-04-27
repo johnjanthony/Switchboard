@@ -32,6 +32,28 @@ Open/proposed features for Switchboard. Shipped items have been moved to [`../PR
 
 ---
 
+## Withdraw pending questions when the agent process dies
+
+**Surfaced 2026-04-26** during cwd-as-channel post-merge testing (test 6d). Killing an agent mid-`ask_human` leaves the question hanging on the server and the phone — no "WITHDRAWN" indicator appears.
+
+**The mechanics already exist; the trigger doesn't fire:**
+- Server has the cancellation path at `gateway.py:226,246` (`except asyncio.CancelledError: await _safe_mark_cancelled(...)` → writes `cancelled: true` via `mark_question_cancelled`).
+- Phone renders it in `MessageBubble.kt:48-60` (WITHDRAWN badge + 0.5 alpha).
+
+**Why the trigger doesn't fire on process kill:** MCP transport is streamable HTTP. HTTP doesn't reliably surface mid-call client disconnects to the server handler, so `asyncio.CancelledError` is never raised. The pending future just hangs until `SWITCHBOARD_TIMEOUT_SECONDS` (default `86400` = 24h), at which point the **timeout** branch fires — `send_timeout_followup`, not `mark_question_cancelled`. Two different gateway paths, two different UX outcomes.
+
+**What does trigger cancellation today:** supersede by a newer `ask_human(cwd=X, sender=Y, ...)` (`gateway.py:219-223`), and server shutdown (`_safe_mark_cancelled` in cleanup).
+
+**Possible approaches (smallest to largest scope):**
+
+1. **Cancel-on-spawn.** When a spawn lands on a cwd, walk `registry.cwd_overrides()` / pending requests for that cwd and mark any in-flight questions cancelled before the new agent starts. Solves the common "I killed the agent and respawned" case directly. Minimal change, no new infrastructure.
+2. **HTTP keepalive disconnect detection.** Investigate whether MCP's streamable-HTTP transport surfaces a disconnect signal to in-flight tool handlers (FastMCP / `streamable_http.py`). If yes, plumb that into a CancelledError on the awaiting future. May not be reachable depending on the MCP SDK.
+3. **Agent liveness pings.** Heartbeat protocol: agents send periodic keepalives; missing two in a row = mark all their pending questions cancelled. More moving parts, more state, but transport-agnostic.
+
+Approach 1 covers the testing scenario and most realistic dev workflows. Approaches 2/3 are insurance for unattended long-running agents that crash without a respawn.
+
+---
+
 ## Per-channel away-mode tracking — IN IMPLEMENTATION (Slices A–L complete in working tree, Slice M pending)
 
 This entry has graduated from backlog to active work. Implementation expanded in scope during brainstorming to **cwd-as-channel unification**: replacing `channel_id` with canonical-cwd as the namespace, re-keying blocking exchanges by `(cwd, sender)` with supersede semantics, two-tier away-mode (`_global_away` + `_cwd_overrides`), and an Android UI overhaul to a list-based two-page nav.
@@ -50,16 +72,23 @@ The bundled "hook captures leaked terminal text" enhancement is **not** included
 
 ---
 
-## Android: MRU workspace selector in spawn dialog
+## Away-mode Firebase schema reorganization
 
-The spawn dialog currently requires typing the workspace path each time. Add an MRU-style dropdown that remembers workspaces John has spawned into before, so repeat spawns are a tap rather than a retype. New paths entered via free text are added to the MRU list; the dropdown shows them in most-recently-used order.
+**Proposed 2026-04-26**, surfaced during cwd-as-channel post-merge testing. Two related schema changes that the current `away_mode/{global, overrides/{cwdKey}}` shape made awkward:
+
+1. **Co-locate per-channel away-mode with the channel.** Move `away_mode/overrides/{cwdKey}` → `channels/{cwdKey}/away_mode`. The override conceptually belongs to the channel; co-locating gets lifecycle alignment for free (deleting/wiping a channel removes its override too, no orphan-on-channel-delete bug). Phone-side it removes one Firebase listener — the channel listener already covers it.
+
+2. **Group global settings.** Move `away_mode/global` → `global_settings/away_mode`. `global_settings/` becomes the home for any future top-level switches (notification quiet hours, default sender, etc.); today it has one tenant. Once both moves land, the `away_mode/` node can be deleted entirely.
 
 **What it takes:**
 
-- Android persists the MRU list locally (SharedPreferences or DataStore) — no server-side change needed.
-- Spawn dialog layout changes: text field becomes a combo-box-style control (editable dropdown) that surfaces the MRU list while still accepting free-text entry for first-time paths.
-- Cap list size (e.g. 10 entries) and evict least-recently-used when full.
-- Successful spawn promotes the chosen entry to the top; failed spawn (server rejects the path) does not add it to the list.
+- **Server (`firebase.py`)** — rewrite `write_away_mode_mirror` to target `global_settings/away_mode` for global, `channels/{cwdKey}/away_mode` for per-channel. The "remove override" path becomes `db.reference(f'channels/{key}/away_mode').delete()`. Bulk clear on global-toggle becomes one Firebase multi-location update (`db.reference().update({...})`) walking `registry.cwd_overrides()`.
+- **Android (`MainViewModel`)** — drop the `setupAwayModeListener` override-listener; pull `away_mode` from the existing channel snapshot in `syncChannel`; add a separate listener on `global_settings/away_mode`. The `Channel` data class gains an `awayMode: Boolean? = null` field (null = follow global).
+- **Server `Registry`** — internal in-memory representation can stay as-is (`_global_away` + `_cwd_overrides`); only the mirror shape changes. `away-mode.json` sidecar likewise unchanged.
+- **Migration** — clean Firebase wipe on deploy. Stale `away_mode/*` paths can be left to die; or do a one-shot delete at startup.
+- **Tests** — `test_messenger_contract` signature checks unaffected (signature unchanged). Any test that asserts specific Firebase paths needs updating.
+
+**Why now is a follow-up, not part of cwd-as-channel:** orthogonal to spawn-flow correctness; the current 3-fix bundle (spawn cwd-override, spawn channel routing, mirror-cleared-overrides) leaves the system *correct* under the existing schema. Schema reshape is a separate, focused branch.
 
 ---
 

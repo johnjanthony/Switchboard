@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from server.canonicalization import canonicalize_cwd
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
 from server.registry import Registry
@@ -64,10 +65,6 @@ _LISTENER_NOTE = (
 	"`message_and_await_agent(cwd=..., sender=\"{sender}\")` "
 	"with no message argument to listen.\n"
 )
-
-
-def _make_channel_id(project_key: str) -> str:
-	return f"{project_key}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
 
 
 def _parse_spawn_flags(text: str) -> tuple[str, list[str]]:
@@ -248,7 +245,7 @@ class SpawnHandler:
 	async def _handle_single_spawn(
 		self, project_path: Path, project_key: str, prompt: str | None, backend_type: str
 	) -> None:
-		channel_id = _make_channel_id(project_key)
+		channel_id = canonicalize_cwd(str(project_path))
 		sender = _get_backend_name(backend_type)
 		base = _BASE_INSTRUCTION.format(sender_default=sender)
 		user_prompt = prompt or _DEFAULT_PROMPT
@@ -273,8 +270,8 @@ class SpawnHandler:
 			return
 
 		self._last_spawn_time = datetime.now(timezone.utc)
-		self._registry.set_global_away(True)
-		self._logger.away_mode_entered(reason="spawn")
+		self._registry.set_cwd_override(channel_id, True)
+		self._logger.away_mode_cwd_changed(channel_id, True)
 
 		try:
 			await self._backend.write_session_meta(
@@ -295,7 +292,7 @@ class SpawnHandler:
 	) -> None:
 		from server.collab import CollabSession
 		task = prompt or _DEFAULT_COLLAB_PROMPT
-		channel_id = _make_channel_id(project_key)
+		channel_id = canonicalize_cwd(str(project_path))
 		
 		# Sender names derived directly from backends
 		s1 = _get_backend_name(backends[0])
@@ -353,8 +350,8 @@ class SpawnHandler:
 			return
 
 		self._last_spawn_time = datetime.now(timezone.utc)
-		self._registry.set_global_away(True)
-		self._logger.away_mode_entered(reason="spawn")
+		self._registry.set_cwd_override(channel_id, True)
+		self._logger.away_mode_cwd_changed(channel_id, True)
 
 		session = CollabSession(
 			cwd=channel_id,

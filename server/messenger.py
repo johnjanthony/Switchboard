@@ -105,9 +105,11 @@ class MessengerBackend(ABC):
 		if False:
 			yield
 
-	async def write_away_mode_mirror(self, cwd: str | None, active: bool) -> None:
+	async def write_away_mode_mirror(self, cwd: str | None, active: bool | None) -> None:
 		"""Mirror away-mode state to Firebase.
 		cwd=None for global flag changes; cwd=<canonical> for per-cwd overrides.
+		active=None (only valid with cwd set) means the override entry should be
+		removed from the mirror.
 		No-op by default; FirebaseBackend overrides."""
 		pass
 
@@ -303,7 +305,7 @@ class MultiBackend(MessengerBackend):
 	async def start_inject_listener(self, session_id) -> None:
 		await asyncio.gather(*(b.start_inject_listener(session_id) for b in self._backends))
 
-	async def write_away_mode_mirror(self, cwd: str | None, active: bool) -> None:
+	async def write_away_mode_mirror(self, cwd: str | None, active: bool | None) -> None:
 		await asyncio.gather(*(b.write_away_mode_mirror(cwd, active) for b in self._backends))
 
 	async def mark_question_cancelled(self, cwd: str, request_id: str) -> None:

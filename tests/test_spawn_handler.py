@@ -66,9 +66,10 @@ async def test_form1_no_args_uses_spawn_root_and_default_prompt(spawn_dirs):
 	with patch("server.spawn.subprocess.run") as mock_run:
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn")
+	from server.canonicalization import canonicalize_cwd
 	pending = json.loads(_pending_path(cfg).read_text())
 	channel_id = pending["channel_id"]
-	assert _re.match(r".+-\d{8}-\d{6}$", channel_id)
+	assert channel_id == canonicalize_cwd(str(spawn_dirs))
 
 	expected = f"{_BASE_INSTRUCTION.format(sender_default='Claude')} {_DEFAULT_PROMPT}"
 	assert pending["prompt"] == expected
@@ -226,25 +227,31 @@ async def test_spawn_started_logged_on_success(spawn_dirs):
 @pytest.mark.asyncio
 async def test_single_spawn_auto_enters_away_mode(spawn_dirs):
 	from server.spawn import SpawnHandler
+	from server.canonicalization import canonicalize_cwd
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
 	registry = Registry(away_mode_path=spawn_dirs / "away-mode.json")
 	with patch("server.spawn.subprocess.run"):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen do stuff")
-	assert registry.global_away() is True
+	expected_cwd = canonicalize_cwd(str(spawn_dirs / "rpdm" / "next-gen"))
+	assert registry.is_away_mode_active(expected_cwd) is True
+	assert registry.global_away() is False
 
 
 @pytest.mark.asyncio
 async def test_collab_spawn_auto_enters_away_mode(spawn_dirs):
 	from server.spawn import SpawnHandler
+	from server.canonicalization import canonicalize_cwd
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
 	registry = Registry(away_mode_path=spawn_dirs / "away-mode.json")
 	with patch("server.spawn.subprocess.run"):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen --collab review this")
-	assert registry.global_away() is True
+	expected_cwd = canonicalize_cwd(str(spawn_dirs / "rpdm" / "next-gen"))
+	assert registry.is_away_mode_active(expected_cwd) is True
+	assert registry.global_away() is False
 
 
 @pytest.mark.asyncio

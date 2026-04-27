@@ -560,8 +560,8 @@ async def test_collab_spawn_writes_agents_array_in_pending_json(tmp_path):
 	assert data["agents"][1]["sender"] == "Claude"
 	assert "relay" not in data
 	assert "channel_id" in data
-	import re
-	assert re.match(r"myproject-\d{8}-\d{6}$", data["channel_id"])
+	from server.canonicalization import canonicalize_cwd
+	assert data["channel_id"] == canonicalize_cwd(str(tmp_path / "myproject"))
 
 
 @pytest.mark.asyncio

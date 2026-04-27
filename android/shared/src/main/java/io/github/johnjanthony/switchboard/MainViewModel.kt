@@ -174,13 +174,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			val listener = object : ChildEventListener {
 				override fun onChildAdded(snap: DataSnapshot, prev: String?) {
 					val msgId = snap.key ?: return
-					val msg = snap.getValue(ChannelMessage::class.java) ?: return
-					addMessage(cwdKey, msgId, msg)
+					try {
+						val msg = snap.getValue(ChannelMessage::class.java) ?: return
+						addMessage(cwdKey, msgId, msg)
+					} catch (e: Exception) {
+						android.util.Log.e("MainViewModel", "MALFORMED MESSAGE at channels/$cwdKey/messages/$msgId")
+						android.util.Log.e("MainViewModel", "Value Type: ${snap.value?.javaClass?.name}")
+						android.util.Log.e("MainViewModel", "Value Content: ${snap.value}")
+						android.util.Log.e("MainViewModel", "Error: ${e.message}")
+					}
 				}
 				override fun onChildChanged(snap: DataSnapshot, prev: String?) {
 					val msgId = snap.key ?: return
-					val msg = snap.getValue(ChannelMessage::class.java) ?: return
-					addMessage(cwdKey, msgId, msg)
+					try {
+						val msg = snap.getValue(ChannelMessage::class.java) ?: return
+						addMessage(cwdKey, msgId, msg)
+					} catch (e: Exception) {
+						android.util.Log.e("MainViewModel", "MALFORMED MESSAGE (update) at channels/$cwdKey/messages/$msgId")
+						android.util.Log.e("MainViewModel", "Value Type: ${snap.value?.javaClass?.name}")
+						android.util.Log.e("MainViewModel", "Value Content: ${snap.value}")
+						android.util.Log.e("MainViewModel", "Error: ${e.message}")
+					}
 				}
 				override fun onChildRemoved(snap: DataSnapshot) {}
 				override fun onChildMoved(snap: DataSnapshot, prev: String?) {}
