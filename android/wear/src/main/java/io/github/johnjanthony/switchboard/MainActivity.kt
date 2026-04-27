@@ -1,18 +1,25 @@
 package io.github.johnjanthony.switchboard
 
 import android.Manifest
+import android.app.Activity
+import android.app.RemoteInput
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -30,7 +37,9 @@ import android.widget.TextView
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.viewinterop.AndroidView
 import io.github.johnjanthony.switchboard.fcm.SwitchboardFirebaseMessagingService
+import io.github.johnjanthony.switchboard.network.BulkRespondPayload
 import io.github.johnjanthony.switchboard.network.Channel
+import androidx.wear.input.RemoteInputIntentHelper
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
@@ -74,6 +83,10 @@ class MainActivity : ComponentActivity() {
 fun WearApp(viewModel: MainViewModel) {
     val navController = rememberSwipeDismissableNavController()
     val selectedCwdKey by viewModel.selectedCwdKey.collectAsState()
+    val bulkRespond by viewModel.bulkRespondDialog.collectAsState()
+
+    var showEnterAwayConfirm by remember { mutableStateOf(false) }
+    var showExitAwayConfirm by remember { mutableStateOf(false) }
 
     LaunchedEffect(selectedCwdKey) {
         selectedCwdKey?.let { cwdKey ->
@@ -92,7 +105,17 @@ fun WearApp(viewModel: MainViewModel) {
                 startDestination = "channel_list"
             ) {
                 composable("channel_list") {
-                    ChannelListScreen(viewModel, navController)
+                    ChannelListScreen(
+                        viewModel = viewModel, 
+                        navController = navController,
+                        onToggleAway = { desired ->
+                            if (desired) {
+                                showEnterAwayConfirm = true
+                            } else {
+                                showExitAwayConfirm = true
+                            }
+                        }
+                    )
                 }
                 composable("message_list/{cwdKey}") { backStackEntry ->
                     val cwdKey = backStackEntry.arguments?.getString("cwdKey") ?: ""
@@ -105,12 +128,156 @@ fun WearApp(viewModel: MainViewModel) {
                     ReplyScreen(cwdKey, requestId, sender, viewModel, navController)
                 }
             }
+
+            if (showEnterAwayConfirm) {
+                WearConfirmationDialog(
+                    show = showEnterAwayConfirm,
+                    onDismissRequest = { showEnterAwayConfirm = false },
+                    onConfirm = {
+                        viewModel.requestAwayModeToggle(null, true)
+                        showEnterAwayConfirm = false
+                    },
+                    title = "Away Mode",
+                    text = "Turn Away Mode ON?"
+                )
+            }
+
+            if (showExitAwayConfirm) {
+                WearConfirmationDialog(
+                    show = showExitAwayConfirm,
+                    onDismissRequest = { showExitAwayConfirm = false },
+                    onConfirm = {
+                        viewModel.requestAwayModeToggle(null, false)
+                        showExitAwayConfirm = false
+                    },
+                    title = "Away Mode",
+                    text = "Turn Away Mode OFF?"
+                )
+            }
+
+            if (bulkRespond != null) {
+                WearBulkRespondDialog(
+                    payload = bulkRespond!!,
+                    onSendToAll = { viewModel.submitBulkRespond("send_to_all", it) },
+                    onSkip = { viewModel.submitBulkRespond("skip") },
+                    onCancel = { viewModel.submitBulkRespond("cancel") }
+                )
+            }
         }
     }
 }
 
 @Composable
-fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController) {
+fun WearConfirmationDialog(
+    show: Boolean,
+    onDismissRequest: () -> Unit,
+    onConfirm: () -> Unit,
+    title: String,
+    text: String
+) {
+    AlertDialog(
+        visible = show,
+        onDismissRequest = onDismissRequest,
+        title = { Text(title, textAlign = TextAlign.Center) },
+        text = { Text(text, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) }
+    ) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    onClick = onDismissRequest,
+                    colors = ButtonDefaults.filledTonalButtonColors(),
+                    label = { Icon(Icons.Default.Clear, contentDescription = "Cancel") }
+                )
+                Spacer(Modifier.width(16.dp))
+                Button(
+                    onClick = onConfirm,
+                    label = { Icon(Icons.Default.Check, contentDescription = "Confirm") }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun WearBulkRespondDialog(
+    payload: BulkRespondPayload,
+    onSendToAll: (text: String) -> Unit,
+    onSkip: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val totalQuestions = payload.sections.sumOf { it.entries.size }
+    
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val results = RemoteInput.getResultsFromIntent(result.data)
+            val text = results?.getCharSequence("response")?.toString()
+            if (!text.isNullOrBlank()) {
+                onSendToAll(text)
+            }
+        }
+    }
+
+    AlertDialog(
+        visible = true,
+        onDismissRequest = onCancel,
+        title = { Text("Pending questions", textAlign = TextAlign.Center) },
+        text = {
+            Text(
+                text = "$totalQuestions questions pending. Respond to all?",
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    ) {
+        item {
+            Button(
+                onClick = { 
+                    val remoteInput = RemoteInput.Builder("response")
+                        .setLabel("Response to all")
+                        .build()
+                    val intent = RemoteInputIntentHelper.createActionRemoteInputIntent()
+                    RemoteInputIntentHelper.putRemoteInputsExtra(intent, listOf(remoteInput))
+                    launcher.launch(intent)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Send editable...") }
+            )
+        }
+        item {
+            Button(
+                onClick = { onSendToAll(payload.defaultText) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Send default") }
+            )
+        }
+        item {
+            Button(
+                onClick = onSkip,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.filledTonalButtonColors(),
+                label = { Text("Toggle off only") }
+            )
+        }
+        item {
+            Button(
+                onClick = onCancel,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.filledTonalButtonColors(),
+                label = { Text("Cancel") }
+            )
+        }
+    }
+}
+
+@Composable
+fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController, onToggleAway: (Boolean) -> Unit) {
     val channels by viewModel.channels.collectAsState()
     val awayModeActive by viewModel.globalAway.collectAsState()
     val unseenChannels by viewModel.unseenChannels.collectAsState()
@@ -138,7 +305,7 @@ fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController
             item {
                 SwitchButton(
                     checked = awayModeActive,
-                    onCheckedChange = { viewModel.requestAwayModeToggle(null, it) },
+                    onCheckedChange = { onToggleAway(it) },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                     label = { Text("Away Mode") }
                 )

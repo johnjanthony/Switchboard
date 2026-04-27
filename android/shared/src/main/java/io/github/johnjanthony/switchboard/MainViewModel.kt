@@ -328,6 +328,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		_unseenChannels.value = _unseenChannels.value - cwdKey
 	}
 
+	fun hasAnyPendingQuestions(): Boolean {
+		return _channels.value.values.any { it.pendingQuestions.isNotEmpty() }
+	}
+
 	fun submitReply(cwdKey: String, sender: String, text: String) {
 		responsesRef.child("${cwdKey}__$sender").setValue(mapOf(
 			"text" to text,
