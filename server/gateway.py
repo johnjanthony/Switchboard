@@ -456,33 +456,58 @@ def build_tool_handlers(
 		groups: dict[str, list] = {}
 		for p in pending:
 			groups.setdefault(p.cwd, []).append(p)
-		sections = []
-		for cwd in sorted(groups.keys()):
-			entries = []
-			for p in groups[cwd]:
-				question_text = ""
-				if p.msg_id:
-					try:
-						question_text = await backend.fetch_message_text(p.cwd, p.msg_id) or ""
-					except Exception:
-						question_text = ""
-				entries.append({
-					"request_id": p.request_id,
-					"sender": p.sender,
-					"question_text": question_text,
-				})
-			sections.append({"cwd": cwd, "entries": entries})
+		
+		# Parallelize fetching question text for all pending requests
+		async def _fetch_entry(p):
+			question_text = ""
+			if p.msg_id:
+				try:
+					question_text = await backend.fetch_message_text(p.cwd, p.msg_id) or ""
+				except Exception:
+					pass
+			return {
+				"cwd": p.cwd,
+				"request_id": p.request_id,
+				"sender": p.sender,
+				"question_text": question_text,
+			}
+
+		results = await asyncio.gather(*[_fetch_entry(p) for p in pending])
+		
+		# Regroup by CWD for the payload sections
+		sections_map: dict[str, list] = {}
+		for res in results:
+			cwd = res.pop("cwd")
+			sections_map.setdefault(cwd, []).append(res)
+		
+		sections = [{"cwd": cwd, "entries": sections_map[cwd]} for cwd in sorted(sections_map.keys())]
 		return {"sections": sections, "default_text": "Caught up — back at my desk."}
 
 	async def bulk_respond_send_to_all(default_text: str) -> None:
 		pending = registry.all_pending()
-		for p in pending:
+		
+		async def _resolve_one(p):
 			req_id = registry.resolve(cwd=p.cwd, sender=p.sender, text=default_text)
 			if req_id is not None:
+				tasks = []
+				# 1. Confirm resolution (cleans up /responses node)
+				tasks.append(backend.send_resolution_confirmation(req_id, p.cwd, (p.cwd, p.sender), response_text=default_text))
+				
+				# 2. Update original question with response text
+				if p.msg_id and hasattr(backend, "write_response_text"):
+					tasks.append(backend.write_response_text(p.cwd, p.msg_id, default_text))
+				
+				# 3. Add to chat history
+				tasks.append(backend.write_channel_message(p.cwd, "John", "human", default_text))
+				
 				try:
-					await backend.send_resolution_confirmation(req_id, p.cwd, None, response_text=default_text)
-				except Exception:
-					pass
+					await asyncio.gather(*tasks)
+					logger.notify_sent(p.cwd, f"Bulk Reply: {default_text}")
+				except Exception as exc:
+					logger.surface_error(f"bulk_resolve_failed: cwd={p.cwd} sender={p.sender} err={exc}")
+
+		if pending:
+			await asyncio.gather(*[_resolve_one(p) for p in pending])
 
 	async def bulk_respond_skip() -> None:
 		pass
@@ -532,7 +557,7 @@ async def dispatch_responses(
 							# Add a NEW message to the history so it shows up in-line in the app
 							async def _write_history(cid=cwd, txt=response.text):
 								try:
-									await backend.write_channel_message(cid, "Human", "human", txt)
+									await backend.write_channel_message(cid, "John", "human", txt)
 									logger.notify_sent(cid, f"Reply: {txt}")
 								except Exception as exc:
 									logger.surface_error(f"history_write_failed: {exc}")
@@ -602,21 +627,24 @@ async def dispatch_away_mode_commands(
 							await backend.write_bulk_respond_dialog(payload)
 							try:
 								decision = await backend.poll_bulk_respond_decision()
-							except NotImplementedError:
-								decision = {"action": "skip"}
-							action = decision.get("action", "skip")
-							default_text = decision.get("default_text", payload.get("default_text", ""))
-							if action == "send_to_all":
-								await handlers.bulk_respond_send_to_all(default_text)
-								registry.set_global_away(False)
-							elif action == "skip":
-								registry.set_global_away(False)
-							else:
-								await handlers.bulk_respond_cancel()
-							await backend.clear_bulk_respond_dialog()
+								# Clear dialog IMMEDIATELY after decision is received
+								await backend.clear_bulk_respond_dialog()
+								
+								action = decision.get("action", "skip")
+								default_text = decision.get("default_text", payload.get("default_text", ""))
+								if action == "send_to_all":
+									await handlers.bulk_respond_send_to_all(default_text)
+									registry.set_global_away(False)
+								elif action == "skip":
+									registry.set_global_away(False)
+								else:
+									await handlers.bulk_respond_cancel()
+							except Exception as exc:
+								logger.surface_error(f"away_mode_commands: exit_global processing error: {exc}")
+								await backend.clear_bulk_respond_dialog()
 						else:
 							registry.set_global_away(False)
-						logger.surface_error(f"away_mode_commands: exit_global applied action={decision.get('action','none')}")
+						logger.surface_error(f"away_mode_commands: exit_global applied")
 
 					elif cmd_type == "enter_cwd":
 						raw_cwd = cmd.get("cwd") or ""
