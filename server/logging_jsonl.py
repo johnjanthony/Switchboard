@@ -29,6 +29,10 @@ class JsonlLogger:
 	def __init__(self, path: str | Path) -> None:
 		self._path = Path(path)
 		self._path.parent.mkdir(parents=True, exist_ok=True)
+
+	@property
+	def log_path(self) -> str:
+		return str(self._path)
 		self._lock = asyncio.Lock()
 
 	async def _write(self, event: dict[str, Any]) -> None:

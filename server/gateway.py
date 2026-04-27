@@ -398,7 +398,7 @@ def build_tool_handlers(
 				# Capture locals for the async task
 				async def _relay(cid=channel_id, s=actual_sender, msg=payload) -> None:
 					try:
-						await backend.write_channel_message(cid, s, "agent", msg)
+						await backend.write_channel_message(cid, s, "agent", msg, format="markdown")
 					except Exception as exc:
 						await logger.surface_error(f"collab_relay_error: {exc}")
 				asyncio.create_task(_relay())
@@ -561,6 +561,7 @@ def build_tool_handlers(
 					tasks.append(backend.write_response_text(p.cwd, p.msg_id, default_text))
 				tasks.append(backend.write_channel_message(p.cwd, "John", "human", default_text))
 				await asyncio.gather(*tasks)
+				await _append_session_log(config.log_path, p.cwd, "←", default_text)
 				await logger.notify_sent(p.cwd, f"Bulk Reply: {default_text}")
 			except Exception as exc:
 				await logger.surface_error(f"bulk_resolve_failed: cwd={p.cwd} sender={p.sender} err={exc}")
@@ -624,6 +625,7 @@ async def dispatch_responses(
 								try:
 									await backend.write_channel_message(cid, "John", "human", txt)
 									await logger.notify_sent(cid, f"Reply: {txt}")
+									await _append_session_log(logger.log_path, cid, "←", txt)
 								except Exception as exc:
 									await logger.surface_error(f"history_write_failed: {exc}")
 							asyncio.create_task(_write_history())

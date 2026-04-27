@@ -121,7 +121,8 @@ def _build_fastmcp(handlers) -> FastMCP:
 	) -> str:
 		"""Send to your collab partner and block until they reply.
 		cwd is the shared session key. sender is your unique display name.
-		Omit message on your first call if you are Agent 2."""
+		Omit message on your first call if you are Agent 2.
+		Markdown is supported and is the default for collab messages."""
 		return await handlers.message_and_await_agent(cwd, sender, title, message)
 
 	@mcp.tool()
