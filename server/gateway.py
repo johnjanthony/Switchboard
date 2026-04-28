@@ -84,12 +84,14 @@ def _validate_path(path_str: str, cwd: Path | None = None) -> Path:
 	return resolved
 
 
-async def _append_session_log(log_path: str, channel_id: str, direction: str, text: str) -> None:
+async def _append_session_log(log_path: str, channel_id: str, direction: str, text: str, logger: JsonlLogger) -> None:
 	from server.canonicalization import to_firebase_key
-	key = to_firebase_key(channel_id)
+	key = to_firebase_key(channel_id).replace(":", "_")
 	path = Path(log_path).parent / "sessions" / f"{key}_{_SESSION_START}.log"
 	ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 	line = f"{ts} {direction} {text}\n"
+
+	await logger.info(f"writing_session_log: {path.absolute()}")
 
 	def _write() -> None:
 		path.parent.mkdir(exist_ok=True)
@@ -208,7 +210,7 @@ def build_tool_handlers(
 		try:
 			await backend.write_channel_message(canonical, sender, "notify", message, format=format, title=title)
 			await logger.notify_sent(canonical, message)
-			await _append_session_log(config.log_path, canonical, "→", message)
+			await _append_session_log(config.log_path, canonical, "→", message, logger)
 			return "ok"
 		except Exception as exc:
 			await logger.tool_error(None, canonical, str(exc))
@@ -239,7 +241,7 @@ def build_tool_handlers(
 					canonical, sender, "notify", question, format=format, title=title,
 				)
 				await logger.notify_sent(canonical, question)
-				await _append_session_log(config.log_path, canonical, "→", question)
+				await _append_session_log(config.log_path, canonical, "→", question, logger)
 			except Exception as exc:
 				await logger.tool_error(None, canonical, str(exc))
 				return f"ERROR: {exc}"
@@ -259,7 +261,7 @@ def build_tool_handlers(
 			if prior_request_id is not None:
 				await _safe_mark_cancelled(backend, canonical, prior_request_id, logger)
 			await logger.request_created(request_id, canonical, question)
-			await _append_session_log(config.log_path, canonical, "→", question)
+			await _append_session_log(config.log_path, canonical, "→", question, logger)
 		except asyncio.CancelledError:
 			await _safe_mark_cancelled(backend, canonical, request_id, logger)
 			registry.remove(canonical, sender)
@@ -289,7 +291,7 @@ def build_tool_handlers(
 			registry.remove(canonical, sender)
 			return f"ERROR: {exc}"
 
-		await _append_session_log(config.log_path, canonical, "←", result)
+		await _append_session_log(config.log_path, canonical, "←", result, logger)
 		duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
 		source = "unknown"
 		if isinstance(correlation, dict):
@@ -354,7 +356,7 @@ def build_tool_handlers(
 		except Exception as exc:
 			await logger.surface_error(f"document_audit_failed: {exc}")
 		entry = f"[document: {resolved.name}] {caption}" if caption else f"[document: {resolved.name}]"
-		await _append_session_log(config.log_path, canonical, "→", entry)
+		await _append_session_log(config.log_path, canonical, "→", entry, logger)
 		return "ok"
 
 	async def message_and_await_agent(
@@ -391,7 +393,7 @@ def build_tool_handlers(
 		try:
 			if message is not None:
 				await logger.collab_message_sent(channel_id, sender, message)
-				await _append_session_log(config.log_path, channel_id, "→", f"{sender}: {message}")
+				await _append_session_log(config.log_path, channel_id, "→", f"{sender}: {message}", logger)
 
 			deliveries = session.handle_message(sender, message, title, title_tracker)
 			for actual_sender, payload in deliveries:
@@ -411,7 +413,7 @@ def build_tool_handlers(
 		try:
 			result = await asyncio.wait_for(future, timeout=config.timeout_seconds)
 			await logger.collab_message_received(channel_id, sender, result)
-			await _append_session_log(config.log_path, channel_id, "←", f"{sender}: {result}")
+			await _append_session_log(config.log_path, channel_id, "←", f"{sender}: {result}", logger)
 			return result
 		except asyncio.TimeoutError:
 			session.cancel_waiting(sender)
@@ -480,6 +482,7 @@ def build_tool_handlers(
 		await _append_session_log(
 			config.log_path, canonical, "→",
 			f"{sender}: [end_collab hand_off_to_human={hand_off_to_human}] {message or ''}",
+			logger,
 		)
 
 		if hand_off_to_human:
@@ -561,7 +564,7 @@ def build_tool_handlers(
 					tasks.append(backend.write_response_text(p.cwd, p.msg_id, default_text))
 				tasks.append(backend.write_channel_message(p.cwd, "John", "human", default_text))
 				await asyncio.gather(*tasks)
-				await _append_session_log(config.log_path, p.cwd, "←", default_text)
+				await _append_session_log(config.log_path, p.cwd, "←", default_text, logger)
 				await logger.notify_sent(p.cwd, f"Bulk Reply: {default_text}")
 			except Exception as exc:
 				await logger.surface_error(f"bulk_resolve_failed: cwd={p.cwd} sender={p.sender} err={exc}")
