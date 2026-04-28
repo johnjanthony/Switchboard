@@ -628,7 +628,7 @@ async def dispatch_responses(
 								try:
 									await backend.write_channel_message(cid, "John", "human", txt)
 									await logger.notify_sent(cid, f"Reply: {txt}")
-									await _append_session_log(logger.log_path, cid, "←", txt)
+									await _append_session_log(logger.log_path, cid, "←", txt, logger)
 								except Exception as exc:
 									await logger.surface_error(f"history_write_failed: {exc}")
 							asyncio.create_task(_write_history())
