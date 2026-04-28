@@ -46,22 +46,6 @@ Periodically clean up old questions, responses, and documents from Firebase (e.g
 
 ---
 
-## Android: multi-sender reply UX in BYO collab channels
-
-**Surfaced 2026-04-26** during cwd-as-channel post-merge testing (test F). When a single channel has multiple pending questions from distinct senders (BYO collab scenario), the reply bar in `SessionViewScreen.kt:87` picks one via `currentPending.values.firstOrNull { !it.cancelled }` and shows just that one in the bottom bar. The placeholder reads `"Reply to {sender}…"` but it's subtle, easy to miss, and the user has no agency over which pending to reply to first — the UI implicitly serializes them.
-
-**What needs to change:**
-
-- **Strong sender attribution in the reply UI.** Promote the sender from a placeholder hint to a prominent label or chip directly above/beside the reply input — e.g. a `→ Replying to: [Claude]` row with the sender styled like the message-bubble sender label.
-- **Agency over which pending to answer.** Options:
-  - Render an inline reply affordance directly beneath each pending question card in the scroll, not (only) a global bottom bar. Eliminates the ambiguity entirely — each question has its own visible reply box.
-  - Or: if keeping the single bottom bar, add a row of sender chips (`[Claude] [Sparkles]`) above it that the user can tap to switch which pending the bar targets.
-- **Test:** when two senders both have pending questions in the same channel, the user can pick which one to answer first, and the reply visibly routes to that sender (slot `responses/{cwdKey}__{sender}` for the chosen one).
-
-The data is already correct end-to-end (verified in test F: server's `(cwd, sender)` keying preserves both pendings, replies route correctly per slot). Pure UX work on the phone.
-
----
-
 ## Android: swipe gestures on channel rows
 
 Add directional swipe actions to `SessionRowComposable` on Page A:
@@ -87,6 +71,21 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 
 ---
 
+## Android: copy message text to clipboard
+
+Allow the user to copy message contents from the channel view — both whole-message copy and partial text-selection copy — for any message type (agent updates, `ask_human` prompts, replies, system messages, collab injections, document captions, etc.).
+
+**What it takes:**
+
+- **Whole-message copy.** Long-press on a message bubble surfaces a context action (Material 3 dropdown menu or bottom sheet) with "Copy". Writes the full rendered text to `ClipboardManager` and shows a brief toast/snackbar confirmation. Should work uniformly across all message types — pull the source text from the `ChannelMessage` body rather than the rendered Compose tree.
+- **Partial selection copy.** Enable text selection inside message bubbles so the user can drag-select a span and copy via the standard Android selection toolbar. In Compose this means swapping the message body `Text(...)` for `SelectionContainer { Text(...) }` (or putting the whole message list inside one `SelectionContainer`). Markdown-rendered bubbles need the same treatment — verify the markdown renderer's output is selectable.
+- **Markdown messages.** When a message is rendered as markdown, the copied text should be the *plain* text (what the user sees), not the raw markdown source. If both are useful, the long-press menu can offer "Copy text" and "Copy as markdown" as separate actions.
+- **No new server work.** Pure client-side feature.
+
+Low-medium priority — improves quality-of-life for grabbing snippets out of agent output (paths, error messages, code) without retyping.
+
+---
+
 ## Android: investigate MALFORMED MESSAGE deserialization warnings
 
 **Surfaced 2026-04-27** while debugging spawn-collision. `MainViewModel.kt` lines 175-198 log `MALFORMED MESSAGE at channels/<key>/messages/<id>` with `Value Type: java.lang.String, Value Content: <empty>` when `getValue(ChannelMessage::class.java)` throws. Direct Firebase admin queries against the same paths return correctly-shaped dicts, so the data IS dict-shaped at rest — the phone's listener appears to fire on a transient state where `snap.value` is a String. The catch swallows the error, so it's log noise plus an occasional missed render rather than data loss. Low priority — investigate whether it's a Firebase SDK race, a partial-write listener fire, or something else, and either suppress the log noise or fix the deserialization path.
@@ -94,26 +93,6 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 ---
 
 # Combined (server + client)
-
-## Per-channel away-mode tracking — IN IMPLEMENTATION (cwd-as-channel branch, post-Slice-M validation)
-
-This entry graduated from backlog to active work and expanded in scope during brainstorming to **cwd-as-channel unification**: replacing `channel_id` with canonical-cwd as the namespace, re-keying blocking exchanges by `(cwd, sender)` with supersede semantics, two-tier away-mode (`_global_away` + `_cwd_overrides`), and an Android UI overhaul to a list-based two-page nav.
-
-**Spec:** [`superpowers/specs/2026-04-24-cwd-as-channel-and-per-cwd-away-mode-design.md`](superpowers/specs/2026-04-24-cwd-as-channel-and-per-cwd-away-mode-design.md)
-**Plan:** `superpowers/plans/2026-04-25-cwd-as-channel-and-per-cwd-away-mode.md` (gitignored)
-**Branch:** `cwd-as-channel`
-**Status (2026-04-26):** Slices A–L committed; today's spawn-correctness fixes shipped (cwd-override on spawn, deterministic cwd-keyed channel id, mirror sync on bulk-clear). Slice M validation walked end-to-end on phone and watch — most scenarios pass; gaps surfaced as separate backlog items (spawn-collision dialog wiring, withdraw-on-agent-death, multi-sender reply UX, swipe gestures, FCM notification suggestion actions). 321 server tests passing.
-
-The original concerns this entry tracked are all subsumed by the new spec:
-- Per-channel away state → covered by Slice B (two-tier `_global_away` + `_cwd_overrides`).
-- At-desk `ask_human` redirect under per-channel state → covered by Slice D (per-cwd resolution in `gateway.ask_human`).
-- Reply-routing by current-pending pointer → covered by Slice C (re-key `_pending` by `(cwd, sender)` so the slot itself is the pointer; supersede on add).
-
-The bundled "hook captures leaked terminal text" enhancement is **not** included in the current spec — it remains a separate follow-up and could be bolted on later (the Stop hook now knows the cwd, so plumbing it through `notify_human` on the channel is straightforward).
-
-This entry moves to `PROJECT-JOURNAL.md` once the branch merges to main.
-
----
 
 ## Withdraw pending questions when an unattended agent dies
 
