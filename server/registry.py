@@ -122,6 +122,10 @@ class Registry:
 		"""Snapshot for bulk-respond on global exit (Slice I)."""
 		return list(self._pending.values())
 
+	def pending_for_cwd(self, cwd: str) -> list["PendingRequest"]:
+		"""Snapshot of pending requests for a specific channel (Slice L)."""
+		return [p for p in self._pending.values() if p.cwd == cwd]
+
 	def cancel_pending_for_cwd(self, cwd: str) -> list[str]:
 		"""Pop and cancel every pending request whose cwd matches. Returns the
 		list of request_ids that were cancelled so the caller can mark each

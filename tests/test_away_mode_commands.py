@@ -205,16 +205,45 @@ async def test_enter_cwd_sets_override(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_exit_cwd_clears_override(tmp_path):
+async def test_exit_cwd_send_to_all_resolves_pending_and_clears_override(tmp_path):
 	registry = Registry()
-	registry.set_cwd_override("c:/work/switchboard", True)
-	backend = FakeBackend()
+	registry.set_cwd_override("c:/work/foo", True)
+	fut = registry.add(cwd="c:/work/foo", sender="Claude", request_id="req-1", msg_id="msg-1")
+	# Another channel's pending should NOT be resolved
+	registry.set_cwd_override("c:/work/bar", True)
+	fut_other = registry.add(cwd="c:/work/bar", sender="Claude", request_id="req-2", msg_id="msg-2")
+
+	backend = FakeBackend(decision={"action": "send_to_all", "default_text": "Back at desk"})
 	await _run_one_cmd(
 		registry, backend,
-		{"type": "exit_cwd", "cwd": "c:/work/switchboard", "issued_at": "2026-01-01T00:00:00Z"},
+		{"type": "exit_cwd", "cwd": "c:/work/foo", "issued_at": "2026-01-01T00:00:00Z"},
 		tmp_path,
 	)
-	assert registry.is_away_mode_active("c:/work/switchboard") is False
+
+	assert registry.is_away_mode_active("c:/work/foo") is False
+	assert fut.done() and fut.result() == "Back at desk"
+
+	# Other channel unaffected
+	assert registry.is_away_mode_active("c:/work/bar") is True
+	assert not fut_other.done()
+	assert backend.dialog_cleared is True
+
+
+@pytest.mark.asyncio
+async def test_exit_cwd_cancel_re_sets_override(tmp_path):
+	registry = Registry()
+	registry.set_cwd_override("c:/work/foo", True)
+	registry.add(cwd="c:/work/foo", sender="Claude", request_id="req-1")
+
+	backend = FakeBackend(decision={"action": "cancel"})
+	await _run_one_cmd(
+		registry, backend,
+		{"type": "exit_cwd", "cwd": "c:/work/foo", "issued_at": "2026-01-01T00:00:00Z"},
+		tmp_path,
+	)
+
+	assert registry.is_away_mode_active("c:/work/foo") is True
+	assert backend.dialog_cleared is True
 
 
 @pytest.mark.asyncio

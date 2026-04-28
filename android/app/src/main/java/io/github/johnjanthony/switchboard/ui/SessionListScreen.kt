@@ -45,6 +45,7 @@ fun SessionListScreen(
 	onExitGlobalAway: () -> Unit,
 	onHideChannel: (Channel) -> Unit,
 	onUnhideChannel: (Channel) -> Unit,
+	onAwayToggle: (Channel) -> Unit,
 	onSpawnClick: () -> Unit,
 ) {
 	var menuExpanded by remember { mutableStateOf(false) }
@@ -98,6 +99,7 @@ fun SessionListScreen(
 						onClick = { onSessionClick(channel) },
 						onHide = { onHideChannel(channel) },
 						onUnhide = { onUnhideChannel(channel) },
+						onExitAway = { onAwayToggle(channel) },
 					)
 					Divider()
 				}

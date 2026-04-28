@@ -168,9 +168,12 @@ class ToolHandlers:
 	enter_away_mode: Callable[..., Coroutine[None, None, str]]
 	exit_away_mode: Callable[..., Coroutine[None, None, str]]
 	build_bulk_respond_payload: Callable[..., Coroutine[None, None, dict]]
+	build_bulk_respond_payload_for_cwd: Callable[..., Coroutine[None, None, dict]]
 	bulk_respond_send_to_all: Callable[..., Coroutine[None, None, None]]
+	bulk_respond_send_to_all_for_cwd: Callable[..., Coroutine[None, None, None]]
 	bulk_respond_skip: Callable[..., Coroutine[None, None, None]]
 	bulk_respond_cancel: Callable[..., Coroutine[None, None, None]]
+	bulk_respond_cancel_for_cwd: Callable[..., Coroutine[None, None, None]]
 
 
 def build_tool_handlers(
@@ -517,6 +520,15 @@ def build_tool_handlers(
 
 	async def build_bulk_respond_payload() -> dict:
 		pending = registry.all_pending()
+		await logger.info(f"build_bulk_respond_payload: found {len(pending)} total pending items")
+		return await _build_payload_from_pending(pending)
+
+	async def build_bulk_respond_payload_for_cwd(cwd: str) -> dict:
+		pending = registry.pending_for_cwd(cwd)
+		await logger.info(f"build_bulk_respond_payload_for_cwd: found {len(pending)} items for {cwd}")
+		return await _build_payload_from_pending(pending)
+
+	async def _build_payload_from_pending(pending: list) -> dict:
 		groups: dict[str, list] = {}
 		for p in pending:
 			groups.setdefault(p.cwd, []).append(p)
@@ -549,7 +561,13 @@ def build_tool_handlers(
 
 	async def bulk_respond_send_to_all(default_text: str) -> None:
 		pending = registry.all_pending()
-		
+		await _bulk_respond_send_to_pending(pending, default_text)
+
+	async def bulk_respond_send_to_all_for_cwd(cwd: str, default_text: str) -> None:
+		pending = registry.pending_for_cwd(cwd)
+		await _bulk_respond_send_to_pending(pending, default_text)
+
+	async def _bulk_respond_send_to_pending(pending: list, default_text: str) -> None:
 		async def _resolve_one(p):
 			# Wrap the whole body so attribute-access failures during task construction
 			# (e.g. backend missing write_channel_message) don't propagate and abort the fan-out.
@@ -578,6 +596,9 @@ def build_tool_handlers(
 	async def bulk_respond_cancel() -> None:
 		registry.set_global_away(True)
 
+	async def bulk_respond_cancel_for_cwd(cwd: str) -> None:
+		registry.set_cwd_override(cwd, True)
+
 	return ToolHandlers(
 		ask_human=ask_human,
 		notify_human=notify_human,
@@ -587,9 +608,12 @@ def build_tool_handlers(
 		enter_away_mode=enter_away_mode,
 		exit_away_mode=exit_away_mode,
 		build_bulk_respond_payload=build_bulk_respond_payload,
+		build_bulk_respond_payload_for_cwd=build_bulk_respond_payload_for_cwd,
 		bulk_respond_send_to_all=bulk_respond_send_to_all,
+		bulk_respond_send_to_all_for_cwd=bulk_respond_send_to_all_for_cwd,
 		bulk_respond_skip=bulk_respond_skip,
 		bulk_respond_cancel=bulk_respond_cancel,
+		bulk_respond_cancel_for_cwd=bulk_respond_cancel_for_cwd,
 	)
 
 
@@ -761,8 +785,43 @@ async def dispatch_away_mode_commands(
 						except CanonicalizationError as exc:
 							await logger.surface_error(f"away_mode_commands: exit_cwd bad cwd={raw_cwd!r} {exc}")
 							continue
-						registry.set_cwd_override(canonical, False)
-						await logger.info(f"away_mode_commands: exit_cwd {canonical}")
+
+						# User intent: exit per-channel away. Honor unless the dialog flow returned an
+						# explicit "cancel" decision. Match exit_global's confirm-then-respond flow.
+						action = "skip"
+						default_text = ""
+						try:
+							payload = await handlers.build_bulk_respond_payload_for_cwd(canonical)
+							if payload["sections"]:
+								default_text = payload.get("default_text", "")
+								await backend.write_bulk_respond_dialog(payload)
+								try:
+									decision = await backend.poll_bulk_respond_decision()
+									action = decision.get("action", "skip")
+									default_text = decision.get("default_text", default_text)
+								except Exception as exc:
+									await logger.surface_error(f"away_mode_commands: exit_cwd decision poll error: {exc}")
+								try:
+									await backend.clear_bulk_respond_dialog()
+								except Exception as exc:
+									await logger.surface_error(f"away_mode_commands: clear_bulk_respond_dialog error: {exc}")
+						except Exception as exc:
+							await logger.surface_error(f"away_mode_commands: exit_cwd dialog setup error: {exc}")
+
+						if action == "send_to_all":
+							try:
+								await handlers.bulk_respond_send_to_all_for_cwd(canonical, default_text)
+							except Exception as exc:
+								await logger.surface_error(f"away_mode_commands: bulk_respond_send_to_all_for_cwd error: {exc}")
+							registry.set_cwd_override(canonical, False)
+						elif action == "skip":
+							registry.set_cwd_override(canonical, False)
+						else:
+							try:
+								await handlers.bulk_respond_cancel_for_cwd(canonical)
+							except Exception as exc:
+								await logger.surface_error(f"away_mode_commands: bulk_respond_cancel_for_cwd error: {exc}")
+						await logger.info(f"away_mode_commands: exit_cwd {canonical} applied (action={action})")
 
 					else:
 						await logger.surface_error(f"away_mode_commands: unknown type={cmd_type!r}")

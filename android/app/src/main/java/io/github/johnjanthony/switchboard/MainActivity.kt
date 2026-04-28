@@ -144,6 +144,7 @@ private fun SwitchboardNavHost(
 				onExitGlobalAway = { viewModel.requestAwayModeToggle(null, false) },
 				onHideChannel = { viewModel.hideChannel(it.cwdKey) },
 				onUnhideChannel = { viewModel.unhideChannel(it.cwdKey) },
+				onAwayToggle = { viewModel.requestAwayModeToggle(it.cwdKey, false) },
 				onSpawnClick = { showSpawnDialog = true },
 			)
 		}
