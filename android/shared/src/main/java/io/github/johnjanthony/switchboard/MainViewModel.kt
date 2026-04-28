@@ -263,6 +263,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		if (_selectedCwdKey.value == null && !channel.hidden) {
 			_selectedCwdKey.value = cwdKey
 		}
+
+		if (msg.rejected) {
+			Handler(Looper.getMainLooper()).post {
+				Toast.makeText(getApplication(), msg.text, Toast.LENGTH_LONG).show()
+			}
+		}
 	}
 
 	private fun removeMessage(cwdKey: String, msgId: String) {

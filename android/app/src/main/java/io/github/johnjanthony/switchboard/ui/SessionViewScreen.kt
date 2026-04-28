@@ -63,6 +63,17 @@ fun SessionViewScreen(
 	onShowTabInfo: () -> Unit,
 ) {
 	val listState = rememberLazyListState()
+	val activePending = currentPending.filterValues { !it.cancelled }
+	var selectedRequestId by remember(channel.cwdKey) { mutableStateOf<String?>(null) }
+
+	// Auto-select if there is exactly one pending question
+	androidx.compose.runtime.LaunchedEffect(activePending.size) {
+		if (activePending.size == 1) {
+			selectedRequestId = activePending.keys.first()
+		} else if (activePending.isEmpty()) {
+			selectedRequestId = null
+		}
+	}
 
 	androidx.compose.runtime.LaunchedEffect(scrollToMessageId, messages.size) {
 		val targetId = scrollToMessageId
@@ -121,12 +132,33 @@ fun SessionViewScreen(
 			)
 		},
 		bottomBar = {
-			val pending = currentPending.values.firstOrNull { !it.cancelled }
-			if (pending != null) {
+			val selected = activePending[selectedRequestId]
+			if (selected != null) {
 				ReplyInputBar(
-					pending = pending,
-					onSubmit = { text -> onSubmitReply(pending.sender, text) },
+					pending = selected,
+					onSubmit = { text ->
+						onSubmitReply(selected.sender, text)
+						// Optimistically clear selection if more remain
+						if (activePending.size > 1) {
+							selectedRequestId = null
+						}
+					},
 				)
+			} else if (activePending.isNotEmpty()) {
+				Surface(tonalElevation = 2.dp) {
+					androidx.compose.foundation.layout.Box(
+						modifier = Modifier
+							.fillMaxWidth()
+							.padding(16.dp),
+						contentAlignment = Alignment.Center
+					) {
+						Text(
+							text = "Select a question to reply...",
+							style = MaterialTheme.typography.bodyMedium,
+							color = MaterialTheme.colorScheme.onSurfaceVariant
+						)
+					}
+				}
 			}
 		},
 	) { padding ->
@@ -156,6 +188,12 @@ fun SessionViewScreen(
 				}
 				MessageBubble(
 					message = msg,
+					isSelected = msg.request_id != null && msg.request_id == selectedRequestId,
+					onClick = {
+						if (msg.request_id != null && activePending.containsKey(msg.request_id)) {
+							selectedRequestId = msg.request_id
+						}
+					},
 					onDownloadClick = onDownloadFile,
 					onDownloadLongClick = onLongPressDownloadFile,
 				)

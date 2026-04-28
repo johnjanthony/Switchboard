@@ -501,7 +501,7 @@ async def test_ask_human_writes_channel_message(tmp_path):
 	backend = RecordingBackend()
 	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
 
-	task = asyncio.create_task(handlers.ask_human("Is this OK?", _ASK_CWD))
+	task = asyncio.create_task(handlers.ask_human("Is this OK?", _ASK_CWD, "Claude"))
 	await asyncio.sleep(0)
 
 	question_msgs = [m for m in backend.channel_messages if m["message_type"] == "question"]
@@ -557,7 +557,7 @@ async def test_collab_spawn_writes_agents_array_in_pending_json(tmp_path):
 	assert "agents" in data
 	assert len(data["agents"]) == 2
 	assert data["agents"][0]["sender"] == "Claude"
-	assert data["agents"][1]["sender"] == "Claude"
+	assert data["agents"][1]["sender"] == "Gemini"
 	assert "relay" not in data
 	assert "channel_id" in data
 	from server.canonicalization import canonicalize_cwd
@@ -587,7 +587,7 @@ async def test_collab_spawn_writes_sidecar(tmp_path):
 	entries = _json.loads(sidecar.read_text())
 	assert len(entries) == 1
 	assert "channel_id" in entries[0]
-	assert entries[0]["agent_senders"] == ["Claude", "Claude"]
+	assert entries[0]["agent_senders"] == ["Claude", "Gemini"]
 
 
 @pytest.mark.asyncio
@@ -609,7 +609,7 @@ async def test_collab_spawn_registers_session_in_registry(tmp_path):
 
 	assert len(registry._sessions) == 1
 	session = list(registry._sessions.values())[0]
-	assert session.agent_senders == ["Claude", "Claude"]
+	assert session.agent_senders == ["Claude", "Gemini"]
 
 
 @pytest.mark.asyncio

@@ -124,7 +124,7 @@ async def test_notify_human_calls_backend_and_returns_ok(cfg, logger, tmp_path):
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.notify_human("starting migration", "c:/work/test-001")
+	result = await handlers.notify_human("starting migration", "c:/work/test-001", "Claude")
 
 	assert result == "ok"
 	assert backend.sent_notifications == [("Claude", "starting migration")]
@@ -144,7 +144,7 @@ async def test_notify_human_returns_error_sentinel_on_backend_failure(cfg, logge
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.notify_human("starting", "c:/work/test-001")
+	result = await handlers.notify_human("starting", "c:/work/test-001", "Claude")
 
 	assert result.startswith("ERROR:")
 	assert "notify boom" in result
@@ -157,9 +157,9 @@ async def test_notify_human_returns_error_when_rate_limited(cfg, logger):
 	limiter = RateLimiter(rate_per_minute=2)
 	handlers = build_tool_handlers(cfg, registry, backend, logger, limiter)
 
-	await handlers.notify_human("first", "c:/work/rl-001")
-	await handlers.notify_human("second", "c:/work/rl-001")
-	result = await handlers.notify_human("third", "c:/work/rl-001")  # over limit
+	await handlers.notify_human("first", "c:/work/rl-001", "Claude")
+	await handlers.notify_human("second", "c:/work/rl-001", "Claude")
+	result = await handlers.notify_human("third", "c:/work/rl-001", "Claude")  # over limit
 
 	assert result.startswith("ERROR: rate limit exceeded")
 	assert "2 messages/min" in result
@@ -175,7 +175,7 @@ async def test_notify_human_no_limiter_is_unlimited(cfg, logger):
 	handlers = build_tool_handlers(cfg, registry, backend, logger)  # no limiter
 
 	for i in range(50):
-		result = await handlers.notify_human(f"msg {i}", "c:/work/rl-002")
+		result = await handlers.notify_human(f"msg {i}", "c:/work/rl-002", "Claude")
 		assert result == "ok"
 
 
@@ -187,9 +187,9 @@ async def test_notify_human_rate_limit_is_per_channel(cfg, logger):
 	limiter = RateLimiter(rate_per_minute=1)
 	handlers = build_tool_handlers(cfg, registry, backend, logger, limiter)
 
-	await handlers.notify_human("only msg", "c:/work/chan-a")          # exhausts chan-a
-	assert (await handlers.notify_human("extra", "c:/work/chan-a")).startswith("ERROR:")  # chan-a limited
-	result = await handlers.notify_human("hello", "c:/work/chan-b")    # chan-b unaffected
+	await handlers.notify_human("only msg", "c:/work/chan-a", "Claude")          # exhausts chan-a
+	assert (await handlers.notify_human("extra", "c:/work/chan-a", "Claude")).startswith("ERROR:")  # chan-a limited
+	result = await handlers.notify_human("hello", "c:/work/chan-b", "Claude")    # chan-b unaffected
 	assert result == "ok"
 
 
@@ -200,7 +200,7 @@ async def test_notify_human_title_passthrough(cfg, logger):
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.notify_human("status update", "c:/work/sw", title="My Session")
+	result = await handlers.notify_human("status update", "c:/work/sw", "Claude", title="My Session")
 
 	assert result == "ok"
 	assert len(backend.channel_messages) == 1
@@ -214,7 +214,7 @@ async def test_notify_human_invalid_cwd_returns_error(cfg, logger):
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.notify_human("msg", "not-a-path")
+	result = await handlers.notify_human("msg", "not-a-path", "Claude")
 
 	assert result.startswith("ERROR: invalid cwd:")
 	assert len(backend.channel_messages) == 0

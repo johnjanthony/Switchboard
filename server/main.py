@@ -14,7 +14,7 @@ from mcp.server.fastmcp import FastMCP
 from starlette.responses import JSONResponse
 from starlette.requests import Request
 
-from server.config import Config, load_config
+from server.config import Config, ConfigError, load_config
 from server.gateway import (
 	build_tool_handlers,
 	dispatch_away_mode_commands,
@@ -23,11 +23,9 @@ from server.gateway import (
 	dispatch_responses,
 )
 from server.logging_jsonl import JsonlLogger
-from server.messenger import MultiBackend
 from server.registry import Registry
 from server.spawn import SpawnHandler
 from server.rate_limiter import RateLimiter
-from server.android import AndroidBackend
 from server.firebase import FirebaseBackend
 
 
@@ -75,7 +73,7 @@ def _build_fastmcp(handlers) -> FastMCP:
 	async def ask_human(
 		question: str,
 		cwd: str,
-		sender: str = "Claude",
+		sender: str,
 		title: str | None = None,
 		format: str = "plain",
 		suggestions: list[str] | None = None,
@@ -96,7 +94,7 @@ def _build_fastmcp(handlers) -> FastMCP:
 	async def notify_human(
 		message: str,
 		cwd: str,
-		sender: str = "Claude",
+		sender: str,
 		title: str | None = None,
 		format: str = "plain",
 	) -> str:
@@ -107,7 +105,7 @@ def _build_fastmcp(handlers) -> FastMCP:
 	async def send_document_human(
 		path: str,
 		cwd: str,
-		sender: str = "Claude",
+		sender: str,
 		title: str | None = None,
 		caption: str | None = None,
 	) -> str:
@@ -123,8 +121,26 @@ def _build_fastmcp(handlers) -> FastMCP:
 	) -> str:
 		"""Send to your collab partner and block until they reply.
 		cwd is the shared session key. sender is your unique display name.
-		Omit message on your first call if you are Agent 2."""
+		Omit message on your first call if you are Agent 2.
+		Markdown is supported and is the default for collab messages."""
 		return await handlers.message_and_await_agent(cwd, sender, title, message)
+
+	@mcp.tool()
+	async def end_collab(
+		cwd: str,
+		sender: str,
+		message: str | None = None,
+		hand_off_to_human: bool = True,
+	) -> str:
+		"""End the collab session for this cwd. Non-blocking. Resolves any
+		partner's pending message_and_await_agent with sentinel
+		'__COLLAB_ENDED__\\n<message>' then purges the session so future calls
+		create a fresh session.
+
+		hand_off_to_human=True (default): caller is the designated reporter.
+		hand_off_to_human=False: partner is the reporter; caller exits silently.
+		See skill/SKILL.md 'Ending a collab session' for full protocol."""
+		return await handlers.end_collab(cwd, sender, message, hand_off_to_human)
 
 	@mcp.tool()
 	async def enter_away_mode(cwd: str) -> str:
@@ -163,25 +179,18 @@ async def _run(config: Config) -> None:
 	away_mode_path = _Path(config.log_path).parent / "away-mode.json"
 	registry = Registry(away_mode_path=away_mode_path)
 
-	backends = []
-
-	if config.enable_android:
-		android_backend = AndroidBackend(logger=logger)
-		backends.append(android_backend)
-
-	if config.firebase_service_account_json and config.firebase_database_url:
-		firebase_backend = FirebaseBackend(
-			service_account_json=config.firebase_service_account_json,
-			database_url=config.firebase_database_url,
-			storage_bucket=config.firebase_storage_bucket,
-			logger=logger
+	if not (config.firebase_service_account_json and config.firebase_database_url):
+		raise ConfigError(
+			"Firebase is required. Set FIREBASE_SERVICE_ACCOUNT_JSON and FIREBASE_DATABASE_URL "
+			"as OS env vars or in .env."
 		)
-		backends.append(firebase_backend)
 
-	if len(backends) == 1:
-		backend = backends[0]
-	else:
-		backend = MultiBackend(backends)
+	backend = FirebaseBackend(
+		service_account_json=config.firebase_service_account_json,
+		database_url=config.firebase_database_url,
+		storage_bucket=config.firebase_storage_bucket,
+		logger=logger,
+	)
 
 	sidecar_path = _Path(config.log_path).parent / "collab-sessions.json"
 	await _notify_lost_collab_sessions(sidecar_path, backend)
@@ -203,24 +212,6 @@ async def _run(config: Config) -> None:
 
 	app.add_route("/healthz", healthz, methods=["GET"])
 	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
-
-	if config.enable_android:
-		async def get_questions(request: Request):
-			return JSONResponse(android_backend.get_pending_questions())
-
-		async def post_reply(request: Request):
-			data = await request.json()
-			request_id = data.get("request_id")
-			text = data.get("text")
-			if not request_id or text is None:
-				return JSONResponse({"error": "missing fields"}, status_code=400)
-
-			correlation = f"android_{request_id}"
-			await android_backend.simulate_response(correlation, text)
-			return JSONResponse({"status": "ok"})
-
-		app.add_route("/android/questions", get_questions, methods=["GET"])
-		app.add_route("/android/reply", post_reply, methods=["POST"])
 
 	uv_config = uvicorn.Config(
 		app,

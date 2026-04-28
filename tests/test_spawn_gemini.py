@@ -30,7 +30,8 @@ async def test_spawn_gemini_single(spawn_dirs):
 	pending = json.loads(_pending_path(cfg).read_text())
 	assert pending["backend"] == "gemini"
 	assert pending["project_path"] == str(spawn_dirs / "project1")
-	assert "sender defaults to 'Gemini'" in pending["prompt"]
+	assert "sender is REQUIRED" in pending["prompt"]
+	assert "Use 'Gemini' unless you were given a different name." in pending["prompt"]
 	assert pending["prompt"].endswith("analyze this")
 	backend.send_spawn_ack.assert_called_once()
 
@@ -45,7 +46,8 @@ async def test_spawn_claude_single(spawn_dirs):
 	
 	pending = json.loads(_pending_path(cfg).read_text())
 	assert pending["backend"] == "claude"
-	assert "sender defaults to 'Claude'" in pending["prompt"]
+	assert "sender is REQUIRED" in pending["prompt"]
+	assert "Use 'Claude' unless you were given a different name." in pending["prompt"]
 	backend.send_spawn_ack.assert_called_once()
 
 @pytest.mark.asyncio
@@ -81,8 +83,8 @@ async def test_spawn_collab_legacy_flag(spawn_dirs):
 	assert "agents" in pending
 	assert pending["agents"][0]["backend"] == "claude"
 	assert pending["agents"][0]["sender"] == "Claude"
-	assert pending["agents"][1]["backend"] == "claude"
-	assert pending["agents"][1]["sender"] == "Claude"
+	assert pending["agents"][1]["backend"] == "gemini"
+	assert pending["agents"][1]["sender"] == "Gemini"
 	backend.send_spawn_ack.assert_called_once()
 
 @pytest.mark.asyncio

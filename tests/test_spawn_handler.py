@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re as _re
 from datetime import timedelta, timezone, datetime
@@ -43,6 +44,14 @@ def _pending_path(cfg: Config) -> Path:
 	return Path(cfg.log_path).parent / "spawn-pending.json"
 
 
+def mock_subprocess_exec():
+	"""Helper to mock asyncio.create_subprocess_exec."""
+	mock_proc = AsyncMock()
+	mock_proc.communicate.return_value = (b"ok", b"")
+	mock_proc.returncode = 0
+	return AsyncMock(return_value=mock_proc)
+
+
 # --- spawn not configured ---
 
 @pytest.mark.asyncio
@@ -63,7 +72,7 @@ async def test_form1_no_args_uses_spawn_root_and_default_prompt(spawn_dirs):
 	from server.spawn import SpawnHandler, _DEFAULT_PROMPT, _BASE_INSTRUCTION
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.run") as mock_run:
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec) as mock_exec:
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn")
 	from server.canonicalization import canonicalize_cwd
@@ -74,8 +83,8 @@ async def test_form1_no_args_uses_spawn_root_and_default_prompt(spawn_dirs):
 	expected = f"{_BASE_INSTRUCTION.format(sender_default='Claude')} {_DEFAULT_PROMPT}"
 	assert pending["prompt"] == expected
 	assert pending["project_path"] == str(spawn_dirs)
-	mock_run.assert_called_once()
-	assert mock_run.call_args[0][0] == ["schtasks", "/run", "/tn", "SwitchboardSpawn"]
+	mock_exec.assert_called_once()
+	assert mock_exec.call_args[0] == ("schtasks", "/run", "/tn", "SwitchboardSpawn")
 	backend.send_spawn_ack.assert_called_once()
 
 
@@ -84,7 +93,7 @@ async def test_form2_subdir_no_prompt(spawn_dirs):
 	from server.spawn import SpawnHandler, _DEFAULT_PROMPT, _BASE_INSTRUCTION
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen")
 	pending = json.loads(_pending_path(cfg).read_text())
@@ -99,7 +108,7 @@ async def test_form3_no_path_with_prompt(spawn_dirs):
 	from server.spawn import SpawnHandler, _BASE_INSTRUCTION
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn fix the migration")
 	pending = json.loads(_pending_path(cfg).read_text())
@@ -114,7 +123,7 @@ async def test_form4_subdir_with_prompt(spawn_dirs):
 	from server.spawn import SpawnHandler, _BASE_INSTRUCTION
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen fix the migration")
 	pending = json.loads(_pending_path(cfg).read_text())
@@ -141,11 +150,11 @@ async def test_path_traversal_rejected(tmp_path):
 		spawn_root=spawn_root,
 	)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.run") as mock_run:
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec) as mock_exec:
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		# "../outside" resolves to tmp_path/outside which is outside spawn_root
 		await handler.handle("/spawn ../outside do stuff")
-	mock_run.assert_not_called()
+	mock_exec.assert_not_called()
 	backend.send_text.assert_called_once()
 	assert "Unknown project" in backend.send_text.call_args[0][0]
 
@@ -157,7 +166,7 @@ async def test_rate_limit_blocks_immediate_second_spawn(spawn_dirs):
 	from server.spawn import SpawnHandler
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn")
 		backend.send_spawn_ack.reset_mock()
@@ -172,7 +181,7 @@ async def test_rate_limit_clears_after_60_seconds(spawn_dirs):
 	from server.spawn import SpawnHandler, RATE_LIMIT_SECONDS
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn")
 		handler._last_spawn_time = handler._last_spawn_time - timedelta(
@@ -191,7 +200,7 @@ async def test_schtasks_failure_sends_error_and_cleans_pending(spawn_dirs):
 	from server.spawn import SpawnHandler
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.run", side_effect=FileNotFoundError("schtasks not found")):
+	with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError("schtasks not found")):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn")
 	backend.send_text.assert_called_once()
@@ -214,7 +223,7 @@ async def test_spawn_started_logged_on_success(spawn_dirs):
 		spawn_root=spawn_dirs,
 	)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(str(log_path)), Registry())
 		await handler.handle("/spawn")
 	events = [json.loads(line) for line in log_path.read_text().splitlines() if line]
@@ -231,7 +240,7 @@ async def test_single_spawn_auto_enters_away_mode(spawn_dirs):
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
 	registry = Registry(away_mode_path=spawn_dirs / "away-mode.json")
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 	expected_cwd = canonicalize_cwd(str(spawn_dirs / "rpdm" / "next-gen"))
@@ -246,7 +255,7 @@ async def test_collab_spawn_auto_enters_away_mode(spawn_dirs):
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
 	registry = Registry(away_mode_path=spawn_dirs / "away-mode.json")
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen --collab review this")
 	expected_cwd = canonicalize_cwd(str(spawn_dirs / "rpdm" / "next-gen"))
@@ -260,7 +269,7 @@ async def test_single_spawn_does_not_set_away_mode_on_schtasks_failure(spawn_dir
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
 	registry = Registry(away_mode_path=spawn_dirs / "away-mode.json")
-	with patch("server.spawn.subprocess.run", side_effect=RuntimeError("schtasks boom")):
+	with patch("asyncio.create_subprocess_exec", side_effect=RuntimeError("schtasks boom")):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 	assert registry.global_away() is False
@@ -340,7 +349,7 @@ async def test_spawn_command_still_works(spawn_dirs):
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
 	registry = Registry(away_mode_path=spawn_dirs / "away.json")
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn")
 	# Sanity: /spawn still routes to the spawn path (pending file written).
@@ -364,7 +373,7 @@ async def test_single_spawn_cancels_prior_pending_for_cwd(spawn_dirs):
 	target_cwd = canonicalize_cwd(str(spawn_dirs / "rpdm" / "next-gen"))
 	fut = registry.add(cwd=target_cwd, sender="Claude", request_id="prior-req-1")
 
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 
@@ -386,7 +395,7 @@ async def test_single_spawn_does_not_affect_pendings_for_other_cwds(spawn_dirs):
 	other_cwd = "c:/work/unrelated"
 	fut_other = registry.add(cwd=other_cwd, sender="Claude", request_id="other-req-1")
 
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 
@@ -401,7 +410,7 @@ async def test_single_spawn_no_prior_pending_skips_firebase_call(spawn_dirs):
 	backend = make_backend()
 	backend.mark_question_cancelled = AsyncMock()
 
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 
@@ -424,7 +433,7 @@ async def test_collab_spawn_cancels_all_prior_pending_for_cwd(spawn_dirs):
 	registry.add(cwd=target_cwd, sender="Claude", request_id="prior-collab-1")
 	registry.add(cwd=target_cwd, sender="Sparkles", request_id="prior-collab-2")
 
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen --collab review this")
 
@@ -446,7 +455,7 @@ async def test_spawn_logs_pending_cancelled_event(spawn_dirs):
 	target_cwd = canonicalize_cwd(str(spawn_dirs / "rpdm" / "next-gen"))
 	registry.add(cwd=target_cwd, sender="Claude", request_id="prior-1")
 
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 
@@ -472,7 +481,7 @@ async def test_spawn_continues_when_mark_cancelled_fails(spawn_dirs):
 	target_cwd = canonicalize_cwd(str(spawn_dirs / "rpdm" / "next-gen"))
 	fut = registry.add(cwd=target_cwd, sender="Claude", request_id="prior-1")
 
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 
@@ -495,7 +504,7 @@ async def test_nested_project_single_match_resolves(tmp_path):
 	(tmp_path / "rpdm" / "develop").mkdir(parents=True)
 	cfg = make_config(tmp_path, spawn_root=tmp_path)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn develop just say hi")
 	pending = json.loads(_pending_path(cfg).read_text())
@@ -514,10 +523,10 @@ async def test_nested_project_ambiguous_match_errors_with_suggestions(tmp_path):
 	(tmp_path / "rpdm_archive" / "develop").mkdir(parents=True)
 	cfg = make_config(tmp_path, spawn_root=tmp_path)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.run") as mock_run:
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec) as mock_exec:
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn develop just say hi")
-	mock_run.assert_not_called()
+	mock_exec.assert_not_called()
 	backend.send_text.assert_called_once()
 	msg = backend.send_text.call_args[0][0]
 	assert "Ambiguous project 'develop'" in msg
@@ -534,7 +543,7 @@ async def test_no_match_preserves_terminal_form_fallback(spawn_dirs):
 	from server.spawn import SpawnHandler, _BASE_INSTRUCTION
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn fix the migration")
 	pending = json.loads(_pending_path(cfg).read_text())
@@ -571,7 +580,7 @@ async def test_spawn_no_collision_proceeds_without_dialog(spawn_dirs):
 	backend.has_messages = AsyncMock(return_value=False)
 	backend.write_spawn_collision_prompt = AsyncMock()
 	backend.poll_spawn_collision_decision = AsyncMock()
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 	backend.write_spawn_collision_prompt.assert_not_called()
@@ -585,7 +594,7 @@ async def test_spawn_collision_cancel_aborts_launch(spawn_dirs):
 	from server.spawn import SpawnHandler
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_spawn_with_collision_backend(decision={"action": "cancel"})
-	with patch("server.spawn.subprocess.run") as mock_run:
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec) as mock_exec:
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 
@@ -594,7 +603,7 @@ async def test_spawn_collision_cancel_aborts_launch(spawn_dirs):
 	backend.poll_spawn_collision_decision.assert_called_once()
 	backend.clear_spawn_collision_prompt.assert_called_once()
 	# Spawn was aborted
-	mock_run.assert_not_called()
+	mock_exec.assert_not_called()
 	backend.send_spawn_ack.assert_not_called()
 	backend.wipe_channel.assert_not_called()
 
@@ -605,7 +614,7 @@ async def test_spawn_collision_continue_launches_without_wiping(spawn_dirs):
 	from server.spawn import SpawnHandler
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_spawn_with_collision_backend(decision={"action": "continue"})
-	with patch("server.spawn.subprocess.run") as mock_run:
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec) as mock_exec:
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 
@@ -614,7 +623,7 @@ async def test_spawn_collision_continue_launches_without_wiping(spawn_dirs):
 	backend.clear_spawn_collision_prompt.assert_called_once()
 	backend.wipe_channel.assert_not_called()
 	# Spawn proceeded
-	mock_run.assert_called_once()
+	mock_exec.assert_called_once()
 	backend.send_spawn_ack.assert_called_once()
 
 
@@ -628,14 +637,14 @@ async def test_spawn_collision_clear_wipes_and_launches(spawn_dirs):
 		decision={"action": "clear"},
 		meta={"title": "Old", "last_activity_at": "2026-04-25T10:00Z", "hidden": True},
 	)
-	with patch("server.spawn.subprocess.run") as mock_run:
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec) as mock_exec:
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 
 	canonical = canonicalize_cwd(str(spawn_dirs / "rpdm" / "next-gen"))
 	backend.wipe_channel.assert_called_once_with(canonical)
 	backend.set_channel_hidden.assert_called_once_with(canonical, False)
-	mock_run.assert_called_once()
+	mock_exec.assert_called_once()
 	backend.send_spawn_ack.assert_called_once()
 
 
@@ -646,7 +655,7 @@ async def test_spawn_collision_dialog_logged(spawn_dirs):
 	from server.canonicalization import canonicalize_cwd
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_spawn_with_collision_backend(decision={"action": "cancel"})
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 
@@ -664,14 +673,14 @@ async def test_spawn_collision_poll_not_implemented_falls_through(spawn_dirs):
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_spawn_with_collision_backend(decision={"action": "cancel"})
 	backend.poll_spawn_collision_decision = AsyncMock(side_effect=NotImplementedError)
-	with patch("server.spawn.subprocess.run") as mock_run:
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec) as mock_exec:
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 
 	# Dialog cleared even though decision couldn't be polled
 	backend.clear_spawn_collision_prompt.assert_called_once()
 	# Spawn still proceeded
-	mock_run.assert_called_once()
+	mock_exec.assert_called_once()
 	backend.send_spawn_ack.assert_called_once()
 
 
@@ -682,12 +691,12 @@ async def test_spawn_collision_dialog_write_fail_falls_through(spawn_dirs):
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_spawn_with_collision_backend(decision={"action": "cancel"})
 	backend.write_spawn_collision_prompt = AsyncMock(side_effect=RuntimeError("firebase down"))
-	with patch("server.spawn.subprocess.run") as mock_run:
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec) as mock_exec:
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 
 	# Spawn still happens
-	mock_run.assert_called_once()
+	mock_exec.assert_called_once()
 	backend.send_spawn_ack.assert_called_once()
 
 
@@ -698,7 +707,7 @@ async def test_spawn_collision_cancel_does_not_bump_rate_limit(spawn_dirs):
 	from server.spawn import SpawnHandler
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_spawn_with_collision_backend(decision={"action": "cancel"})
-	with patch("server.spawn.subprocess.run"):
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 	# Rate limiter is set inside _handle_single_spawn, which never ran on cancel
@@ -712,10 +721,8 @@ async def test_spawn_collision_continue_with_collab(spawn_dirs):
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_spawn_with_collision_backend(decision={"action": "continue"})
 	backend.start_inject_listener = AsyncMock()
-	with patch("server.spawn.subprocess.run") as mock_run:
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec) as mock_exec:
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
 		await handler.handle("/spawn rpdm/next-gen --collab review this")
-	mock_run.assert_called_once()
+	mock_exec.assert_called_once()
 	backend.send_spawn_ack.assert_called_once()
-
-

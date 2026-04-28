@@ -5,6 +5,12 @@ from __future__ import annotations
 import math
 import time
 
+# A bucket whose tokens are at the cap and hasn't been touched in this many
+# seconds is indistinguishable from a fresh bucket — drop it on the next sweep
+# so the dict doesn't grow unboundedly across the lifetime of the process.
+_BUCKET_IDLE_TTL_SECONDS = 600.0
+_BUCKET_SWEEP_INTERVAL_SECONDS = 300.0
+
 
 class RateLimiter:
 	"""Per-channel token-bucket rate limiter.
@@ -21,6 +27,7 @@ class RateLimiter:
 		self._rate = rate_per_minute
 		# channel_id -> (tokens, last_refill_monotonic)
 		self._buckets: dict[str, tuple[float, float]] = {}
+		self._last_sweep: float = 0.0
 
 	@property
 	def rate_per_minute(self) -> int:
@@ -30,6 +37,21 @@ class RateLimiter:
 	def wait_seconds(self) -> int:
 		"""Minimum seconds an agent must wait before a token refills."""
 		return math.ceil(60 / self._rate) if self._rate > 0 else 0
+
+	def _sweep_idle(self, now: float) -> None:
+		"""Drop entries whose tokens are at the cap and last-refilled long ago.
+		Such entries behave identically to a fresh bucket on the next consume,
+		so retaining them in the dict is pure memory churn."""
+		if now - self._last_sweep < _BUCKET_SWEEP_INTERVAL_SECONDS:
+			return
+		self._last_sweep = now
+		cap = float(self._rate)
+		stale = [
+			cid for cid, (tokens, last_refill) in self._buckets.items()
+			if tokens >= cap and (now - last_refill) >= _BUCKET_IDLE_TTL_SECONDS
+		]
+		for cid in stale:
+			self._buckets.pop(cid, None)
 
 	def consume(self, channel_id: str) -> bool:
 		"""Attempt to consume one token for channel_id.
@@ -43,6 +65,7 @@ class RateLimiter:
 			return True
 
 		now = time.monotonic()
+		self._sweep_idle(now)
 		tokens, last_refill = self._buckets.get(channel_id, (float(self._rate), now))
 
 		elapsed = now - last_refill

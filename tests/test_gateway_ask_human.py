@@ -37,7 +37,7 @@ async def test_ask_human_returns_response_when_resolved(cfg, logger):
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	task = asyncio.create_task(handlers.ask_human("Overwrite foo?", _CWD))
+	task = asyncio.create_task(handlers.ask_human("Overwrite foo?", _CWD, _SENDER))
 	await asyncio.sleep(0)
 	req_id = registry.resolve(cwd=_CWD, sender=_SENDER, text="yes")
 	assert req_id is not None
@@ -68,7 +68,7 @@ async def test_dispatch_loop_routes_responses_to_registry(cfg, logger):
 	backend = YieldingBackend([IncomingResponse(correlation=(_CWD, _SENDER), text="yes")])
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	ask_task = asyncio.create_task(handlers.ask_human("q", _CWD))
+	ask_task = asyncio.create_task(handlers.ask_human("q", _CWD, _SENDER))
 	await asyncio.sleep(0)  # let ask_human register
 	dispatch_task = asyncio.create_task(
 		dispatch_responses(registry, backend, logger)
@@ -175,7 +175,7 @@ async def test_ask_human_cleans_up_registry_on_cancellation(cfg, logger):
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	task = asyncio.create_task(handlers.ask_human("q", _CWD))
+	task = asyncio.create_task(handlers.ask_human("q", _CWD, _SENDER))
 	await asyncio.sleep(0)  # let it register
 	assert registry.pending_count == 1
 	# Cancel mid-wait.
@@ -219,7 +219,7 @@ async def test_dispatch_loop_restarts_after_iterator_crash(cfg, logger, tmp_path
 		pass
 	assert backend._calls >= 2
 	log_text = (tmp_path / "log.jsonl").read_text()
-	assert "dispatch_loop_crashed" in log_text
+	assert "dispatch_responses_loop_crashed" in log_text
 
 
 @pytest.mark.asyncio
@@ -237,9 +237,9 @@ async def test_concurrent_ask_human_calls_resolve_independently(cfg, logger):
 	])
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	first = asyncio.create_task(handlers.ask_human("q1", _CWD_A))
+	first = asyncio.create_task(handlers.ask_human("q1", _CWD_A, _SENDER))
 	await asyncio.sleep(0)
-	second = asyncio.create_task(handlers.ask_human("q2", _CWD_B))
+	second = asyncio.create_task(handlers.ask_human("q2", _CWD_B, _SENDER))
 	await asyncio.sleep(0)
 
 	dispatch_task = asyncio.create_task(
@@ -270,7 +270,7 @@ async def test_ask_human_at_desk_returns_redirect_and_delivers_as_notify(cfg, lo
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
 	result = await handlers.ask_human(
-		"Should I overwrite foo.java?", _CWD, suggestions=["yes", "no"]
+		"Should I overwrite foo.java?", _CWD, _SENDER, suggestions=["yes", "no"]
 	)
 
 	# Returns the redirect sentinel.
@@ -298,7 +298,7 @@ async def test_ask_human_per_cwd_at_desk_redirect(cfg, logger):
 	registry.set_cwd_override(_CWD, False)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.ask_human("question?", _CWD)
+	result = await handlers.ask_human("question?", _CWD, _SENDER)
 
 	assert result == "ERROR: John is at his desk. Ask this question via the terminal."
 	assert registry.pending_count == 0
@@ -313,7 +313,7 @@ async def test_ask_human_away_mode_blocks_as_before(cfg, logger):
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	task = asyncio.create_task(handlers.ask_human("Proceed with migration?", _CWD))
+	task = asyncio.create_task(handlers.ask_human("Proceed with migration?", _CWD, _SENDER))
 	await asyncio.sleep(0)
 
 	# A question was written to the backend.
@@ -335,7 +335,7 @@ async def test_ask_human_invalid_cwd_returns_error(cfg, logger):
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.ask_human("question?", "not-absolute")
+	result = await handlers.ask_human("question?", "not-absolute", _SENDER)
 
 	assert result.startswith("ERROR: invalid cwd:")
 	assert registry.pending_count == 0
@@ -360,13 +360,13 @@ async def test_ask_human_supersede_marks_prior_cancelled(cfg, logger):
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
 	# First ask — registers and blocks
-	first_task = asyncio.create_task(handlers.ask_human("first question", _CWD))
+	first_task = asyncio.create_task(handlers.ask_human("first question", _CWD, _SENDER))
 	await asyncio.sleep(0)
 	assert registry.pending_count == 1
 	first_req_id = list(registry._pending.values())[0].request_id
 
 	# Second ask for same (cwd, sender) — supersedes first
-	second_task = asyncio.create_task(handlers.ask_human("second question", _CWD))
+	second_task = asyncio.create_task(handlers.ask_human("second question", _CWD, _SENDER))
 	await asyncio.sleep(0)
 
 	# mark_question_cancelled must have been called for the first request_id
@@ -400,7 +400,7 @@ async def test_ask_human_cancel_marks_firebase(cfg, logger):
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	task = asyncio.create_task(handlers.ask_human("cancel me", _CWD))
+	task = asyncio.create_task(handlers.ask_human("cancel me", _CWD, _SENDER))
 	await asyncio.sleep(0)
 	req_id = list(registry._pending.values())[0].request_id
 
@@ -423,7 +423,7 @@ async def test_ask_human_title_passthrough(cfg, logger):
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	task = asyncio.create_task(handlers.ask_human("q?", _CWD, title="My Task"))
+	task = asyncio.create_task(handlers.ask_human("q?", _CWD, _SENDER, title="My Task"))
 	await asyncio.sleep(0)
 
 	assert backend.channel_messages[0]["title"] == "My Task"

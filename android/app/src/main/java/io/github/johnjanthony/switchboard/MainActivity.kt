@@ -287,6 +287,15 @@ fun MarkdownText(
 			factory = { ctx ->
 				TextView(ctx).apply {
 					android.text.method.LinkMovementMethod.getInstance().let { movementMethod = it }
+					// setMovementMethod(...) auto-flips isClickable/isLongClickable to true
+					// (Android-internal fixFocusableAndClickableSettings). That makes the
+					// TextView consume every touch and prevents clicks from propagating out
+					// to the outer Compose Surface's combinedClickable, breaking the
+					// question-bubble click-to-select. Reset to false here — link taps still
+					// work because LinkMovementMethod handles them via onTouchEvent
+					// regardless of isClickable.
+					isClickable = false
+					isLongClickable = false
 				}
 			},
 			update = { view ->

@@ -16,6 +16,7 @@ data class ChannelMessage(
 	@get:PropertyName("suggestions") @set:PropertyName("suggestions") var suggestions: List<String>? = null,
 	@get:PropertyName("filename") @set:PropertyName("filename") var filename: String? = null,
 	@get:PropertyName("cancelled") @set:PropertyName("cancelled") var cancelled: Boolean = false,
+	@get:PropertyName("rejected") @set:PropertyName("rejected") var rejected: Boolean = false,
 	@get:PropertyName("title") @set:PropertyName("title") var title: String? = null,
 )
 

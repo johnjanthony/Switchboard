@@ -99,6 +99,15 @@ def test_send_stale_reply_notice_signature():
 	assert params == ["self", "cwd", "sender"]
 
 
+def test_write_channel_message_accepts_rejected_kwarg():
+	"""FirebaseBackend.send_stale_reply_notice writes via write_channel_message
+	with rejected=True so the Android client can render the system message as a
+	transient toast. Lock the kwarg in on the ABC so future overrides can't
+	silently drop it (which would TypeError at runtime, untested today)."""
+	sig = inspect.signature(MessengerBackend.write_channel_message)
+	assert "rejected" in sig.parameters
+
+
 def test_update_channel_title_signature():
 	sig = inspect.signature(MessengerBackend.update_channel_title)
 	params = list(sig.parameters)
@@ -211,58 +220,3 @@ class _RecordingBackend(MessengerBackend):
 	async def update_last_activity(self, cwd: str, timestamp_iso: str, preview: str) -> None:
 		self.activity_calls.append((cwd, timestamp_iso, preview))
 
-
-@pytest.mark.asyncio
-async def test_multibackend_forwards_write_away_mode_mirror():
-	from server.messenger import MultiBackend
-	b1 = _RecordingBackend()
-	b2 = _RecordingBackend()
-	multi = MultiBackend([b1, b2])
-	await multi.write_away_mode_mirror(None, True)
-	await multi.write_away_mode_mirror("c:/work/proj", False)
-	assert b1.mirror_calls == [(None, True), ("c:/work/proj", False)]
-	assert b2.mirror_calls == [(None, True), ("c:/work/proj", False)]
-
-
-@pytest.mark.asyncio
-async def test_multibackend_forwards_mark_question_cancelled():
-	from server.messenger import MultiBackend
-	b1 = _RecordingBackend()
-	b2 = _RecordingBackend()
-	multi = MultiBackend([b1, b2])
-	await multi.mark_question_cancelled("c:/work/proj", "req123")
-	assert b1.cancel_calls == [("c:/work/proj", "req123")]
-	assert b2.cancel_calls == [("c:/work/proj", "req123")]
-
-
-@pytest.mark.asyncio
-async def test_multibackend_forwards_send_stale_reply_notice():
-	from server.messenger import MultiBackend
-	b1 = _RecordingBackend()
-	b2 = _RecordingBackend()
-	multi = MultiBackend([b1, b2])
-	await multi.send_stale_reply_notice("c:/work/proj", "Claude")
-	assert b1.stale_calls == [("c:/work/proj", "Claude")]
-	assert b2.stale_calls == [("c:/work/proj", "Claude")]
-
-
-@pytest.mark.asyncio
-async def test_multibackend_forwards_update_channel_title():
-	from server.messenger import MultiBackend
-	b1 = _RecordingBackend()
-	b2 = _RecordingBackend()
-	multi = MultiBackend([b1, b2])
-	await multi.update_channel_title("c:/work/proj", "Session Title")
-	assert b1.title_calls == [("c:/work/proj", "Session Title")]
-	assert b2.title_calls == [("c:/work/proj", "Session Title")]
-
-
-@pytest.mark.asyncio
-async def test_multibackend_forwards_update_last_activity():
-	from server.messenger import MultiBackend
-	b1 = _RecordingBackend()
-	b2 = _RecordingBackend()
-	multi = MultiBackend([b1, b2])
-	await multi.update_last_activity("c:/work/proj", "2026-04-24T00:00:00+00:00", "preview text")
-	assert b1.activity_calls == [("c:/work/proj", "2026-04-24T00:00:00+00:00", "preview text")]
-	assert b2.activity_calls == [("c:/work/proj", "2026-04-24T00:00:00+00:00", "preview text")]
