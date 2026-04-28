@@ -36,7 +36,9 @@ _DEFAULT_COLLAB_PROMPT = (
 	"Perform a comprehensive technical review of this codebase. Identify architectural "
 	"weaknesses, potential bugs, and high-to-medium priority areas for improvement. Debate "
 	"these points critically with your partner until you reach consensus on what needs to "
-	"change, then implement those changes and verify them."
+	"change. Once consensus is reached, send John a document detailing the issues found "
+	"and your proposed fixes using send_document_human. Then, use ask_human to await "
+	"John's approval before proceeding with implementing the proposal."
 )
 _COLLAB_INSTRUCTION = (
 	"John is currently away. All communications MUST go through the Switchboard MCP. "
