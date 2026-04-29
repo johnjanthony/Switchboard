@@ -38,6 +38,8 @@ data class Channel(
 	val lastActivityAt: String? = null,
 	val preview: String? = null,
 	val unreadCount: Int = 0,
+	val awayMode: Boolean? = null,
+	val pendingResponses: Int = 0,
 	val pendingQuestions: Map<String, Pending> = emptyMap(),
 	val messages: List<Pair<String, ChannelMessage>> = emptyList(),
 )
@@ -65,4 +67,9 @@ data class BulkRespondEntry(
 data class BulkRespondPayload(
 	val sections: List<BulkRespondSection>,
 	val defaultText: String,
+)
+
+data class PendingExitToggle(
+	val scopeCwdKey: String?,    // null = global; otherwise per-channel cwdKey
+	val payload: BulkRespondPayload,
 )

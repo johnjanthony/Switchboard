@@ -6,6 +6,31 @@ Open/proposed features for Switchboard, grouped by where the work lives. Shipped
 
 # Server
 
+## Persistence layer (Firebase hybrid write-behind)
+
+**Surfaced 2026-04-28** in the codebase review (`docs/2026-04-28-codebase-review.md` H1). Deferred at John's call.
+
+**Problem.** `Registry` (`server/registry.py:34-46`) stores pending `ask_human` futures and collab sessions in plain `dict`s. On service restart, every pending question dies (waiting agents block until the 24h timeout) and every collab session evaporates (both partners' `message_and_await_agent` calls die likewise). The current mitigation is the `collab-sessions.json` sidecar (`server/main.py:46-66`) which only writes a "session lost" notice — it does not restore. `AGENTS.md` already documents the operational constraint *"Never restart the service while a collab session is active."*
+
+**Target architecture: Firebase hybrid write-behind** (not JSON, not SQLite — John's preference):
+
+- **Primary state stays in memory.** `Registry._pending` and `Registry._sessions` continue to be the authoritative state for the hot path; mutations are O(1) dict ops with no network latency.
+- **Firebase as async backup.** Every mutation schedules a write-behind task to Firebase RTDB nodes (e.g., `pending_requests/{request_id}`, `collab_sessions/{cwd}`). Use the bg-task tracking pattern from H3 so writes can't be GC'd.
+- **Startup seed.** Read both nodes at startup, hydrate `Registry`, re-create futures (any future that was already-resolved on disk converts to a "next message delivers" semantic), broadcast a "we restarted; resume" status to each affected channel.
+- **Tradeoff accepted.** A crash between in-memory mutation and Firebase flush loses a few seconds of state. Acceptable in exchange for keeping `ask_human` latency unchanged (firebase_admin is sync, wrapped in `asyncio.to_thread` — sync writes on the hot path would add ~100ms per call).
+
+**Extends the already-shipped Firebase schema** (per-channel `away_mode`, `unread_count`, `pending_responses`, etc., all under `channels/{key}/`). Pending-requests-as-Firebase-nodes follows the same co-location pattern.
+
+**What it takes:**
+
+- New module `server/persistence.py` (or similar) — write-behind queue + flush coroutine + reload helpers.
+- `Registry.add` / `resolve` / `remove` / `add_session` / `remove_session` fire write-behind hooks.
+- Startup path in `server/main.py:_run` reads + seeds before listeners start.
+- Tests for crash-recovery scenarios and the "future was already resolved" edge case.
+- Document in `AGENTS.md` that the restart-during-collab constraint is now relaxed (still not free — a few-second mutation window is at risk).
+
+---
+
 ## Log rotation
 
 `logs/switchboard.jsonl` grows forever. At low volume this is a months-out concern, but worth a simple size-based rotation (`logs/switchboard.jsonl.1`, `.2`, with a cap).
@@ -104,28 +129,6 @@ Low-medium priority — improves quality-of-life for grabbing snippets out of ag
 2. **Agent liveness pings.** Heartbeat protocol: agents send periodic keepalives; missing two in a row = mark all their pending questions cancelled. More moving parts, more state, but transport-agnostic.
 
 Both are insurance against unattended crashes; the common case is handled.
-
----
-
-## Away-mode Firebase schema reorganization
-
-**Proposed 2026-04-26**, surfaced during cwd-as-channel post-merge testing. Two related schema changes that the current `away_mode/{global, overrides/{cwdKey}}` shape made awkward:
-
-1. **Co-locate per-channel away-mode with the channel.** Move `away_mode/overrides/{cwdKey}` → `channels/{cwdKey}/away_mode`. The override conceptually belongs to the channel; co-locating gets lifecycle alignment for free (deleting/wiping a channel removes its override too, no orphan-on-channel-delete bug). Phone-side it removes one Firebase listener — the channel listener already covers it.
-
-2. **Group global settings.** Move `away_mode/global` → `global_settings/away_mode`. `global_settings/` becomes the home for any future top-level switches (notification quiet hours, default sender, etc.); today it has one tenant. Once both moves land, the `away_mode/` node can be deleted entirely.
-
-3. **Cross-device unseen state synchronization.** Move `unread_count` and `unseen` flags into the Firebase `channels/{key}/` node. Update `MainViewModel` to write to these nodes when a channel is selected. Update both apps to observe these remote values instead of local state. This ensures that reading a message on the phone correctly clears the indicator on the watch.
-
-**What it takes:**
-
-- **Server (`firebase.py`)** — rewrite `write_away_mode_mirror` to target `global_settings/away_mode` for global, `channels/{cwdKey}/away_mode` for per-channel. The "remove override" path becomes `db.reference(f'channels/{key}/away_mode').delete()`. Bulk clear on global-toggle becomes one Firebase multi-location update (`db.reference().update({...})`) walking `registry.cwd_overrides()`.
-- **Android (`MainViewModel`)** — drop the `setupAwayModeListener` override-listener; pull `away_mode` from the existing channel snapshot in `syncChannel`; add a separate listener on `global_settings/away_mode`. The `Channel` data class gains an `awayMode: Boolean? = null` field (null = follow global).
-- **Server `Registry`** — internal in-memory representation can stay as-is (`_global_away` + `_cwd_overrides`); only the mirror shape changes. `away-mode.json` sidecar likewise unchanged.
-- **Migration** — clean Firebase wipe on deploy. Stale `away_mode/*` paths can be left to die; or do a one-shot delete at startup.
-- **Tests** — `test_messenger_contract` signature checks unaffected (signature unchanged). Any test that asserts specific Firebase paths needs updating.
-
-**Why now is a follow-up, not part of cwd-as-channel:** orthogonal to spawn-flow correctness; the current 3-fix bundle (spawn cwd-override, spawn channel routing, mirror-cleared-overrides) leaves the system *correct* under the existing schema. Schema reshape is a separate, focused branch.
 
 ---
 

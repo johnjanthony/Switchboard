@@ -9,6 +9,7 @@ from server.gateway import build_tool_handlers, dispatch_responses
 from server.logging_jsonl import JsonlLogger
 from server.messenger import IncomingResponse
 from server.registry import Registry
+from tests.conftest import make_registry_with_loopback
 from tests.test_gateway_notify_human import RecordingBackend
 
 _CWD = "c:/work/sw"
@@ -33,7 +34,7 @@ def logger(cfg):
 @pytest.mark.asyncio
 async def test_ask_human_returns_response_when_resolved(cfg, logger):
 	backend = RecordingBackend()
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
@@ -62,7 +63,7 @@ class YieldingBackend(RecordingBackend):
 
 @pytest.mark.asyncio
 async def test_dispatch_loop_routes_responses_to_registry(cfg, logger):
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	registry.set_cwd_override(_CWD, True)
 	# Dispatch uses tuple correlation (cwd, sender)
 	backend = YieldingBackend([IncomingResponse(correlation=(_CWD, _SENDER), text="yes")])
@@ -87,7 +88,7 @@ async def test_dispatch_loop_routes_responses_to_registry(cfg, logger):
 
 @pytest.mark.asyncio
 async def test_dispatch_loop_logs_unknown_correlation(cfg, logger, tmp_path):
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	backend = YieldingBackend(
 		[IncomingResponse(correlation=("c:/unknown", "Ghost"), text="stray")]
 	)
@@ -109,7 +110,7 @@ async def test_dispatch_loop_logs_unknown_correlation(cfg, logger, tmp_path):
 @pytest.mark.asyncio
 async def test_dispatch_loop_logs_legacy_correlation(cfg, logger, tmp_path):
 	"""Non-tuple correlations are logged as legacy_correlation_dropped."""
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	backend = YieldingBackend(
 		[IncomingResponse(correlation=9999, text="stray")]
 	)
@@ -133,7 +134,7 @@ async def test_dispatch_loop_continues_after_iteration_exception(
 	cfg, logger, tmp_path, monkeypatch
 ):
 	"""If an iteration raises unexpectedly, the loop logs surface_error and keeps running."""
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	backend = YieldingBackend([
 		IncomingResponse(correlation=(_CWD, _SENDER), text="first"),
 		IncomingResponse(correlation=(_CWD, _SENDER), text="second"),
@@ -171,7 +172,7 @@ async def test_ask_human_cleans_up_registry_on_cancellation(cfg, logger):
 	"""If the ask_human coroutine is cancelled mid-wait, the registry
 	entry must not be left behind."""
 	backend = RecordingBackend()
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
@@ -205,7 +206,7 @@ class FirstCallCrashesBackend(RecordingBackend):
 
 @pytest.mark.asyncio
 async def test_dispatch_loop_restarts_after_iterator_crash(cfg, logger, tmp_path):
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	backend = FirstCallCrashesBackend()
 	dispatch_task = asyncio.create_task(
 		dispatch_responses(registry, backend, logger)
@@ -228,7 +229,7 @@ async def test_concurrent_ask_human_calls_resolve_independently(cfg, logger):
 	dispatch loop, each return their own reply."""
 	_CWD_A = "c:/work/chan-a"
 	_CWD_B = "c:/work/chan-b"
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	registry.set_cwd_override(_CWD_A, True)
 	registry.set_cwd_override(_CWD_B, True)
 	backend = YieldingBackend([
@@ -265,7 +266,7 @@ async def test_ask_human_at_desk_returns_redirect_and_delivers_as_notify(cfg, lo
 	"""When away mode is off for this cwd, ask_human delivers a passive notify and
 	returns the at-desk redirect error so the agent produces the question in the terminal."""
 	backend = RecordingBackend()
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	# is_away_mode_active(_CWD) defaults to False — no override needed.
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
@@ -293,7 +294,7 @@ async def test_ask_human_at_desk_returns_redirect_and_delivers_as_notify(cfg, lo
 async def test_ask_human_per_cwd_at_desk_redirect(cfg, logger):
 	"""Global away=True but cwd override=False → at-desk redirect for that cwd."""
 	backend = RecordingBackend()
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	registry.set_global_away(True)
 	registry.set_cwd_override(_CWD, False)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
@@ -309,7 +310,7 @@ async def test_ask_human_away_mode_blocks_as_before(cfg, logger):
 	"""When away mode is active for this cwd, ask_human registers a pending request
 	and blocks until a response arrives — existing behavior is preserved."""
 	backend = RecordingBackend()
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
@@ -332,7 +333,7 @@ async def test_ask_human_away_mode_blocks_as_before(cfg, logger):
 async def test_ask_human_invalid_cwd_returns_error(cfg, logger):
 	"""Non-absolute cwd returns an error string without registering a pending request."""
 	backend = RecordingBackend()
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
 	result = await handlers.ask_human("question?", "not-absolute", _SENDER)
@@ -355,7 +356,7 @@ async def test_ask_human_supersede_marks_prior_cancelled(cfg, logger):
 			self.cancelled_ids.append((cwd, request_id))
 
 	backend = RecordingCancelBackend()
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
@@ -396,7 +397,7 @@ async def test_ask_human_cancel_marks_firebase(cfg, logger):
 			self.cancelled_ids.append((cwd, request_id))
 
 	backend = RecordingCancelBackend()
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
@@ -419,7 +420,7 @@ async def test_ask_human_title_passthrough(cfg, logger):
 	"""title kwarg is forwarded to backend.write_channel_message for both
 	the question and the at-desk notify paths."""
 	backend = RecordingBackend()
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
@@ -446,7 +447,7 @@ class StaleNoticeBackend(RecordingBackend):
 @pytest.mark.asyncio
 async def test_dispatch_loop_calls_stale_reply_notice_on_unknown_correlation(cfg, logger):
 	"""When registry.resolve returns None, send_stale_reply_notice is called."""
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	# No pending request registered — any response is stale.
 	backend = YieldingBackend([
 		IncomingResponse(correlation=(_CWD, _SENDER), text="stray reply")

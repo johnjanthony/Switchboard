@@ -167,13 +167,6 @@ class ToolHandlers:
 	end_collab: Callable[..., Coroutine[None, None, str]]
 	enter_away_mode: Callable[..., Coroutine[None, None, str]]
 	exit_away_mode: Callable[..., Coroutine[None, None, str]]
-	build_bulk_respond_payload: Callable[..., Coroutine[None, None, dict]]
-	build_bulk_respond_payload_for_cwd: Callable[..., Coroutine[None, None, dict]]
-	bulk_respond_send_to_all: Callable[..., Coroutine[None, None, None]]
-	bulk_respond_send_to_all_for_cwd: Callable[..., Coroutine[None, None, None]]
-	bulk_respond_skip: Callable[..., Coroutine[None, None, None]]
-	bulk_respond_cancel: Callable[..., Coroutine[None, None, None]]
-	bulk_respond_cancel_for_cwd: Callable[..., Coroutine[None, None, None]]
 
 
 def build_tool_handlers(
@@ -518,87 +511,6 @@ def build_tool_handlers(
 			await logger.tool_error(None, canonical, str(exc))
 			return f"ERROR: {exc}"
 
-	async def build_bulk_respond_payload() -> dict:
-		pending = registry.all_pending()
-		await logger.info(f"build_bulk_respond_payload: found {len(pending)} total pending items")
-		return await _build_payload_from_pending(pending)
-
-	async def build_bulk_respond_payload_for_cwd(cwd: str) -> dict:
-		pending = registry.pending_for_cwd(cwd)
-		await logger.info(f"build_bulk_respond_payload_for_cwd: found {len(pending)} items for {cwd}")
-		return await _build_payload_from_pending(pending)
-
-	async def _build_payload_from_pending(pending: list) -> dict:
-		groups: dict[str, list] = {}
-		for p in pending:
-			groups.setdefault(p.cwd, []).append(p)
-		
-		# Parallelize fetching question text for all pending requests
-		async def _fetch_entry(p):
-			question_text = ""
-			if p.msg_id:
-				try:
-					question_text = await backend.fetch_message_text(p.cwd, p.msg_id) or ""
-				except Exception:
-					pass
-			return {
-				"cwd": p.cwd,
-				"request_id": p.request_id,
-				"sender": p.sender,
-				"question_text": question_text,
-			}
-
-		results = await asyncio.gather(*[_fetch_entry(p) for p in pending])
-		
-		# Regroup by CWD for the payload sections
-		sections_map: dict[str, list] = {}
-		for res in results:
-			cwd = res.pop("cwd")
-			sections_map.setdefault(cwd, []).append(res)
-		
-		sections = [{"cwd": cwd, "entries": sections_map[cwd]} for cwd in sorted(sections_map.keys())]
-		return {"sections": sections, "default_text": "Caught up — back at my desk."}
-
-	async def bulk_respond_send_to_all(default_text: str) -> None:
-		pending = registry.all_pending()
-		await _bulk_respond_send_to_pending(pending, default_text)
-
-	async def bulk_respond_send_to_all_for_cwd(cwd: str, default_text: str) -> None:
-		pending = registry.pending_for_cwd(cwd)
-		await _bulk_respond_send_to_pending(pending, default_text)
-
-	async def _bulk_respond_send_to_pending(pending: list, default_text: str) -> None:
-		async def _resolve_one(p):
-			# Wrap the whole body so attribute-access failures during task construction
-			# (e.g. backend missing write_channel_message) don't propagate and abort the fan-out.
-			try:
-				req_id = registry.resolve(cwd=p.cwd, sender=p.sender, text=default_text)
-				if req_id is None:
-					return
-				tasks = [
-					backend.send_resolution_confirmation(req_id, p.cwd, (p.cwd, p.sender), response_text=default_text),
-				]
-				if p.msg_id and hasattr(backend, "write_response_text"):
-					tasks.append(backend.write_response_text(p.cwd, p.msg_id, default_text))
-				tasks.append(backend.write_channel_message(p.cwd, "John", "human", default_text))
-				await asyncio.gather(*tasks)
-				await _append_session_log(config.log_path, p.cwd, "←", default_text, logger)
-				await logger.notify_sent(p.cwd, f"Bulk Reply: {default_text}")
-			except Exception as exc:
-				await logger.surface_error(f"bulk_resolve_failed: cwd={p.cwd} sender={p.sender} err={exc}")
-
-		if pending:
-			await asyncio.gather(*[_resolve_one(p) for p in pending])
-
-	async def bulk_respond_skip() -> None:
-		pass
-
-	async def bulk_respond_cancel() -> None:
-		registry.set_global_away(True)
-
-	async def bulk_respond_cancel_for_cwd(cwd: str) -> None:
-		registry.set_cwd_override(cwd, True)
-
 	return ToolHandlers(
 		ask_human=ask_human,
 		notify_human=notify_human,
@@ -607,13 +519,6 @@ def build_tool_handlers(
 		end_collab=end_collab,
 		enter_away_mode=enter_away_mode,
 		exit_away_mode=exit_away_mode,
-		build_bulk_respond_payload=build_bulk_respond_payload,
-		build_bulk_respond_payload_for_cwd=build_bulk_respond_payload_for_cwd,
-		bulk_respond_send_to_all=bulk_respond_send_to_all,
-		bulk_respond_send_to_all_for_cwd=bulk_respond_send_to_all_for_cwd,
-		bulk_respond_skip=bulk_respond_skip,
-		bulk_respond_cancel=bulk_respond_cancel,
-		bulk_respond_cancel_for_cwd=bulk_respond_cancel_for_cwd,
 	)
 
 
@@ -702,13 +607,88 @@ async def dispatch_commands(
 			)
 
 
+async def _apply_bulk_respond_decision(
+	registry: Registry,
+	backend: Any,
+	logger: JsonlLogger,
+	scope_cwd: str | None,
+	decision: str | None,
+	default_text: str,
+) -> bool:
+	"""Apply a bulk-respond decision (sent from the phone via the exit command)
+	and return True if the away-mode flip should be committed.
+
+	scope_cwd=None means global scope; otherwise per-cwd. Decision values:
+	- "send_default": resolve all pending in scope with `default_text`, commit flip
+	- "skip": leave pendings in place, commit flip
+	- "cancel": leave pendings in place, do NOT commit flip
+	- None: if no pendings, commit; otherwise treat as cancel and surface an error
+	"""
+	pendings = (
+		registry.all_pending() if scope_cwd is None
+		else registry.pending_for_cwd(scope_cwd)
+	)
+
+	if decision is None:
+		if not pendings:
+			return True
+		await logger.surface_error(
+			f"away_mode_commands: bulk_respond_decision_missing "
+			f"(scope={scope_cwd!r}, pending={len(pendings)}); treating as cancel"
+		)
+		return False
+
+	if decision == "send_default":
+		# Resolve every pending in scope: registry.resolve + send_resolution_confirmation
+		# + (optional) write_response_text + write_channel_message, in parallel.
+		# Per-pending exceptions are caught so a single failure doesn't abort the fan-out.
+		async def _resolve_one(p):
+			try:
+				req_id = registry.resolve(cwd=p.cwd, sender=p.sender, text=default_text)
+				if req_id is None:
+					return
+				tasks = [
+					backend.send_resolution_confirmation(req_id, p.cwd, (p.cwd, p.sender), response_text=default_text),
+				]
+				if p.msg_id and hasattr(backend, "write_response_text"):
+					tasks.append(backend.write_response_text(p.cwd, p.msg_id, default_text))
+				tasks.append(backend.write_channel_message(p.cwd, "John", "human", default_text))
+				await asyncio.gather(*tasks)
+				await _append_session_log(logger.log_path, p.cwd, "←", default_text, logger)
+				await logger.notify_sent(p.cwd, f"Bulk Reply: {default_text}")
+			except Exception as exc:
+				await logger.surface_error(f"bulk_resolve_failed: cwd={p.cwd} sender={p.sender} err={exc}")
+
+		if pendings:
+			try:
+				await asyncio.gather(*[_resolve_one(p) for p in pendings])
+			except Exception as exc:
+				await logger.surface_error(
+					f"away_mode_commands: bulk_respond_send_default error "
+					f"(scope={scope_cwd!r}): {exc}"
+				)
+		return True
+
+	if decision == "skip":
+		return True
+	if decision == "cancel":
+		return False
+
+	await logger.surface_error(f"away_mode_commands: unknown decision={decision!r}")
+	return False
+
+
 async def dispatch_away_mode_commands(
 	registry: Registry,
 	backend: Any,
-	handlers: "ToolHandlers",
 	logger: JsonlLogger,
 ) -> None:
-	"""Consume away_mode_commands queue entries and dispatch to registry/bulk-respond."""
+	"""Consume away_mode_commands queue entries and dispatch to registry/bulk-respond.
+
+	Decisions about pending questions arrive as fields on the exit_global / exit_cwd
+	command (set by the phone after showing its dialog). The server applies the
+	decision via `_apply_bulk_respond_decision` and only flips the away-mode mirror
+	if the decision allows commit."""
 	from server.canonicalization import canonicalize_cwd, CanonicalizationError
 
 	poll = getattr(backend, "poll_away_mode_commands", None)
@@ -725,48 +705,22 @@ async def dispatch_away_mode_commands(
 				cmd_type = cmd.get("type", "")
 				try:
 					if cmd_type == "enter_global":
-						registry.set_global_away(True)
+						await backend.write_away_mode_mirror(None, True)
 						await logger.info(f"away_mode_commands: enter_global applied")
 
 					elif cmd_type == "exit_global":
-						# User intent: exit global away. Honor unless the dialog flow returned an
-						# explicit "cancel" decision. Default to "skip" (= exit, no replies) if any
-						# step of the bulk-respond confirmation flow fails — partial failures must
-						# not strand the user in away mode after they pressed exit.
-						action = "skip"
-						default_text = ""
-						try:
-							payload = await handlers.build_bulk_respond_payload()
-							if payload["sections"]:
-								default_text = payload.get("default_text", "")
-								await backend.write_bulk_respond_dialog(payload)
-								try:
-									decision = await backend.poll_bulk_respond_decision()
-									action = decision.get("action", "skip")
-									default_text = decision.get("default_text", default_text)
-								except Exception as exc:
-									await logger.surface_error(f"away_mode_commands: exit_global decision poll error: {exc}")
-								try:
-									await backend.clear_bulk_respond_dialog()
-								except Exception as exc:
-									await logger.surface_error(f"away_mode_commands: clear_bulk_respond_dialog error: {exc}")
-						except Exception as exc:
-							await logger.surface_error(f"away_mode_commands: exit_global dialog setup error: {exc}")
-
-						if action == "send_to_all":
-							try:
-								await handlers.bulk_respond_send_to_all(default_text)
-							except Exception as exc:
-								await logger.surface_error(f"away_mode_commands: bulk_respond_send_to_all error: {exc}")
-							registry.set_global_away(False)
-						elif action == "skip":
-							registry.set_global_away(False)
-						else:
-							try:
-								await handlers.bulk_respond_cancel()
-							except Exception as exc:
-								await logger.surface_error(f"away_mode_commands: bulk_respond_cancel error: {exc}")
-						await logger.info(f"away_mode_commands: exit_global applied (action={action})")
+						decision = cmd.get("decision")
+						default_text = cmd.get("default_text", "")
+						commit = await _apply_bulk_respond_decision(
+							registry, backend, logger,
+							scope_cwd=None, decision=decision, default_text=default_text,
+						)
+						if commit:
+							await backend.write_away_mode_mirror(None, False)
+						await logger.info(
+							f"away_mode_commands: exit_global applied "
+							f"(decision={decision}, commit={commit})"
+						)
 
 					elif cmd_type == "enter_cwd":
 						raw_cwd = cmd.get("cwd") or ""
@@ -775,7 +729,7 @@ async def dispatch_away_mode_commands(
 						except CanonicalizationError as exc:
 							await logger.surface_error(f"away_mode_commands: enter_cwd bad cwd={raw_cwd!r} {exc}")
 							continue
-						registry.set_cwd_override(canonical, True)
+						await backend.write_away_mode_mirror(canonical, True)
 						await logger.info(f"away_mode_commands: enter_cwd {canonical}")
 
 					elif cmd_type == "exit_cwd":
@@ -785,43 +739,18 @@ async def dispatch_away_mode_commands(
 						except CanonicalizationError as exc:
 							await logger.surface_error(f"away_mode_commands: exit_cwd bad cwd={raw_cwd!r} {exc}")
 							continue
-
-						# User intent: exit per-channel away. Honor unless the dialog flow returned an
-						# explicit "cancel" decision. Match exit_global's confirm-then-respond flow.
-						action = "skip"
-						default_text = ""
-						try:
-							payload = await handlers.build_bulk_respond_payload_for_cwd(canonical)
-							if payload["sections"]:
-								default_text = payload.get("default_text", "")
-								await backend.write_bulk_respond_dialog(payload)
-								try:
-									decision = await backend.poll_bulk_respond_decision()
-									action = decision.get("action", "skip")
-									default_text = decision.get("default_text", default_text)
-								except Exception as exc:
-									await logger.surface_error(f"away_mode_commands: exit_cwd decision poll error: {exc}")
-								try:
-									await backend.clear_bulk_respond_dialog()
-								except Exception as exc:
-									await logger.surface_error(f"away_mode_commands: clear_bulk_respond_dialog error: {exc}")
-						except Exception as exc:
-							await logger.surface_error(f"away_mode_commands: exit_cwd dialog setup error: {exc}")
-
-						if action == "send_to_all":
-							try:
-								await handlers.bulk_respond_send_to_all_for_cwd(canonical, default_text)
-							except Exception as exc:
-								await logger.surface_error(f"away_mode_commands: bulk_respond_send_to_all_for_cwd error: {exc}")
-							registry.set_cwd_override(canonical, False)
-						elif action == "skip":
-							registry.set_cwd_override(canonical, False)
-						else:
-							try:
-								await handlers.bulk_respond_cancel_for_cwd(canonical)
-							except Exception as exc:
-								await logger.surface_error(f"away_mode_commands: bulk_respond_cancel_for_cwd error: {exc}")
-						await logger.info(f"away_mode_commands: exit_cwd {canonical} applied (action={action})")
+						decision = cmd.get("decision")
+						default_text = cmd.get("default_text", "")
+						commit = await _apply_bulk_respond_decision(
+							registry, backend, logger,
+							scope_cwd=canonical, decision=decision, default_text=default_text,
+						)
+						if commit:
+							await backend.write_away_mode_mirror(canonical, False)
+						await logger.info(
+							f"away_mode_commands: exit_cwd {canonical} applied "
+							f"(decision={decision}, commit={commit})"
+						)
 
 					else:
 						await logger.surface_error(f"away_mode_commands: unknown type={cmd_type!r}")

@@ -14,6 +14,7 @@ import pytest
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
 from server.registry import Registry
+from tests.conftest import make_registry_with_loopback
 
 
 def make_config(tmp_path: Path, spawn_root=None) -> Config:
@@ -239,7 +240,7 @@ async def test_single_spawn_auto_enters_away_mode(spawn_dirs):
 	from server.canonicalization import canonicalize_cwd
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	registry = Registry(away_mode_path=spawn_dirs / "away-mode.json")
+	registry = make_registry_with_loopback()
 	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen do stuff")
@@ -254,7 +255,7 @@ async def test_collab_spawn_auto_enters_away_mode(spawn_dirs):
 	from server.canonicalization import canonicalize_cwd
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	registry = Registry(away_mode_path=spawn_dirs / "away-mode.json")
+	registry = make_registry_with_loopback()
 	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen --collab review this")
@@ -268,7 +269,7 @@ async def test_single_spawn_does_not_set_away_mode_on_schtasks_failure(spawn_dir
 	from server.spawn import SpawnHandler
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	registry = Registry(away_mode_path=spawn_dirs / "away-mode.json")
+	registry = make_registry_with_loopback()
 	with patch("asyncio.create_subprocess_exec", side_effect=RuntimeError("schtasks boom")):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen do stuff")
@@ -289,7 +290,7 @@ async def test_away_mode_on_command_sets_flag_and_audits(tmp_path):
 	from server.spawn import SpawnHandler
 	cfg = make_config(tmp_path, spawn_root=tmp_path)
 	backend = make_backend()
-	registry = Registry(away_mode_path=tmp_path / "away.json")
+	registry = make_registry_with_loopback()
 	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 	assert registry.global_away() is False
 
@@ -306,7 +307,7 @@ async def test_away_mode_off_command_clears_flag_and_audits(tmp_path):
 	from server.spawn import SpawnHandler
 	cfg = make_config(tmp_path, spawn_root=tmp_path)
 	backend = make_backend()
-	registry = Registry(away_mode_path=tmp_path / "away.json")
+	registry = make_registry_with_loopback()
 	registry.set_global_away(True)
 	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 
@@ -323,7 +324,7 @@ async def test_away_mode_unknown_subcommand_is_ignored(tmp_path):
 	from server.spawn import SpawnHandler
 	cfg = make_config(tmp_path, spawn_root=tmp_path)
 	backend = make_backend()
-	registry = Registry(away_mode_path=tmp_path / "away.json")
+	registry = make_registry_with_loopback()
 	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 
 	await handler.handle("/away-mode wobble")
@@ -348,7 +349,7 @@ async def test_spawn_command_still_works(spawn_dirs):
 	from server.spawn import SpawnHandler
 	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
 	backend = make_backend()
-	registry = Registry(away_mode_path=spawn_dirs / "away.json")
+	registry = make_registry_with_loopback()
 	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn")

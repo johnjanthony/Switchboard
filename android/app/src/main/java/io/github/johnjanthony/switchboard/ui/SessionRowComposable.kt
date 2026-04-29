@@ -162,7 +162,7 @@ fun SessionRow(
 						color = MaterialTheme.colorScheme.onSurfaceVariant,
 					)
 					Row(verticalAlignment = Alignment.CenterVertically) {
-						if (channel.pendingQuestions.values.any { !it.cancelled }) {
+						if (channel.pendingResponses > 0) {
 							Box(
 								modifier = Modifier.size(8.dp).background(
 									MaterialTheme.colorScheme.primary, CircleShape,

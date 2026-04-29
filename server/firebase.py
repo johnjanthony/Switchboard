@@ -15,6 +15,17 @@ from server.logging_jsonl import JsonlLogger
 from server.messenger import CorrelationToken, IncomingResponse, MessengerBackend
 
 
+def _increment(n: int) -> object:
+	"""Wrapper for atomic Firebase RTDB increment. Returns the documented
+	server-value sentinel that the RTDB backend interprets as an atomic
+	add-n operation. Centralized so tests can monkeypatch it.
+
+	firebase-admin 7.x for Python does not expose ServerValue.increment as a
+	helper — the underlying wire format is {".sv": {"increment": n}}, which
+	is what the JS/Java SDK helpers produce. We emit that sentinel directly."""
+	return {".sv": {"increment": n}}
+
+
 class FirebaseBackend(MessengerBackend):
 	def __init__(
 		self,
@@ -53,8 +64,6 @@ class FirebaseBackend(MessengerBackend):
 		self._inject_listeners: dict[str, object] = {}
 		self._away_mode_cmd_queue: asyncio.Queue[dict] = asyncio.Queue()
 		self._away_mode_cmd_listener = None
-		self._bulk_decision_future: asyncio.Future[dict] | None = None
-		self._bulk_decision_listener = None
 		self._spawn_decision_future: asyncio.Future[dict] | None = None
 		self._spawn_decision_listener = None
 
@@ -129,12 +138,12 @@ class FirebaseBackend(MessengerBackend):
 
 	async def aclose(self) -> None:
 		# listener.close() blocks for many seconds while the SSE stream tears down
-		# (see comments in poll_bulk_respond_decision / poll_spawn_collision_decision).
+		# (see comment in poll_spawn_collision_decision).
 		# Run them in the default executor so shutdown doesn't stall the event loop.
 		listeners = []
 		for attr in (
 			"_resp_listener", "_cmd_listener", "_away_mode_cmd_listener",
-			"_bulk_decision_listener", "_spawn_decision_listener",
+			"_spawn_decision_listener",
 		):
 			lst = getattr(self, attr)
 			if lst:
@@ -226,6 +235,18 @@ class FirebaseBackend(MessengerBackend):
 			'preview': preview,
 		}))
 
+		# unread_count: atomic increment for every non-Human message
+		if message_type != "human":
+			await asyncio.to_thread(
+				lambda: db.reference(f'channels/{key}/unread_count').set(_increment(1))
+			)
+
+		# pending_responses: atomic increment only for question messages
+		if message_type == "question":
+			await asyncio.to_thread(
+				lambda: db.reference(f'channels/{key}/pending_responses').set(_increment(1))
+			)
+
 		# FCM notification
 		if message_type != "human":
 			fcm_data: dict = {
@@ -239,7 +260,7 @@ class FirebaseBackend(MessengerBackend):
 				await self._send_fcm(key, message_type, sender, content, fcm_data)
 			except Exception as exc:
 				if self._logger:
-					self._logger.surface_error(f"firebase_fcm_error: {exc}")
+					await self._logger.surface_error(f"firebase_fcm_error: {exc}")
 
 		# Correlation: encode (cwd, sender) so the dispatch loop can route by key
 		correlation = (cwd, sender)
@@ -334,6 +355,8 @@ class FirebaseBackend(MessengerBackend):
 			db.reference(f'channels/{key}/preview').delete()
 			db.reference(f'channels/{key}/last_activity_at').delete()
 			db.reference(f'channels/{key}/unread_count').delete()
+			db.reference(f'channels/{key}/pending_responses').delete()
+			db.reference(f'channels/{key}/away_mode').delete()
 			responses_ref = db.reference('responses')
 			all_responses = responses_ref.get(shallow=True) or {}
 			for slot in list(all_responses.keys()):
@@ -356,26 +379,128 @@ class FirebaseBackend(MessengerBackend):
 			return None
 		return await asyncio.to_thread(_fetch)
 
-	async def write_bulk_respond_dialog(self, payload: dict) -> None:
-		def _write():
-			db.reference('bulk_respond_dialog/active').set(payload)
-		await asyncio.to_thread(_write)
-
-	async def clear_bulk_respond_dialog(self) -> None:
-		def _clear():
-			db.reference('bulk_respond_dialog').delete()
-		await asyncio.to_thread(_clear)
-
 	async def write_away_mode_mirror(self, cwd: str | None, active: bool | None) -> None:
 		from server.canonicalization import to_firebase_key
 		if cwd is None:
-			await asyncio.to_thread(lambda: db.reference('away_mode/global').set(active))
+			await asyncio.to_thread(lambda: db.reference('global_settings/away_mode').set(active))
+			return
+		key = to_firebase_key(cwd)
+		ref_path = f'channels/{key}/away_mode'
+		if active is None:
+			await asyncio.to_thread(lambda: db.reference(ref_path).delete())
 		else:
+			await asyncio.to_thread(lambda: db.reference(ref_path).set(active))
+
+	async def load_away_mode_snapshot(self, registry) -> None:
+		from server.canonicalization import from_firebase_key
+		def _read():
+			global_val = db.reference('global_settings/away_mode').get()
+			channels = db.reference('channels').get(shallow=False) or {}
+			return global_val, channels
+		global_val, channels = await asyncio.to_thread(_read)
+		registry.update_global_away_cache(bool(global_val))
+		if not isinstance(channels, dict):
+			return
+		for key, channel in channels.items():
+			if not isinstance(channel, dict):
+				continue
+			away = channel.get('away_mode')
+			if away is None:
+				continue
+			try:
+				cwd = from_firebase_key(key)
+			except Exception:
+				continue
+			registry.update_cwd_override_cache(cwd, bool(away))
+
+	async def start_away_mode_listeners(self, registry) -> None:
+		from server.canonicalization import from_firebase_key
+
+		def _on_global(event):
+			# event.data is the new value of global_settings/away_mode.
+			# Marshal cache update back to the event loop so Registry's
+			# single-event-loop access invariant holds.
+			active = bool(event.data) if event.data is not None else False
+			try:
+				self._loop.call_soon_threadsafe(registry.update_global_away_cache, active)
+			except Exception as exc:
+				if self._logger:
+					asyncio.run_coroutine_threadsafe(
+						self._logger.surface_error(f"away_mode_global listener error: {exc}"),
+						self._loop,
+					)
+
+		def _on_channel(event):
+			# event.path is like "/" (snapshot delivery), "/{key}/away_mode" (single update),
+			# or "/{key}" (whole-channel write). Walk only the away_mode-bearing leaves.
+			if not event.path or event.path == "/":
+				return  # initial snapshot — already loaded by load_away_mode_snapshot
+			parts = event.path.strip("/").split("/")
+			if len(parts) == 2 and parts[1] == "away_mode":
+				cwd = from_firebase_key(parts[0])
+				active = None if event.data is None else bool(event.data)
+				try:
+					self._loop.call_soon_threadsafe(registry.update_cwd_override_cache, cwd, active)
+				except Exception as exc:
+					if self._logger:
+						asyncio.run_coroutine_threadsafe(
+							self._logger.surface_error(f"away_mode_channel listener error ({cwd!r}): {exc}"),
+							self._loop,
+						)
+
+		def _start():
+			# .listen() blocks the calling thread; run each in a daemon thread.
+			import threading
+			def _run_global():
+				db.reference('global_settings/away_mode').listen(_on_global)
+			def _run_channels():
+				db.reference('channels').listen(_on_channel)
+			threading.Thread(target=_run_global, daemon=True, name="away-mode-global-listener").start()
+			threading.Thread(target=_run_channels, daemon=True, name="away-mode-channels-listener").start()
+
+		# Run the thread-spawning directly since it's quick and non-blocking.
+		_start()
+
+	async def reset_all_pending_responses(self) -> None:
+		def _reset():
+			channels = db.reference('channels').get(shallow=True) or {}
+			if not isinstance(channels, dict) or not channels:
+				return
+			updates = {f'channels/{k}/pending_responses': 0 for k in channels.keys()}
+			db.reference().update(updates)
+		await asyncio.to_thread(_reset)
+
+	async def delete_legacy_away_mode_node(self) -> None:
+		"""One-shot startup migration: delete the old away_mode/ top-level node.
+		Idempotent — if the node doesn't exist, this is a no-op."""
+		def _do():
+			ref = db.reference('away_mode')
+			if ref.get(shallow=True) is not None:
+				ref.delete()
+		await asyncio.to_thread(_do)
+
+	def make_pending_mirror_writer(self):
+		"""Returns a sync callable (cwd, delta) that schedules an atomic
+		pending_responses Firebase increment for the cwd. The callable is meant
+		for Registry.set_pending_mirror()."""
+		from server.canonicalization import to_firebase_key
+		import logging as _logging
+		def _write(cwd: str, delta: int) -> None:
 			key = to_firebase_key(cwd)
-			if active is None:
-				await asyncio.to_thread(lambda: db.reference(f'away_mode/overrides/{key}').delete())
-			else:
-				await asyncio.to_thread(lambda: db.reference(f'away_mode/overrides/{key}').set(active))
+			def _do():
+				db.reference(f'channels/{key}/pending_responses').set(_increment(delta))
+			try:
+				loop = asyncio.get_running_loop()
+				loop.create_task(asyncio.to_thread(_do))
+			except RuntimeError:
+				# No running loop — common in synchronous unit tests where Registry
+				# mutations happen outside an event loop. Production paths always
+				# have a loop; an exception here in production is a bug worth seeing.
+				_logging.getLogger(__name__).debug(
+					"pending_mirror skipped: no running event loop (cwd=%s, delta=%d)",
+					cwd, delta,
+				)
+		return _write
 
 	async def _send_fcm(
 		self,
@@ -431,7 +556,7 @@ class FirebaseBackend(MessengerBackend):
 			)
 		except Exception as exc:
 			if self._logger:
-				self._logger.surface_error(f"firebase_timeout_notify_error: {exc}")
+				await self._logger.surface_error(f"firebase_timeout_notify_error: {exc}")
 
 	async def send_resolution_confirmation(
 		self,
@@ -484,37 +609,6 @@ class FirebaseBackend(MessengerBackend):
 			)
 		while True:
 			yield await self._away_mode_cmd_queue.get()
-
-	def _on_bulk_decision(self, event):
-		if event.event_type != 'put' or not event.data:
-			return
-		path = event.path.strip('/')
-		data = event.data
-		decision = None
-		if not path and isinstance(data, dict) and 'action' in data:
-			decision = data
-		elif path == 'decision' and isinstance(data, dict) and 'action' in data:
-			decision = data
-		if decision is not None and self._bulk_decision_future and not self._bulk_decision_future.done():
-			self._loop.call_soon_threadsafe(self._bulk_decision_future.set_result, decision)
-
-	async def poll_bulk_respond_decision(self) -> dict:
-		self._bulk_decision_future = asyncio.get_running_loop().create_future()
-		if self._bulk_decision_listener:
-			self._loop.run_in_executor(None, self._bulk_decision_listener.close)
-		self._bulk_decision_listener = db.reference('bulk_respond_dialog').listen(
-			self._on_bulk_decision
-		)
-		try:
-			return await self._bulk_decision_future
-		finally:
-			if self._bulk_decision_listener:
-				listener = self._bulk_decision_listener
-				self._bulk_decision_listener = None
-				# Background close so the dispatch loop returns to clear_bulk_respond_dialog
-				# immediately rather than holding the event loop for the SSE teardown.
-				self._loop.run_in_executor(None, listener.close)
-			self._bulk_decision_future = None
 
 	def _on_spawn_decision(self, event):
 		# Resolves on the first 'decision' write under spawn_collisions/{spawn_id}.

@@ -92,7 +92,7 @@ class MainActivity : ComponentActivity() {
 fun WearApp(viewModel: MainViewModel) {
     val navController = rememberSwipeDismissableNavController()
     val selectedCwdKey by viewModel.selectedCwdKey.collectAsState()
-    val bulkRespond by viewModel.bulkRespondDialog.collectAsState()
+    val pendingExitToggle by viewModel.pendingExitToggle.collectAsState()
 
     LaunchedEffect(selectedCwdKey) {
         val key = selectedCwdKey
@@ -139,12 +139,12 @@ fun WearApp(viewModel: MainViewModel) {
                 }
             }
 
-            if (bulkRespond != null) {
+            pendingExitToggle?.let { pending ->
                 WearBulkRespondDialog(
-                    payload = bulkRespond!!,
-                    onSendToAll = { viewModel.submitBulkRespond("send_to_all", it) },
-                    onSkip = { viewModel.submitBulkRespond("skip") },
-                    onCancel = { viewModel.submitBulkRespond("cancel") }
+                    payload = pending.payload,
+                    onSendToAll = { viewModel.submitExitToggleDecision("send_default", it) },
+                    onSkip = { viewModel.submitExitToggleDecision("skip", null) },
+                    onCancel = { viewModel.cancelExitToggle() }
                 )
             }
         }
@@ -229,8 +229,7 @@ fun WearBulkRespondDialog(
 fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController, onToggleAway: (Boolean) -> Unit) {
     val channels by viewModel.channels.collectAsState()
     val awayModeActive by viewModel.globalAway.collectAsState()
-    val unseenChannels by viewModel.unseenChannels.collectAsState()
-    
+
     val listState = rememberScalingLazyListState()
     
     ScreenScaffold(
@@ -257,7 +256,7 @@ fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController
                 key = { it.cwdKey }
             ) { channel ->
                 val hasPending = channel.pendingQuestions.isNotEmpty()
-                val isUnseen = unseenChannels.contains(channel.cwdKey)
+                val isUnseen = channel.unreadCount > 0
                 
                 android.util.Log.d("MainActivity", "Rendering channel: ${channel.cwdKey} (cwdCanonical=${channel.cwdCanonical}, hidden=${channel.hidden})")
                 
@@ -272,8 +271,7 @@ fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController
                     label = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (isUnseen) {
-                                val countText = if (channel.unreadCount > 0) "[${channel.unreadCount}] " else "• "
-                                Text(countText, color = MaterialTheme.colorScheme.primary)
+                                Text("[${channel.unreadCount}] ", color = MaterialTheme.colorScheme.primary)
                             }
                             Column {
                                 Text(

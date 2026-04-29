@@ -23,6 +23,7 @@ import io.github.johnjanthony.switchboard.network.BulkRespondSection
 import io.github.johnjanthony.switchboard.network.Channel
 import io.github.johnjanthony.switchboard.network.ChannelMessage
 import io.github.johnjanthony.switchboard.network.Pending
+import io.github.johnjanthony.switchboard.network.PendingExitToggle
 import io.github.johnjanthony.switchboard.network.SpawnCollisionData
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,6 +39,10 @@ import java.time.format.DateTimeFormatter
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
+	companion object {
+		private const val BULK_RESPOND_DEFAULT_TEXT = "I'll respond when I'm back at my desk."
+	}
+
 	// Keyed by cwdKey (Firebase form, e.g. "c:__work__switchboard")
 	private val _channels = MutableStateFlow<Map<String, Channel>>(emptyMap())
 	val channels: StateFlow<Map<String, Channel>> = _channels.asStateFlow()
@@ -48,15 +53,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _globalAway = MutableStateFlow(false)
 	val globalAway: StateFlow<Boolean> = _globalAway.asStateFlow()
 
-	// Keys are cwdKey
+	// Keys are cwdKey. Derived from _channels: any channel with a non-null awayMode
+	// is considered to have a per-channel override. Recomputed in syncChannel / removeChannel.
 	private val _cwdOverrides = MutableStateFlow<Map<String, Boolean>>(emptyMap())
 	val cwdOverrides: StateFlow<Map<String, Boolean>> = _cwdOverrides.asStateFlow()
 
 	private val _pendingCollision = MutableStateFlow<SpawnCollisionData?>(null)
 	val pendingCollision: StateFlow<SpawnCollisionData?> = _pendingCollision.asStateFlow()
 
-	private val _bulkRespondDialog = MutableStateFlow<BulkRespondPayload?>(null)
-	val bulkRespondDialog: StateFlow<BulkRespondPayload?> = _bulkRespondDialog.asStateFlow()
+	private val _pendingExitToggle = MutableStateFlow<PendingExitToggle?>(null)
+	val pendingExitToggle: StateFlow<PendingExitToggle?> = _pendingExitToggle.asStateFlow()
 
 	private val _markdownViewerContent = MutableStateFlow<Pair<String, String>?>(null) // fileName to content
 	val markdownViewerContent: StateFlow<Pair<String, String>?> = _markdownViewerContent.asStateFlow()
@@ -67,17 +73,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _pendingDeepLinkMessageId = MutableStateFlow<String?>(null)
 	val pendingDeepLinkMessageId: StateFlow<String?> = _pendingDeepLinkMessageId.asStateFlow()
 
-	private val _unseenChannels = MutableStateFlow<Set<String>>(emptySet())
-	val unseenChannels: StateFlow<Set<String>> = _unseenChannels.asStateFlow()
-
 	private val database = FirebaseDatabase.getInstance()
 	private val channelsRef = database.getReference("channels")
 	private val responsesRef = database.getReference("responses")
 	private val commandsRef = database.getReference("commands")
-	private val awayModeRef = database.getReference("away_mode")
 	private val awayCommandsRef = database.getReference("away_mode_commands")
 	private val spawnCollisionsRef = database.getReference("spawn_collisions")
-	private val bulkRespondRef = database.getReference("bulk_respond_dialog")
 
 	private val messageListeners = mutableMapOf<String, ChildEventListener>()
 
@@ -86,7 +87,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		setupChannelsListener()
 		setupAwayModeListener()
 		setupSpawnCollisionsListener()
-		setupBulkRespondListener()
 		loadProjectMru()
 	}
 
@@ -122,8 +122,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	fun isAwayActive(cwdKey: String): Boolean {
-		val override = _cwdOverrides.value[cwdKey]
-		return override ?: _globalAway.value
+		val channel = _channels.value[cwdKey]
+		return channel?.awayMode ?: _globalAway.value
 	}
 
 	// --- Firebase listeners ---
@@ -154,6 +154,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		val lastActivityAt = snapshot.child("last_activity_at").getValue(String::class.java)
 		val preview = snapshot.child("preview").getValue(String::class.java)
 		val unreadCount = snapshot.child("unread_count").getValue(Int::class.java) ?: 0
+		val awayMode = snapshot.child("away_mode").getValue(Boolean::class.java)
+		val pendingResponses = snapshot.child("pending_responses").getValue(Int::class.java) ?: 0
 		val cwd = cwdCanonical.ifBlank { fromFirebaseKey(cwdKey) }
 
 		val existing = _channels.value[cwdKey]
@@ -166,10 +168,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			lastActivityAt = lastActivityAt,
 			preview = preview,
 			unreadCount = unreadCount,
+			awayMode = awayMode,
+			pendingResponses = pendingResponses,
 		)
 		val newMap = _channels.value.toMutableMap()
 		newMap[cwdKey] = updated
 		_channels.value = newMap
+		recomputeCwdOverrides()
 
 		if (_selectedCwdKey.value == null && !hidden) {
 			_selectedCwdKey.value = cwdKey
@@ -224,10 +229,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		val newMap = _channels.value.toMutableMap()
 		if (newMap.remove(cwdKey) != null) {
 			_channels.value = newMap
+			recomputeCwdOverrides()
 			if (_selectedCwdKey.value == cwdKey) {
 				_selectedCwdKey.value = newMap.entries.firstOrNull { !it.value.hidden }?.key
 			}
 		}
+	}
+
+	private fun recomputeCwdOverrides() {
+		val map = mutableMapOf<String, Boolean>()
+		for ((key, ch) in _channels.value) {
+			val v = ch.awayMode
+			if (v != null) map[key] = v
+		}
+		_cwdOverrides.value = map
 	}
 
 	private fun addMessage(cwdKey: String, msgId: String, msg: ChannelMessage) {
@@ -257,9 +272,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		newMap[cwdKey] = updated
 		_channels.value = newMap
 
-		if (msg.sender != "Human" && cwdKey != _selectedCwdKey.value) {
-			_unseenChannels.value = _unseenChannels.value + cwdKey
-		}
 		if (_selectedCwdKey.value == null && !channel.hidden) {
 			_selectedCwdKey.value = cwdKey
 		}
@@ -288,21 +300,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	private fun setupAwayModeListener() {
-		awayModeRef.child("global").addValueEventListener(object : ValueEventListener {
+		database.getReference("global_settings/away_mode").addValueEventListener(object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
 				_globalAway.value = snapshot.getValue(Boolean::class.java) == true
-			}
-			override fun onCancelled(error: DatabaseError) {}
-		})
-		awayModeRef.child("overrides").addValueEventListener(object : ValueEventListener {
-			override fun onDataChange(snapshot: DataSnapshot) {
-				val map = mutableMapOf<String, Boolean>()
-				for (child in snapshot.children) {
-					val key = child.key ?: continue
-					val value = child.getValue(Boolean::class.java) ?: continue
-					map[key] = value
-				}
-				_cwdOverrides.value = map
 			}
 			override fun onCancelled(error: DatabaseError) {}
 		})
@@ -330,35 +330,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		})
 	}
 
-	private fun setupBulkRespondListener() {
-		bulkRespondRef.child("active").addValueEventListener(object : ValueEventListener {
-			override fun onDataChange(snapshot: DataSnapshot) {
-				if (!snapshot.exists()) {
-					_bulkRespondDialog.value = null
-					return
-				}
-				val defaultText = snapshot.child("default_text").getValue(String::class.java) ?: ""
-				val sections = snapshot.child("sections").children.mapNotNull { sectionSnap ->
-					val cwd = sectionSnap.child("cwd").getValue(String::class.java) ?: return@mapNotNull null
-					val entries = sectionSnap.child("entries").children.mapNotNull { entrySnap ->
-						val requestId = entrySnap.child("request_id").getValue(String::class.java) ?: return@mapNotNull null
-						val sender = entrySnap.child("sender").getValue(String::class.java) ?: return@mapNotNull null
-						val questionText = entrySnap.child("question_text").getValue(String::class.java) ?: ""
-						BulkRespondEntry(requestId, sender, questionText)
-					}
-					BulkRespondSection(cwd, entries)
-				}
-				_bulkRespondDialog.value = BulkRespondPayload(sections, defaultText)
-			}
-			override fun onCancelled(error: DatabaseError) {}
-		})
-	}
-
 	// --- Public actions ---
 
 	fun selectChannel(cwdKey: String) {
 		_selectedCwdKey.value = cwdKey
-		_unseenChannels.value = _unseenChannels.value - cwdKey
+		channelsRef.child(cwdKey).child("unread_count").setValue(0)
 	}
 
 	fun clearSelectedChannel() {
@@ -386,23 +362,86 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			"text" to text,
 			"written_at" to nowIso(),
 		))
-		// Remove from pending optimistically
+		// Remove from pending optimistically. Decrement pendingResponses by the
+		// number of pending entries we're dropping for this sender so the row-
+		// level pending dot clears immediately rather than after the Firebase
+		// echo round-trip. Server's atomic decrement on resolve produces the
+		// same final value.
 		val channel = _channels.value[cwdKey] ?: return
+		val droppedCount = channel.pendingQuestions.values.count { it.sender == sender }
 		val newPending = channel.pendingQuestions.filterValues { it.sender != sender }
-		_channels.value = _channels.value.toMutableMap().also { it[cwdKey] = channel.copy(pendingQuestions = newPending) }
+		val newPendingResponses = (channel.pendingResponses - droppedCount).coerceAtLeast(0)
+		_channels.value = _channels.value.toMutableMap().also {
+			it[cwdKey] = channel.copy(pendingQuestions = newPending, pendingResponses = newPendingResponses)
+		}
 	}
 
 	fun requestAwayModeToggle(cwdKey: String?, desired: Boolean) {
-		if (cwdKey == null) {
-			_globalAway.value = desired
-			if (desired) enterGlobalAway() else exitGlobalAway()
-		} else {
-			val newOverrides = _cwdOverrides.value.toMutableMap()
-			newOverrides[cwdKey] = desired
-			_cwdOverrides.value = newOverrides
-			val cwd = _channels.value[cwdKey]?.cwd ?: return
-			if (desired) enterCwdAway(cwd) else exitCwdAway(cwd)
+		// Entering away — no dialog needed
+		if (desired) {
+			if (cwdKey == null) {
+				enterGlobalAway()
+			} else {
+				val cwd = _channels.value[cwdKey]?.cwd ?: return
+				enterCwdAway(cwd)
+			}
+			return
 		}
+
+		// Exiting away — gather pending in scope
+		val sectionsByCwd: List<BulkRespondSection> = if (cwdKey == null) {
+			_channels.value.values
+				.filter { ch -> ch.pendingResponses > 0 }
+				.map { ch ->
+					BulkRespondSection(
+						cwd = ch.cwdCanonical.ifBlank { ch.cwd },
+						entries = ch.pendingQuestions.values
+							.filter { !it.cancelled }
+							.map { p -> BulkRespondEntry(p.requestId, p.sender, p.questionText) },
+					)
+				}
+		} else {
+			val ch = _channels.value[cwdKey] ?: return
+			if (ch.pendingResponses == 0) emptyList()
+			else listOf(BulkRespondSection(
+				cwd = ch.cwdCanonical.ifBlank { ch.cwd },
+				entries = ch.pendingQuestions.values
+					.filter { !it.cancelled }
+					.map { p -> BulkRespondEntry(p.requestId, p.sender, p.questionText) },
+			))
+		}
+
+		if (sectionsByCwd.isEmpty()) {
+			// No pending: send the exit command without a decision
+			if (cwdKey == null) {
+				exitGlobalAway(decision = null, defaultText = null)
+			} else {
+				val cwd = _channels.value[cwdKey]?.cwd ?: return
+				exitCwdAway(cwd, decision = null, defaultText = null)
+			}
+			return
+		}
+
+		// Pending exists: surface dialog. submitExitToggleDecision() will fire the command.
+		_pendingExitToggle.value = PendingExitToggle(
+			scopeCwdKey = cwdKey,
+			payload = BulkRespondPayload(sections = sectionsByCwd, defaultText = BULK_RESPOND_DEFAULT_TEXT),
+		)
+	}
+
+	fun submitExitToggleDecision(decision: String, defaultText: String?) {
+		val pending = _pendingExitToggle.value ?: return
+		_pendingExitToggle.value = null
+		if (pending.scopeCwdKey == null) {
+			exitGlobalAway(decision = decision, defaultText = defaultText)
+		} else {
+			val cwd = _channels.value[pending.scopeCwdKey]?.cwd ?: return
+			exitCwdAway(cwd, decision = decision, defaultText = defaultText)
+		}
+	}
+
+	fun cancelExitToggle() {
+		_pendingExitToggle.value = null
 	}
 
 	fun hideChannel(cwdKey: String) {
@@ -416,12 +455,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 	fun resolveSpawnCollision(spawnId: String, action: String) {
 		spawnCollisionsRef.child(spawnId).child("decision").setValue(mapOf("action" to action))
-	}
-
-	fun submitBulkRespond(action: String, defaultText: String? = null) {
-		val payload = mutableMapOf<String, Any>("action" to action)
-		if (defaultText != null) payload["default_text"] = defaultText
-		bulkRespondRef.child("decision").setValue(payload)
 	}
 
 	fun spawnSession(project: String, prompt: String, useClaude: Boolean, useGemini: Boolean) {
@@ -440,16 +473,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		awayCommandsRef.push().setValue(mapOf("type" to "enter_global", "issued_at" to nowIso()))
 	}
 
-	private fun exitGlobalAway() {
-		awayCommandsRef.push().setValue(mapOf("type" to "exit_global", "issued_at" to nowIso()))
+	private fun exitGlobalAway(decision: String?, defaultText: String?) {
+		val payload = mutableMapOf<String, Any>(
+			"type" to "exit_global",
+			"issued_at" to nowIso(),
+		)
+		if (decision != null) payload["decision"] = decision
+		if (defaultText != null) payload["default_text"] = defaultText
+		awayCommandsRef.push().setValue(payload)
 	}
 
 	private fun enterCwdAway(cwd: String) {
 		awayCommandsRef.push().setValue(mapOf("type" to "enter_cwd", "cwd" to cwd, "issued_at" to nowIso()))
 	}
 
-	private fun exitCwdAway(cwd: String) {
-		awayCommandsRef.push().setValue(mapOf("type" to "exit_cwd", "cwd" to cwd, "issued_at" to nowIso()))
+	private fun exitCwdAway(cwd: String, decision: String?, defaultText: String?) {
+		val payload = mutableMapOf<String, Any>(
+			"type" to "exit_cwd",
+			"cwd" to cwd,
+			"issued_at" to nowIso(),
+		)
+		if (decision != null) payload["decision"] = decision
+		if (defaultText != null) payload["default_text"] = defaultText
+		awayCommandsRef.push().setValue(payload)
 	}
 
 	// --- Utilities ---

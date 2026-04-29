@@ -494,8 +494,9 @@ async def test_message_and_await_agent_relay_calls_write_channel_message(tmp_pat
 
 @pytest.mark.asyncio
 async def test_ask_human_writes_channel_message(tmp_path):
+	from tests.conftest import make_registry_with_loopback
 	_ASK_CWD = "c:/work/my-chan"
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	registry.set_global_away(True)
 	cfg = _make_config(tmp_path)
 	backend = RecordingBackend()

@@ -100,7 +100,7 @@ private fun SwitchboardNavHost(
 	val globalAway by viewModel.globalAway.collectAsState()
 	val cwdOverrides by viewModel.cwdOverrides.collectAsState()
 	val pendingCollision by viewModel.pendingCollision.collectAsState()
-	val bulkRespond by viewModel.bulkRespondDialog.collectAsState()
+	val pendingExitToggle by viewModel.pendingExitToggle.collectAsState()
 	val markdownViewerContent by viewModel.markdownViewerContent.collectAsState()
 	val projectMru by viewModel.projectMru.collectAsState()
 	var showHidden by remember { mutableStateOf(false) }
@@ -229,12 +229,12 @@ private fun SwitchboardNavHost(
 			onCancel = { viewModel.resolveSpawnCollision(pendingCollision!!.spawnId, "cancel") },
 		)
 	}
-	if (bulkRespond != null) {
+	pendingExitToggle?.let { pending ->
 		BulkRespondDialog(
-			payload = bulkRespond!!,
-			onSendToAll = { text -> viewModel.submitBulkRespond("send_to_all", text) },
-			onSkip = { viewModel.submitBulkRespond("skip") },
-			onCancel = { viewModel.submitBulkRespond("cancel") },
+			payload = pending.payload,
+			onSendToAll = { text -> viewModel.submitExitToggleDecision("send_default", text) },
+			onSkip = { viewModel.submitExitToggleDecision("skip", null) },
+			onCancel = { viewModel.cancelExitToggle() },
 		)
 	}
 	if (showSpawnDialog) {

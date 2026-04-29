@@ -158,26 +158,21 @@ def _build_fastmcp(handlers) -> FastMCP:
 
 
 async def _wire_away_mode_mirror(registry: "Registry", backend: "MessengerBackend") -> None:
-	"""Register a post-set callback that mirrors the away-mode flag to Firebase,
-	and perform a startup push so Firebase reflects the sidecar truth."""
+	"""Register a callback that mirrors away-mode mutations to Firebase.
+	The callback writes the (cwd, active) pair as-is; the listener path
+	(start_away_mode_listeners, wired in Task 8) is responsible for updating
+	the in-memory cache."""
 	loop = asyncio.get_running_loop()
 
-	def _on_change(cwd: "str | None", active: bool) -> None:
-		if cwd is None:
-			effective = registry.global_away() or bool(registry.cwd_overrides())
-			loop.create_task(backend.write_away_mode_mirror(None, effective))
-		else:
-			loop.create_task(backend.write_away_mode_mirror(cwd, active))
+	def _on_change(cwd: "str | None", active: bool | None) -> None:
+		loop.create_task(backend.write_away_mode_mirror(cwd, active))
 
 	registry.set_away_mode_callback(_on_change)
-	initial = registry.global_away() or bool(registry.cwd_overrides())
-	await backend.write_away_mode_mirror(None, initial)
 
 
 async def _run(config: Config) -> None:
 	logger = JsonlLogger(config.log_path)
-	away_mode_path = _Path(config.log_path).parent / "away-mode.json"
-	registry = Registry(away_mode_path=away_mode_path)
+	registry = Registry()
 
 	if not (config.firebase_service_account_json and config.firebase_database_url):
 		raise ConfigError(
@@ -196,6 +191,15 @@ async def _run(config: Config) -> None:
 	await _notify_lost_collab_sessions(sidecar_path, backend)
 
 	await _wire_away_mode_mirror(registry, backend)
+
+	# Populate cache from Firebase, start listeners, zero pending counters
+	await backend.load_away_mode_snapshot(registry)
+	await backend.delete_legacy_away_mode_node()
+	await backend.start_away_mode_listeners(registry)
+	await backend.reset_all_pending_responses()
+
+	if isinstance(backend, FirebaseBackend):
+		registry.set_pending_mirror(backend.make_pending_mirror_writer())
 
 	limiter = RateLimiter(config.rate_limit)
 	handlers = build_tool_handlers(config, registry, backend, logger, limiter)
@@ -235,7 +239,7 @@ async def _run(config: Config) -> None:
 	)
 
 	away_cmd_task = asyncio.create_task(
-		dispatch_away_mode_commands(registry, backend, handlers, logger)
+		dispatch_away_mode_commands(registry, backend, logger)
 	)
 
 	loop = asyncio.get_running_loop()
