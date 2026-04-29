@@ -1,16 +1,6 @@
-"""FastMCP tool handlers and response-dispatch loop.
-
-`build_tool_handlers` returns a small object with the two tool coroutines
-bound to the provided dependencies. `build_gateway` wires those into a
-FastMCP instance. Keeping the handlers separable from the FastMCP wiring
-makes them trivially unit-testable without spinning up an MCP server.
-"""
-
 from __future__ import annotations
 
 import asyncio
-import fnmatch
-import hashlib
 import json
 import uuid
 from dataclasses import dataclass
@@ -26,63 +16,15 @@ from server.messenger import MessengerBackend
 from server.rate_limiter import RateLimiter
 from server.registry import Registry
 from server.title_tracker import TitleTracker
+from server.gateway.document import _validate_path, _sha256_hex
+from server.gateway.bg_tasks import _spawn_bg
 
 TIMEOUT_SENTINEL = "__TIMEOUT__"
 
 _SESSION_START = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
-_MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
-_DENYLIST_EXACT = frozenset({".env", "service-account.json"})
-_DENYLIST_GLOBS = ("*token*", "*secret*", "*.pem", "*.key", ".env*", "*.env")
-
-
 def _new_request_id() -> str:
 	return uuid.uuid4().hex[:8]
-
-
-async def _sha256_hex(path: Path) -> str:
-	def _do_sha256():
-		h = hashlib.sha256()
-		with path.open("rb") as f:
-			for chunk in iter(lambda: f.read(65536), b""):
-				h.update(chunk)
-		return h.hexdigest()
-	return await asyncio.to_thread(_do_sha256)
-
-
-def _validate_path(path_str: str, cwd: Path | None = None) -> Path:
-	"""Return the resolved Path if safe; raise ValueError otherwise."""
-	p = Path(path_str)
-	if p.is_absolute():
-		resolved = p.resolve()
-	else:
-		_cwd = (cwd or Path.cwd()).resolve()
-		resolved = (_cwd / p).resolve()
-		try:
-			resolved.relative_to(_cwd)
-		except ValueError:
-			raise ValueError(f"Path escapes project directory: {path_str}")
-
-	if not resolved.exists():
-		raise ValueError(f"File not found: {path_str}")
-	if not resolved.is_file():
-		raise ValueError(f"Not a file: {path_str}")
-
-	size = resolved.stat().st_size
-	if size > _MAX_DOCUMENT_BYTES:
-		raise ValueError(f"File too large ({size} bytes, max {_MAX_DOCUMENT_BYTES})")
-
-	name_lower = resolved.name.lower()
-	if name_lower in _DENYLIST_EXACT:
-		raise ValueError(f"File is on the deny list: {resolved.name}")
-	for pattern in _DENYLIST_GLOBS:
-		if fnmatch.fnmatch(name_lower, pattern):
-			raise ValueError(
-				f"File matches restricted pattern '{pattern}': {resolved.name}"
-			)
-
-	return resolved
-
 
 async def _append_session_log(log_path: str, channel_id: str, direction: str, text: str, logger: JsonlLogger) -> None:
 	from server.canonicalization import to_firebase_key
@@ -99,7 +41,6 @@ async def _append_session_log(log_path: str, channel_id: str, direction: str, te
 			f.write(line)
 
 	await asyncio.to_thread(_write)
-
 
 async def _write_byo_sidecar(log_path: str, channel_id: str) -> None:
 	sidecar_path = Path(log_path).parent / "collab-sessions.json"
@@ -122,41 +63,11 @@ async def _write_byo_sidecar(log_path: str, channel_id: str) -> None:
 
 	await asyncio.to_thread(_write)
 
-
 async def _safe_mark_cancelled(backend: MessengerBackend, cwd: str, request_id: str, logger: JsonlLogger) -> None:
 	try:
 		await backend.mark_question_cancelled(cwd, request_id)
 	except Exception as exc:
 		await logger.surface_error(f"mark_cancelled_failed: {exc}")
-
-
-_LOOP_CRASH_ALERT_THRESHOLD = 5
-_LOOP_BACKOFF_MAX = 60.0
-
-
-async def _loop_crash_backoff(
-	backend: Any,
-	logger: JsonlLogger,
-	label: str,
-	consecutive_failures: int,
-	backoff: float,
-	exc: Exception,
-) -> float:
-	"""Log a dispatch-loop crash, escalate to the admin channel after the
-	threshold is hit, sleep `backoff` seconds, and return the next backoff."""
-	await logger.surface_error(
-		f"{label}_loop_crashed: {exc} (count={consecutive_failures}, sleep={backoff:.1f}s)"
-	)
-	if consecutive_failures == _LOOP_CRASH_ALERT_THRESHOLD:
-		try:
-			await backend.send_text(
-				f"Switchboard {label} loop has failed {consecutive_failures} times in a row — check service logs."
-			)
-		except Exception as alert_exc:
-			await logger.surface_error(f"{label}_loop_alert_failed: {alert_exc}")
-	await asyncio.sleep(backoff)
-	return min(backoff * 2, _LOOP_BACKOFF_MAX)
-
 
 @dataclass
 class ToolHandlers:
@@ -167,7 +78,6 @@ class ToolHandlers:
 	end_collab: Callable[..., Coroutine[None, None, str]]
 	enter_away_mode: Callable[..., Coroutine[None, None, str]]
 	exit_away_mode: Callable[..., Coroutine[None, None, str]]
-
 
 def build_tool_handlers(
 	config: Config,
@@ -374,11 +284,18 @@ def build_tool_handlers(
 				cwd=canonical, agent_senders=[], task="", is_byo=True
 			)
 			registry.add_session(session)
-			asyncio.create_task(backend.write_session_meta(
-				canonical, "collab", canonical, agent_senders=[], task=""
-			))
-			asyncio.create_task(_write_byo_sidecar(config.log_path, canonical))
-			asyncio.create_task(backend.start_inject_listener(canonical))
+			_spawn_bg(
+				backend.write_session_meta(canonical, "collab", canonical, agent_senders=[], task=""),
+				label=f"collab_session_meta:{canonical}",
+			)
+			_spawn_bg(
+				_write_byo_sidecar(config.log_path, canonical),
+				label=f"byo_sidecar:{canonical}",
+			)
+			_spawn_bg(
+				backend.start_inject_listener(canonical),
+				label=f"inject_listener:{canonical}",
+			)
 
 		err = session.enroll(sender)
 		if err == "duplicate":
@@ -399,7 +316,7 @@ def build_tool_handlers(
 						await backend.write_channel_message(cid, s, "agent", msg, format="markdown")
 					except Exception as exc:
 						await logger.surface_error(f"collab_relay_error: {exc}")
-				asyncio.create_task(_relay())
+				_spawn_bg(_relay(), label=f"collab_relay:{channel_id}:{actual_sender}")
 
 			future = session.start_waiting(sender)
 		except Exception as exc:
@@ -520,284 +437,3 @@ def build_tool_handlers(
 		enter_away_mode=enter_away_mode,
 		exit_away_mode=exit_away_mode,
 	)
-
-
-async def dispatch_responses(
-	registry: Registry,
-	backend: MessengerBackend,
-	logger: JsonlLogger,
-) -> None:
-	consecutive_failures = 0
-	backoff = 1.0
-	while True:
-		try:
-			async for response in backend.poll_responses():
-				consecutive_failures = 0
-				backoff = 1.0
-				try:
-					corr = response.correlation
-					if isinstance(corr, tuple) and len(corr) == 2:
-						cwd, sender = corr
-						record = registry.get((cwd, sender))
-						req_id = registry.resolve(cwd=cwd, sender=sender, text=response.text)
-						if req_id is None:
-							await logger.surface_error(f"unknown_correlation: cwd={cwd} sender={sender}")
-							try:
-								await backend.send_stale_reply_notice(cwd, sender)
-							except Exception as exc:
-								await logger.surface_error(f"stale_reply_notice_failed: {exc}")
-						elif record is not None:
-							if record.msg_id and hasattr(backend, "write_response_text"):
-								# Update original question so it stays answered across restarts
-								asyncio.create_task(backend.write_response_text(
-									cwd, record.msg_id, response.text
-								))
-							# Add a NEW message to the history so it shows up in-line in the app
-							async def _write_history(cid=cwd, txt=response.text):
-								try:
-									await backend.write_channel_message(cid, "John", "human", txt)
-									await logger.notify_sent(cid, f"Reply: {txt}")
-									await _append_session_log(logger.log_path, cid, "←", txt, logger)
-								except Exception as exc:
-									await logger.surface_error(f"history_write_failed: {exc}")
-							asyncio.create_task(_write_history())
-					else:
-						await logger.surface_error(f"legacy_correlation_dropped: {corr}")
-				except asyncio.CancelledError:
-					raise
-				except Exception as exc:
-					await logger.surface_error(
-						f"dispatch_iteration_error: {exc}",
-						correlation=str(response.correlation),
-					)
-		except asyncio.CancelledError:
-			raise
-		except Exception as exc:
-			consecutive_failures += 1
-			backoff = await _loop_crash_backoff(
-				backend, logger, "dispatch_responses", consecutive_failures, backoff, exc,
-			)
-
-
-async def dispatch_commands(
-	spawn_handler: Any,
-	backend: Any,
-	logger: JsonlLogger,
-) -> None:
-	consecutive_failures = 0
-	backoff = 1.0
-	while True:
-		try:
-			async for raw in backend.poll_commands():
-				consecutive_failures = 0
-				backoff = 1.0
-				try:
-					await spawn_handler.handle(raw)
-				except asyncio.CancelledError:
-					raise
-				except Exception as exc:
-					await logger.surface_error(f"dispatch_commands_error: {exc}")
-
-		except asyncio.CancelledError:
-			raise
-		except Exception as exc:
-			consecutive_failures += 1
-			backoff = await _loop_crash_backoff(
-				backend, logger, "dispatch_commands", consecutive_failures, backoff, exc,
-			)
-
-
-async def _apply_bulk_respond_decision(
-	registry: Registry,
-	backend: Any,
-	logger: JsonlLogger,
-	scope_cwd: str | None,
-	decision: str | None,
-	default_text: str,
-) -> bool:
-	"""Apply a bulk-respond decision (sent from the phone via the exit command)
-	and return True if the away-mode flip should be committed.
-
-	scope_cwd=None means global scope; otherwise per-cwd. Decision values:
-	- "send_default": resolve all pending in scope with `default_text`, commit flip
-	- "skip": leave pendings in place, commit flip
-	- "cancel": leave pendings in place, do NOT commit flip
-	- None: if no pendings, commit; otherwise treat as cancel and surface an error
-	"""
-	pendings = (
-		registry.all_pending() if scope_cwd is None
-		else registry.pending_for_cwd(scope_cwd)
-	)
-
-	if decision is None:
-		if not pendings:
-			return True
-		await logger.surface_error(
-			f"away_mode_commands: bulk_respond_decision_missing "
-			f"(scope={scope_cwd!r}, pending={len(pendings)}); treating as cancel"
-		)
-		return False
-
-	if decision == "send_default":
-		# Resolve every pending in scope: registry.resolve + send_resolution_confirmation
-		# + (optional) write_response_text + write_channel_message, in parallel.
-		# Per-pending exceptions are caught so a single failure doesn't abort the fan-out.
-		async def _resolve_one(p):
-			try:
-				req_id = registry.resolve(cwd=p.cwd, sender=p.sender, text=default_text)
-				if req_id is None:
-					return
-				tasks = [
-					backend.send_resolution_confirmation(req_id, p.cwd, (p.cwd, p.sender), response_text=default_text),
-				]
-				if p.msg_id and hasattr(backend, "write_response_text"):
-					tasks.append(backend.write_response_text(p.cwd, p.msg_id, default_text))
-				tasks.append(backend.write_channel_message(p.cwd, "John", "human", default_text))
-				await asyncio.gather(*tasks)
-				await _append_session_log(logger.log_path, p.cwd, "←", default_text, logger)
-				await logger.notify_sent(p.cwd, f"Bulk Reply: {default_text}")
-			except Exception as exc:
-				await logger.surface_error(f"bulk_resolve_failed: cwd={p.cwd} sender={p.sender} err={exc}")
-
-		if pendings:
-			try:
-				await asyncio.gather(*[_resolve_one(p) for p in pendings])
-			except Exception as exc:
-				await logger.surface_error(
-					f"away_mode_commands: bulk_respond_send_default error "
-					f"(scope={scope_cwd!r}): {exc}"
-				)
-		return True
-
-	if decision == "skip":
-		return True
-	if decision == "cancel":
-		return False
-
-	await logger.surface_error(f"away_mode_commands: unknown decision={decision!r}")
-	return False
-
-
-async def dispatch_away_mode_commands(
-	registry: Registry,
-	backend: Any,
-	logger: JsonlLogger,
-) -> None:
-	"""Consume away_mode_commands queue entries and dispatch to registry/bulk-respond.
-
-	Decisions about pending questions arrive as fields on the exit_global / exit_cwd
-	command (set by the phone after showing its dialog). The server applies the
-	decision via `_apply_bulk_respond_decision` and only flips the away-mode mirror
-	if the decision allows commit."""
-	from server.canonicalization import canonicalize_cwd, CanonicalizationError
-
-	poll = getattr(backend, "poll_away_mode_commands", None)
-	if poll is None:
-		return
-
-	consecutive_failures = 0
-	backoff = 1.0
-	while True:
-		try:
-			async for cmd in poll():
-				consecutive_failures = 0
-				backoff = 1.0
-				cmd_type = cmd.get("type", "")
-				try:
-					if cmd_type == "enter_global":
-						await backend.write_away_mode_mirror(None, True)
-						await logger.info(f"away_mode_commands: enter_global applied")
-
-					elif cmd_type == "exit_global":
-						decision = cmd.get("decision")
-						default_text = cmd.get("default_text", "")
-						commit = await _apply_bulk_respond_decision(
-							registry, backend, logger,
-							scope_cwd=None, decision=decision, default_text=default_text,
-						)
-						if commit:
-							await backend.write_away_mode_mirror(None, False)
-						await logger.info(
-							f"away_mode_commands: exit_global applied "
-							f"(decision={decision}, commit={commit})"
-						)
-
-					elif cmd_type == "enter_cwd":
-						raw_cwd = cmd.get("cwd") or ""
-						try:
-							canonical = canonicalize_cwd(raw_cwd)
-						except CanonicalizationError as exc:
-							await logger.surface_error(f"away_mode_commands: enter_cwd bad cwd={raw_cwd!r} {exc}")
-							continue
-						await backend.write_away_mode_mirror(canonical, True)
-						await logger.info(f"away_mode_commands: enter_cwd {canonical}")
-
-					elif cmd_type == "exit_cwd":
-						raw_cwd = cmd.get("cwd") or ""
-						try:
-							canonical = canonicalize_cwd(raw_cwd)
-						except CanonicalizationError as exc:
-							await logger.surface_error(f"away_mode_commands: exit_cwd bad cwd={raw_cwd!r} {exc}")
-							continue
-						decision = cmd.get("decision")
-						default_text = cmd.get("default_text", "")
-						commit = await _apply_bulk_respond_decision(
-							registry, backend, logger,
-							scope_cwd=canonical, decision=decision, default_text=default_text,
-						)
-						if commit:
-							await backend.write_away_mode_mirror(canonical, False)
-						await logger.info(
-							f"away_mode_commands: exit_cwd {canonical} applied "
-							f"(decision={decision}, commit={commit})"
-						)
-
-					else:
-						await logger.surface_error(f"away_mode_commands: unknown type={cmd_type!r}")
-
-				except asyncio.CancelledError:
-					raise
-				except Exception as exc:
-					await logger.surface_error(f"away_mode_commands_dispatch_error: {exc}")
-		except asyncio.CancelledError:
-			raise
-		except Exception as exc:
-			consecutive_failures += 1
-			backoff = await _loop_crash_backoff(
-				backend, logger, "away_mode_commands", consecutive_failures, backoff, exc,
-			)
-
-
-async def dispatch_inject_queue(
-	registry: Registry,
-	backend: Any,
-	logger: JsonlLogger,
-) -> None:
-	"""Deliver human inject messages from the Android compose box to collab sessions."""
-	poll = getattr(backend, "poll_inject_messages", None)
-	if poll is None:
-		return
-	consecutive_failures = 0
-	backoff = 1.0
-	while True:
-		try:
-			async for session_id, inject_id, text in poll():
-				consecutive_failures = 0
-				backoff = 1.0
-				try:
-					session = registry.get_session(session_id)
-					if session is None:
-						await logger.surface_error(f"inject_unknown_session: {session_id} inject_id={inject_id}")
-					else:
-						session.deliver_inject(text)
-				except asyncio.CancelledError:
-					raise
-				except Exception as exc:
-					await logger.surface_error(f"inject_dispatch_error: inject_id={inject_id} {exc}")
-		except asyncio.CancelledError:
-			raise
-		except Exception as exc:
-			consecutive_failures += 1
-			backoff = await _loop_crash_backoff(
-				backend, logger, "inject_queue", consecutive_failures, backoff, exc,
-			)

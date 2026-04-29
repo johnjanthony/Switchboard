@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -175,6 +176,13 @@ private fun SwitchboardNavHost(
 			val isOverride = cwdOverrides.containsKey(cwdKey)
 			var infoOpen by remember { mutableStateOf(false) }
 
+			DisposableEffect(cwdKey) {
+				viewModel.selectChannel(cwdKey)
+				onDispose {
+					viewModel.clearSelectedChannel()
+				}
+			}
+
 			SessionViewScreen(
 				channel = channel,
 				messages = channel.messages.sortedBy { it.second.timestamp },
@@ -187,7 +195,7 @@ private fun SwitchboardNavHost(
 				onBack = { navController.popBackStack() },
 				onTapPill = { viewModel.requestAwayModeToggle(cwdKey, !awayActive) },
 				onLongPressPillConfirm = { viewModel.requestAwayModeToggle(cwdKey, !awayActive) },
-				onSubmitReply = { sender, text -> viewModel.submitReply(cwdKey, sender, text) },
+				onSubmitReply = { sender, text, requestId -> viewModel.submitReply(cwdKey, sender, text, requestId) },
 				onDownloadFile = { url, filename -> viewModel.downloadAndOpenFile(context, url, filename) },
 				onLongPressDownloadFile = { url, filename -> viewModel.saveFileToDownloads(context, url, filename) },
 				onShowTabInfo = { infoOpen = true },

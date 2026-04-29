@@ -146,3 +146,54 @@ async def test_dispatch_commands_restarts_after_generator_crash(tmp_path):
 	events = [json.loads(line) for line in log_path.read_text().splitlines() if line]
 	errors = [e for e in events if e["event"] == "surface_error"]
 	assert any("connection lost" in e["detail"] for e in errors)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_commands_fanned_out(logger):
+	"""Commands are dispatched as background tasks, so the loop doesn't block on handlers."""
+	from server.gateway import dispatch_commands
+
+	start_event = asyncio.Event()
+	finish_event = asyncio.Event()
+
+	call_count = 0
+
+	async def slow_handle(raw: str) -> None:
+		nonlocal call_count
+		call_count += 1
+		start_event.set()
+		await finish_event.wait()
+
+	spawn_handler = MagicMock()
+	spawn_handler.handle = slow_handle
+
+	backend = MagicMock()
+
+	# Create an async generator for poll_commands
+	async def fake_poll_commands():
+		yield "/spawn slow"
+		yield "/spawn next"
+		await asyncio.Event().wait()
+
+	backend.poll_commands = fake_poll_commands
+
+	task = asyncio.create_task(dispatch_commands(spawn_handler, backend, logger))
+
+	# Wait for the first command to start
+	await asyncio.wait_for(start_event.wait(), timeout=1.0)
+
+	# The loop should have advanced and started the second command even though the first is still waiting
+	# We sleep a bit to give the loop a chance to process the second item
+	for _ in range(10):
+		if call_count == 2:
+			break
+		await asyncio.sleep(0.01)
+
+	assert call_count == 2
+
+	finish_event.set()
+	task.cancel()
+	try:
+		await task
+	except asyncio.CancelledError:
+		pass

@@ -132,34 +132,19 @@ def test_away_mode_defaults_false_when_no_path():
 	assert registry.is_away_mode_active("c:/work/switchboard") is False
 
 
-def test_away_mode_set_is_idempotent():
-	# After Task 6, set_global_away no longer mutates the cache directly — the
-	# listener does, via update_global_away_cache. We mimic the listener here.
+def test_away_mode_update_cache_is_idempotent():
 	registry = Registry()
-	registry.set_global_away(True)
-	registry.update_global_away_cache(True)   # mimic listener fire
-	registry.set_global_away(True)            # second call is a no-op (cache says True)
+	registry.update_global_away_cache(True)
+	registry.update_global_away_cache(True)
 	assert registry.is_away_mode_active("c:/work/switchboard") is True
-	registry.set_global_away(False)
-	registry.update_global_away_cache(False)  # mimic listener fire
-	registry.set_global_away(False)           # second call is a no-op (cache says False)
-	assert registry.is_away_mode_active("c:/work/switchboard") is False
-
-
-def test_away_mode_no_path_set_does_not_crash():
-	registry = Registry()  # no path
-	registry.set_global_away(True)
-	registry.update_global_away_cache(True)   # mimic listener fire
-	assert registry.is_away_mode_active("c:/work/switchboard") is True
-	registry.set_global_away(False)
-	registry.update_global_away_cache(False)  # mimic listener fire
+	registry.update_global_away_cache(False)
+	registry.update_global_away_cache(False)
 	assert registry.is_away_mode_active("c:/work/switchboard") is False
 
 
 def test_cwd_override_inherited_by_subdirectory():
 	"""A descendant cwd inherits the nearest ancestor's override."""
 	registry = Registry()
-	registry.set_global_away(True)
 	registry.update_global_away_cache(True)
 	# Project root has explicit at-desk override
 	registry.set_cwd_override("c:/work/switchboard", False)
@@ -177,26 +162,23 @@ def test_cwd_override_inherited_by_subdirectory():
 	assert registry.is_away_mode_active("c:/work/switchboard/server") is False  # still inherits root
 
 
-def test_set_away_mode_invokes_callback():
+def test_set_cwd_override_invokes_callback():
 	registry = Registry()
 	calls: list = []
 	registry.set_away_mode_callback(lambda cwd, active: calls.append((cwd, active)))
-	registry.set_global_away(True)
-	registry.update_global_away_cache(True)   # mimic listener fire
-	registry.set_global_away(False)
-	registry.update_global_away_cache(False)
-	assert calls == [(None, True), (None, False)]
+	registry.set_cwd_override("c:/work/sw", True)
+	assert calls == [("c:/work/sw", True)]
 
 
-def test_set_away_mode_without_callback_is_noop():
+def test_set_cwd_override_without_callback_is_noop():
 	registry = Registry()
 	# No callback registered; must not raise.
-	registry.set_global_away(True)
-	registry.update_global_away_cache(True)   # mimic listener fire
-	assert registry.is_away_mode_active("c:/work/switchboard") is True
+	registry.set_cwd_override("c:/work/sw", True)
+	registry.update_cwd_override_cache("c:/work/sw", True)
+	assert registry.is_away_mode_active("c:/work/sw") is True
 
 
-def test_set_away_mode_callback_failure_does_not_propagate(caplog):
+def test_set_cwd_override_callback_failure_does_not_propagate(caplog):
 	registry = Registry()
 
 	def _cb(cwd, active: bool) -> None:
@@ -206,11 +188,10 @@ def test_set_away_mode_callback_failure_does_not_propagate(caplog):
 	# Must not raise.
 	import logging
 	with caplog.at_level(logging.ERROR):
-		registry.set_global_away(True)
-	# Mimic listener fire even though the real callback raised — in production,
-	# the listener path is independent from the callback path.
-	registry.update_global_away_cache(True)
-	assert registry.is_away_mode_active("c:/work/switchboard") is True
+		registry.set_cwd_override("c:/work/sw", True)
+	# Mimic listener fire
+	registry.update_cwd_override_cache("c:/work/sw", True)
+	assert registry.is_away_mode_active("c:/work/sw") is True
 	assert any("away_mode_callback" in rec.message for rec in caplog.records)
 
 
@@ -221,64 +202,29 @@ class TestTwoTierAwayMode:
 
 	def test_global_on_no_overrides(self):
 		r = Registry()
-		r.set_global_away(True)
 		r.update_global_away_cache(True)
 		assert r.is_away_mode_active("c:/work/switchboard") is True
 		assert r.is_away_mode_active("c:/work/rpdm") is True
 
 	def test_per_cwd_override_when_global_off(self):
 		r = Registry()
-		r.set_cwd_override("c:/work/switchboard", True)
 		r.update_cwd_override_cache("c:/work/switchboard", True)
 		assert r.is_away_mode_active("c:/work/switchboard") is True
 		assert r.is_away_mode_active("c:/work/rpdm") is False
 
 	def test_per_cwd_exempt_when_global_on(self):
 		r = Registry()
-		r.set_global_away(True)
 		r.update_global_away_cache(True)
-		r.set_cwd_override("c:/work/switchboard", False)
 		r.update_cwd_override_cache("c:/work/switchboard", False)
 		assert r.is_away_mode_active("c:/work/switchboard") is False
 		assert r.is_away_mode_active("c:/work/rpdm") is True
 
-	def test_set_global_clears_overrides(self):
-		r = Registry()
-		r.set_cwd_override("c:/work/switchboard", True)
-		r.update_cwd_override_cache("c:/work/switchboard", True)
-		r.set_global_away(True)
-		# set_global_away fires per-override clear callbacks then the global flip.
-		# Mimic listener catching each.
-		r.update_cwd_override_cache("c:/work/switchboard", None)
-		r.update_global_away_cache(True)
-		assert r.cwd_overrides() == {}
-
-	def test_set_global_off_clears_overrides(self):
-		r = Registry()
-		r.set_global_away(True)
-		r.update_global_away_cache(True)
-		r.set_cwd_override("c:/work/switchboard", False)
-		r.update_cwd_override_cache("c:/work/switchboard", False)
-		r.set_global_away(False)
-		# Override clear callback fires first, then the global flip.
-		r.update_cwd_override_cache("c:/work/switchboard", None)
-		r.update_global_away_cache(False)
-		assert r.cwd_overrides() == {}
-
 	def test_remove_cwd_override(self):
 		r = Registry()
-		r.set_cwd_override("c:/work/switchboard", True)
 		r.update_cwd_override_cache("c:/work/switchboard", True)
 		r.remove_cwd_override("c:/work/switchboard")
 		r.update_cwd_override_cache("c:/work/switchboard", None)
 		assert "c:/work/switchboard" not in r.cwd_overrides()
-
-	def test_callback_fires_on_global_change(self):
-		r = Registry()
-		calls = []
-		r.set_away_mode_callback(lambda cwd, active: calls.append((cwd, active)))
-		r.set_global_away(True)
-		assert calls == [(None, True)]
 
 	def test_callback_fires_on_cwd_change(self):
 		r = Registry()
@@ -287,22 +233,12 @@ class TestTwoTierAwayMode:
 		r.set_cwd_override("c:/work/switchboard", True)
 		assert calls == [("c:/work/switchboard", True)]
 
-	def test_callback_no_fire_on_redundant_global_set(self):
-		r = Registry()
-		r.set_global_away(True)
-		r.update_global_away_cache(True)   # cache now reflects True
-		calls = []
-		r.set_away_mode_callback(lambda cwd, active: calls.append((cwd, active)))
-		r.set_global_away(True)  # already True, no overrides
-		assert calls == []
-
 	def test_callback_no_fire_on_redundant_cwd_set(self):
 		# After Task 6, set_cwd_override is unconditional — it always fires the
 		# callback. Idempotency moves to the listener / Firebase layer (the
 		# listener no-ops on identical writes). This test now verifies that
 		# behavior: same value => still fires.
 		r = Registry()
-		r.set_cwd_override("c:/work/switchboard", True)
 		r.update_cwd_override_cache("c:/work/switchboard", True)
 		calls = []
 		r.set_away_mode_callback(lambda cwd, active: calls.append((cwd, active)))
@@ -405,21 +341,6 @@ class TestAwayModeCache:
 			assert r.cwd_overrides() == {"c:/work/sw": False}
 			r.update_cwd_override_cache("c:/work/sw", None)
 			assert r.cwd_overrides() == {}
-		asyncio.run(run())
-
-	def test_set_global_away_does_not_mutate_cache_directly(self):
-		"""set_global_away fires the away_mode_callback (which writes to Firebase);
-		it should NOT mutate the cache directly. Cache update happens via the
-		listener calling update_global_away_cache."""
-		async def run():
-			calls = []
-			r = Registry()
-			r.set_away_mode_callback(lambda cwd, active: calls.append((cwd, active)))
-			r.set_global_away(True)
-			# Callback fired
-			assert calls == [(None, True)]
-			# But cache NOT mutated yet (listener will do it)
-			assert r.global_away() is False
 		asyncio.run(run())
 
 

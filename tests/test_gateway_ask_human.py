@@ -295,8 +295,9 @@ async def test_ask_human_per_cwd_at_desk_redirect(cfg, logger):
 	"""Global away=True but cwd override=False → at-desk redirect for that cwd."""
 	backend = RecordingBackend()
 	registry = make_registry_with_loopback()
-	registry.set_global_away(True)
+	registry.update_global_away_cache(True)
 	registry.set_cwd_override(_CWD, False)
+	registry.update_cwd_override_cache(_CWD, False)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
 	result = await handlers.ask_human("question?", _CWD, _SENDER)

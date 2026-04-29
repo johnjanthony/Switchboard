@@ -42,7 +42,9 @@ data class Channel(
 	val pendingResponses: Int = 0,
 	val pendingQuestions: Map<String, Pending> = emptyMap(),
 	val messages: List<Pair<String, ChannelMessage>> = emptyList(),
-)
+) {
+	val displayCount: Int get() = kotlin.math.max(unreadCount, pendingResponses)
+}
 
 data class SpawnCollisionData(
 	val spawnId: String,

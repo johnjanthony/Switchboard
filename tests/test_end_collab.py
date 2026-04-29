@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
+from unittest.mock import AsyncMock
 
 from server.collab import CollabSession
 from server.config import Config
@@ -64,24 +66,19 @@ async def test_end_collab_e3_resolves_active_block_with_sentinel(tmp_path):
 	backend = RecordingBackend()
 	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
 
-	# Bob blocks waiting for a message
+	# 1. Join phase (drains buffers)
+	task_b = asyncio.create_task(handlers.message_and_await_agent(_CWD, "Bob", message="Bob join"))
+	await asyncio.sleep(0.01)
+	await handlers.message_and_await_agent(_CWD, "Alice", message="Alice join")
+	await asyncio.wait_for(task_b, timeout=1.0)
+
+	# 2. Bob blocks waiting for a message (no message needed since Alice is live)
 	bob_task = asyncio.create_task(
 		handlers.message_and_await_agent(_CWD, "Bob")
 	)
-	await asyncio.sleep(0)
+	await asyncio.sleep(0.01)
 
-	# Alice also enrolls (but doesn't await — she calls end_collab next)
-	alice_task = asyncio.create_task(
-		handlers.message_and_await_agent(_CWD, "Alice")
-	)
-	await asyncio.sleep(0)
-
-	# Cancel Alice's await — we just needed her enrolled
-	alice_task.cancel()
-	with pytest.raises(asyncio.CancelledError):
-		await alice_task
-
-	# Now Alice ends collab with a final message
+	# 3. Now Alice ends collab with a final message
 	result = await handlers.end_collab(_CWD, "Alice", message="final summary")
 	assert result.startswith("ok. You are the designated reporter")
 
@@ -98,15 +95,17 @@ async def test_end_collab_sentinel_without_message(tmp_path):
 	backend = RecordingBackend()
 	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
 
+	# 1. Join phase
+	task_b = asyncio.create_task(handlers.message_and_await_agent(_CWD, "Bob", message="hi"))
+	await asyncio.sleep(0.01)
+	await handlers.message_and_await_agent(_CWD, "Alice", message="hello")
+	await asyncio.wait_for(task_b, timeout=1.0)
+
+	# 2. Bob waits
 	bob_task = asyncio.create_task(handlers.message_and_await_agent(_CWD, "Bob"))
-	await asyncio.sleep(0)
+	await asyncio.sleep(0.01)
 
-	alice_task = asyncio.create_task(handlers.message_and_await_agent(_CWD, "Alice"))
-	await asyncio.sleep(0)
-	alice_task.cancel()
-	with pytest.raises(asyncio.CancelledError):
-		await alice_task
-
+	# 3. Alice ends
 	await handlers.end_collab(_CWD, "Alice")
 
 	bob_result = await asyncio.wait_for(bob_task, timeout=1.0)
@@ -212,13 +211,21 @@ async def test_end_collab_resume_via_byo_creates_fresh_session(tmp_path):
 
 	# Fresh BYO call — creates a new session and clears the breadcrumb
 	new_task = asyncio.create_task(handlers.message_and_await_agent(_CWD, "Charlie"))
-	await asyncio.sleep(0.05)
+	
+	# Give it a moment to run add_session
+	for _ in range(10):
+		if registry.get_session(_CWD) is not None:
+			break
+		await asyncio.sleep(0.01)
+
 	assert registry.get_session(_CWD) is not None
 	assert not registry.was_recently_ended(_CWD)
 
 	new_task.cancel()
-	with pytest.raises(asyncio.CancelledError):
+	try:
 		await new_task
+	except asyncio.CancelledError:
+		pass
 
 
 @pytest.mark.asyncio
@@ -278,7 +285,7 @@ async def test_end_collab_then_spawn_creates_fresh_session(tmp_path, monkeypatch
 	backend = RecordingBackend()
 	logger = JsonlLogger(cfg.log_path)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
-	
+
 	await handlers.end_collab(_CWD, "Alice")
 	assert registry.was_recently_ended(_CWD)
 
@@ -292,21 +299,24 @@ async def test_end_collab_then_spawn_creates_fresh_session(tmp_path, monkeypatch
 		log_path=str(tmp_path / "log.jsonl"),
 		spawn_root=spawn_root
 	)
-	
-	monkeypatch.setattr("subprocess.run", lambda *a, **kw: None)
+
+	monkeypatch.setattr("asyncio.create_subprocess_exec", AsyncMock(return_value=AsyncMock(
+		returncode=0,
+		communicate=AsyncMock(return_value=(b"ok", b""))
+	)))
 	spawn_handler = SpawnHandler(cfg_with_spawn, backend, logger, registry)
-	
+
 	# Simulate /spawn --collab testproj
 	# Note: testproj canonicalizes to tmp_path/projects/testproj which is NOT _CWD
 	# so we must use the actual path.
-	project_cwd = "c:/work/testproj" # manually matched for test predictability
-	monkeypatch.setattr("server.spawn.canonicalize_cwd", lambda path: project_cwd)
+	from server.canonicalization import canonicalize_cwd
+	project_cwd = canonicalize_cwd(str(proj))
 	
 	# Reset breadcrumb for the specific path we're spawning
 	registry.mark_session_ended(project_cwd, ["Alice", "Bob"])
 	assert registry.was_recently_ended(project_cwd)
-	
-	await spawn_handler.handle(f"/spawn --collab testproj")
-	
+
+	await spawn_handler.handle(f"/spawn testproj --collab review code")
+
 	assert registry.get_session(project_cwd) is not None
 	assert not registry.was_recently_ended(project_cwd)

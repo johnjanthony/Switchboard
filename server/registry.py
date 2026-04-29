@@ -223,19 +223,6 @@ class Registry:
 			probe = parent
 		return self._global_away
 
-	def set_global_away(self, active: bool) -> None:
-		# Read current state from cache (which mirrors Firebase). Skip if no change.
-		# The cache is updated by the Firebase listener calling update_global_away_cache;
-		# this method only fires the callback so the gateway writes to Firebase.
-		if self._global_away == active and not self._cwd_overrides:
-			return
-		cleared = list(self._cwd_overrides.keys())
-		# Fire callback for each cleared override (callback writes to Firebase;
-		# listener fires back into update_cwd_override_cache).
-		for cwd in cleared:
-			self._fire_callback(cwd, None)
-		self._fire_callback(None, active)
-
 	def set_cwd_override(self, cwd: str, active: bool) -> None:
 		# Write unconditionally. The listener will update the cache idempotently.
 		self._fire_callback(cwd, active)

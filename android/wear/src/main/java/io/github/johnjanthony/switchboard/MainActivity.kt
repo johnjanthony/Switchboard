@@ -256,7 +256,7 @@ fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController
                 key = { it.cwdKey }
             ) { channel ->
                 val hasPending = channel.pendingQuestions.isNotEmpty()
-                val isUnseen = channel.unreadCount > 0
+                val displayCount = channel.displayCount
                 
                 android.util.Log.d("MainActivity", "Rendering channel: ${channel.cwdKey} (cwdCanonical=${channel.cwdCanonical}, hidden=${channel.hidden})")
                 
@@ -270,8 +270,8 @@ fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController
                              else ButtonDefaults.filledTonalButtonColors(),
                     label = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (isUnseen) {
-                                Text("[${channel.unreadCount}] ", color = MaterialTheme.colorScheme.primary)
+                            if (displayCount > 0) {
+                                Text("[$displayCount] ", color = MaterialTheme.colorScheme.primary)
                             }
                             Column {
                                 Text(
@@ -359,7 +359,8 @@ fun MessageListScreen(cwdKey: String, viewModel: MainViewModel, navController: N
             }
             
             items(sortedMessages) { (_, msg) ->
-                val isQuestion = msg.type == "question" && msg.response_text == null
+                val isQuestion = (msg.type == "question" || msg.type == "ask_human") && 
+                                 msg.response_text == null && !msg.cancelled && !msg.rejected
                 
                 Card(
                     onClick = { 
@@ -422,7 +423,7 @@ fun ReplyScreen(cwdKey: String, requestId: String, sender: String, viewModel: Ma
             items(suggestions) { text ->
                 Button(
                     onClick = { 
-                        viewModel.submitReply(cwdKey, sender, text)
+                        viewModel.submitReply(cwdKey, sender, text, requestId)
                         navController.popBackStack()
                     },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),

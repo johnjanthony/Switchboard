@@ -32,7 +32,10 @@ class CollabSession:
 		self.agent_senders.append(sender)
 		return None
 
+
 	def other_sender(self, sender: str) -> str:
+		if len(self.agent_senders) < 2:
+			raise ValueError("other_sender called on session with fewer than 2 members")
 		return self.agent_senders[1] if sender == self.agent_senders[0] else self.agent_senders[0]
 
 	def handle_message(self, sender: str, message: str | None, title: str | None, title_tracker: Any) -> list[tuple[str, str]]:
@@ -61,9 +64,12 @@ class CollabSession:
 				self.deliver(other, relayed)
 				deliveries.append((sender, message))
 			else:
+				# Buffer the first message if partner hasn't enrolled yet
 				self._pre_enroll_msg = message
 				self._pre_enroll_title = title
 		else:
+			# No message content (empty call). 
+			# If this is the second person joining, they drain the pre-enroll buffer.
 			if len(self.agent_senders) == 2 and self._pre_enroll_msg is not None:
 				pre_msg = self._pre_enroll_msg
 				buf_title = self._pre_enroll_title
@@ -86,15 +92,50 @@ class CollabSession:
 		pending: str | None = None
 		queue = self._pending.get(sender)
 		if queue:
-			pending = queue.pop(0)
+			# H10: drain the entire queue and coalesce. Without this, a backlog
+			# of N buffered messages from the partner delivers FIFO across N
+			# successive `start_waiting` calls — the recipient ends up replying
+			# to message k while message k+1 is still queued, producing the
+			# "stale reply" perception we hit during today's T5/T6 churn.
+			# Coalescing delivers the whole backlog as one blob with a markdown
+			# horizontal-rule separator so the recipient sees all queued
+			# context at once.
+			if len(queue) == 1:
+				pending = queue.pop(0)
+			else:
+				pending = "\n\n---\n\n".join(queue)
+				queue.clear()
 			if not queue:
 				del self._pending[sender]
 		else:
 			if self._inject_pending:
-				pending = self._inject_pending.pop(0)
+				if len(self._inject_pending) == 1:
+					pending = self._inject_pending.pop(0)
+				else:
+					pending = "\n\n---\n\n".join(self._inject_pending)
+					self._inject_pending.clear()
 
 		loop = asyncio.get_running_loop()
 		future: asyncio.Future[str] = loop.create_future()
+
+		# H8 Guard: Detect deterministic deadlock (both agents waiting with
+		# nothing pending in either direction).
+		if pending is None and len(self.agent_senders) == 2:
+			partner = self.other_sender(sender)
+			if partner in self._waiting:
+				err_msg = (
+					"ERROR: collab deadlock detected — both agents waiting with "
+					"nothing pending. Every mid-session message must carry content."
+				)
+				# Unblock the partner who is already waiting
+				partner_fut = self._waiting.pop(partner)
+				if not partner_fut.done():
+					partner_fut.set_result(err_msg)
+				
+				# Return a future that resolves immediately for the current caller
+				future.set_result(err_msg)
+				return future
+
 		if pending is not None:
 			future.set_result(pending)
 		else:

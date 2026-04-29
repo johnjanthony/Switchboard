@@ -22,6 +22,7 @@ from server.gateway import (
 	dispatch_inject_queue,
 	dispatch_responses,
 )
+from server.gateway.bg_tasks import _spawn_bg
 from server.logging_jsonl import JsonlLogger
 from server.registry import Registry
 from server.spawn import SpawnHandler
@@ -41,6 +42,39 @@ def _build_away_mode_route(registry: Registry):
 			return JSONResponse({"active": False})
 		return JSONResponse({"active": registry.is_away_mode_active(canonical)})
 	return away_mode
+
+
+def _build_collab_partner_state_route(registry: Registry):
+	"""Read-only route used by the turn-end hook (Option G / H9). Returns the
+	state of the collab session at this cwd from the live agent's perspective:
+
+	- `none` — no session for this cwd, or session has fewer than two enrolled agents
+	- `live` — session exists, no agent is currently blocked in `_waiting`
+	- `blocked` — at least one agent is blocked in `_waiting`. The hook treats
+	  this as "your partner is blocked awaiting your reply" (in a 2-agent collab,
+	  if anyone is blocked, the agent firing the Stop hook is by definition the
+	  live one — they're generating output, not suspended on a tool await).
+
+	Sender is intentionally NOT a query param: matching by sender is brittle
+	when agents rename themselves (e.g. "Sparkles"), and the cwd-level signal
+	is sufficient since collab is 2-agent and exactly one agent can be `live`
+	at a time."""
+	from server.canonicalization import canonicalize_cwd, CanonicalizationError
+	async def collab_partner_state(request: Request):
+		cwd_raw = request.query_params.get("cwd", "")
+		if not cwd_raw:
+			return JSONResponse({"state": "none"})
+		try:
+			canonical = canonicalize_cwd(cwd_raw)
+		except CanonicalizationError:
+			return JSONResponse({"state": "none"})
+		session = registry.get_session(canonical)
+		if session is None or len(session.agent_senders) < 2:
+			return JSONResponse({"state": "none"})
+		if session._waiting:
+			return JSONResponse({"state": "blocked"})
+		return JSONResponse({"state": "live"})
+	return collab_partner_state
 
 
 async def _notify_lost_collab_sessions(sidecar_path: _Path, backend) -> None:
@@ -165,7 +199,11 @@ async def _wire_away_mode_mirror(registry: "Registry", backend: "MessengerBacken
 	loop = asyncio.get_running_loop()
 
 	def _on_change(cwd: "str | None", active: bool | None) -> None:
-		loop.create_task(backend.write_away_mode_mirror(cwd, active))
+		scope = "global" if cwd is None else cwd
+		_spawn_bg(
+			backend.write_away_mode_mirror(cwd, active),
+			label=f"away_mode_mirror:{scope}",
+		)
 
 	registry.set_away_mode_callback(_on_change)
 
@@ -216,6 +254,7 @@ async def _run(config: Config) -> None:
 
 	app.add_route("/healthz", healthz, methods=["GET"])
 	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
+	app.add_route("/collab-partner-state", _build_collab_partner_state_route(registry), methods=["GET"])
 
 	uv_config = uvicorn.Config(
 		app,

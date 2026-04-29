@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -162,14 +161,6 @@ fun SessionRow(
 						color = MaterialTheme.colorScheme.onSurfaceVariant,
 					)
 					Row(verticalAlignment = Alignment.CenterVertically) {
-						if (channel.pendingResponses > 0) {
-							Box(
-								modifier = Modifier.size(8.dp).background(
-									MaterialTheme.colorScheme.primary, CircleShape,
-								),
-							)
-							Spacer(Modifier.width(6.dp))
-						}
 						if (awayActive) {
 							Text(
 								"AWAY", style = MaterialTheme.typography.labelSmall,
@@ -184,8 +175,8 @@ fun SessionRow(
 							)
 							Spacer(Modifier.width(6.dp))
 						}
-						if (channel.unreadCount > 0) {
-							Badge { Text(channel.unreadCount.toString()) }
+						if (channel.displayCount > 0) {
+							Badge { Text(channel.displayCount.toString()) }
 						}
 					}
 				}

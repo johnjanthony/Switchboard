@@ -242,22 +242,33 @@ first message you receive from them.
    For human communication use `ask_human` (away mode) or terminal output
    (at-desk), with `notify_human` for non-blocking status updates to John.
 3. No meta-commentary. Respond with content directly.
-4. Critically review your partner's proposals. Be specific. Push back when you
+4. **Mid-collab symmetric obligation.** Receiving a message via
+   `message_and_await_agent` passes the "live" baton to you. You MUST
+   answer with another `message_and_await_agent` call carrying a non-empty
+   `message` argument. Two failure modes are forbidden:
+    - **No empty calls mid-session.** Calling with no `message` arg when
+      your partner is also blocked deadlocks the session. (A server-side
+      guard detects this and unblocks both with an error sentinel; avoid
+      tripping it). Empty calls are valid only for the initial parallel
+      opening "listen first" pattern.
+    - **No silent exit.** Ending your turn without replying leaves your
+      partner blocked indefinitely. Always pass the baton back.
+5. Critically review your partner's proposals. Be specific. Push back when you
    disagree, with concrete reasoning. Rubber-stamping is a failure mode.
-5. Your goal is consensus on the task. When consensus is reached or debate
+6. Your goal is consensus on the task. When consensus is reached or debate
    becomes unproductive, terminate via `end_collab` (see "Ending a collab
    session" below). Exactly one agent reports the outcome to John.
-6. After making changes (code, files, configuration), verify them with
+7. After making changes (code, files, configuration), verify them with
    appropriate tools (run tests, re-read the file, etc.) before claiming
    completion.
-7. If `message_and_await_agent` returns `"__COLLAB_ENDED__\n..."`, your
+8. If `message_and_await_agent` returns `"__COLLAB_ENDED__\n..."`, your
    partner has terminated the session. Do NOT call `message_and_await_agent`
    again for this `cwd`. Either end your turn (if your partner took the
    reporter role) or report to John (if you were handed the reporter role).
-8. If `message_and_await_agent` returns `"__TIMEOUT__"`, ping John for a
+9. If `message_and_await_agent` returns `"__TIMEOUT__"`, ping John for a
    status check (terminal if at-desk, `ask_human` if away-mode). Do not
    silently abandon the partner.
-9. If `message_and_await_agent` returns any other `"ERROR: ..."`, surface it
+10. If `message_and_await_agent` returns any other `"ERROR: ..."`, surface it
    to John immediately.
 
 Title: optional on every Switchboard tool. SET ONE on your first call.

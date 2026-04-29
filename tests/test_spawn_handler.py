@@ -42,7 +42,18 @@ def spawn_dirs(tmp_path):
 
 
 def _pending_path(cfg: Config) -> Path:
-	return Path(cfg.log_path).parent / "spawn-pending.json"
+	"""Find the per-spawn pending-config file written by SpawnHandler.
+
+	Each spawn writes a uniquely-named `spawn-pending-<spawn_id>.json` (the
+	post-H5 race fix). Tests do one spawn per test, so we glob and return the
+	single match. If no file is present, return a non-existent path so callers'
+	`.exists()` checks still work."""
+	matches = list(Path(cfg.log_path).parent.glob("spawn-pending-*.json"))
+	if len(matches) == 1:
+		return matches[0]
+	if len(matches) == 0:
+		return Path(cfg.log_path).parent / "spawn-pending-NONE.json"
+	raise AssertionError(f"Expected 0 or 1 pending file, got {len(matches)}: {matches}")
 
 
 def mock_subprocess_exec():
@@ -274,74 +285,6 @@ async def test_single_spawn_does_not_set_away_mode_on_schtasks_failure(spawn_dir
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle("/spawn rpdm/next-gen do stuff")
 	assert registry.global_away() is False
-
-
-# --- /away-mode command dispatch ---
-
-def _read_events(cfg: Config) -> list[dict]:
-	log = Path(cfg.log_path)
-	if not log.exists():
-		return []
-	return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
-
-
-@pytest.mark.asyncio
-async def test_away_mode_on_command_sets_flag_and_audits(tmp_path):
-	from server.spawn import SpawnHandler
-	cfg = make_config(tmp_path, spawn_root=tmp_path)
-	backend = make_backend()
-	registry = make_registry_with_loopback()
-	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
-	assert registry.global_away() is False
-
-	await handler.handle("/away-mode on")
-
-	assert registry.global_away() is True
-	events = _read_events(cfg)
-	entered = [e for e in events if e.get("event") == "away_mode_entered"]
-	assert entered and entered[-1].get("reason") == "android"
-
-
-@pytest.mark.asyncio
-async def test_away_mode_off_command_clears_flag_and_audits(tmp_path):
-	from server.spawn import SpawnHandler
-	cfg = make_config(tmp_path, spawn_root=tmp_path)
-	backend = make_backend()
-	registry = make_registry_with_loopback()
-	registry.set_global_away(True)
-	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
-
-	await handler.handle("/away-mode off")
-
-	assert registry.global_away() is False
-	events = _read_events(cfg)
-	exited = [e for e in events if e.get("event") == "away_mode_exited"]
-	assert exited and exited[-1].get("reason") == "android"
-
-
-@pytest.mark.asyncio
-async def test_away_mode_unknown_subcommand_is_ignored(tmp_path):
-	from server.spawn import SpawnHandler
-	cfg = make_config(tmp_path, spawn_root=tmp_path)
-	backend = make_backend()
-	registry = make_registry_with_loopback()
-	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
-
-	await handler.handle("/away-mode wobble")
-
-	assert registry.global_away() is False
-	events = _read_events(cfg)
-	# Must not have emitted entered/exited audit events
-	assert not any(
-		e.get("event") in ("away_mode_entered", "away_mode_exited")
-		for e in events
-	)
-	# Positive assertion: the unknown-subcommand path MUST call surface_error
-	# with a descriptive detail so future refactors can't silently swallow it.
-	surface_errors = [e for e in events if e.get("event") == "surface_error"]
-	assert len(surface_errors) == 1
-	assert "away_mode_unknown_subcommand" in surface_errors[0].get("detail", "")
-	assert "wobble" in surface_errors[0].get("detail", "")
 
 
 @pytest.mark.asyncio
@@ -727,3 +670,175 @@ async def test_spawn_collision_continue_with_collab(spawn_dirs):
 		await handler.handle("/spawn rpdm/next-gen --collab review this")
 	mock_exec.assert_called_once()
 	backend.send_spawn_ack.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_spawn_collision_timeout(spawn_dirs, tmp_path):
+	"""Collision poll times out -> log error and treat as cancel (no launch)."""
+	from server.spawn import SpawnHandler
+	import server.spawn
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	# Mock collision state
+	backend.has_messages = AsyncMock(return_value=True)
+	backend.read_channel_meta = AsyncMock(return_value={})
+	backend.write_spawn_collision_prompt = AsyncMock()
+	backend.clear_spawn_collision_prompt = AsyncMock()
+
+	# Mock poll to hang indefinitely
+	async def _hang(spawn_id):
+		await asyncio.sleep(1000)
+	backend.poll_spawn_collision_decision = _hang
+
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec) as mock_exec:
+		# Use a very short timeout for the test by patching the constant
+		with patch("server.spawn._SPAWN_COLLISION_TIMEOUT_SECONDS", 0.01):
+			handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+			await handler.handle("/spawn rpdm/next-gen do stuff")
+
+	# Not launched
+	mock_exec.assert_not_called()
+	# Dialog cleared
+	backend.clear_spawn_collision_prompt.assert_called_once()
+	# Log entry present
+	log_text = Path(cfg.log_path).read_text()
+	assert "spawn_collision_timeout" in log_text
+
+
+# --- H5: per-spawn unique pending filenames ---
+
+@pytest.mark.asyncio
+async def test_pending_file_per_spawn_is_unique(spawn_dirs):
+	"""Two back-to-back spawns each write their own uniquely-named pending file
+	so the second can't clobber the first while the launcher is still reading it."""
+	from server.spawn import SpawnHandler, RATE_LIMIT_SECONDS
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn rpdm")
+		# Bypass rate limiter so the second spawn lands.
+		handler._last_spawn_time = handler._last_spawn_time - timedelta(seconds=RATE_LIMIT_SECONDS + 1)
+		await handler.handle("/spawn rpdm/next-gen")
+
+	matches = sorted((Path(cfg.log_path).parent).glob("spawn-pending-*.json"))
+	assert len(matches) == 2, f"expected 2 distinct pending files, got {[p.name for p in matches]}"
+	# Filenames must differ (i.e. unique spawn_ids).
+	assert matches[0].name != matches[1].name
+
+
+@pytest.mark.asyncio
+async def test_pending_file_unique_filename_format(spawn_dirs):
+	"""Pending file uses `spawn-pending-<hex>.json` naming so the launcher can glob it."""
+	from server.spawn import SpawnHandler
+	import re
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn rpdm")
+
+	matches = list((Path(cfg.log_path).parent).glob("spawn-pending-*.json"))
+	assert len(matches) == 1
+	# spawn_id is secrets.token_hex(8) → 16 hex chars.
+	assert re.match(r"^spawn-pending-[0-9a-f]{16}\.json$", matches[0].name), matches[0].name
+
+
+@pytest.mark.asyncio
+async def test_failed_spawn_only_unlinks_its_own_pending_file(spawn_dirs):
+	"""Rollback after a schtasks failure must delete the failing spawn's unique
+	file ONLY — any concurrent spawn's file must remain on disk."""
+	from server.spawn import SpawnHandler
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	pending_dir = Path(cfg.log_path).parent
+
+	# Pre-place a "neighbor" pending file simulating a concurrent spawn.
+	pending_dir.mkdir(parents=True, exist_ok=True)
+	neighbor = pending_dir / "spawn-pending-deadbeefdeadbeef.json"
+	neighbor.write_text('{"channel_id": "x", "backend": "claude", "prompt": "p", "project_path": "x"}')
+
+	backend = make_backend()
+	with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError("schtasks not found")):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn")
+
+	# Failure path must report.
+	backend.send_text.assert_called_once()
+	# Neighbor's file must remain — rollback must only delete the failing spawn's own file.
+	assert neighbor.exists(), "rollback must not touch other spawns' pending files"
+
+
+# --- T6: sender-naming regression — spawn-collab must allow custom sender names ---
+
+@pytest.mark.asyncio
+async def test_collab_spawn_allows_renamed_agent_to_enroll(spawn_dirs):
+	"""Regression: an agent spawned via --collab whose CLAUDE.md or prompt
+	tells it to use a non-default sender (e.g. 'Sparkles') must be able to
+	enroll. The bug pre-fix: `_handle_collab_spawn` initialized the
+	CollabSession with agent_senders=['Claude','Gemini'], so any non-default
+	first-call sender hit the 'full' branch in CollabSession.enroll."""
+	from server.spawn import SpawnHandler
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	backend.start_inject_listener = AsyncMock()
+	registry = Registry()
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle("/spawn rpdm/next-gen --collab review this")
+
+	from server.canonicalization import canonicalize_cwd
+	channel_id = canonicalize_cwd(str(spawn_dirs / "rpdm" / "next-gen"))
+	session = registry.get_session(channel_id)
+	assert session is not None, "spawn-collab must register the in-memory session"
+	# Pre-fix this would be ["Claude", "Gemini"] — blocking custom names.
+	assert session.agent_senders == [], (
+		"spawn-collab session must start with empty agent_senders so agents enroll dynamically"
+	)
+	# Concrete: a renamed agent ("Sparkles") can now enroll without hitting "full".
+	assert session.enroll("Sparkles") is None
+	assert session.agent_senders == ["Sparkles"]
+
+
+@pytest.mark.asyncio
+async def test_collab_spawn_same_name_collision_still_returns_duplicate(spawn_dirs):
+	"""Regression-adjacent: with dynamic enrollment, two agents picking the
+	same name must still get the duplicate-error path, not silently both
+	enroll. Guards the SKILL's same-type pair caveat."""
+	from server.spawn import SpawnHandler
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	backend.start_inject_listener = AsyncMock()
+	registry = Registry()
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle("/spawn rpdm/next-gen --collab review this")
+
+	from server.canonicalization import canonicalize_cwd
+	channel_id = canonicalize_cwd(str(spawn_dirs / "rpdm" / "next-gen"))
+	session = registry.get_session(channel_id)
+	assert session.enroll("Sparkles") is None
+	# Second agent picks the same name — must hit duplicate, not silently enroll a clone.
+	assert session.enroll("Sparkles") == "duplicate"
+	assert session.agent_senders == ["Sparkles"]
+
+
+@pytest.mark.asyncio
+async def test_collab_spawn_metadata_write_keeps_resolved_senders(spawn_dirs):
+	"""The Firebase metadata write should still receive the resolved
+	expected-sender list (Claude/Gemini) even though the in-memory session
+	starts empty — the phone UI uses it as a pre-enrollment hint."""
+	from server.spawn import SpawnHandler
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	backend.start_inject_listener = AsyncMock()
+	registry = Registry()
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle("/spawn rpdm/next-gen --collab review this")
+
+	# write_session_meta should have been called with the resolved expected list.
+	backend.write_session_meta.assert_called_once()
+	kwargs = backend.write_session_meta.call_args.kwargs
+	assert kwargs.get("agent_senders") == ["Claude", "Gemini"], (
+		f"metadata write must carry the expected-sender hint; got {kwargs}"
+	)

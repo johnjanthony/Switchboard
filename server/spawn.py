@@ -18,6 +18,7 @@ from server.registry import Registry
 
 RATE_LIMIT_SECONDS = 60
 _TASK_NAME = "SwitchboardSpawn"
+_SPAWN_COLLISION_TIMEOUT_SECONDS = 600.0
 
 _BASE_INSTRUCTION = (
 	"John is currently away. All communications MUST go through the switchboard "
@@ -89,12 +90,19 @@ class SpawnHandler:
 		self, config: Config, backend: Any, logger: JsonlLogger, registry: Registry
 	) -> None:
 		self._spawn_root = config.spawn_root
-		self._pending_path = Path(config.log_path).parent / "spawn-pending.json"
-		self._sidecar_path = Path(config.log_path).parent / "collab-sessions.json"
+		self._pending_dir = Path(config.log_path).parent
+		self._sidecar_path = self._pending_dir / "collab-sessions.json"
 		self._backend = backend
 		self._logger = logger
 		self._registry = registry
 		self._last_spawn_time: datetime | None = None
+
+	def _pending_path_for(self, spawn_id: str) -> Path:
+		"""Return the per-spawn pending-config file path. Each spawn writes a
+		uniquely-named file so back-to-back spawns can't clobber each other; the
+		launcher script picks the oldest matching file and atomically renames it
+		to claim ownership."""
+		return self._pending_dir / f"spawn-pending-{spawn_id}.json"
 
 	async def _cancel_prior_pending(self, canonical_cwd: str) -> None:
 		"""Cancel any pending ask_human requests left over for this cwd before launching
@@ -117,22 +125,9 @@ class SpawnHandler:
 		stripped = raw.strip()
 		if stripped.startswith("/spawn"):
 			await self._handle_spawn(stripped[len("/spawn"):].strip())
-		elif stripped.startswith("/away-mode"):
-			await self._handle_away_mode_command(stripped[len("/away-mode"):].strip())
 		# Unknown command: silently ignore. The command watcher surfaces its
 		# own errors, and we don't want a typo in the Android app to crash
 		# the dispatcher.
-
-	async def _handle_away_mode_command(self, arg: str) -> None:
-		arg = arg.strip().lower()
-		if arg == "on":
-			self._registry.set_global_away(True)
-			await self._logger.away_mode_entered(reason="android")
-		elif arg == "off":
-			self._registry.set_global_away(False)
-			await self._logger.away_mode_exited(reason="android")
-		else:
-			await self._logger.surface_error(f"away_mode_unknown_subcommand: {arg!r}")
 
 
 	async def _handle_spawn(self, text: str) -> None:
@@ -262,7 +257,17 @@ class SpawnHandler:
 		await self._logger.spawn_collision_detected(canonical_cwd, spawn_id)
 
 		try:
-			decision = await self._backend.poll_spawn_collision_decision(spawn_id)
+			# H2-mini: Add a timeout to the collision poll to prevent permanent wedges.
+			decision = await asyncio.wait_for(
+				self._backend.poll_spawn_collision_decision(spawn_id),
+				timeout=_SPAWN_COLLISION_TIMEOUT_SECONDS,
+			)
+		except asyncio.TimeoutError:
+			await self._logger.surface_error(
+				f"spawn_collision_timeout: spawn_id={spawn_id} (treating as cancel)"
+			)
+			await self._safe_clear_spawn_collision_prompt(spawn_id)
+			return "cancel"
 		except NotImplementedError:
 			# No listener support (e.g., local-only backend). Fall through to spawn.
 			await self._safe_clear_spawn_collision_prompt(spawn_id)
@@ -308,6 +313,11 @@ class SpawnHandler:
 
 		await self._cancel_prior_pending(channel_id)
 
+		# Generate spawn_id up-front so the per-spawn pending file is unique;
+		# the same id is reused for the spawn_started log entry below.
+		spawn_id = secrets.token_hex(8)
+		pending_path = self._pending_path_for(spawn_id)
+
 		pending = {
 			"channel_id": channel_id,
 			"backend": backend_type,
@@ -315,7 +325,7 @@ class SpawnHandler:
 			"project_path": str(project_path),
 		}
 		try:
-			self._pending_path.write_text(json.dumps(pending), encoding="utf-8")
+			pending_path.write_text(json.dumps(pending), encoding="utf-8")
 			proc = await asyncio.create_subprocess_exec(
 				"schtasks", "/run", "/tn", _TASK_NAME,
 				stdout=asyncio.subprocess.PIPE,
@@ -326,7 +336,7 @@ class SpawnHandler:
 				error_msg = stderr.decode().strip() or f"exit code {proc.returncode}"
 				raise RuntimeError(error_msg)
 		except Exception as exc:
-			self._pending_path.unlink(missing_ok=True)
+			pending_path.unlink(missing_ok=True)
 			await self._logger.spawn_failed(project_key, str(project_path), [_TASK_NAME], str(exc))
 			await self._backend.send_text(f"Failed to spawn: {exc}.")
 			return
@@ -342,7 +352,6 @@ class SpawnHandler:
 		except Exception as exc:
 			await self._logger.surface_error(f"single_meta_write_error: {exc}")
 
-		spawn_id = secrets.token_hex(4)
 		await self._logger.spawn_started(
 			spawn_id, project_key, str(project_path),
 			prompt if prompt is not None else "(ask on start)",
@@ -365,6 +374,10 @@ class SpawnHandler:
 		agent_senders = [_get_backend_name(b) for b in backends]
 		s1, s2 = agent_senders
 		prompt_text = _COLLAB_INSTRUCTION.format(task=task)
+
+		# Generate spawn_id up-front so the per-spawn pending file is unique.
+		spawn_id = secrets.token_hex(8)
+		pending_path = self._pending_path_for(spawn_id)
 
 		pending = {
 			"channel_id": channel_id,
@@ -399,7 +412,7 @@ class SpawnHandler:
 		self._sidecar_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
 
 		try:
-			self._pending_path.write_text(json.dumps(pending), encoding="utf-8")
+			pending_path.write_text(json.dumps(pending), encoding="utf-8")
 			proc = await asyncio.create_subprocess_exec(
 				"schtasks", "/run", "/tn", _TASK_NAME,
 				stdout=asyncio.subprocess.PIPE,
@@ -410,8 +423,8 @@ class SpawnHandler:
 				error_msg = stderr.decode().strip() or f"exit code {proc.returncode}"
 				raise RuntimeError(error_msg)
 		except Exception as exc:
-			self._pending_path.unlink(missing_ok=True)
-			# Roll back the sidecar entry we appended at line 397; without this,
+			pending_path.unlink(missing_ok=True)
+			# Roll back the sidecar entry we appended above; without this,
 			# a failed spawn leaves a phantom session record that survives until
 			# the next service restart and triggers a "session was lost" notice
 			# for a session that never existed.
@@ -429,9 +442,15 @@ class SpawnHandler:
 		self._registry.set_cwd_override(channel_id, True)
 		await self._logger.away_mode_cwd_changed(channel_id, True)
 
+		# Initialize the in-memory session with empty agent_senders so each agent
+		# enrolls dynamically with whatever name they use — `_BASE_INSTRUCTION`
+		# tells them they may use a name other than the backend default. The
+		# resolved-name list still goes to the Firebase metadata write below as
+		# an "expected senders" hint for the phone UI; that data is read-only
+		# from the session's perspective.
 		session = CollabSession(
 			cwd=channel_id,
-			agent_senders=list(agent_senders),
+			agent_senders=[],
 			task=task,
 		)
 		self._registry.add_session(session)
@@ -449,6 +468,5 @@ class SpawnHandler:
 		except Exception as exc:
 			await self._logger.surface_error(f"collab_inject_listener_error: {exc}")
 
-		spawn_id = secrets.token_hex(4)
 		await self._logger.spawn_started(spawn_id, project_key, str(project_path), f"[collab] {task[:60]}")
 		await self._backend.send_spawn_ack(channel_id, f"[collab] {task[:60]}")

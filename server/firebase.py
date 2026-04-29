@@ -11,6 +11,7 @@ from typing import AsyncIterator
 import firebase_admin
 from firebase_admin import credentials, db, messaging, storage
 
+from server.gateway.bg_tasks import _spawn_bg
 from server.logging_jsonl import JsonlLogger
 from server.messenger import CorrelationToken, IncomingResponse, MessengerBackend
 
@@ -79,12 +80,12 @@ class FirebaseBackend(MessengerBackend):
 							)
 						elif self._logger:
 							self._loop.call_soon_threadsafe(
-								lambda: asyncio.create_task(self._logger.surface_error(f"firebase_malformed_response_entry: {slot} -> {type(data)}"))
+								lambda: _spawn_bg(self._logger.surface_error(f"firebase_malformed_response_entry: {slot} -> {type(data)}"), label="firebase_malformed_response_entry")
 							)
 				else:
 					if self._logger:
 						self._loop.call_soon_threadsafe(
-							lambda: asyncio.create_task(self._logger.surface_error(f"firebase_malformed_response_root: {type(event.data)}"))
+							lambda: _spawn_bg(self._logger.surface_error(f"firebase_malformed_response_root: {type(event.data)}"), label="firebase_malformed_response_root")
 						)
 			elif path:
 				if isinstance(event.data, dict) and 'text' in event.data:
@@ -94,7 +95,7 @@ class FirebaseBackend(MessengerBackend):
 				else:
 					if self._logger:
 						self._loop.call_soon_threadsafe(
-							lambda: asyncio.create_task(self._logger.surface_error(f"firebase_malformed_response_path: {path} -> {type(event.data)}"))
+							lambda: _spawn_bg(self._logger.surface_error(f"firebase_malformed_response_path: {path} -> {type(event.data)}"), label="firebase_malformed_response_path")
 						)
 
 	def _enqueue_response_by_slot(self, slot: str, text: str):
@@ -104,7 +105,7 @@ class FirebaseBackend(MessengerBackend):
 			return
 		cwd = from_firebase_key(cwd_key)
 		resp = IncomingResponse(correlation=(cwd, sender), text=text)
-		asyncio.create_task(self._response_queue.put(resp))
+		_spawn_bg(self._response_queue.put(resp), label=f"response_enqueue:{cwd}:{sender}")
 
 	def _on_command(self, event):
 		if event.event_type == 'put' and event.data:
@@ -116,22 +117,22 @@ class FirebaseBackend(MessengerBackend):
 							self._loop.call_soon_threadsafe(self._enqueue_command, cmd_id, text)
 						elif self._logger:
 							self._loop.call_soon_threadsafe(
-								lambda: asyncio.create_task(self._logger.surface_error(f"firebase_malformed_command_entry: {cmd_id} -> {type(text)}"))
+								lambda: _spawn_bg(self._logger.surface_error(f"firebase_malformed_command_entry: {cmd_id} -> {type(text)}"), label="firebase_malformed_command_entry")
 							)
 				elif self._logger:
 					self._loop.call_soon_threadsafe(
-						lambda: asyncio.create_task(self._logger.surface_error(f"firebase_malformed_command_root: {type(event.data)}"))
+						lambda: _spawn_bg(self._logger.surface_error(f"firebase_malformed_command_root: {type(event.data)}"), label="firebase_malformed_command_root")
 					)
 			elif path:
 				if isinstance(event.data, str):
 					self._loop.call_soon_threadsafe(self._enqueue_command, path, event.data)
 				elif self._logger:
 					self._loop.call_soon_threadsafe(
-						lambda: asyncio.create_task(self._logger.surface_error(f"firebase_malformed_command_path: {path} -> {type(event.data)}"))
+						lambda: _spawn_bg(self._logger.surface_error(f"firebase_malformed_command_path: {path} -> {type(event.data)}"), label="firebase_malformed_command_path")
 					)
 
 	def _enqueue_command(self, command_id: str, text: str):
-		asyncio.create_task(self._command_queue.put(text))
+		_spawn_bg(self._command_queue.put(text), label=f"command_enqueue:{command_id}")
 		def _cleanup():
 			self._cmd_ref.child(command_id).delete()
 		self._loop.run_in_executor(None, _cleanup)
@@ -490,8 +491,7 @@ class FirebaseBackend(MessengerBackend):
 			def _do():
 				db.reference(f'channels/{key}/pending_responses').set(_increment(delta))
 			try:
-				loop = asyncio.get_running_loop()
-				loop.create_task(asyncio.to_thread(_do))
+				_spawn_bg(asyncio.to_thread(_do), label=f"pending_mirror:{key}:{delta:+d}")
 			except RuntimeError:
 				# No running loop — common in synchronous unit tests where Registry
 				# mutations happen outside an event loop. Production paths always
@@ -597,7 +597,7 @@ class FirebaseBackend(MessengerBackend):
 			)
 
 	def _enqueue_away_mode_cmd(self, cmd_id: str, entry: dict):
-		asyncio.create_task(self._away_mode_cmd_queue.put(entry))
+		_spawn_bg(self._away_mode_cmd_queue.put(entry), label=f"away_mode_cmd_enqueue:{cmd_id}")
 		def _cleanup():
 			db.reference(f'away_mode_commands/{cmd_id}').delete()
 		self._loop.run_in_executor(None, _cleanup)

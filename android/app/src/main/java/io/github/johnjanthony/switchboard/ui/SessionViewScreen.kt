@@ -57,7 +57,7 @@ fun SessionViewScreen(
 	onBack: () -> Unit,
 	onTapPill: () -> Unit,
 	onLongPressPillConfirm: () -> Unit,
-	onSubmitReply: (sender: String, text: String) -> Unit,
+	onSubmitReply: (sender: String, text: String, requestId: String?) -> Unit,
 	onDownloadFile: (url: String, filename: String) -> Unit,
 	onLongPressDownloadFile: (url: String, filename: String) -> Unit,
 	onShowTabInfo: () -> Unit,
@@ -137,7 +137,7 @@ fun SessionViewScreen(
 				ReplyInputBar(
 					pending = selected,
 					onSubmit = { text ->
-						onSubmitReply(selected.sender, text)
+						onSubmitReply(selected.sender, text, selected.requestId)
 						// Optimistically clear selection if more remain
 						if (activePending.size > 1) {
 							selectedRequestId = null

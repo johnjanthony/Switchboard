@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from server.config import Config
-from server.gateway import _validate_path, build_tool_handlers
+from server.gateway import build_tool_handlers
+from server.gateway.document import _validate_path
 from server.logging_jsonl import JsonlLogger
 from server.rate_limiter import RateLimiter
 from server.registry import Registry
