@@ -185,21 +185,6 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 
 ---
 
-### Android: copy message text to clipboard
-
-Allow the user to copy message contents from the channel view — both whole-message copy and partial text-selection copy — for any message type (agent updates, `ask_human` prompts, replies, system messages, collab injections, document captions, etc.).
-
-**What it takes:**
-
-- **Whole-message copy.** Long-press on a message bubble surfaces a context action (Material 3 dropdown menu or bottom sheet) with "Copy". Writes the full rendered text to `ClipboardManager` and shows a brief toast/snackbar confirmation. Should work uniformly across all message types — pull the source text from the `ChannelMessage` body rather than the rendered Compose tree.
-- **Partial selection copy.** Enable text selection inside message bubbles so the user can drag-select a span and copy via the standard Android selection toolbar. In Compose this means swapping the message body `Text(...)` for `SelectionContainer { Text(...) }` (or putting the whole message list inside one `SelectionContainer`). Markdown-rendered bubbles need the same treatment — verify the markdown renderer's output is selectable.
-- **Markdown messages.** When a message is rendered as markdown, the copied text should be the *plain* text (what the user sees), not the raw markdown source. If both are useful, the long-press menu can offer "Copy text" and "Copy as markdown" as separate actions.
-- **No new server work.** Pure client-side feature.
-
-Low-medium priority — improves quality-of-life for grabbing snippets out of agent output (paths, error messages, code) without retyping.
-
----
-
 ### Android: investigate MALFORMED MESSAGE deserialization warnings
 
 **Surfaced 2026-04-27** while debugging spawn-collision. `MainViewModel.kt` lines 175-198 log `MALFORMED MESSAGE at channels/<key>/messages/<id>` with `Value Type: java.lang.String, Value Content: <empty>` when `getValue(ChannelMessage::class.java)` throws. Direct Firebase admin queries against the same paths return correctly-shaped dicts, so the data IS dict-shaped at rest — the phone's listener appears to fire on a transient state where `snap.value` is a String. The catch swallows the error, so it's log noise plus an occasional missed render rather than data loss. Low priority — investigate whether it's a Firebase SDK race, a partial-write listener fire, or something else, and either suppress the log noise or fix the deserialization path.
