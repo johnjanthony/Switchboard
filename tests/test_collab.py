@@ -92,6 +92,75 @@ async def test_start_waiting_prefers_agent_specific_over_inject():
 	assert future2.result() == "from human"
 
 
+# H10: Buffered-message coalescing — multiple queued messages deliver as one
+# concatenated blob with a markdown horizontal-rule separator, so the recipient
+# sees all queued context together rather than FIFO-one-at-a-time (which produces
+# the "stale reply" perception bug we hit during T5/T6 churn).
+
+@pytest.mark.asyncio
+async def test_start_waiting_single_pending_message_returned_unchanged():
+	"""One pending message — returned as-is, no separator added."""
+	s = _make_session()
+	s.deliver("Gemini", "single message")
+	future = s.start_waiting("Gemini")
+	assert future.done()
+	assert future.result() == "single message"
+
+
+@pytest.mark.asyncio
+async def test_start_waiting_coalesces_multiple_pending_messages():
+	"""Two queued messages — joined with `\\n\\n---\\n\\n` separator."""
+	s = _make_session()
+	s.deliver("Gemini", "first")
+	s.deliver("Gemini", "second")
+	future = s.start_waiting("Gemini")
+	assert future.done()
+	assert future.result() == "first\n\n---\n\nsecond"
+	# Queue is fully drained.
+	assert "Gemini" not in s._pending
+
+
+@pytest.mark.asyncio
+async def test_start_waiting_coalesces_three_or_more_pending_messages():
+	"""Three queued messages — all joined in send order."""
+	s = _make_session()
+	for i in range(3):
+		s.deliver("Gemini", f"msg{i}")
+	future = s.start_waiting("Gemini")
+	assert future.done()
+	assert future.result() == "msg0\n\n---\n\nmsg1\n\n---\n\nmsg2"
+	assert "Gemini" not in s._pending
+
+
+@pytest.mark.asyncio
+async def test_start_waiting_coalesces_multiple_inject_messages():
+	"""Multiple human inject messages also coalesce when pulled together."""
+	s = _make_session()
+	s.deliver_inject("inject one")
+	s.deliver_inject("inject two")
+	future = s.start_waiting("Gemini")
+	assert future.done()
+	assert future.result() == "inject one\n\n---\n\ninject two"
+	assert s._inject_pending == []
+
+
+@pytest.mark.asyncio
+async def test_start_waiting_pending_takes_precedence_over_inject_with_coalescing():
+	"""Mixed state: when both pending and inject have content, pending wins
+	(existing behavior). Pending side coalesces; inject stays for next call."""
+	s = _make_session()
+	s.deliver("Gemini", "agent A")
+	s.deliver("Gemini", "agent B")
+	s.deliver_inject("human msg")
+	future1 = s.start_waiting("Gemini")
+	assert future1.done()
+	assert future1.result() == "agent A\n\n---\n\nagent B"
+	# Inject is still pending — next call gets it.
+	future2 = s.start_waiting("Gemini")
+	assert future2.done()
+	assert future2.result() == "human msg"
+
+
 # enroll() tests
 
 def test_enroll_adds_new_sender():
@@ -118,7 +187,6 @@ def test_enroll_duplicate_name_when_not_full_returns_duplicate():
 	s = CollabSession(cwd="ch", agent_senders=[], task="")
 	s.enroll("Alice")
 	assert s.enroll("Alice") == "duplicate"
-	assert s.agent_senders == ["Alice"]
 
 
 def test_enroll_third_distinct_sender_returns_full():
@@ -494,9 +562,10 @@ async def test_message_and_await_agent_relay_calls_write_channel_message(tmp_pat
 
 @pytest.mark.asyncio
 async def test_ask_human_writes_channel_message(tmp_path):
+	from tests.conftest import make_registry_with_loopback
 	_ASK_CWD = "c:/work/my-chan"
-	registry = Registry()
-	registry.set_global_away(True)
+	registry = make_registry_with_loopback()
+	registry.update_global_away_cache(True)
 	cfg = _make_config(tmp_path)
 	backend = RecordingBackend()
 	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
@@ -550,8 +619,10 @@ async def test_collab_spawn_writes_agents_array_in_pending_json(tmp_path):
 		mock_run.return_value = MagicMock(returncode=0)
 		await handler.handle("/spawn myproject --collab review auth")
 
-	pending_path = tmp_path / "spawn-pending.json"
-	assert pending_path.exists()
+	# Per-spawn unique filename (H5): glob the pending dir for the single match.
+	pending_matches = list(tmp_path.glob("spawn-pending-*.json"))
+	assert len(pending_matches) == 1, f"expected one pending file, got {pending_matches}"
+	pending_path = pending_matches[0]
 	import json as _json
 	data = _json.loads(pending_path.read_text())
 	assert "agents" in data
@@ -609,7 +680,11 @@ async def test_collab_spawn_registers_session_in_registry(tmp_path):
 
 	assert len(registry._sessions) == 1
 	session = list(registry._sessions.values())[0]
-	assert session.agent_senders == ["Claude", "Gemini"]
+	# Post-T6 sender-naming-regression fix: spawn-collab sessions start with
+	# empty agent_senders so each agent enrolls dynamically with whatever
+	# name they use. The Firebase metadata write still receives the resolved
+	# expected list — that's verified separately in test_spawn_handler.py.
+	assert session.agent_senders == []
 
 
 @pytest.mark.asyncio
@@ -628,8 +703,11 @@ async def test_single_agent_spawn_writes_session_meta(tmp_path):
 		mock_run.return_value = MagicMock(returncode=0)
 		await handler.handle("/spawn myproject do stuff")
 
+	# Per-spawn unique filename (H5): glob the pending dir for the single match.
+	pending_matches = list(tmp_path.glob("spawn-pending-*.json"))
+	assert len(pending_matches) == 1, f"expected one pending file, got {pending_matches}"
 	import json as _json
-	data = _json.loads((tmp_path / "spawn-pending.json").read_text())
+	data = _json.loads(pending_matches[0].read_text())
 	assert "agents" not in data
 	assert "channel_id" in data
 	assert len(registry._sessions) == 0
@@ -786,3 +864,30 @@ async def test_title_prepend_firebase_relay_uses_original_message(tmp_path):
 
 	session.deliver("Claude", "done")
 	await asyncio.wait_for(task_a, timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_collab_deadlock_guard():
+	"""If both agents try to wait with nothing pending, both unblock with an error."""
+	from server.collab import CollabSession
+	from server.title_tracker import TitleTracker
+	s = CollabSession(cwd="deadlock", agent_senders=["Claude", "Gemini"], task="test")
+	tracker = TitleTracker()
+
+	# Gemini starts waiting (no message yet)
+	gemini_fut = s.start_waiting("Gemini")
+	assert "Gemini" in s._waiting
+
+	# Claude calls handle_message with no content (passes baton without work)
+	# then calls start_waiting. Deadlock!
+	s.handle_message("Claude", None, "Title", tracker)
+	claude_fut = s.start_waiting("Claude")
+
+	# Both should resolve immediately with the deadlock error
+	err = "ERROR: collab deadlock detected"
+	result_gemini = await gemini_fut
+	result_claude = await claude_fut
+	assert result_gemini.startswith(err)
+	assert result_claude.startswith(err)
+	assert not s._waiting
+

@@ -16,9 +16,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -45,6 +48,7 @@ import io.github.johnjanthony.switchboard.ui.SessionViewScreen
 import io.github.johnjanthony.switchboard.ui.SpawnCollisionDialog
 import io.github.johnjanthony.switchboard.ui.SpawnSessionDialog
 import io.github.johnjanthony.switchboard.ui.TabInfoPopover
+import io.github.johnjanthony.switchboard.ui.leafName
 import io.github.johnjanthony.switchboard.ui.theme.SwitchboardTheme
 
 class MainActivity : ComponentActivity() {
@@ -100,7 +104,8 @@ private fun SwitchboardNavHost(
 	val globalAway by viewModel.globalAway.collectAsState()
 	val cwdOverrides by viewModel.cwdOverrides.collectAsState()
 	val pendingCollision by viewModel.pendingCollision.collectAsState()
-	val bulkRespond by viewModel.bulkRespondDialog.collectAsState()
+	val pendingExitToggle by viewModel.pendingExitToggle.collectAsState()
+	val pendingSwipeAtDeskConfirm by viewModel.pendingSwipeAtDeskConfirm.collectAsState()
 	val markdownViewerContent by viewModel.markdownViewerContent.collectAsState()
 	val projectMru by viewModel.projectMru.collectAsState()
 	var showHidden by remember { mutableStateOf(false) }
@@ -144,7 +149,7 @@ private fun SwitchboardNavHost(
 				onExitGlobalAway = { viewModel.requestAwayModeToggle(null, false) },
 				onHideChannel = { viewModel.hideChannel(it.cwdKey) },
 				onUnhideChannel = { viewModel.unhideChannel(it.cwdKey) },
-				onAwayToggle = { viewModel.requestAwayModeToggle(it.cwdKey, false) },
+				onAwayToggle = { viewModel.requestSwipeAtDesk(it.cwdKey) },
 				onSpawnClick = { showSpawnDialog = true },
 			)
 		}
@@ -175,6 +180,13 @@ private fun SwitchboardNavHost(
 			val isOverride = cwdOverrides.containsKey(cwdKey)
 			var infoOpen by remember { mutableStateOf(false) }
 
+			DisposableEffect(cwdKey) {
+				viewModel.selectChannel(cwdKey)
+				onDispose {
+					viewModel.clearSelectedChannel()
+				}
+			}
+
 			SessionViewScreen(
 				channel = channel,
 				messages = channel.messages.sortedBy { it.second.timestamp },
@@ -185,9 +197,8 @@ private fun SwitchboardNavHost(
 				scrollToMessageId = deepLinkMessageId.value,
 				onScrollConsumed = { deepLinkMessageId.value = null },
 				onBack = { navController.popBackStack() },
-				onTapPill = { viewModel.requestAwayModeToggle(cwdKey, !awayActive) },
-				onLongPressPillConfirm = { viewModel.requestAwayModeToggle(cwdKey, !awayActive) },
-				onSubmitReply = { sender, text -> viewModel.submitReply(cwdKey, sender, text) },
+				onLongPressPill = { viewModel.requestAwayModeToggle(cwdKey, !awayActive) },
+				onSubmitReply = { sender, text, requestId -> viewModel.submitReply(cwdKey, sender, text, requestId) },
 				onDownloadFile = { url, filename -> viewModel.downloadAndOpenFile(context, url, filename) },
 				onLongPressDownloadFile = { url, filename -> viewModel.saveFileToDownloads(context, url, filename) },
 				onShowTabInfo = { infoOpen = true },
@@ -229,12 +240,27 @@ private fun SwitchboardNavHost(
 			onCancel = { viewModel.resolveSpawnCollision(pendingCollision!!.spawnId, "cancel") },
 		)
 	}
-	if (bulkRespond != null) {
+	pendingExitToggle?.let { pending ->
 		BulkRespondDialog(
-			payload = bulkRespond!!,
-			onSendToAll = { text -> viewModel.submitBulkRespond("send_to_all", text) },
-			onSkip = { viewModel.submitBulkRespond("skip") },
-			onCancel = { viewModel.submitBulkRespond("cancel") },
+			payload = pending.payload,
+			onSendToAll = { text -> viewModel.submitExitToggleDecision("send_default", text) },
+			onSkip = { viewModel.submitExitToggleDecision("skip", null) },
+			onCancel = { viewModel.cancelExitToggle() },
+		)
+	}
+	pendingSwipeAtDeskConfirm?.let { cwdKey ->
+		val channel = channels[cwdKey]
+		val channelLabel = channel?.title ?: channel?.let { leafName(it.cwdCanonical) } ?: cwdKey
+		AlertDialog(
+			onDismissRequest = { viewModel.cancelSwipeAtDesk() },
+			title = { Text("Set channel to At desk?") },
+			text = { Text("Mark $channelLabel as At desk. Agents in this channel will resume normal terminal output.") },
+			confirmButton = {
+				TextButton(onClick = { viewModel.confirmSwipeAtDesk() }) { Text("At desk") }
+			},
+			dismissButton = {
+				TextButton(onClick = { viewModel.cancelSwipeAtDesk() }) { Text("Cancel") }
+			},
 		)
 	}
 	if (showSpawnDialog) {
@@ -265,7 +291,7 @@ fun AwayModePillChip(active: Boolean, onLongPress: () -> Unit) {
 			.border(1.dp, borderColor, RoundedCornerShape(50))
 			.background(bg, RoundedCornerShape(50))
 			.combinedClickable(
-				onClick = onLongPress,
+				onClick = {},
 				onLongClick = onLongPress,
 			)
 			.padding(horizontal = 10.dp, vertical = 4.dp)

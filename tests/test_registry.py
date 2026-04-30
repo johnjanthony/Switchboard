@@ -132,114 +132,55 @@ def test_away_mode_defaults_false_when_no_path():
 	assert registry.is_away_mode_active("c:/work/switchboard") is False
 
 
-def test_away_mode_defaults_false_when_file_missing(tmp_path):
-	registry = Registry(away_mode_path=tmp_path / "away-mode.json")
-	assert registry.is_away_mode_active("c:/work/switchboard") is False
-
-
-def test_away_mode_set_true_persists(tmp_path):
-	path = tmp_path / "away-mode.json"
-	registry = Registry(away_mode_path=path)
-	registry.set_global_away(True)
-	data = json.loads(path.read_text(encoding="utf-8"))
-	assert data["global"] is True
-	assert "overrides" in data
-
-
-def test_away_mode_set_false_persists(tmp_path):
-	path = tmp_path / "away-mode.json"
-	registry = Registry(away_mode_path=path)
-	registry.set_global_away(True)
-	registry.set_global_away(False)
-	data = json.loads(path.read_text(encoding="utf-8"))
-	assert data["global"] is False
-
-
-def test_away_mode_round_trip_across_registry_instances(tmp_path):
-	path = tmp_path / "away-mode.json"
-	r1 = Registry(away_mode_path=path)
-	r1.set_global_away(True)
-	r2 = Registry(away_mode_path=path)
-	assert r2.is_away_mode_active("c:/work/switchboard") is True
-
-
-def test_away_mode_corrupt_file_defaults_false(tmp_path):
-	path = tmp_path / "away-mode.json"
-	path.write_text("not json at all {{{", encoding="utf-8")
-	registry = Registry(away_mode_path=path)
-	assert registry.is_away_mode_active("c:/work/switchboard") is False
-
-
-def test_away_mode_set_is_idempotent(tmp_path):
-	path = tmp_path / "away-mode.json"
-	registry = Registry(away_mode_path=path)
-	registry.set_global_away(True)
-	registry.set_global_away(True)
+def test_away_mode_update_cache_is_idempotent():
+	registry = Registry()
+	registry.update_global_away_cache(True)
+	registry.update_global_away_cache(True)
 	assert registry.is_away_mode_active("c:/work/switchboard") is True
-	registry.set_global_away(False)
-	registry.set_global_away(False)
+	registry.update_global_away_cache(False)
+	registry.update_global_away_cache(False)
 	assert registry.is_away_mode_active("c:/work/switchboard") is False
 
 
-def test_away_mode_no_path_set_does_not_crash():
-	registry = Registry()  # no path
-	registry.set_global_away(True)
-	assert registry.is_away_mode_active("c:/work/switchboard") is True
-	registry.set_global_away(False)
-	assert registry.is_away_mode_active("c:/work/switchboard") is False
-
-
-def test_cwd_override_inherited_by_subdirectory(tmp_path):
-	"""A descendant cwd inherits the nearest ancestor's override."""
-	registry = Registry(away_mode_path=tmp_path / "away.json")
-	registry.set_global_away(True)
-	# Project root has explicit at-desk override
-	registry.set_cwd_override("c:/work/switchboard", False)
-	# Subdirectory inherits the override even though it has no entry of its own
-	assert registry.is_away_mode_active("c:/work/switchboard/android") is False
-	assert registry.is_away_mode_active("c:/work/switchboard/server/firebase.py") is False
-	# Unrelated path falls through to global
-	assert registry.is_away_mode_active("c:/work/other") is True
-	# Direct subdir override wins over ancestor
-	registry.set_cwd_override("c:/work/switchboard/android", True)
+def test_cwd_override_does_not_propagate_to_children():
+	"""Each channel is independent. An override on a parent cwd has no effect
+	on children — they fall through to the global flag instead."""
+	registry = Registry()
+	registry.update_global_away_cache(True)
+	# Parent set to at-desk
+	registry.update_cwd_override_cache("c:/work/switchboard", False)
+	# Children do NOT inherit — they fall through to the global (True).
 	assert registry.is_away_mode_active("c:/work/switchboard/android") is True
-	assert registry.is_away_mode_active("c:/work/switchboard/android/app") is True
-	assert registry.is_away_mode_active("c:/work/switchboard/server") is False  # still inherits root
+	assert registry.is_away_mode_active("c:/work/switchboard/server/firebase.py") is True
+	# Unrelated path also falls through to global.
+	assert registry.is_away_mode_active("c:/work/other") is True
+	# Parent itself reflects its own override.
+	assert registry.is_away_mode_active("c:/work/switchboard") is False
+	# A child can hold its own override independently of the parent.
+	registry.update_cwd_override_cache("c:/work/switchboard/android", False)
+	assert registry.is_away_mode_active("c:/work/switchboard/android") is False
+	# Sibling without an override still falls through to global, not to parent.
+	assert registry.is_away_mode_active("c:/work/switchboard/server") is True
 
 
-def test_set_away_mode_invokes_callback(tmp_path):
-	registry = Registry(away_mode_path=tmp_path / "away.json")
+def test_set_cwd_override_invokes_callback():
+	registry = Registry()
 	calls: list = []
 	registry.set_away_mode_callback(lambda cwd, active: calls.append((cwd, active)))
-	registry.set_global_away(True)
-	registry.set_global_away(False)
-	assert calls == [(None, True), (None, False)]
+	registry.set_cwd_override("c:/work/sw", True)
+	assert calls == [("c:/work/sw", True)]
 
 
-def test_set_away_mode_without_callback_is_noop(tmp_path):
-	registry = Registry(away_mode_path=tmp_path / "away.json")
+def test_set_cwd_override_without_callback_is_noop():
+	registry = Registry()
 	# No callback registered; must not raise.
-	registry.set_global_away(True)
-	assert registry.is_away_mode_active("c:/work/switchboard") is True
+	registry.set_cwd_override("c:/work/sw", True)
+	registry.update_cwd_override_cache("c:/work/sw", True)
+	assert registry.is_away_mode_active("c:/work/sw") is True
 
 
-def test_set_away_mode_callback_is_called_after_persist(tmp_path):
-	registry = Registry(away_mode_path=tmp_path / "away.json")
-	seen_from_disk: list[bool] = []
-
-	def _cb(cwd, active: bool) -> None:
-		# By the time the callback fires, the sidecar must already reflect
-		# the new value, so a fresh Registry loading the same path sees it.
-		other = Registry(away_mode_path=tmp_path / "away.json")
-		seen_from_disk.append(other.is_away_mode_active("c:/anywhere"))
-
-	registry.set_away_mode_callback(_cb)
-	registry.set_global_away(True)
-	assert seen_from_disk == [True]
-
-
-def test_set_away_mode_callback_failure_does_not_propagate(tmp_path, caplog):
-	registry = Registry(away_mode_path=tmp_path / "away.json")
+def test_set_cwd_override_callback_failure_does_not_propagate(caplog):
+	registry = Registry()
 
 	def _cb(cwd, active: bool) -> None:
 		raise RuntimeError("boom")
@@ -248,117 +189,171 @@ def test_set_away_mode_callback_failure_does_not_propagate(tmp_path, caplog):
 	# Must not raise.
 	import logging
 	with caplog.at_level(logging.ERROR):
-		registry.set_global_away(True)
-	assert registry.is_away_mode_active("c:/work/switchboard") is True
+		registry.set_cwd_override("c:/work/sw", True)
+	# Mimic listener fire
+	registry.update_cwd_override_cache("c:/work/sw", True)
+	assert registry.is_away_mode_active("c:/work/sw") is True
 	assert any("away_mode_callback" in rec.message for rec in caplog.records)
 
 
 class TestTwoTierAwayMode:
-	def test_default_is_inactive(self, tmp_path):
-		r = Registry(away_mode_path=tmp_path / "away.json")
+	def test_default_is_inactive(self):
+		r = Registry()
 		assert r.is_away_mode_active("c:/work/switchboard") is False
 
-	def test_global_on_no_overrides(self, tmp_path):
-		r = Registry(away_mode_path=tmp_path / "away.json")
-		r.set_global_away(True)
+	def test_global_on_no_overrides(self):
+		r = Registry()
+		r.update_global_away_cache(True)
 		assert r.is_away_mode_active("c:/work/switchboard") is True
 		assert r.is_away_mode_active("c:/work/rpdm") is True
 
-	def test_per_cwd_override_when_global_off(self, tmp_path):
-		r = Registry(away_mode_path=tmp_path / "away.json")
-		r.set_cwd_override("c:/work/switchboard", True)
+	def test_per_cwd_override_when_global_off(self):
+		r = Registry()
+		r.update_cwd_override_cache("c:/work/switchboard", True)
 		assert r.is_away_mode_active("c:/work/switchboard") is True
 		assert r.is_away_mode_active("c:/work/rpdm") is False
 
-	def test_per_cwd_exempt_when_global_on(self, tmp_path):
-		r = Registry(away_mode_path=tmp_path / "away.json")
-		r.set_global_away(True)
-		r.set_cwd_override("c:/work/switchboard", False)
+	def test_per_cwd_exempt_when_global_on(self):
+		r = Registry()
+		r.update_global_away_cache(True)
+		r.update_cwd_override_cache("c:/work/switchboard", False)
 		assert r.is_away_mode_active("c:/work/switchboard") is False
 		assert r.is_away_mode_active("c:/work/rpdm") is True
 
-	def test_set_global_clears_overrides(self, tmp_path):
-		r = Registry(away_mode_path=tmp_path / "away.json")
-		r.set_cwd_override("c:/work/switchboard", True)
-		r.set_global_away(True)
-		assert r.cwd_overrides() == {}
-
-	def test_set_global_off_clears_overrides(self, tmp_path):
-		r = Registry(away_mode_path=tmp_path / "away.json")
-		r.set_global_away(True)
-		r.set_cwd_override("c:/work/switchboard", False)
-		r.set_global_away(False)
-		assert r.cwd_overrides() == {}
-
-	def test_remove_cwd_override(self, tmp_path):
-		r = Registry(away_mode_path=tmp_path / "away.json")
-		r.set_cwd_override("c:/work/switchboard", True)
+	def test_remove_cwd_override(self):
+		r = Registry()
+		r.update_cwd_override_cache("c:/work/switchboard", True)
 		r.remove_cwd_override("c:/work/switchboard")
+		r.update_cwd_override_cache("c:/work/switchboard", None)
 		assert "c:/work/switchboard" not in r.cwd_overrides()
 
-	def test_callback_fires_on_global_change(self, tmp_path):
-		r = Registry(away_mode_path=tmp_path / "away.json")
-		calls = []
-		r.set_away_mode_callback(lambda cwd, active: calls.append((cwd, active)))
-		r.set_global_away(True)
-		assert calls == [(None, True)]
-
-	def test_callback_fires_on_cwd_change(self, tmp_path):
-		r = Registry(away_mode_path=tmp_path / "away.json")
+	def test_callback_fires_on_cwd_change(self):
+		r = Registry()
 		calls = []
 		r.set_away_mode_callback(lambda cwd, active: calls.append((cwd, active)))
 		r.set_cwd_override("c:/work/switchboard", True)
 		assert calls == [("c:/work/switchboard", True)]
 
-	def test_callback_no_fire_on_redundant_global_set(self, tmp_path):
-		r = Registry(away_mode_path=tmp_path / "away.json")
-		r.set_global_away(True)
+	def test_callback_no_fire_on_redundant_cwd_set(self):
+		# After Task 6, set_cwd_override is unconditional — it always fires the
+		# callback. Idempotency moves to the listener / Firebase layer (the
+		# listener no-ops on identical writes). This test now verifies that
+		# behavior: same value => still fires.
+		r = Registry()
+		r.update_cwd_override_cache("c:/work/switchboard", True)
 		calls = []
 		r.set_away_mode_callback(lambda cwd, active: calls.append((cwd, active)))
-		r.set_global_away(True)  # already True, no overrides
-		assert calls == []
-
-	def test_callback_no_fire_on_redundant_cwd_set(self, tmp_path):
-		r = Registry(away_mode_path=tmp_path / "away.json")
+		# Unconditional write — callback fires every time.
 		r.set_cwd_override("c:/work/switchboard", True)
-		calls = []
-		r.set_away_mode_callback(lambda cwd, active: calls.append((cwd, active)))
-		# Resolution unchanged: still True
-		r.set_cwd_override("c:/work/switchboard", True)
-		assert calls == []
+		assert calls == [("c:/work/switchboard", True)]
 
 
-class TestSidecarPersistence:
-	def test_persist_global_only(self, tmp_path):
-		path = tmp_path / "away.json"
-		r = Registry(away_mode_path=path)
-		r.set_global_away(True)
-		r2 = Registry(away_mode_path=path)
-		assert r2.is_away_mode_active("c:/anywhere") is True
+class TestPendingMirror:
+	def test_add_calls_mirror_with_plus_one(self):
+		async def run():
+			calls = []
+			r = Registry()
+			r.set_pending_mirror(lambda cwd, delta: calls.append((cwd, delta)))
+			r.add(cwd="c:/work/sw", sender="Claude", request_id="r1")
+			assert calls == [("c:/work/sw", 1)]
+		asyncio.run(run())
 
-	def test_persist_overrides(self, tmp_path):
-		path = tmp_path / "away.json"
-		r = Registry(away_mode_path=path)
-		r.set_global_away(True)
-		r.set_cwd_override("c:/work/switchboard", False)
-		r2 = Registry(away_mode_path=path)
-		assert r2.is_away_mode_active("c:/work/switchboard") is False
-		assert r2.is_away_mode_active("c:/work/rpdm") is True
+	def test_resolve_calls_mirror_with_minus_one(self):
+		async def run():
+			calls = []
+			r = Registry()
+			r.set_pending_mirror(lambda cwd, delta: calls.append((cwd, delta)))
+			r.add(cwd="c:/work/sw", sender="Claude", request_id="r1")
+			calls.clear()
+			r.resolve("c:/work/sw", "Claude", "ok")
+			assert calls == [("c:/work/sw", -1)]
+		asyncio.run(run())
 
-	def test_load_legacy_v1_shape_silently_discarded(self, tmp_path):
-		# V1 sidecar shape: {"active": bool, "entered_at": ISO}
-		path = tmp_path / "away.json"
-		path.write_text('{"active": true, "entered_at": "2026-04-23T10:00:00+00:00"}')
-		r = Registry(away_mode_path=path)
-		# Legacy file is silently discarded; new state starts clean
-		assert r.is_away_mode_active("c:/anywhere") is False
+	def test_resolve_missing_does_not_call_mirror(self):
+		async def run():
+			calls = []
+			r = Registry()
+			r.set_pending_mirror(lambda cwd, delta: calls.append((cwd, delta)))
+			r.resolve("c:/work/sw", "Claude", "ok")
+			assert calls == []
+		asyncio.run(run())
 
-	def test_first_write_replaces_legacy_shape(self, tmp_path):
-		path = tmp_path / "away.json"
-		path.write_text('{"active": true, "entered_at": "2026-04-23T10:00:00+00:00"}')
-		r = Registry(away_mode_path=path)
-		r.set_global_away(True)
-		import json
-		data = json.loads(path.read_text())
-		assert "global" in data
-		assert "active" not in data
+	def test_remove_calls_mirror_with_minus_one(self):
+		async def run():
+			calls = []
+			r = Registry()
+			r.set_pending_mirror(lambda cwd, delta: calls.append((cwd, delta)))
+			r.add(cwd="c:/work/sw", sender="Claude", request_id="r1")
+			calls.clear()
+			r.remove("c:/work/sw", "Claude")
+			assert calls == [("c:/work/sw", -1)]
+		asyncio.run(run())
+
+	def test_supersede_via_add_emits_minus_one_then_plus_one(self):
+		"""When add() supersedes an existing entry, the prior is cancelled (mirror -1)
+		and the new is added (mirror +1). Two calls."""
+		async def run():
+			calls = []
+			r = Registry()
+			r.set_pending_mirror(lambda cwd, delta: calls.append((cwd, delta)))
+			r.add(cwd="c:/work/sw", sender="Claude", request_id="r1")
+			calls.clear()
+			r.add(cwd="c:/work/sw", sender="Claude", request_id="r2")
+			assert calls == [("c:/work/sw", -1), ("c:/work/sw", 1)]
+		asyncio.run(run())
+
+	def test_cancel_pending_for_cwd_calls_mirror_once_with_combined_delta(self):
+		async def run():
+			calls = []
+			r = Registry()
+			r.set_pending_mirror(lambda cwd, delta: calls.append((cwd, delta)))
+			r.add(cwd="c:/work/sw", sender="A", request_id="r1")
+			r.add(cwd="c:/work/sw", sender="B", request_id="r2")
+			r.add(cwd="c:/work/other", sender="C", request_id="r3")
+			calls.clear()
+			r.cancel_pending_for_cwd("c:/work/sw")
+			assert calls == [("c:/work/sw", -2)]
+		asyncio.run(run())
+
+
+class TestAwayModeCache:
+	def test_cache_starts_empty_when_no_path(self):
+		async def run():
+			r = Registry()
+			assert r.global_away() is False
+			assert r.cwd_overrides() == {}
+		asyncio.run(run())
+
+	def test_update_global_away_cache(self):
+		async def run():
+			r = Registry()
+			r.update_global_away_cache(True)
+			assert r.global_away() is True
+			r.update_global_away_cache(False)
+			assert r.global_away() is False
+		asyncio.run(run())
+
+	def test_update_cwd_override_cache_set_and_remove(self):
+		async def run():
+			r = Registry()
+			r.update_cwd_override_cache("c:/work/sw", True)
+			assert r.cwd_overrides() == {"c:/work/sw": True}
+			r.update_cwd_override_cache("c:/work/sw", False)
+			assert r.cwd_overrides() == {"c:/work/sw": False}
+			r.update_cwd_override_cache("c:/work/sw", None)
+			assert r.cwd_overrides() == {}
+		asyncio.run(run())
+
+
+class TestSnapshotLoad:
+	def test_listener_callbacks_populate_cache(self):
+		"""Smoke: simulate a snapshot load by calling update_*_cache directly,
+		verify the cache reflects the values."""
+		async def run():
+			r = Registry()
+			r.update_global_away_cache(True)
+			r.update_cwd_override_cache("c:/work/a", True)
+			r.update_cwd_override_cache("c:/work/b", False)
+			assert r.global_away() is True
+			assert r.cwd_overrides() == {"c:/work/a": True, "c:/work/b": False}
+		asyncio.run(run())

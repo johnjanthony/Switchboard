@@ -11,6 +11,7 @@ from server.config import Config
 from server.gateway import build_tool_handlers
 from server.logging_jsonl import JsonlLogger
 from server.registry import Registry
+from tests.conftest import make_registry_with_loopback as _make_registry_with_loopback
 from tests.test_gateway_notify_human import RecordingBackend
 
 _CWD = "c:/work/sw"
@@ -44,7 +45,7 @@ def _log_events(cfg) -> list[dict]:
 
 @pytest.mark.asyncio
 async def test_enter_away_mode_sets_flag_and_returns_ok(cfg, logger, tmp_path):
-	registry = Registry(away_mode_path=tmp_path / "away-mode.json")
+	registry = _make_registry_with_loopback()
 	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), logger)
 	result = await handlers.enter_away_mode(_CWD)
 	assert result == "ok"
@@ -54,7 +55,7 @@ async def test_enter_away_mode_sets_flag_and_returns_ok(cfg, logger, tmp_path):
 @pytest.mark.asyncio
 async def test_enter_away_mode_calls_set_cwd_override(cfg, logger, tmp_path):
 	"""enter_away_mode must call set_cwd_override(canonical, True)."""
-	registry = Registry(away_mode_path=tmp_path / "away-mode.json")
+	registry = _make_registry_with_loopback()
 	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), logger)
 	await handlers.enter_away_mode(_CWD)
 	assert registry.cwd_overrides().get(_CWD) is True
@@ -62,7 +63,7 @@ async def test_enter_away_mode_calls_set_cwd_override(cfg, logger, tmp_path):
 
 @pytest.mark.asyncio
 async def test_enter_away_mode_logs_event(cfg, logger, tmp_path):
-	registry = Registry(away_mode_path=tmp_path / "away-mode.json")
+	registry = _make_registry_with_loopback()
 	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), logger)
 	await handlers.enter_away_mode(_CWD)
 	events = [e for e in _log_events(cfg) if e["event"] == "away_mode_cwd_changed"]
@@ -72,7 +73,7 @@ async def test_enter_away_mode_logs_event(cfg, logger, tmp_path):
 
 @pytest.mark.asyncio
 async def test_exit_away_mode_clears_flag_and_returns_ok(cfg, logger, tmp_path):
-	registry = Registry(away_mode_path=tmp_path / "away-mode.json")
+	registry = _make_registry_with_loopback()
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), logger)
 	result = await handlers.exit_away_mode(_CWD)
@@ -83,7 +84,7 @@ async def test_exit_away_mode_clears_flag_and_returns_ok(cfg, logger, tmp_path):
 @pytest.mark.asyncio
 async def test_exit_away_mode_calls_set_cwd_override_false(cfg, logger, tmp_path):
 	"""exit_away_mode must call set_cwd_override(canonical, False)."""
-	registry = Registry(away_mode_path=tmp_path / "away-mode.json")
+	registry = _make_registry_with_loopback()
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), logger)
 	await handlers.exit_away_mode(_CWD)
@@ -92,7 +93,7 @@ async def test_exit_away_mode_calls_set_cwd_override_false(cfg, logger, tmp_path
 
 @pytest.mark.asyncio
 async def test_exit_away_mode_logs_event(cfg, logger, tmp_path):
-	registry = Registry(away_mode_path=tmp_path / "away-mode.json")
+	registry = _make_registry_with_loopback()
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), logger)
 	await handlers.exit_away_mode(_CWD)
@@ -103,7 +104,7 @@ async def test_exit_away_mode_logs_event(cfg, logger, tmp_path):
 
 @pytest.mark.asyncio
 async def test_enter_away_mode_is_idempotent(cfg, logger, tmp_path):
-	registry = Registry(away_mode_path=tmp_path / "away-mode.json")
+	registry = _make_registry_with_loopback()
 	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), logger)
 	assert await handlers.enter_away_mode(_CWD) == "ok"
 	assert await handlers.enter_away_mode(_CWD) == "ok"
@@ -112,7 +113,7 @@ async def test_enter_away_mode_is_idempotent(cfg, logger, tmp_path):
 
 @pytest.mark.asyncio
 async def test_exit_away_mode_is_idempotent(cfg, logger, tmp_path):
-	registry = Registry(away_mode_path=tmp_path / "away-mode.json")
+	registry = _make_registry_with_loopback()
 	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), logger)
 	assert await handlers.exit_away_mode(_CWD) == "ok"
 	assert await handlers.exit_away_mode(_CWD) == "ok"
@@ -122,7 +123,7 @@ async def test_exit_away_mode_is_idempotent(cfg, logger, tmp_path):
 @pytest.mark.asyncio
 async def test_enter_away_mode_invalid_cwd_returns_error(cfg, logger, tmp_path):
 	"""Non-absolute cwd returns an error string."""
-	registry = Registry(away_mode_path=tmp_path / "away-mode.json")
+	registry = _make_registry_with_loopback()
 	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), logger)
 	result = await handlers.enter_away_mode("not-a-path")
 	assert result.startswith("ERROR: invalid cwd:")
@@ -131,7 +132,7 @@ async def test_enter_away_mode_invalid_cwd_returns_error(cfg, logger, tmp_path):
 @pytest.mark.asyncio
 async def test_exit_away_mode_invalid_cwd_returns_error(cfg, logger, tmp_path):
 	"""Non-absolute cwd returns an error string."""
-	registry = Registry(away_mode_path=tmp_path / "away-mode.json")
+	registry = _make_registry_with_loopback()
 	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), logger)
 	result = await handlers.exit_away_mode("not-a-path")
 	assert result.startswith("ERROR: invalid cwd:")
@@ -139,7 +140,7 @@ async def test_exit_away_mode_invalid_cwd_returns_error(cfg, logger, tmp_path):
 
 @pytest.mark.asyncio
 async def test_enter_away_mode_error_returns_error_string(cfg, logger, tmp_path, monkeypatch):
-	registry = Registry(away_mode_path=tmp_path / "away-mode.json")
+	registry = _make_registry_with_loopback()
 
 	def boom(self, cwd, active):
 		raise RuntimeError("set failed")

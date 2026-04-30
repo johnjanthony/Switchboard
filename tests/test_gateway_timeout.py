@@ -6,6 +6,7 @@ from server.config import Config
 from server.gateway import TIMEOUT_SENTINEL, build_tool_handlers
 from server.logging_jsonl import JsonlLogger
 from server.registry import Registry
+from tests.conftest import make_registry_with_loopback
 from tests.test_gateway_notify_human import RecordingBackend
 
 _CWD = "c:/work/sw"
@@ -30,7 +31,7 @@ def logger(cfg):
 @pytest.mark.asyncio
 async def test_ask_human_returns_sentinel_on_timeout(cfg, logger):
 	backend = RecordingBackend()
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
@@ -54,7 +55,7 @@ class BrokenBackend(RecordingBackend):
 @pytest.mark.asyncio
 async def test_ask_human_returns_error_sentinel_on_backend_failure(cfg, logger):
 	backend = BrokenBackend()
-	registry = Registry()
+	registry = make_registry_with_loopback()
 	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 

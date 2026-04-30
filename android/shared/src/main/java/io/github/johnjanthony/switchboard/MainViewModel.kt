@@ -23,6 +23,7 @@ import io.github.johnjanthony.switchboard.network.BulkRespondSection
 import io.github.johnjanthony.switchboard.network.Channel
 import io.github.johnjanthony.switchboard.network.ChannelMessage
 import io.github.johnjanthony.switchboard.network.Pending
+import io.github.johnjanthony.switchboard.network.PendingExitToggle
 import io.github.johnjanthony.switchboard.network.SpawnCollisionData
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,6 +38,15 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
+
+	companion object {
+		// Default response text seeded into the bulk-respond modal when the user
+		// toggles away-mode off and there are pending ask_human questions in
+		// scope. The user can edit this in the modal before tapping "send to all";
+		// the edited value rides on the away_mode_commands exit command as
+		// `default_text`, and the server applies it on `decision == "send_default"`.
+		private const val BULK_RESPOND_DEFAULT_TEXT = "I'll respond when I'm back at my desk."
+	}
 
 	// Keyed by cwdKey (Firebase form, e.g. "c:__work__switchboard")
 	private val _channels = MutableStateFlow<Map<String, Channel>>(emptyMap())
@@ -55,8 +65,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _pendingCollision = MutableStateFlow<SpawnCollisionData?>(null)
 	val pendingCollision: StateFlow<SpawnCollisionData?> = _pendingCollision.asStateFlow()
 
-	private val _bulkRespondDialog = MutableStateFlow<BulkRespondPayload?>(null)
-	val bulkRespondDialog: StateFlow<BulkRespondPayload?> = _bulkRespondDialog.asStateFlow()
+	private val _pendingExitToggle = MutableStateFlow<PendingExitToggle?>(null)
+	val pendingExitToggle: StateFlow<PendingExitToggle?> = _pendingExitToggle.asStateFlow()
+
+	// Set when the user swipes a channel row to "At desk" AND the channel has no
+	// pending questions — without pendings the bulk-respond modal would not pop,
+	// so we surface a plain confirm dialog instead. Value is the cwdKey awaiting
+	// confirmation, or null when no swipe is pending.
+	private val _pendingSwipeAtDeskConfirm = MutableStateFlow<String?>(null)
+	val pendingSwipeAtDeskConfirm: StateFlow<String?> = _pendingSwipeAtDeskConfirm.asStateFlow()
 
 	private val _markdownViewerContent = MutableStateFlow<Pair<String, String>?>(null) // fileName to content
 	val markdownViewerContent: StateFlow<Pair<String, String>?> = _markdownViewerContent.asStateFlow()
@@ -67,17 +84,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _pendingDeepLinkMessageId = MutableStateFlow<String?>(null)
 	val pendingDeepLinkMessageId: StateFlow<String?> = _pendingDeepLinkMessageId.asStateFlow()
 
-	private val _unseenChannels = MutableStateFlow<Set<String>>(emptySet())
-	val unseenChannels: StateFlow<Set<String>> = _unseenChannels.asStateFlow()
-
 	private val database = FirebaseDatabase.getInstance()
 	private val channelsRef = database.getReference("channels")
 	private val responsesRef = database.getReference("responses")
 	private val commandsRef = database.getReference("commands")
-	private val awayModeRef = database.getReference("away_mode")
 	private val awayCommandsRef = database.getReference("away_mode_commands")
 	private val spawnCollisionsRef = database.getReference("spawn_collisions")
-	private val bulkRespondRef = database.getReference("bulk_respond_dialog")
+	private val globalAwayRef = database.getReference("global_settings/away_mode")
 
 	private val messageListeners = mutableMapOf<String, ChildEventListener>()
 
@@ -86,7 +99,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		setupChannelsListener()
 		setupAwayModeListener()
 		setupSpawnCollisionsListener()
-		setupBulkRespondListener()
 		loadProjectMru()
 	}
 
@@ -154,6 +166,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		val lastActivityAt = snapshot.child("last_activity_at").getValue(String::class.java)
 		val preview = snapshot.child("preview").getValue(String::class.java)
 		val unreadCount = snapshot.child("unread_count").getValue(Int::class.java) ?: 0
+		val awayMode = snapshot.child("away_mode").getValue(Boolean::class.java)
+		val pendingResponses = snapshot.child("pending_responses").getValue(Int::class.java) ?: 0
 		val cwd = cwdCanonical.ifBlank { fromFirebaseKey(cwdKey) }
 
 		val existing = _channels.value[cwdKey]
@@ -166,10 +180,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			lastActivityAt = lastActivityAt,
 			preview = preview,
 			unreadCount = unreadCount,
+			awayMode = awayMode,
+			pendingResponses = pendingResponses,
 		)
 		val newMap = _channels.value.toMutableMap()
 		newMap[cwdKey] = updated
 		_channels.value = newMap
+		recomputeCwdOverrides()
 
 		if (_selectedCwdKey.value == null && !hidden) {
 			_selectedCwdKey.value = cwdKey
@@ -224,10 +241,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		val newMap = _channels.value.toMutableMap()
 		if (newMap.remove(cwdKey) != null) {
 			_channels.value = newMap
+			recomputeCwdOverrides()
 			if (_selectedCwdKey.value == cwdKey) {
 				_selectedCwdKey.value = newMap.entries.firstOrNull { !it.value.hidden }?.key
 			}
 		}
+	}
+
+	private fun recomputeCwdOverrides() {
+		// Derive _cwdOverrides from each channel's awayMode field. A null awayMode
+		// means "follow global"; a non-null value (true or false) is the channel's
+		// own override of the global flag. This keeps a single source of truth —
+		// `channels/{key}/away_mode` — instead of mirroring overrides into a
+		// separate Firebase node.
+		val map = mutableMapOf<String, Boolean>()
+		for ((key, ch) in _channels.value) {
+			val v = ch.awayMode
+			if (v != null) map[key] = v
+		}
+		_cwdOverrides.value = map
+	}
+
+	private fun isQuestionType(type: String): Boolean {
+		return type == "question" || type == "ask_human"
 	}
 
 	private fun addMessage(cwdKey: String, msgId: String, msg: ChannelMessage) {
@@ -237,10 +273,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		if (idx >= 0) newMessages[idx] = msgId to msg else newMessages.add(msgId to msg)
 
 		var newPending = channel.pendingQuestions.toMutableMap()
-		if (msg.type == "question" && msg.request_id != null) {
-			if (msg.response_text != null || msg.cancelled) {
-				newPending.remove(msg.request_id!!)
+		var newPendingResponses = channel.pendingResponses
+		if (isQuestionType(msg.type) && msg.request_id != null) {
+			if (msg.response_text != null || msg.cancelled || msg.rejected) {
+				if (newPending.containsKey(msg.request_id)) {
+					newPending.remove(msg.request_id!!)
+					newPendingResponses = (newPendingResponses - 1).coerceAtLeast(0)
+				}
 			} else {
+				if (!newPending.containsKey(msg.request_id)) {
+					newPendingResponses += 1
+				}
 				newPending[msg.request_id!!] = Pending(
 					sender = msg.sender,
 					requestId = msg.request_id!!,
@@ -252,15 +295,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			}
 		}
 
-		val updated = channel.copy(messages = newMessages, pendingQuestions = newPending)
+		val updated = channel.copy(
+			messages = newMessages,
+			pendingQuestions = newPending,
+			pendingResponses = newPendingResponses
+		)
 		val newMap = _channels.value.toMutableMap()
 		newMap[cwdKey] = updated
 		_channels.value = newMap
 
-		if (msg.sender != "Human" && cwdKey != _selectedCwdKey.value) {
-			_unseenChannels.value = _unseenChannels.value + cwdKey
-		}
-		if (_selectedCwdKey.value == null && !channel.hidden) {
+		if (_selectedCwdKey.value == cwdKey) {
+			channelsRef.child(cwdKey).child("unread_count").setValue(0)
+		} else if (_selectedCwdKey.value == null && !channel.hidden) {
 			_selectedCwdKey.value = cwdKey
 		}
 
@@ -278,31 +324,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		// If the removed message was a pending question, drop it from the pending map too.
 		val removed = channel.messages.firstOrNull { it.first == msgId }?.second
 		val newPending = channel.pendingQuestions.toMutableMap()
-		if (removed?.type == "question" && removed.request_id != null) {
-			newPending.remove(removed.request_id)
+		var newPendingResponses = channel.pendingResponses
+		if (removed != null && isQuestionType(removed.type) && removed.request_id != null) {
+			if (newPending.containsKey(removed.request_id)) {
+				newPending.remove(removed.request_id)
+				newPendingResponses = (newPendingResponses - 1).coerceAtLeast(0)
+			}
 		}
-		val updated = channel.copy(messages = newMessages, pendingQuestions = newPending)
+		val updated = channel.copy(
+			messages = newMessages,
+			pendingQuestions = newPending,
+			pendingResponses = newPendingResponses
+		)
 		val newMap = _channels.value.toMutableMap()
 		newMap[cwdKey] = updated
 		_channels.value = newMap
 	}
 
 	private fun setupAwayModeListener() {
-		awayModeRef.child("global").addValueEventListener(object : ValueEventListener {
+		// Per-channel away-mode lives in each channel snapshot's `away_mode` field
+		// (parsed in syncChannel + materialized via recomputeCwdOverrides). We only
+		// listen to the global flag here.
+		globalAwayRef.addValueEventListener(object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
 				_globalAway.value = snapshot.getValue(Boolean::class.java) == true
-			}
-			override fun onCancelled(error: DatabaseError) {}
-		})
-		awayModeRef.child("overrides").addValueEventListener(object : ValueEventListener {
-			override fun onDataChange(snapshot: DataSnapshot) {
-				val map = mutableMapOf<String, Boolean>()
-				for (child in snapshot.children) {
-					val key = child.key ?: continue
-					val value = child.getValue(Boolean::class.java) ?: continue
-					map[key] = value
-				}
-				_cwdOverrides.value = map
 			}
 			override fun onCancelled(error: DatabaseError) {}
 		})
@@ -330,35 +375,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		})
 	}
 
-	private fun setupBulkRespondListener() {
-		bulkRespondRef.child("active").addValueEventListener(object : ValueEventListener {
-			override fun onDataChange(snapshot: DataSnapshot) {
-				if (!snapshot.exists()) {
-					_bulkRespondDialog.value = null
-					return
-				}
-				val defaultText = snapshot.child("default_text").getValue(String::class.java) ?: ""
-				val sections = snapshot.child("sections").children.mapNotNull { sectionSnap ->
-					val cwd = sectionSnap.child("cwd").getValue(String::class.java) ?: return@mapNotNull null
-					val entries = sectionSnap.child("entries").children.mapNotNull { entrySnap ->
-						val requestId = entrySnap.child("request_id").getValue(String::class.java) ?: return@mapNotNull null
-						val sender = entrySnap.child("sender").getValue(String::class.java) ?: return@mapNotNull null
-						val questionText = entrySnap.child("question_text").getValue(String::class.java) ?: ""
-						BulkRespondEntry(requestId, sender, questionText)
-					}
-					BulkRespondSection(cwd, entries)
-				}
-				_bulkRespondDialog.value = BulkRespondPayload(sections, defaultText)
-			}
-			override fun onCancelled(error: DatabaseError) {}
-		})
-	}
-
 	// --- Public actions ---
 
 	fun selectChannel(cwdKey: String) {
 		_selectedCwdKey.value = cwdKey
-		_unseenChannels.value = _unseenChannels.value - cwdKey
+		// Clear the server-maintained unread badge for this channel so the
+		// indicator drops on every device subscribed to this Firebase node.
+		channelsRef.child(cwdKey).child("unread_count").setValue(0)
 	}
 
 	fun clearSelectedChannel() {
@@ -381,28 +404,133 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		return _channels.value.values.any { it.pendingQuestions.isNotEmpty() }
 	}
 
-	fun submitReply(cwdKey: String, sender: String, text: String) {
-		responsesRef.child("${cwdKey}__$sender").setValue(mapOf(
+	fun submitReply(cwdKey: String, sender: String, text: String, requestId: String?) {
+		val key = requestId ?: "${cwdKey}__$sender"
+		responsesRef.child(key).setValue(mapOf(
 			"text" to text,
+			"cwd_key" to cwdKey,
+			"sender" to sender,
+			"request_id" to requestId,
 			"written_at" to nowIso(),
 		))
-		// Remove from pending optimistically
+		// Remove from pending optimistically. Decrement pendingResponses by the
+		// number of pending entries we're dropping for this sender so the row-
+		// level pending dot clears immediately rather than after the Firebase
+		// echo round-trip. Server's atomic decrement on resolve produces the
+		// same final value.
 		val channel = _channels.value[cwdKey] ?: return
-		val newPending = channel.pendingQuestions.filterValues { it.sender != sender }
-		_channels.value = _channels.value.toMutableMap().also { it[cwdKey] = channel.copy(pendingQuestions = newPending) }
+		val droppedCount = if (requestId != null) {
+			if (channel.pendingQuestions.containsKey(requestId)) 1 else 0
+		} else {
+			channel.pendingQuestions.values.count { it.sender == sender }
+		}
+		val newPending = if (requestId != null) {
+			channel.pendingQuestions.filterKeys { it != requestId }
+		} else {
+			channel.pendingQuestions.filterValues { it.sender != sender }
+		}
+		val newPendingResponses = (channel.pendingResponses - droppedCount).coerceAtLeast(0)
+		_channels.value = _channels.value.toMutableMap().also {
+			it[cwdKey] = channel.copy(pendingQuestions = newPending, pendingResponses = newPendingResponses)
+		}
 	}
 
 	fun requestAwayModeToggle(cwdKey: String?, desired: Boolean) {
-		if (cwdKey == null) {
-			_globalAway.value = desired
-			if (desired) enterGlobalAway() else exitGlobalAway()
-		} else {
-			val newOverrides = _cwdOverrides.value.toMutableMap()
-			newOverrides[cwdKey] = desired
-			_cwdOverrides.value = newOverrides
-			val cwd = _channels.value[cwdKey]?.cwd ?: return
-			if (desired) enterCwdAway(cwd) else exitCwdAway(cwd)
+		// "On" direction (entering away mode): no bulk-respond modal needed —
+		// fire the command immediately and let the Firebase listener carry the
+		// committed state back to the UI.
+		if (desired) {
+			if (cwdKey == null) enterGlobalAway()
+			else _channels.value[cwdKey]?.cwd?.let { enterCwdAway(it) }
+			return
 		}
+
+		// "Off" direction (exiting away mode). Per the schema-reorg spec, the
+		// modal lives on the phone. Build it locally from in-memory channel state
+		// when there are pending questions in scope; otherwise fire exit straight
+		// through. We do NOT optimistically flip _globalAway / _cwdOverrides here:
+		// (a) for the no-pending fast path the Firebase listener will reflect the
+		// committed state in well under a second, and (b) for the pending path
+		// the user may still cancel in the modal, in which case nothing should
+		// have changed.
+		if (cwdKey == null) {
+			val sections = buildBulkRespondSectionsForGlobal()
+			if (sections.isEmpty()) {
+				exitGlobalAway()
+			} else {
+				_pendingExitToggle.value = PendingExitToggle(
+					scopeCwdKey = null,
+					payload = BulkRespondPayload(
+						sections = sections,
+						defaultText = BULK_RESPOND_DEFAULT_TEXT,
+					),
+				)
+			}
+		} else {
+			val channel = _channels.value[cwdKey] ?: return
+			val cwd = channel.cwd
+			val section = buildBulkRespondSectionForChannel(channel)
+			if (section == null) {
+				exitCwdAway(cwd)
+			} else {
+				_pendingExitToggle.value = PendingExitToggle(
+					scopeCwdKey = cwdKey,
+					payload = BulkRespondPayload(
+						sections = listOf(section),
+						defaultText = BULK_RESPOND_DEFAULT_TEXT,
+					),
+				)
+			}
+		}
+	}
+
+	fun requestSwipeAtDesk(cwdKey: String) {
+		// Channel-row swipe-to-At-desk needs a confirmation gate. If the channel
+		// has pending questions, requestAwayModeToggle will surface the bulk-
+		// respond modal — that modal is itself the confirmation, so we just
+		// invoke the standard path. With no pendings the standard path commits
+		// immediately, which is too aggressive for a single accidental swipe;
+		// we route through a plain confirm dialog instead.
+		val channel = _channels.value[cwdKey] ?: return
+		val hasPendings = channel.pendingQuestions.values.any { !it.cancelled }
+		if (hasPendings) {
+			requestAwayModeToggle(cwdKey, false)
+		} else {
+			_pendingSwipeAtDeskConfirm.value = cwdKey
+		}
+	}
+
+	fun confirmSwipeAtDesk() {
+		val cwdKey = _pendingSwipeAtDeskConfirm.value ?: return
+		_pendingSwipeAtDeskConfirm.value = null
+		requestAwayModeToggle(cwdKey, false)
+	}
+
+	fun cancelSwipeAtDesk() {
+		_pendingSwipeAtDeskConfirm.value = null
+	}
+
+	private fun buildBulkRespondSectionForChannel(channel: Channel): BulkRespondSection? {
+		// Source pending questions from the channel's locally-tracked
+		// pendingQuestions map (populated as messages stream in via addMessage).
+		// We bypass channel.pendingResponses here and trust the per-question
+		// records — the count and the records can briefly drift mid-flight but
+		// the records are the structurally-richer source for the modal's list.
+		val entries = channel.pendingQuestions.values
+			.filter { !it.cancelled }
+			.map { BulkRespondEntry(it.requestId, it.sender, it.questionText) }
+		if (entries.isEmpty()) return null
+		return BulkRespondSection(cwd = channel.cwd, entries = entries)
+	}
+
+	private fun buildBulkRespondSectionsForGlobal(): List<BulkRespondSection> {
+		// Aggregate sections across every channel that holds pending questions.
+		// We do NOT filter by awayMode here: the server clears all per-channel
+		// overrides on a successful global flip, so every pending IS in scope of
+		// the transition. The server's _apply_bulk_respond_decision uses
+		// registry.all_pending() with no filter; the phone matches that.
+		return _channels.value.values
+			.mapNotNull { buildBulkRespondSectionForChannel(it) }
 	}
 
 	fun hideChannel(cwdKey: String) {
@@ -418,10 +546,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		spawnCollisionsRef.child(spawnId).child("decision").setValue(mapOf("action" to action))
 	}
 
-	fun submitBulkRespond(action: String, defaultText: String? = null) {
-		val payload = mutableMapOf<String, Any>("action" to action)
-		if (defaultText != null) payload["default_text"] = defaultText
-		bulkRespondRef.child("decision").setValue(payload)
+	fun submitExitToggleDecision(decision: String, defaultText: String?) {
+		val pending = _pendingExitToggle.value ?: return
+		_pendingExitToggle.value = null
+		if (pending.scopeCwdKey == null) {
+			exitGlobalAway(decision = decision, defaultText = defaultText)
+		} else {
+			val cwd = _channels.value[pending.scopeCwdKey]?.cwd ?: return
+			exitCwdAway(cwd, decision = decision, defaultText = defaultText)
+		}
+	}
+
+	fun cancelExitToggle() {
+		_pendingExitToggle.value = null
 	}
 
 	fun spawnSession(project: String, prompt: String, useClaude: Boolean, useGemini: Boolean) {
@@ -440,16 +577,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		awayCommandsRef.push().setValue(mapOf("type" to "enter_global", "issued_at" to nowIso()))
 	}
 
-	private fun exitGlobalAway() {
-		awayCommandsRef.push().setValue(mapOf("type" to "exit_global", "issued_at" to nowIso()))
+	private fun exitGlobalAway(decision: String? = null, defaultText: String? = null) {
+		val payload = mutableMapOf<String, Any>(
+			"type" to "exit_global",
+			"issued_at" to nowIso(),
+		)
+		if (decision != null) payload["decision"] = decision
+		if (defaultText != null) payload["default_text"] = defaultText
+		awayCommandsRef.push().setValue(payload)
 	}
 
 	private fun enterCwdAway(cwd: String) {
 		awayCommandsRef.push().setValue(mapOf("type" to "enter_cwd", "cwd" to cwd, "issued_at" to nowIso()))
 	}
 
-	private fun exitCwdAway(cwd: String) {
-		awayCommandsRef.push().setValue(mapOf("type" to "exit_cwd", "cwd" to cwd, "issued_at" to nowIso()))
+	private fun exitCwdAway(cwd: String, decision: String? = null, defaultText: String? = null) {
+		val payload = mutableMapOf<String, Any>(
+			"type" to "exit_cwd",
+			"cwd" to cwd,
+			"issued_at" to nowIso(),
+		)
+		if (decision != null) payload["decision"] = decision
+		if (defaultText != null) payload["default_text"] = defaultText
+		awayCommandsRef.push().setValue(payload)
 	}
 
 	// --- Utilities ---

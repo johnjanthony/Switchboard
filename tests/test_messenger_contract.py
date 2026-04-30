@@ -44,6 +44,10 @@ def test_messenger_backend_new_methods_exist():
 		"update_last_activity",
 		"write_away_mode_mirror",
 		"poll_spawn_collision_decision",
+		"load_away_mode_snapshot",
+		"start_away_mode_listeners",
+		"reset_all_pending_responses",
+		"delete_legacy_away_mode_node",
 	):
 		assert hasattr(MessengerBackend, method_name), f"Missing: {method_name}"
 

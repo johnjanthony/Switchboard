@@ -22,10 +22,16 @@ class IncomingResponse:
 	`correlation` is whatever opaque token the backend stored at
 	`send_question` time (e.g. Telegram message_id). The gateway uses it
 	to look up the pending request_id in the registry.
+
+	`slot` is the literal storage key the response was read from (e.g. the
+	Firebase RTDB child under `responses/`). Carried so the dispatcher can
+	clean up unroutable / stale responses without having to reconstruct the
+	key from correlation fields.
 	"""
 
 	correlation: CorrelationToken
 	text: str
+	slot: str | None = None
 
 
 class MessengerBackend(ABC):
@@ -116,9 +122,43 @@ class MessengerBackend(ABC):
 		No-op by default; FirebaseBackend overrides."""
 		pass
 
+	async def load_away_mode_snapshot(self, registry) -> None:
+		"""Read current global + per-channel away-mode state from the backend
+		and seed the registry's in-memory cache. Called once at server startup
+		before the gateway accepts requests. No-op default."""
+		pass
+
+	async def start_away_mode_listeners(self, registry) -> None:
+		"""Subscribe to backend value events for global and per-channel away-mode
+		state; invoke registry.update_global_away_cache and
+		registry.update_cwd_override_cache as changes arrive. No-op default."""
+		pass
+
+	async def reset_all_pending_responses(self) -> None:
+		"""Zero out channels/*/pending_responses for every channel. Called once
+		at server startup to match the post-restart in-memory Registry state. No-op default."""
+		pass
+
+	async def reset_all_away_mode(self) -> None:
+		"""Force away mode off globally and clear all per-channel overrides on
+		startup. Decouples post-restart away-mode state from the now-broken MCP
+		sessions of any pre-restart agents. No-op default; FirebaseBackend overrides."""
+		pass
+
+	async def delete_legacy_away_mode_node(self) -> None:
+		"""Delete the legacy /away_mode top-level node (one-shot migration).
+		No-op default."""
+		pass
+
 	async def mark_question_cancelled(self, cwd: str, request_id: str) -> None:
 		"""Mark the question with this request_id as cancelled in storage.
 		No-op default; FirebaseBackend overrides."""
+		pass
+
+	async def delete_response_slot(self, slot: str) -> None:
+		"""Delete a response entry under `responses/` by its literal storage key.
+		Called by the dispatcher after a stale / unroutable response so the
+		listener doesn't re-fire it forever. No-op default; FirebaseBackend overrides."""
 		pass
 
 	async def send_stale_reply_notice(self, cwd: str, sender: str) -> None:
@@ -167,22 +207,10 @@ class MessengerBackend(ABC):
 		"""Return the text of a message by msg_id, or None if not found."""
 		return None
 
-	async def write_bulk_respond_dialog(self, payload: dict) -> None:
-		"""Push the bulk-respond dialog to phone via Firebase node bulk_respond_dialog/active."""
-		pass
-
-	async def clear_bulk_respond_dialog(self) -> None:
-		"""Remove the bulk-respond dialog node."""
-		pass
-
 	async def poll_away_mode_commands(self) -> "AsyncIterator[dict]":
 		"""Yield away_mode_commands queue entries as they arrive. No-op by default."""
 		if False:
 			yield
-
-	async def poll_bulk_respond_decision(self) -> dict:
-		"""Block until bulk_respond_dialog/decision is written; return the decision dict."""
-		raise NotImplementedError
 
 	async def poll_spawn_collision_decision(self, spawn_id: str) -> dict:
 		"""Block until spawn_collisions/{spawn_id}/decision is written; return the decision dict.

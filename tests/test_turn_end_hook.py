@@ -201,3 +201,159 @@ def test_hook_invalid_json_stdin_fail_open():
 		r = _run("claude", stdin="not json at all", url_env=srv.url)
 	assert r.returncode == 0
 	assert r.stdout.strip() == ""
+
+
+# --- T7 / H9: collab-partner-state augmentation ---
+
+class _DualRouteFakeServer:
+	"""Like _FakeServer but dispatches by path: /away-mode vs /collab-partner-state.
+
+	Provides two payloads, one for each route. Either may be None to return 404.
+	"""
+
+	def __init__(self, away_payload: dict | None, partner_payload: dict | None):
+		self.away_payload = away_payload
+		self.partner_payload = partner_payload
+		self._thread = None
+		self._httpd = None
+		self.port: int | None = None
+		self.received_paths: list[str] = []
+
+	def __enter__(self):
+		import http.server
+		import threading
+
+		away_payload = self.away_payload
+		partner_payload = self.partner_payload
+		received = self.received_paths
+
+		class Handler(http.server.BaseHTTPRequestHandler):
+			def do_GET(self):
+				received.append(self.path)
+				if self.path.startswith("/away-mode"):
+					payload = away_payload
+				elif self.path.startswith("/collab-partner-state"):
+					payload = partner_payload
+				else:
+					self.send_response(404)
+					self.end_headers()
+					return
+				if payload is None:
+					self.send_response(404)
+					self.end_headers()
+					return
+				self.send_response(200)
+				self.send_header("Content-Type", "application/json")
+				self.end_headers()
+				self.wfile.write(json.dumps(payload).encode("utf-8"))
+
+			def log_message(self, *a, **kw):
+				pass
+
+		self._httpd = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+		self.port = self._httpd.server_address[1]
+		self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+		self._thread.start()
+		return self
+
+	def __exit__(self, *a):
+		self._httpd.shutdown()
+		self._httpd.server_close()
+
+	@property
+	def away_url(self) -> str:
+		return f"http://127.0.0.1:{self.port}/away-mode"
+
+	@property
+	def partner_url(self) -> str:
+		return f"http://127.0.0.1:{self.port}/collab-partner-state"
+
+
+def _run_dual(cli: str, away_url: str, partner_url: str, stdin: str = _DEFAULT_CWD_PAYLOAD) -> subprocess.CompletedProcess:
+	import os
+	env = os.environ.copy()
+	env["SWITCHBOARD_URL"] = away_url
+	env["SWITCHBOARD_PARTNER_STATE_URL"] = partner_url
+	return subprocess.run(
+		[sys.executable, str(SCRIPT), "--cli", cli],
+		input=stdin,
+		capture_output=True,
+		text=True,
+		timeout=10,
+		env=env,
+	)
+
+
+def test_partner_blocked_appends_to_block_reason_when_away_mode_active():
+	"""When away-mode is active AND a partner is blocked, the block reason
+	gains a partner-blocked clause naming both message_and_await_agent and
+	end_collab as recovery options."""
+	with _DualRouteFakeServer({"active": True}, {"state": "blocked"}) as srv:
+		r = _run_dual("claude", srv.away_url, srv.partner_url)
+	assert r.returncode == 0
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
+	# Both base away-mode reason AND the partner-blocked clause.
+	assert "away mode" in out["reason"].lower()
+	assert "collab partner" in out["reason"].lower()
+	assert "message_and_await_agent" in out["reason"]
+	assert "end_collab" in out["reason"]
+
+
+def test_partner_live_does_not_append_partner_clause():
+	"""Away-mode active but partner is live — base reason only, no partner clause."""
+	with _DualRouteFakeServer({"active": True}, {"state": "live"}) as srv:
+		r = _run_dual("claude", srv.away_url, srv.partner_url)
+	assert r.returncode == 0
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
+	assert "away mode" in out["reason"].lower()
+	assert "collab partner" not in out["reason"].lower()
+
+
+def test_no_session_does_not_append_partner_clause():
+	"""Away-mode active, no session at this cwd — base reason only."""
+	with _DualRouteFakeServer({"active": True}, {"state": "none"}) as srv:
+		r = _run_dual("claude", srv.away_url, srv.partner_url)
+	assert r.returncode == 0
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
+	assert "collab partner" not in out["reason"].lower()
+
+
+def test_partner_state_check_skipped_when_away_mode_inactive():
+	"""When away-mode is OFF, the hook exits silently and never queries the
+	partner-state route. Gating per Option G design discussion: at-desk dialogs
+	with John shouldn't be hindered by the partner-blocked check."""
+	with _DualRouteFakeServer({"active": False}, {"state": "blocked"}) as srv:
+		r = _run_dual("claude", srv.away_url, srv.partner_url)
+	assert r.returncode == 0
+	assert r.stdout.strip() == ""
+	# Only the away-mode route was queried; partner-state was skipped entirely.
+	partner_queries = [p for p in srv.received_paths if p.startswith("/collab-partner-state")]
+	assert len(partner_queries) == 0, f"partner-state should not be queried; got {partner_queries}"
+
+
+def test_gemini_partner_blocked_emits_deny_with_partner_clause():
+	"""Gemini variant: deny + continue=True, with partner-blocked clause appended."""
+	with _DualRouteFakeServer({"active": True}, {"state": "blocked"}) as srv:
+		r = _run_dual("gemini", srv.away_url, srv.partner_url)
+	assert r.returncode == 0
+	out = json.loads(r.stdout)
+	assert out["decision"] == "deny"
+	assert out["continue"] is True
+	assert "collab partner" in out["reason"].lower()
+
+
+def test_partner_state_route_failure_falls_back_to_base_reason():
+	"""If the partner-state endpoint is unreachable but away-mode is active,
+	the hook still emits the base block (fail-open on the partner check) so
+	non-collab away-mode workflows aren't broken by an upgrade boundary."""
+	with _DualRouteFakeServer({"active": True}, partner_payload=None) as srv:  # 404 on partner route
+		r = _run_dual("claude", srv.away_url, srv.partner_url)
+	assert r.returncode == 0
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
+	assert "away mode" in out["reason"].lower()
+	# No partner clause when partner check failed.
+	assert "collab partner" not in out["reason"].lower()

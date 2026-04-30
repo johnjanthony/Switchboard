@@ -6,12 +6,13 @@ Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task an
 
 ## Features
 
-- **Unified Routing**: Target specific sessions using stable `channel_id`s and display names (`sender`).
-- **Asynchronous Updates**: Send non-blocking notifications or deliver documents directly to your phone.
-- **In-line Replies**: View your responses directly in the chat history for full context.
-- **Activity Indicators**: Prominent high-visibility tab borders and tints for unseen activity or pending questions.
-- **Session Spawning**: Launch fresh agent sessions on your desktop directly from your phone.
-- **Bring-Your-Own Sessions**: Pair two already-running agents into a collab channel without spawning — just share a `channel_id`.
+- **cwd-as-channel routing**: Each agent's working directory IS its channel, with `sender` distinguishing agents that share a cwd (collab sessions). No manual channel_id wiring.
+- **Asynchronous updates**: Send non-blocking notifications or deliver documents directly to your phone.
+- **In-line replies**: View your responses directly in the chat history for full context.
+- **Two-tier away mode**: Global flag plus per-channel overrides. Toggle from the phone (long-press the pill) or via the `enter_away_mode` / `exit_away_mode` MCP tools.
+- **Activity indicators**: Prominent high-visibility tab borders and tints for unseen activity or pending questions.
+- **Session spawning**: Launch fresh agent sessions on your desktop directly from your phone.
+- **Bring-your-own sessions**: Pair two already-running agents into a collab channel without spawning — both agents share the same cwd, distinct senders.
 - **Rich Markdown**: Full support for bold, italic, code blocks, checklists, and tables.
 
 ## Design & Architecture
@@ -134,10 +135,12 @@ Prompt for Authorization: Keep an eye on your watch face when you first click Ru
 
 Away mode activates when you tell your agent you're stepping away — any phrasing like *"I'm stepping away"* is sufficient. The agent immediately routes all output through `ask_human` or `notify_human`.
 
-- **`ask_human(question, channel_id, sender?, format?, suggestions?)`** — blocks until you reply.
-- **`notify_human(message, channel_id, sender?, format?)`** — fire-and-forget status update.
-- **`send_document_human(path, channel_id, sender?, caption?)`** — delivers a file to your phone.
-- **`message_and_await_agent(channel_id, sender, message?)`** — collaborative session relay.
+- **`ask_human(question, cwd, sender, title?, format?, suggestions?)`** — blocks until you reply.
+- **`notify_human(message, cwd, sender, title?, format?)`** — fire-and-forget status update.
+- **`send_document_human(path, cwd, sender, title?, caption?)`** — delivers a file to your phone.
+- **`message_and_await_agent(cwd, sender, title?, message?)`** — collab session relay (sends to your partner, blocks until they reply).
+- **`end_collab(cwd, sender, message?, hand_off_to_human?)`** — terminate a collab session and optionally hand off to John.
+- **`enter_away_mode(cwd)` / `exit_away_mode(cwd)`** — flip THIS cwd's per-channel override.
 
 To exit away mode, reply *"I'm back"*. The agent will provide a **Welcome Back Summary** of what was accomplished while you were away and then resume normal terminal output.
 
@@ -147,7 +150,7 @@ Switchboard correlates your reply to the waiting `ask_human` call via the Androi
 
 ### Bring-your-own collab sessions
 
-Two already-running agents can be paired into a collab channel without spawning. Give both agents the same `channel_id` and tell them to call `message_and_await_agent`. The first agent to call creates the session; the second joins. Call order doesn't matter — the gateway buffers the first message until both agents are enrolled.
+Two already-running agents can be paired into a collab channel without spawning. Give both agents the same `cwd` (working directory) and tell them to call `message_and_await_agent`. The first agent to call creates the session; the second joins. Call order doesn't matter — the gateway buffers the first message until both agents are enrolled.
 
 Each agent uses its own display name as `sender` (e.g. `"Claude"`, `"Gemini"`), which is naturally unique across different agent types. BYO sessions do not enter away mode unless you explicitly step away.
 

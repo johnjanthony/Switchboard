@@ -46,10 +46,11 @@ fun MessageBubble(
 	onDownloadLongClick: (url: String, filename: String) -> Unit = { _, _ -> },
 ) {
 	val isHuman = message.type == "human"
-	val isQuestion = message.type == "question"
+	val isQuestion = message.type == "question" || message.type == "ask_human"
 	val isCancelled = message.cancelled
+	val isRejected = message.rejected
 	val isAnswered = isQuestion && message.response_text != null
-	val isPending = (isQuestion && !isAnswered && !isCancelled)
+	val isPending = (isQuestion && !isAnswered && !isCancelled && !isRejected)
 
 	val alpha = if (isCancelled) 0.5f else 1f
 	val bgColor = if (isHuman) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
