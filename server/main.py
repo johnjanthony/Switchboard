@@ -101,7 +101,16 @@ async def _notify_lost_collab_sessions(sidecar_path: _Path, backend) -> None:
 
 
 def _build_fastmcp(handlers) -> FastMCP:
-	mcp = FastMCP("switchboard", stateless_http=True)
+	# Stateful HTTP: session-scoped transport so per-tool-call cancel
+	# notifications can find the in-flight responder. The cost is that an MCP
+	# session does not survive a server restart — Claude Code (issue #27142,
+	# closed not-planned) caches Mcp-Session-Id and gets a 404, then drops the
+	# tool list permanently. Workaround: /exit and relaunch CC after a server
+	# restart. Acceptable here because restarts are rare in normal use.
+	#
+	# session_idle_timeout is left at the default (None) so a long-blocking
+	# `ask_human` awaiting John's reply for up to 24h is not reaped mid-call.
+	mcp = FastMCP("switchboard", stateless_http=False)
 
 	@mcp.tool()
 	async def ask_human(
@@ -230,7 +239,16 @@ async def _run(config: Config) -> None:
 
 	await _wire_away_mode_mirror(registry, backend)
 
-	# Populate cache from Firebase, start listeners, zero pending counters
+	# Reset away-mode state BEFORE loading the snapshot. In stateful HTTP mode
+	# (which we use to get cancel-notification propagation), a server restart
+	# invalidates every pre-existing CC session and those agents lose access to
+	# switchboard tools. Leaving away_mode=true would trap them in a Stop-hook
+	# loop ("call ask_human" → tool unavailable → repeat). Resetting to off
+	# lets them gracefully fall back to terminal output. The user re-enables
+	# away mode via spawn (per-channel) or the phone (global).
+	await backend.reset_all_away_mode()
+	# Populate cache from Firebase (now reflects the post-reset state), start
+	# listeners, zero pending counters.
 	await backend.load_away_mode_snapshot(registry)
 	await backend.delete_legacy_away_mode_node()
 	await backend.start_away_mode_listeners(registry)
@@ -256,11 +274,73 @@ async def _run(config: Config) -> None:
 	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
 	app.add_route("/collab-partner-state", _build_collab_partner_state_route(registry), methods=["GET"])
 
+	# === DIAGNOSTIC: log every JSON-RPC request/notification arriving on /mcp ===
+	# Purpose: determine whether Claude Code sends `notifications/cancelled`
+	# when the user hits Esc on a tool call, and on what Mcp-Session-Id it lands.
+	# Remove this wrapper once cancel propagation is verified or root-caused.
+	import json as _diag_json
+	from starlette.types import Message, Receive, Scope, Send
+
+	starlette_app = app
+
+	class MCPRequestSnoop:
+		def __init__(self, app_inner) -> None:
+			self.app_inner = app_inner
+
+		async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+			if scope["type"] != "http" or not scope.get("path", "").startswith("/mcp"):
+				await self.app_inner(scope, receive, send)
+				return
+
+			session_id = None
+			for k, v in scope.get("headers", []):
+				if k == b"mcp-session-id":
+					session_id = v.decode("ascii", errors="replace")
+					break
+
+			body_chunks: list[bytes] = []
+
+			async def receive_logging() -> Message:
+				message = await receive()
+				if message["type"] == "http.request":
+					body = message.get("body", b"")
+					if body:
+						body_chunks.append(body)
+					if not message.get("more_body", False):
+						full = b"".join(body_chunks)
+						method = "<unparseable>"
+						jrpc_id = None
+						try:
+							payload = _diag_json.loads(full.decode("utf-8"))
+							if isinstance(payload, dict):
+								method = payload.get("method", "<no-method>")
+								jrpc_id = payload.get("id") or (payload.get("params") or {}).get("requestId")
+							elif isinstance(payload, list):
+								method = "[batch:" + ",".join(
+									p.get("method", "?") for p in payload if isinstance(p, dict)
+								) + "]"
+						except Exception:
+							pass
+						_spawn_bg(
+							logger.info(
+								f"mcp_snoop method={method!r} session_id={session_id!r} "
+								f"jrpc_id={jrpc_id!r} body_bytes={len(full)}"
+							),
+							label="mcp_snoop",
+						)
+				return message
+
+			await self.app_inner(scope, receive_logging, send)
+
+	asgi_app = MCPRequestSnoop(starlette_app)
+	# === END DIAGNOSTIC ===
+
 	uv_config = uvicorn.Config(
-		app,
+		asgi_app,
 		host=config.host,
 		port=config.port,
 		log_level="info",
+		lifespan="on",
 	)
 	server = uvicorn.Server(uv_config)
 

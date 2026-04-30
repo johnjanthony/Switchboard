@@ -168,16 +168,6 @@ Periodically clean up old questions, responses, and documents from Firebase (e.g
 
 ---
 
-## Android: swipe gestures on channel rows
-
-Add directional swipe actions to `SessionRowComposable` on Page A:
-- **Swipe left** → hide the channel (equivalent to `viewModel.hideChannel(cwdKey)`).
-- **Swipe right** → exit away mode for that channel (equivalent to `viewModel.requestAwayModeToggle(cwdKey, false)`, setting the per-cwd override to at-desk).
-
-Both should reveal a colored action affordance during the swipe (red for hide, green/blue for at-desk) and commit on full swipe / snap back if released early — Material 3 `SwipeToDismissBox` or similar pattern. Long-press / context menu / TabInfoPopover access continues to work for the no-swipe path.
-
----
-
 ## Android: suggestion buttons as notification actions
 
 When `ask_human` is called with suggestions, render them as tappable action buttons on the notification banner so the developer can reply without opening the app.
@@ -218,20 +208,29 @@ Low-medium priority — improves quality-of-life for grabbing snippets out of ag
 
 ## Withdraw pending questions when an unattended agent dies
 
-**Surfaced 2026-04-26** during cwd-as-channel post-merge testing (test 6d). The common kill-and-respawn case is now covered by **cancel-on-spawn** (shipped 2026-04-27): `Registry.cancel_pending_for_cwd` + `SpawnHandler._cancel_prior_pending` write the WITHDRAWN marker via `mark_question_cancelled` before the new agent launches. Closes the typical dev workflow.
+**Surfaced 2026-04-26** during cwd-as-channel post-merge testing (test 6d). Several scenarios; partial coverage shipped over time:
 
-**Still open** — agents that die *without* a respawn (unattended long-running crash) still leave their pending questions hanging until the 24h timeout fires `send_timeout_followup` rather than `mark_question_cancelled`. Two complementary approaches remain as future-insurance:
+- **Kill-and-respawn (typical dev workflow)** — covered by **cancel-on-spawn** (shipped 2026-04-27): `Registry.cancel_pending_for_cwd` + `SpawnHandler._cancel_prior_pending` write the WITHDRAWN marker via `mark_question_cancelled` before the new agent launches.
+- **User cancels the tool call from the terminal (Claude Code)** — covered as of 2026-04-30: stateful HTTP transport + `anyio.CancelScope(shield=True)` cleanup shielding in [`server/gateway/handlers.py`](../server/gateway/handlers.py) means MCP `notifications/cancelled` reaches our `CancelledError` block AND the cleanup write completes. Question gets `cancelled: true`; phone shows WITHDRAWN.
+- **Gemini CLI cancel** — NOT covered. Per-snoop-log evidence on 2026-04-30, Gemini CLI does not send `notifications/cancelled` over MCP at all. Either a Gemini-side bug or a deliberate omission. Nothing fixable server-side; file an issue with the Gemini CLI repo if it matters.
+- **Unattended long-running agent crash (process death without explicit cancel)** — STILL OPEN. Verified: closing the agent's terminal entirely leaves the question with `cancelled: false`, `pending_responses: 1`. A reply lands as if delivered to the (now-dead) agent. FastMCP's stateful streamable-HTTP transport doesn't propagate the dropped TCP/SSE connection to the in-flight responder; the session task keeps the responder alive. The pending entry sits until the 24h `ask_human` timeout fires `send_timeout_followup`. So the user-visible bug ("phone shows RESPONDED but agent never got it") still happens in this scenario.
 
-1. **HTTP keepalive disconnect detection.** Investigate whether MCP's streamable-HTTP transport surfaces a disconnect signal to in-flight tool handlers (FastMCP / `streamable_http.py`). If yes, plumb that into a CancelledError on the awaiting future. May not be reachable depending on the MCP SDK.
+Two complementary approaches remain as future insurance for the unattended-crash case:
+
+1. **HTTP keepalive disconnect detection.** Investigate whether FastMCP's stateful-mode session lifecycle (now in use as of 2026-04-30) surfaces a disconnect signal that can be plumbed into CancelledError on in-flight responders. May be tractable now that we're stateful — sessions HAVE a clearer lifecycle than they did in stateless.
 2. **Agent liveness pings.** Heartbeat protocol: agents send periodic keepalives; missing two in a row = mark all their pending questions cancelled. More moving parts, more state, but transport-agnostic.
 
-Both are insurance against unattended crashes; the common case is handled.
+Both are insurance against unattended crashes; common cases are now covered.
 
 ---
 
-## Away-Mode Framing Check
+## Away-Mode Framing Check (terminal-leak detection mid-turn)
 
-Add an automated check to ensure that every agent response in away mode starts with a tool call. Server-side enforcement (gateway/Stop hook) plus skill-doc reinforcement on the agent side.
+The Stop hook blocks any turn that ends without an `ask_human` / `notify_human` / `send_document_human` call while away-mode is active. SKILL.md "tool call IS the acknowledgment" reinforces that on the agent side. Together those cover the turn-end case.
+
+What's still uncovered: terminal text emitted *before* the agent's first tool call within a turn ("Got it, on it…" → tool call). The hook doesn't see that — it only fires at turn-end. A stricter check would scan the agent's transcript for leaked text before the first acknowledging tool call and block / log on detection.
+
+Low priority — practical leakage is rare given current SKILL adherence. Pickup when a real incident surfaces.
 
 ---
 

@@ -17,8 +17,7 @@ fun PerCwdAwayPill(
 	awayActive: Boolean,
 	isOverride: Boolean,
 	globalAway: Boolean,
-	onTap: () -> Unit,
-	onLongPressConfirm: () -> Unit,
+	onLongPress: () -> Unit,
 ) {
 	val label = when {
 		awayActive && isOverride && !globalAway -> "Away"
@@ -32,7 +31,7 @@ fun PerCwdAwayPill(
 		        else MaterialTheme.colorScheme.surfaceVariant,
 		modifier = Modifier
 			.padding(horizontal = 4.dp)
-			.combinedClickable(onClick = onTap, onLongClick = onLongPressConfirm),
+			.combinedClickable(onClick = {}, onLongClick = onLongPress),
 	) {
 		Text(
 			text = label,

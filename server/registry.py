@@ -189,38 +189,12 @@ class Registry:
 		return cwd in self._recently_ended
 
 	def is_away_mode_active(self, cwd: str) -> bool:
-		# Walk up the canonical path looking for the nearest registered ancestor
-		# override. Canonical cwds are forward-slash, lowercased, drive-prefixed
-		# (e.g. 'c:/work/switchboard'). A query for 'c:/work/switchboard/android'
-		# inherits the override on 'c:/work/switchboard' if no override is set
-		# directly on the subdirectory. This matches user mental model: setting
-		# at-desk on a project applies to all bash subshells inside it.
-		probe = cwd
-		while probe:
-			if probe in self._cwd_overrides:
-				return self._cwd_overrides[probe]
-			
-			if "/" not in probe:
-				# Single-component name or empty (already handled by while-loop), 
-				# nothing left to split.
-				break
-
-			parent = probe.rsplit("/", 1)[0]
-			
-			if parent == probe:
-				break
-			
-			# Drive root check: 'c:/'. After rsplit("/", 1) on 'c:/foo', parent is 'c:'.
-			# We want to check 'c:/' if 'c:' is hit, but rsplit doesn't give us the slash.
-			# If parent is just a drive letter (e.g. 'c:'), it means we reached the root.
-			if len(parent) <= 2 and parent.endswith(":"):
-				# Check the root override if it exists
-				root = parent + "/"
-				if root in self._cwd_overrides:
-					return self._cwd_overrides[root]
-				break
-
-			probe = parent
+		# Exact-match only. Each channel is independent: an override on a parent
+		# path does NOT propagate to children. A spawn on c:/work must not flip
+		# every project under it into away-mode. The only fallback when no
+		# override exists for this exact cwd is the global flag.
+		if cwd in self._cwd_overrides:
+			return self._cwd_overrides[cwd]
 		return self._global_away
 
 	def set_cwd_override(self, cwd: str, active: bool) -> None:

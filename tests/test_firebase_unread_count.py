@@ -8,7 +8,12 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_question_increments_unread_count_and_pending_responses(monkeypatch):
+async def test_question_increments_unread_count_only(monkeypatch):
+	"""Question writes bump unread_count but NOT pending_responses.
+
+	pending_responses is owned by the Registry pending-mirror callback, which
+	fires on registry.add (+1) / resolve / remove / cancel (-1). Doing it here
+	too would double-count every question."""
 	from server import firebase as fb_module
 
 	mock_db = MagicMock()
@@ -26,10 +31,9 @@ async def test_question_increments_unread_count_and_pending_responses(monkeypatc
 		request_id="r1",
 	)
 
-	# Verify both unread_count and pending_responses got an increment write
 	calls = [str(c) for c in mock_db.reference.call_args_list]
 	assert any("channels/c:__work__sw/unread_count" in c for c in calls)
-	assert any("channels/c:__work__sw/pending_responses" in c for c in calls)
+	assert not any("channels/c:__work__sw/pending_responses" in c for c in calls)
 
 
 @pytest.mark.asyncio

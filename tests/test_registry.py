@@ -142,24 +142,25 @@ def test_away_mode_update_cache_is_idempotent():
 	assert registry.is_away_mode_active("c:/work/switchboard") is False
 
 
-def test_cwd_override_inherited_by_subdirectory():
-	"""A descendant cwd inherits the nearest ancestor's override."""
+def test_cwd_override_does_not_propagate_to_children():
+	"""Each channel is independent. An override on a parent cwd has no effect
+	on children — they fall through to the global flag instead."""
 	registry = Registry()
 	registry.update_global_away_cache(True)
-	# Project root has explicit at-desk override
-	registry.set_cwd_override("c:/work/switchboard", False)
+	# Parent set to at-desk
 	registry.update_cwd_override_cache("c:/work/switchboard", False)
-	# Subdirectory inherits the override even though it has no entry of its own
-	assert registry.is_away_mode_active("c:/work/switchboard/android") is False
-	assert registry.is_away_mode_active("c:/work/switchboard/server/firebase.py") is False
-	# Unrelated path falls through to global
-	assert registry.is_away_mode_active("c:/work/other") is True
-	# Direct subdir override wins over ancestor
-	registry.set_cwd_override("c:/work/switchboard/android", True)
-	registry.update_cwd_override_cache("c:/work/switchboard/android", True)
+	# Children do NOT inherit — they fall through to the global (True).
 	assert registry.is_away_mode_active("c:/work/switchboard/android") is True
-	assert registry.is_away_mode_active("c:/work/switchboard/android/app") is True
-	assert registry.is_away_mode_active("c:/work/switchboard/server") is False  # still inherits root
+	assert registry.is_away_mode_active("c:/work/switchboard/server/firebase.py") is True
+	# Unrelated path also falls through to global.
+	assert registry.is_away_mode_active("c:/work/other") is True
+	# Parent itself reflects its own override.
+	assert registry.is_away_mode_active("c:/work/switchboard") is False
+	# A child can hold its own override independently of the parent.
+	registry.update_cwd_override_cache("c:/work/switchboard/android", False)
+	assert registry.is_away_mode_active("c:/work/switchboard/android") is False
+	# Sibling without an override still falls through to global, not to parent.
+	assert registry.is_away_mode_active("c:/work/switchboard/server") is True
 
 
 def test_set_cwd_override_invokes_callback():

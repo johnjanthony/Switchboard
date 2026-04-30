@@ -16,8 +16,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -46,6 +48,7 @@ import io.github.johnjanthony.switchboard.ui.SessionViewScreen
 import io.github.johnjanthony.switchboard.ui.SpawnCollisionDialog
 import io.github.johnjanthony.switchboard.ui.SpawnSessionDialog
 import io.github.johnjanthony.switchboard.ui.TabInfoPopover
+import io.github.johnjanthony.switchboard.ui.leafName
 import io.github.johnjanthony.switchboard.ui.theme.SwitchboardTheme
 
 class MainActivity : ComponentActivity() {
@@ -102,6 +105,7 @@ private fun SwitchboardNavHost(
 	val cwdOverrides by viewModel.cwdOverrides.collectAsState()
 	val pendingCollision by viewModel.pendingCollision.collectAsState()
 	val pendingExitToggle by viewModel.pendingExitToggle.collectAsState()
+	val pendingSwipeAtDeskConfirm by viewModel.pendingSwipeAtDeskConfirm.collectAsState()
 	val markdownViewerContent by viewModel.markdownViewerContent.collectAsState()
 	val projectMru by viewModel.projectMru.collectAsState()
 	var showHidden by remember { mutableStateOf(false) }
@@ -145,7 +149,7 @@ private fun SwitchboardNavHost(
 				onExitGlobalAway = { viewModel.requestAwayModeToggle(null, false) },
 				onHideChannel = { viewModel.hideChannel(it.cwdKey) },
 				onUnhideChannel = { viewModel.unhideChannel(it.cwdKey) },
-				onAwayToggle = { viewModel.requestAwayModeToggle(it.cwdKey, false) },
+				onAwayToggle = { viewModel.requestSwipeAtDesk(it.cwdKey) },
 				onSpawnClick = { showSpawnDialog = true },
 			)
 		}
@@ -193,8 +197,7 @@ private fun SwitchboardNavHost(
 				scrollToMessageId = deepLinkMessageId.value,
 				onScrollConsumed = { deepLinkMessageId.value = null },
 				onBack = { navController.popBackStack() },
-				onTapPill = { viewModel.requestAwayModeToggle(cwdKey, !awayActive) },
-				onLongPressPillConfirm = { viewModel.requestAwayModeToggle(cwdKey, !awayActive) },
+				onLongPressPill = { viewModel.requestAwayModeToggle(cwdKey, !awayActive) },
 				onSubmitReply = { sender, text, requestId -> viewModel.submitReply(cwdKey, sender, text, requestId) },
 				onDownloadFile = { url, filename -> viewModel.downloadAndOpenFile(context, url, filename) },
 				onLongPressDownloadFile = { url, filename -> viewModel.saveFileToDownloads(context, url, filename) },
@@ -245,6 +248,21 @@ private fun SwitchboardNavHost(
 			onCancel = { viewModel.cancelExitToggle() },
 		)
 	}
+	pendingSwipeAtDeskConfirm?.let { cwdKey ->
+		val channel = channels[cwdKey]
+		val channelLabel = channel?.title ?: channel?.let { leafName(it.cwdCanonical) } ?: cwdKey
+		AlertDialog(
+			onDismissRequest = { viewModel.cancelSwipeAtDesk() },
+			title = { Text("Set channel to At desk?") },
+			text = { Text("Mark $channelLabel as At desk. Agents in this channel will resume normal terminal output.") },
+			confirmButton = {
+				TextButton(onClick = { viewModel.confirmSwipeAtDesk() }) { Text("At desk") }
+			},
+			dismissButton = {
+				TextButton(onClick = { viewModel.cancelSwipeAtDesk() }) { Text("Cancel") }
+			},
+		)
+	}
 	if (showSpawnDialog) {
 		SpawnSessionDialog(
 			mruList = projectMru,
@@ -273,7 +291,7 @@ fun AwayModePillChip(active: Boolean, onLongPress: () -> Unit) {
 			.border(1.dp, borderColor, RoundedCornerShape(50))
 			.background(bg, RoundedCornerShape(50))
 			.combinedClickable(
-				onClick = onLongPress,
+				onClick = {},
 				onLongClick = onLongPress,
 			)
 			.padding(horizontal = 10.dp, vertical = 4.dp)

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+
+import anyio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -169,8 +171,14 @@ def build_tool_handlers(
 			await logger.request_created(request_id, canonical, question)
 			await _append_session_log(config.log_path, canonical, "→", question, logger)
 		except asyncio.CancelledError:
-			await _safe_mark_cancelled(backend, canonical, request_id, logger)
-			registry.remove(canonical, sender)
+			# Shield cleanup against re-cancellation: MCP's responder.cancel()
+			# leaves the surrounding anyio CancelScope in a sustained cancelled
+			# state, so any subsequent await is also a checkpoint that re-raises
+			# CancelledError. Without this shield, the Firebase write below
+			# never completes and the question stays cancelled=false.
+			with anyio.CancelScope(shield=True):
+				registry.remove(canonical, sender)
+				await _safe_mark_cancelled(backend, canonical, request_id, logger)
 			raise
 		except Exception as exc:
 			await logger.tool_error(request_id, canonical, str(exc))
@@ -189,8 +197,11 @@ def build_tool_handlers(
 				await logger.surface_error(f"timeout_followup_failed: {exc}", correlation=str(correlation))
 			return TIMEOUT_SENTINEL
 		except asyncio.CancelledError:
-			await _safe_mark_cancelled(backend, canonical, request_id, logger)
-			registry.remove(canonical, sender)
+			# See note above re: shielding. This is the live cancel-from-MCP
+			# path that the user observes when pressing Esc on the tool call.
+			with anyio.CancelScope(shield=True):
+				registry.remove(canonical, sender)
+				await _safe_mark_cancelled(backend, canonical, request_id, logger)
 			raise
 		except Exception as exc:
 			await logger.tool_error(request_id, canonical, str(exc))

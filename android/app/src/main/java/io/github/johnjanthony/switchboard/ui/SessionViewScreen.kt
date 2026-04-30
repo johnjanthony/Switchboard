@@ -55,8 +55,7 @@ fun SessionViewScreen(
 	scrollToMessageId: String? = null,
 	onScrollConsumed: () -> Unit = {},
 	onBack: () -> Unit,
-	onTapPill: () -> Unit,
-	onLongPressPillConfirm: () -> Unit,
+	onLongPressPill: () -> Unit,
 	onSubmitReply: (sender: String, text: String, requestId: String?) -> Unit,
 	onDownloadFile: (url: String, filename: String) -> Unit,
 	onLongPressDownloadFile: (url: String, filename: String) -> Unit,
@@ -125,8 +124,7 @@ fun SessionViewScreen(
 						awayActive = awayActive,
 						isOverride = isAwayOverride,
 						globalAway = globalAway,
-						onTap = onTapPill,
-						onLongPressConfirm = onLongPressPillConfirm,
+						onLongPress = onLongPressPill,
 					)
 				},
 			)

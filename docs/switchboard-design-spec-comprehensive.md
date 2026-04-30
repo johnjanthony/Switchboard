@@ -2,7 +2,17 @@
 
 **Version:** 3.1 (Updated with Constraints)
 **Date:** 2026-04-26
-**Status:** Canonical Source of Truth
+**Status:** ⚠️ PARTIALLY STALE — see freshness notice below.
+
+> **Freshness notice (2026-04-30).** This doc was last refreshed 2026-04-26 and predates several substantial architectural changes that have shipped since. References to `channel_id` should be read as `cwd` plus `sender`; the `away_mode_active` flag is now per-channel + global; `logs/away-mode.json` no longer exists; `gateway.py` is now the `server/gateway/` package; HTTP transport is stateful. For accurate detail, read the dated specs in [`docs/superpowers/specs/`](superpowers/specs/) and the [`PROJECT-JOURNAL.md`](../PROJECT-JOURNAL.md) entries from 2026-04-24 onward — when this doc disagrees with the dated specs, the dated specs win.
+>
+> Notable shipped-since-2026-04-26 milestones:
+>
+> - **cwd-as-channel routing** ([2026-04-24-cwd-as-channel-and-per-cwd-away-mode-design](superpowers/specs/2026-04-24-cwd-as-channel-and-per-cwd-away-mode-design.md)). Tools take `cwd` + `sender` instead of `channel_id`.
+> - **Two-tier away mode + phone-built bulk-respond modal.** `global_settings/away_mode` + `channels/{key}/away_mode` overrides. `enter_away_mode(cwd)` / `exit_away_mode(cwd)` take a cwd argument.
+> - **Firebase schema reorg** ([2026-04-28-away-mode-firebase-schema-reorg-design](superpowers/specs/2026-04-28-away-mode-firebase-schema-reorg-design.md)). Per-channel `away_mode`, `unread_count`, `pending_responses` live under `channels/{key}/`.
+> - **Codebase-review HIGH sweep** ([2026-04-28-codebase-review](2026-04-28-codebase-review.md)). `gateway.py` split into `server/gateway/` package; bg-task tracking; collab deadlock guard + message coalescing; turn-end hook partner-blocked enforcement.
+> - **Stateful HTTP transport (2026-04-30)**. `stateless_http=False` so per-tool-call cancel notifications propagate. Server startup auto-clears away mode globally so pre-restart agents don't get trapped in a Stop-hook loop.
 
 ---
 

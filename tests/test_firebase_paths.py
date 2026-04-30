@@ -57,3 +57,37 @@ async def test_wipe_channel_deletes_pending_responses_and_away_mode(backend):
 	deleted_paths = [str(c) for c in mock_db.reference.call_args_list]
 	assert any("channels/c:__work__sw/pending_responses" in p for p in deleted_paths)
 	assert any("channels/c:__work__sw/away_mode" in p for p in deleted_paths)
+
+
+@pytest.mark.asyncio
+async def test_reset_all_away_mode_writes_global_false_and_clears_overrides(backend):
+	"""Startup reset: global goes to false; every channel with away_mode set
+	gets its field deleted. Channels without away_mode are not touched."""
+	be, mock_db = backend
+	mock_db.reference.return_value.get.return_value = {
+		"c:__work__sw": {"away_mode": True, "title": "Switchboard"},
+		"c:__work__hygiene": {"away_mode": False},
+		"c:__work__no_override": {"title": "no override here"},
+	}
+	await be.reset_all_away_mode()
+
+	# Multi-path update payload should hit global=False and delete both
+	# channels' away_mode fields, while leaving the no-override channel alone.
+	update_calls = [c for c in mock_db.reference.return_value.update.call_args_list]
+	assert len(update_calls) >= 1
+	payload = update_calls[-1].args[0]
+	assert payload.get("global_settings/away_mode") is False
+	assert "channels/c:__work__sw/away_mode" in payload
+	assert payload["channels/c:__work__sw/away_mode"] is None
+	assert "channels/c:__work__hygiene/away_mode" in payload
+	assert payload["channels/c:__work__hygiene/away_mode"] is None
+	assert "channels/c:__work__no_override/away_mode" not in payload
+
+
+@pytest.mark.asyncio
+async def test_reset_all_away_mode_with_no_channels_still_writes_global_false(backend):
+	be, mock_db = backend
+	mock_db.reference.return_value.get.return_value = None
+	await be.reset_all_away_mode()
+	payload = mock_db.reference.return_value.update.call_args.args[0]
+	assert payload == {"global_settings/away_mode": False}

@@ -22,10 +22,16 @@ class IncomingResponse:
 	`correlation` is whatever opaque token the backend stored at
 	`send_question` time (e.g. Telegram message_id). The gateway uses it
 	to look up the pending request_id in the registry.
+
+	`slot` is the literal storage key the response was read from (e.g. the
+	Firebase RTDB child under `responses/`). Carried so the dispatcher can
+	clean up unroutable / stale responses without having to reconstruct the
+	key from correlation fields.
 	"""
 
 	correlation: CorrelationToken
 	text: str
+	slot: str | None = None
 
 
 class MessengerBackend(ABC):
@@ -133,6 +139,12 @@ class MessengerBackend(ABC):
 		at server startup to match the post-restart in-memory Registry state. No-op default."""
 		pass
 
+	async def reset_all_away_mode(self) -> None:
+		"""Force away mode off globally and clear all per-channel overrides on
+		startup. Decouples post-restart away-mode state from the now-broken MCP
+		sessions of any pre-restart agents. No-op default; FirebaseBackend overrides."""
+		pass
+
 	async def delete_legacy_away_mode_node(self) -> None:
 		"""Delete the legacy /away_mode top-level node (one-shot migration).
 		No-op default."""
@@ -141,6 +153,12 @@ class MessengerBackend(ABC):
 	async def mark_question_cancelled(self, cwd: str, request_id: str) -> None:
 		"""Mark the question with this request_id as cancelled in storage.
 		No-op default; FirebaseBackend overrides."""
+		pass
+
+	async def delete_response_slot(self, slot: str) -> None:
+		"""Delete a response entry under `responses/` by its literal storage key.
+		Called by the dispatcher after a stale / unroutable response so the
+		listener doesn't re-fire it forever. No-op default; FirebaseBackend overrides."""
 		pass
 
 	async def send_stale_reply_notice(self, cwd: str, sender: str) -> None:

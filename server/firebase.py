@@ -76,7 +76,7 @@ class FirebaseBackend(MessengerBackend):
 					for slot, data in event.data.items():
 						if isinstance(data, dict) and 'text' in data:
 							self._loop.call_soon_threadsafe(
-								self._enqueue_response_by_slot, slot, data['text']
+								self._enqueue_response, slot, data
 							)
 						elif self._logger:
 							self._loop.call_soon_threadsafe(
@@ -90,7 +90,7 @@ class FirebaseBackend(MessengerBackend):
 			elif path:
 				if isinstance(event.data, dict) and 'text' in event.data:
 					self._loop.call_soon_threadsafe(
-						self._enqueue_response_by_slot, path, event.data['text']
+						self._enqueue_response, path, event.data
 					)
 				else:
 					if self._logger:
@@ -98,13 +98,37 @@ class FirebaseBackend(MessengerBackend):
 							lambda: _spawn_bg(self._logger.surface_error(f"firebase_malformed_response_path: {path} -> {type(event.data)}"), label="firebase_malformed_response_path")
 						)
 
-	def _enqueue_response_by_slot(self, slot: str, text: str):
+	def _enqueue_response(self, slot: str, data: dict):
+		"""Route a response payload to the in-process queue.
+
+		The phone keys responses by request_id (8-char hex, no '__' separator),
+		so the slot itself is no longer routable. Routing fields are written into
+		the payload by the phone: `cwd_key` and `sender`. We fall back to parsing
+		the slot only for legacy `<cwd_key>__<sender>` slots that may still be
+		on disk from older clients.
+		"""
 		from server.canonicalization import from_firebase_key
-		cwd_key, sep, sender = slot.rpartition("__")
-		if not sep or not cwd_key or not sender:
+		text = data.get('text')
+		if not isinstance(text, str):
 			return
+		cwd_key = data.get('cwd_key') if isinstance(data.get('cwd_key'), str) else None
+		sender = data.get('sender') if isinstance(data.get('sender'), str) else None
+		if not (cwd_key and sender):
+			# Legacy fallback: composite slot form `<cwd_key>__<sender>`.
+			parsed_cwd_key, sep, parsed_sender = slot.rpartition("__")
+			if not sep or not parsed_cwd_key or not parsed_sender:
+				if self._logger:
+					_spawn_bg(
+						self._logger.surface_error(
+							f"firebase_response_unroutable: slot={slot!r} keys={list(data.keys())}"
+						),
+						label="firebase_response_unroutable",
+					)
+				return
+			cwd_key = parsed_cwd_key
+			sender = parsed_sender
 		cwd = from_firebase_key(cwd_key)
-		resp = IncomingResponse(correlation=(cwd, sender), text=text)
+		resp = IncomingResponse(correlation=(cwd, sender), text=text, slot=slot)
 		_spawn_bg(self._response_queue.put(resp), label=f"response_enqueue:{cwd}:{sender}")
 
 	def _on_command(self, event):
@@ -242,11 +266,11 @@ class FirebaseBackend(MessengerBackend):
 				lambda: db.reference(f'channels/{key}/unread_count').set(_increment(1))
 			)
 
-		# pending_responses: atomic increment only for question messages
-		if message_type == "question":
-			await asyncio.to_thread(
-				lambda: db.reference(f'channels/{key}/pending_responses').set(_increment(1))
-			)
+		# pending_responses is owned by the Registry mirror callback (see
+		# make_pending_mirror_writer): registry.add fires +1, registry.resolve /
+		# remove / cancel-on-spawn / cancel_pending_for_cwd fire -1. Doing it here
+		# AND there double-counts every question by exactly +1, drifting the
+		# counter upward over time.
 
 		# FCM notification
 		if message_type != "human":
@@ -471,6 +495,35 @@ class FirebaseBackend(MessengerBackend):
 			db.reference().update(updates)
 		await asyncio.to_thread(_reset)
 
+	async def reset_all_away_mode(self) -> None:
+		"""Force away mode off globally and clear every per-channel override.
+
+		Called once on server startup. Rationale: in stateful HTTP mode, a server
+		restart invalidates every active CC session — those agents lose access to
+		the switchboard MCP tools (issue #27142) and can no longer call
+		ask_human / notify_human / etc. If we left away_mode=true on restart,
+		the Stop hook would block their turn-end with "call ask_human" but the
+		tool isn't available, producing a useless loop until the user manually
+		`/exit`s and relaunches CC.
+
+		Resetting away mode on startup means pre-restart agents fall back to
+		normal terminal output (which they can do without switchboard tools).
+		The user re-enables away mode by spawning new agents (the spawn handler
+		sets the new channel's away_mode override) or via the phone toggle.
+		"""
+		def _reset():
+			# Walk channels, queue an explicit None write for any away_mode field
+			# that is currently set. Multi-path update is atomic from Firebase's
+			# perspective — listeners see one event per path.
+			channels = db.reference('channels').get(shallow=False) or {}
+			updates: dict[str, object] = {'global_settings/away_mode': False}
+			if isinstance(channels, dict):
+				for key, channel in channels.items():
+					if isinstance(channel, dict) and channel.get('away_mode') is not None:
+						updates[f'channels/{key}/away_mode'] = None
+			db.reference().update(updates)
+		await asyncio.to_thread(_reset)
+
 	async def delete_legacy_away_mode_node(self) -> None:
 		"""One-shot startup migration: delete the old away_mode/ top-level node.
 		Idempotent — if the node doesn't exist, this is a no-op."""
@@ -566,12 +619,21 @@ class FirebaseBackend(MessengerBackend):
 		response_text: str | None = None,
 	) -> None:
 		from server.canonicalization import to_firebase_key
-		if isinstance(correlation, tuple) and len(correlation) == 2:
-			cwd, sender = correlation
-			slot = f"{to_firebase_key(cwd)}__{sender}"
-			def _cleanup():
-				self._resp_ref.child(slot).delete()
-			await self._loop.run_in_executor(None, _cleanup)
+		# The phone keys responses by request_id; older clients used the composite
+		# `<cwd_key>__<sender>` form. Delete both candidates so cleanup is robust
+		# regardless of which key shape produced this response.
+		def _cleanup():
+			self._resp_ref.child(request_id).delete()
+			if isinstance(correlation, tuple) and len(correlation) == 2:
+				cwd, sender = correlation
+				legacy_slot = f"{to_firebase_key(cwd)}__{sender}"
+				self._resp_ref.child(legacy_slot).delete()
+		await self._loop.run_in_executor(None, _cleanup)
+
+	async def delete_response_slot(self, slot: str) -> None:
+		def _delete():
+			self._resp_ref.child(slot).delete()
+		await self._loop.run_in_executor(None, _delete)
 
 	async def write_response_text(self, channel_id: str, msg_id: str, text: str) -> None:
 		from server.canonicalization import to_firebase_key
