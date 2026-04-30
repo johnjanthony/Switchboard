@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -232,6 +233,7 @@ private fun ReplyInputBar(
 					modifier = Modifier.weight(1f),
 					placeholder = { Text("Reply to ${pending.sender}…") },
 					maxLines = 4,
+					shape = RoundedCornerShape(24.dp),
 				)
 				Spacer(Modifier.width(8.dp))
 				IconButton(onClick = { if (text.isNotBlank()) { onSubmit(text); text = "" } }) {
