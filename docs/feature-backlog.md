@@ -63,6 +63,8 @@ ResponsePoller      — poll_responses, poll_commands, poll_away_mode_commands
 
 **Target fix.** Wrap each listener in a supervised loop with reconnect + exponential backoff. Expose a per-listener "last event at" timestamp on `/healthz` so silent listener death is observable.
 
+**Implementation pointer.** The crash-backoff shape we want already exists in `server/gateway/dispatch.py:_loop_crash_backoff` — consecutive-failure tracking, exponential backoff (1s → 2s → 4s … capped at `_LOOP_BACKOFF_MAX`), `surface_error` + admin-channel alert at `_LOOP_CRASH_ALERT_THRESHOLD`. Reuse or factor out rather than reinventing.
+
 **Effort estimate.** ~half day. Pairs nicely with M2 (deeper `/healthz`) since both feed the same operational-visibility story.
 
 ---
