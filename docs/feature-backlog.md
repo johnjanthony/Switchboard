@@ -4,9 +4,9 @@ Open/proposed features for Switchboard, grouped by where the work lives. Shipped
 
 ---
 
-# Server
+## Server
 
-## Persistence layer (Firebase hybrid write-behind)
+### Persistence layer (Firebase hybrid write-behind)
 
 **Surfaced 2026-04-28** in the codebase review (`docs/2026-04-28-codebase-review.md` H1). Deferred at John's call.
 
@@ -31,7 +31,7 @@ Open/proposed features for Switchboard, grouped by where the work lives. Shipped
 
 ---
 
-## `MessengerBackend` trait split (god-interface refactor)
+### `MessengerBackend` trait split (god-interface refactor)
 
 **Surfaced 2026-04-28** in the codebase review (`docs/2026-04-28-codebase-review.md` H4). Originally HIGH, demoted to MEDIUM after H1 persistence was deferred — the "prep work for clean persistence wiring" justification disappeared with H1, leaving only the testability argument.
 
@@ -41,7 +41,7 @@ Open/proposed features for Switchboard, grouped by where the work lives. Shipped
 
 **Target fix.** Split into focused traits:
 
-```
+```text
 MessageWriter       — write_channel_message, mark_question_cancelled, send_*_followup
 AwayModeMirror      — write_away_mode_mirror, load/start listeners, reset_pending
 SpawnCollisionPort  — write_spawn_collision_prompt, clear, poll_decision, wipe_channel, etc.
@@ -55,7 +55,7 @@ ResponsePoller      — poll_responses, poll_commands, poll_away_mode_commands
 
 ---
 
-## Listener thread supervision (M1)
+### Listener thread supervision (M1)
 
 **Surfaced 2026-04-28** in the codebase review (`docs/2026-04-28-codebase-review.md` M1).
 
@@ -67,7 +67,7 @@ ResponsePoller      — poll_responses, poll_commands, poll_away_mode_commands
 
 ---
 
-## Deeper `/healthz` + crash-alert cadence (M2)
+### Deeper `/healthz` + crash-alert cadence (M2)
 
 **Surfaced 2026-04-28** in the codebase review (`docs/2026-04-28-codebase-review.md` M2).
 
@@ -86,7 +86,7 @@ ResponsePoller      — poll_responses, poll_commands, poll_away_mode_commands
 
 ---
 
-## Non-blocking partner messaging — *tentative; needs design pass* (collab protocol enhancement)
+### Non-blocking partner messaging — *tentative; needs design pass* (collab protocol enhancement)
 
 **Surfaced 2026-04-29** in conversation while reviewing the 2026-04-28 sweep. **Not greenlit** — added here so it isn't lost, but a real design pass is needed before implementation. Wait until the H8/H9/H10 fixes have been shaken out in production use (i.e. don't bolt this on while the recent collab-protocol work is still settling).
 
@@ -128,27 +128,27 @@ A new guard would be needed alongside the new tool. Possible shapes:
 
 ---
 
-## Log rotation
+### Log rotation
 
 `logs/switchboard.jsonl` grows forever. At low volume this is a months-out concern, but worth a simple size-based rotation (`logs/switchboard.jsonl.1`, `.2`, with a cap).
 
 ---
 
-## `ask_human` rate limiting
+### `ask_human` rate limiting
 
 Per-channel token bucket on `notify_human` and `send_document_human` shipped 2026-04-23; `ask_human` is not yet rate-limited. Low priority — `ask_human` is self-paced by the human reply, unlike fire-and-forget notifications.
 
 ---
 
-## Database ageout sweep
+### Database ageout sweep
 
 Periodically clean up old questions, responses, and documents from Firebase (e.g., delete entries older than 30 days). This prevents the Realtime Database and Storage from growing indefinitely and keeps the Android app's history retrieval performant.
 
 ---
 
-# Client
+## Client
 
-## Web Dashboard for Conversation Monitoring & Interaction
+### Web Dashboard for Conversation Monitoring & Interaction
 
 **Proposed 2026-04-23.** A desktop-based web interface to supplement the Android app, allowing for more comfortable long-form replies and better visibility into multiple simultaneous sessions.
 
@@ -168,7 +168,7 @@ Periodically clean up old questions, responses, and documents from Firebase (e.g
 
 ---
 
-## Android: suggestion buttons as notification actions
+### Android: suggestion buttons as notification actions
 
 When `ask_human` is called with suggestions, render them as tappable action buttons on the notification banner so the developer can reply without opening the app.
 
@@ -183,7 +183,7 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 
 ---
 
-## Android: copy message text to clipboard
+### Android: copy message text to clipboard
 
 Allow the user to copy message contents from the channel view — both whole-message copy and partial text-selection copy — for any message type (agent updates, `ask_human` prompts, replies, system messages, collab injections, document captions, etc.).
 
@@ -198,33 +198,15 @@ Low-medium priority — improves quality-of-life for grabbing snippets out of ag
 
 ---
 
-## Android: investigate MALFORMED MESSAGE deserialization warnings
+### Android: investigate MALFORMED MESSAGE deserialization warnings
 
 **Surfaced 2026-04-27** while debugging spawn-collision. `MainViewModel.kt` lines 175-198 log `MALFORMED MESSAGE at channels/<key>/messages/<id>` with `Value Type: java.lang.String, Value Content: <empty>` when `getValue(ChannelMessage::class.java)` throws. Direct Firebase admin queries against the same paths return correctly-shaped dicts, so the data IS dict-shaped at rest — the phone's listener appears to fire on a transient state where `snap.value` is a String. The catch swallows the error, so it's log noise plus an occasional missed render rather than data loss. Low priority — investigate whether it's a Firebase SDK race, a partial-write listener fire, or something else, and either suppress the log noise or fix the deserialization path.
 
 ---
 
-# Combined (server + client)
+## Combined (server + client)
 
-## Withdraw pending questions when an unattended agent dies
-
-**Surfaced 2026-04-26** during cwd-as-channel post-merge testing (test 6d). Several scenarios; partial coverage shipped over time:
-
-- **Kill-and-respawn (typical dev workflow)** — covered by **cancel-on-spawn** (shipped 2026-04-27): `Registry.cancel_pending_for_cwd` + `SpawnHandler._cancel_prior_pending` write the WITHDRAWN marker via `mark_question_cancelled` before the new agent launches.
-- **User cancels the tool call from the terminal (Claude Code)** — covered as of 2026-04-30: stateful HTTP transport + `anyio.CancelScope(shield=True)` cleanup shielding in [`server/gateway/handlers.py`](../server/gateway/handlers.py) means MCP `notifications/cancelled` reaches our `CancelledError` block AND the cleanup write completes. Question gets `cancelled: true`; phone shows WITHDRAWN.
-- **Gemini CLI cancel** — NOT covered. Per-snoop-log evidence on 2026-04-30, Gemini CLI does not send `notifications/cancelled` over MCP at all. Either a Gemini-side bug or a deliberate omission. Nothing fixable server-side; file an issue with the Gemini CLI repo if it matters.
-- **Unattended long-running agent crash (process death without explicit cancel)** — STILL OPEN. Verified: closing the agent's terminal entirely leaves the question with `cancelled: false`, `pending_responses: 1`. A reply lands as if delivered to the (now-dead) agent. FastMCP's stateful streamable-HTTP transport doesn't propagate the dropped TCP/SSE connection to the in-flight responder; the session task keeps the responder alive. The pending entry sits until the 24h `ask_human` timeout fires `send_timeout_followup`. So the user-visible bug ("phone shows RESPONDED but agent never got it") still happens in this scenario.
-
-Two complementary approaches remain as future insurance for the unattended-crash case:
-
-1. **HTTP keepalive disconnect detection.** Investigate whether FastMCP's stateful-mode session lifecycle (now in use as of 2026-04-30) surfaces a disconnect signal that can be plumbed into CancelledError on in-flight responders. May be tractable now that we're stateful — sessions HAVE a clearer lifecycle than they did in stateless.
-2. **Agent liveness pings.** Heartbeat protocol: agents send periodic keepalives; missing two in a row = mark all their pending questions cancelled. More moving parts, more state, but transport-agnostic.
-
-Both are insurance against unattended crashes; common cases are now covered.
-
----
-
-## Away-Mode Framing Check (terminal-leak detection mid-turn)
+### Away-Mode Framing Check (terminal-leak detection mid-turn)
 
 The Stop hook blocks any turn that ends without an `ask_human` / `notify_human` / `send_document_human` call while away-mode is active. SKILL.md "tool call IS the acknowledgment" reinforces that on the agent side. Together those cover the turn-end case.
 
@@ -234,13 +216,13 @@ Low priority — practical leakage is rare given current SKILL adherence. Pickup
 
 ---
 
-## Skill Instruction Polish
+### Skill Instruction Polish
 
 Periodically review and harden `SKILL.md` based on failure patterns (e.g., the 2026-04-23 terminal leak incident). Edit only the in-repo `skill/SKILL.md` — the user-level installs at `~/.claude/skills/switchboard/` and `~/.gemini/skills/switchboard/` are symlinks to it, so changes flow through automatically.
 
 ---
 
-## Multi-Surface Voice & Summary Integration
+### Multi-Surface Voice & Summary Integration
 
 **Proposed 2026-04-25.** Major multi-surface UX initiative spanning phone, Wear OS, and Android Auto. Introduces a Firebase Cloud Function (Gen 2) that uses Gemini 3.0 Flash to transform raw agent updates into a `display_metadata` object — surface-specific strings tuned for each device (`summary_phone`, `glance_wrist`, `speech_payload`, `progress_state`). Surfaces consume the metadata via `Notification.ProgressStyle` + `MessagingStyle`, with TTS read-aloud, RemoteInput voice-reply, an Android Auto messaging bridge, and a remote-session kill switch. Includes smart-throttling, offline cache for the last N speech payloads, and cross-surface notification cancel-sync.
 
@@ -250,14 +232,16 @@ Requires Firebase Blaze plan upgrade (Cloud Functions Gen 2). Spec breaks into 1
 
 ---
 
-## Timeout snooze via Android app
+### Timeout snooze via Android app
 
 Add a "Snooze" button to the `ask_human` notification/tab that extends the window by 2h. Implementation: Android app writes `snooze: true` to the question object; gateway intercepts the change and resets the wait clock in the registry.
 
 ---
 
-# Explicitly deferred / not recommended
+## Explicitly deferred / not recommended
 
+- **Disconnect detection for unattended agent crash.** Investigated. Starlette/uvicorn does detect the dropped TCP/SSE connection, but FastMCP's transport doesn't propagate that to `ServerSession._in_flight[request_id]` or `responder.cancel()` — wiring it requires an upstream mcp-library patch, monkey-patching `ServerSession.__init__` from ASGI middleware, or a custom transport subclass. None are clean. Heartbeat alternative not pursued (per-turn round-trip not justified given the typical kill-and-respawn and cancel-tool-call paths are already covered). The 24h `ask_human` timeout is the backstop. Revisit if the MCP SDK adds a disconnect-propagation hook.
+- **Gemini CLI cancel notifications.** Not actionable server-side. Per snoop-log evidence, Gemini CLI does not send `notifications/cancelled` over MCP when the user cancels a tool call. File an issue with the Gemini CLI repo if it matters; nothing to fix here.
 - **Webhook instead of long-polling getUpdates.** Legacy Telegram concept, no longer applicable.
 - **Multi-user chat support.** Single-developer model is baked into the spec. Don't touch until there's a concrete second user.
 - **MarkdownV2** — Telegram flavour. Its 18-character escape list (including `.` and `-`) makes unescaped user strings a footgun; one stray period rejects the whole message. Obsolete after Telegram removal.

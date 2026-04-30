@@ -274,73 +274,11 @@ async def _run(config: Config) -> None:
 	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
 	app.add_route("/collab-partner-state", _build_collab_partner_state_route(registry), methods=["GET"])
 
-	# === DIAGNOSTIC: log every JSON-RPC request/notification arriving on /mcp ===
-	# Purpose: determine whether Claude Code sends `notifications/cancelled`
-	# when the user hits Esc on a tool call, and on what Mcp-Session-Id it lands.
-	# Remove this wrapper once cancel propagation is verified or root-caused.
-	import json as _diag_json
-	from starlette.types import Message, Receive, Scope, Send
-
-	starlette_app = app
-
-	class MCPRequestSnoop:
-		def __init__(self, app_inner) -> None:
-			self.app_inner = app_inner
-
-		async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-			if scope["type"] != "http" or not scope.get("path", "").startswith("/mcp"):
-				await self.app_inner(scope, receive, send)
-				return
-
-			session_id = None
-			for k, v in scope.get("headers", []):
-				if k == b"mcp-session-id":
-					session_id = v.decode("ascii", errors="replace")
-					break
-
-			body_chunks: list[bytes] = []
-
-			async def receive_logging() -> Message:
-				message = await receive()
-				if message["type"] == "http.request":
-					body = message.get("body", b"")
-					if body:
-						body_chunks.append(body)
-					if not message.get("more_body", False):
-						full = b"".join(body_chunks)
-						method = "<unparseable>"
-						jrpc_id = None
-						try:
-							payload = _diag_json.loads(full.decode("utf-8"))
-							if isinstance(payload, dict):
-								method = payload.get("method", "<no-method>")
-								jrpc_id = payload.get("id") or (payload.get("params") or {}).get("requestId")
-							elif isinstance(payload, list):
-								method = "[batch:" + ",".join(
-									p.get("method", "?") for p in payload if isinstance(p, dict)
-								) + "]"
-						except Exception:
-							pass
-						_spawn_bg(
-							logger.info(
-								f"mcp_snoop method={method!r} session_id={session_id!r} "
-								f"jrpc_id={jrpc_id!r} body_bytes={len(full)}"
-							),
-							label="mcp_snoop",
-						)
-				return message
-
-			await self.app_inner(scope, receive_logging, send)
-
-	asgi_app = MCPRequestSnoop(starlette_app)
-	# === END DIAGNOSTIC ===
-
 	uv_config = uvicorn.Config(
-		asgi_app,
+		app,
 		host=config.host,
 		port=config.port,
 		log_level="info",
-		lifespan="on",
 	)
 	server = uvicorn.Server(uv_config)
 
