@@ -66,6 +66,7 @@ fun MarkdownViewerScreen(
 				content = content,
 				format = "markdown",
 				color = MaterialTheme.colorScheme.onSurfaceVariant,
+				isSelectable = true,
 			) { textView, link ->
 				val anchor = link.removePrefix("#").lowercase()
 				val layout = textView.layout ?: return@MarkdownText
