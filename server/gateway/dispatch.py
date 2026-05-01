@@ -6,46 +6,19 @@ from server.registry import Registry
 from server.logging_jsonl import JsonlLogger
 from server.messenger import MessengerBackend
 from server.gateway.bg_tasks import _spawn_bg
-
-_LOOP_CRASH_ALERT_THRESHOLD = 5
-_LOOP_BACKOFF_MAX = 60.0
-
-async def _loop_crash_backoff(
-	backend: Any,
-	logger: JsonlLogger,
-	label: str,
-	consecutive_failures: int,
-	backoff: float,
-	exc: Exception,
-) -> float:
-	"""Log a dispatch-loop crash, escalate to the admin channel after the
-	threshold is hit, sleep `backoff` seconds, and return the next backoff."""
-	await logger.surface_error(
-		f"{label}_loop_crashed: {exc} (count={consecutive_failures}, sleep={backoff:.1f}s)"
-	)
-	if consecutive_failures == _LOOP_CRASH_ALERT_THRESHOLD:
-		try:
-			await backend.send_text(
-				f"Switchboard {label} loop has failed {consecutive_failures} times in a row — check service logs."
-			)
-		except Exception as alert_exc:
-			await logger.surface_error(f"{label}_loop_alert_failed: {alert_exc}")
-	await asyncio.sleep(backoff)
-	return min(backoff * 2, _LOOP_BACKOFF_MAX)
+from server.firebase_supervisor import LoopSupervisor
 
 async def dispatch_responses(
 	registry: Registry,
 	backend: MessengerBackend,
 	logger: JsonlLogger,
+	supervisor: LoopSupervisor,
 ) -> None:
 	from server.gateway.handlers import _append_session_log
-	consecutive_failures = 0
-	backoff = 1.0
 	while True:
 		try:
 			async for response in backend.poll_responses():
-				consecutive_failures = 0
-				backoff = 1.0
+				supervisor.record_success()
 				try:
 					corr = response.correlation
 					if isinstance(corr, tuple) and len(corr) == 2:
@@ -108,10 +81,7 @@ async def dispatch_responses(
 		except asyncio.CancelledError:
 			raise
 		except Exception as exc:
-			consecutive_failures += 1
-			backoff = await _loop_crash_backoff(
-				backend, logger, "dispatch_responses", consecutive_failures, backoff, exc,
-			)
+			await supervisor.record_crash(exc)
 
 async def _safe_handle(spawn_handler: Any, raw: str, logger: JsonlLogger) -> None:
 	try:
@@ -126,23 +96,17 @@ async def dispatch_commands(
 	spawn_handler: Any,
 	backend: Any,
 	logger: JsonlLogger,
+	supervisor: LoopSupervisor,
 ) -> None:
-	consecutive_failures = 0
-	backoff = 1.0
 	while True:
 		try:
 			async for raw in backend.poll_commands():
-				consecutive_failures = 0
-				backoff = 1.0
+				supervisor.record_success()
 				_spawn_bg(_safe_handle(spawn_handler, raw, logger), label="dispatch_commands")
-
 		except asyncio.CancelledError:
 			raise
 		except Exception as exc:
-			consecutive_failures += 1
-			backoff = await _loop_crash_backoff(
-				backend, logger, "dispatch_commands", consecutive_failures, backoff, exc,
-			)
+			await supervisor.record_crash(exc)
 
 async def _clear_all_cwd_overrides(registry: Registry, backend: Any, logger: JsonlLogger) -> int:
 	"""Wipe every per-channel away_mode override.
@@ -174,6 +138,7 @@ async def dispatch_away_mode_commands(
 	registry: Registry,
 	backend: Any,
 	logger: JsonlLogger,
+	supervisor: LoopSupervisor,
 ) -> None:
 	"""Consume away_mode_commands queue entries and dispatch to registry/bulk-respond.
 
@@ -188,13 +153,10 @@ async def dispatch_away_mode_commands(
 	if poll is None:
 		return
 
-	consecutive_failures = 0
-	backoff = 1.0
 	while True:
 		try:
 			async for cmd in poll():
-				consecutive_failures = 0
-				backoff = 1.0
+				supervisor.record_success()
 				cmd_type = cmd.get("type", "")
 				try:
 					if cmd_type == "enter_global":
@@ -260,27 +222,22 @@ async def dispatch_away_mode_commands(
 		except asyncio.CancelledError:
 			raise
 		except Exception as exc:
-			consecutive_failures += 1
-			backoff = await _loop_crash_backoff(
-				backend, logger, "away_mode_commands", consecutive_failures, backoff, exc,
-			)
+			await supervisor.record_crash(exc)
 
 async def dispatch_inject_queue(
 	registry: Registry,
 	backend: Any,
 	logger: JsonlLogger,
+	supervisor: LoopSupervisor,
 ) -> None:
 	"""Deliver human inject messages from the Android compose box to collab sessions."""
 	poll = getattr(backend, "poll_inject_messages", None)
 	if poll is None:
 		return
-	consecutive_failures = 0
-	backoff = 1.0
 	while True:
 		try:
 			async for session_id, inject_id, text in poll():
-				consecutive_failures = 0
-				backoff = 1.0
+				supervisor.record_success()
 				try:
 					session = registry.get_session(session_id)
 					if session is None:
@@ -294,7 +251,4 @@ async def dispatch_inject_queue(
 		except asyncio.CancelledError:
 			raise
 		except Exception as exc:
-			consecutive_failures += 1
-			backoff = await _loop_crash_backoff(
-				backend, logger, "inject_queue", consecutive_failures, backoff, exc,
-			)
+			await supervisor.record_crash(exc)

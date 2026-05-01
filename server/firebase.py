@@ -16,6 +16,13 @@ from server.logging_jsonl import JsonlLogger
 from server.messenger import CorrelationToken, IncomingResponse, MessengerBackend
 
 
+async def _no_op_async_logger(_message: str) -> None:
+	"""Fallback when no JsonlLogger is configured. SupervisedListener and
+	LoopSupervisor both require an async error_logger; this satisfies the
+	type without doing anything."""
+	return None
+
+
 def _increment(n: int) -> object:
 	"""Wrapper for atomic Firebase RTDB increment. Returns the documented
 	server-value sentinel that the RTDB backend interprets as an atomic
@@ -63,6 +70,11 @@ class FirebaseBackend(MessengerBackend):
 		self._cmd_listener = None
 		self._inject_queue_internal: asyncio.Queue[tuple[str, str, str]] = asyncio.Queue()
 		self._inject_listeners: dict[str, object] = {}
+		# SupervisedListener instances, keyed by listener name. Populated by
+		# the start_*/poll_* methods that own each listener. aclose() iterates
+		# this map to stop everything cleanly on shutdown.
+		from server.firebase_supervisor import SupervisedListener  # type: ignore
+		self._supervised: dict[str, SupervisedListener] = {}
 		self._away_mode_cmd_queue: asyncio.Queue[dict] = asyncio.Queue()
 		self._away_mode_cmd_listener = None
 		self._spawn_decision_future: asyncio.Future[dict] | None = None
@@ -162,9 +174,21 @@ class FirebaseBackend(MessengerBackend):
 		self._loop.run_in_executor(None, _cleanup)
 
 	async def aclose(self) -> None:
-		# listener.close() blocks for many seconds while the SSE stream tears down
-		# (see comment in poll_spawn_collision_decision).
-		# Run them in the default executor so shutdown doesn't stall the event loop.
+		# Stop supervised listeners first so their watchdogs don't try to
+		# reconnect while we're tearing the backend down.
+		for sup in list(self._supervised.values()):
+			try:
+				await sup.stop()
+			except Exception as exc:
+				if self._logger:
+					await self._logger.surface_error(
+						f"supervisor_stop_failed: {sup.name} {exc}"
+					)
+		self._supervised.clear()
+
+		# Legacy bare ListenerRegistration paths (poll_responses, poll_commands,
+		# etc.) still use this until those tasks are migrated. After Tasks 4-7
+		# this branch becomes a no-op.
 		listeners = []
 		for attr in (
 			"_resp_listener", "_cmd_listener", "_away_mode_cmd_listener",
@@ -179,6 +203,33 @@ class FirebaseBackend(MessengerBackend):
 			await asyncio.gather(*(
 				asyncio.to_thread(l.close) for l in listeners
 			), return_exceptions=True)
+
+	def listener_health(self) -> list:
+		"""Return per-listener health snapshots for /healthz.
+
+		Returns a list of dicts (one per supervised listener) with name,
+		state, last_event_at_seconds_ago, crash_count, last_crash_at.
+		Timestamps are converted to "seconds ago" relative to time.monotonic()
+		so the route response is a stable, JSON-friendly shape."""
+		import time
+		now = time.monotonic()
+		out: list = []
+		for sup in self._supervised.values():
+			h = sup.health()
+			out.append({
+				"name": h.name,
+				"state": h.state,
+				"last_event_seconds_ago": (
+					(now - h.last_event_at) if h.last_event_at is not None else None
+				),
+				"crash_count": h.crash_count,
+				"last_crash_seconds_ago": (
+					(now - h.last_crash_at) if h.last_crash_at is not None else None
+				),
+			})
+		# Stable ordering for diffing.
+		out.sort(key=lambda d: d["name"])
+		return out
 
 	async def write_channel_message(
 		self,
@@ -440,11 +491,9 @@ class FirebaseBackend(MessengerBackend):
 
 	async def start_away_mode_listeners(self, registry) -> None:
 		from server.canonicalization import from_firebase_key
+		from server.firebase_supervisor import SupervisedListener
 
 		def _on_global(event):
-			# event.data is the new value of global_settings/away_mode.
-			# Marshal cache update back to the event loop so Registry's
-			# single-event-loop access invariant holds.
 			active = bool(event.data) if event.data is not None else False
 			try:
 				self._loop.call_soon_threadsafe(registry.update_global_away_cache, active)
@@ -456,10 +505,8 @@ class FirebaseBackend(MessengerBackend):
 					)
 
 		def _on_channel(event):
-			# event.path is like "/" (snapshot delivery), "/{key}/away_mode" (single update),
-			# or "/{key}" (whole-channel write). Walk only the away_mode-bearing leaves.
 			if not event.path or event.path == "/":
-				return  # initial snapshot — already loaded by load_away_mode_snapshot
+				return
 			parts = event.path.strip("/").split("/")
 			if len(parts) == 2 and parts[1] == "away_mode":
 				cwd = from_firebase_key(parts[0])
@@ -469,22 +516,29 @@ class FirebaseBackend(MessengerBackend):
 				except Exception as exc:
 					if self._logger:
 						asyncio.run_coroutine_threadsafe(
-							self._logger.surface_error(f"away_mode_channel listener error ({cwd!r}): {exc}"),
+							self._logger.surface_error(
+								f"away_mode_channel listener error ({cwd!r}): {exc}"
+							),
 							self._loop,
 						)
 
-		def _start():
-			# .listen() blocks the calling thread; run each in a daemon thread.
-			import threading
-			def _run_global():
-				db.reference('global_settings/away_mode').listen(_on_global)
-			def _run_channels():
-				db.reference('channels').listen(_on_channel)
-			threading.Thread(target=_run_global, daemon=True, name="away-mode-global-listener").start()
-			threading.Thread(target=_run_channels, daemon=True, name="away-mode-channels-listener").start()
-
-		# Run the thread-spawning directly since it's quick and non-blocking.
-		_start()
+		err = self._logger.surface_error if self._logger else _no_op_async_logger
+		self._supervised["away_mode_global"] = SupervisedListener(
+			name="away_mode_global",
+			path="global_settings/away_mode",
+			callback=_on_global,
+			error_logger=err,
+			loop=self._loop,
+		)
+		self._supervised["away_mode_channels"] = SupervisedListener(
+			name="away_mode_channels",
+			path="channels",
+			callback=_on_channel,
+			error_logger=err,
+			loop=self._loop,
+		)
+		self._supervised["away_mode_global"].start()
+		self._supervised["away_mode_channels"].start()
 
 	async def reset_all_pending_responses(self) -> None:
 		def _reset():
@@ -665,10 +719,18 @@ class FirebaseBackend(MessengerBackend):
 		self._loop.run_in_executor(None, _cleanup)
 
 	async def poll_away_mode_commands(self) -> AsyncIterator[dict]:
-		if not self._away_mode_cmd_listener:
-			self._away_mode_cmd_listener = db.reference('away_mode_commands').listen(
-				self._on_away_mode_command
+		from server.firebase_supervisor import SupervisedListener
+		if "away_mode_commands" not in self._supervised:
+			err = self._logger.surface_error if self._logger else _no_op_async_logger
+			sup = SupervisedListener(
+				name="away_mode_commands",
+				path="away_mode_commands",
+				callback=self._on_away_mode_command,
+				error_logger=err,
+				loop=self._loop,
 			)
+			self._supervised["away_mode_commands"] = sup
+			sup.start()
 		while True:
 			yield await self._away_mode_cmd_queue.get()
 
@@ -712,14 +774,35 @@ class FirebaseBackend(MessengerBackend):
 			self._spawn_decision_future = None
 
 	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
-		if not self._resp_listener:
-			self._resp_listener = self._resp_ref.listen(self._on_response)
+		from server.firebase_supervisor import SupervisedListener
+		if "responses" not in self._supervised:
+			err = self._logger.surface_error if self._logger else _no_op_async_logger
+			sup = SupervisedListener(
+				name="responses",
+				path="responses",
+				callback=self._on_response,
+				error_logger=err,
+				loop=self._loop,
+			)
+			self._supervised["responses"] = sup
+			sup.start()
+		# Drop the legacy bare-registration field — it's never set now.
 		while True:
 			yield await self._response_queue.get()
 
 	async def poll_commands(self) -> AsyncIterator[str]:
-		if not self._cmd_listener:
-			self._cmd_listener = self._cmd_ref.listen(self._on_command)
+		from server.firebase_supervisor import SupervisedListener
+		if "commands" not in self._supervised:
+			err = self._logger.surface_error if self._logger else _no_op_async_logger
+			sup = SupervisedListener(
+				name="commands",
+				path="commands",
+				callback=self._on_command,
+				error_logger=err,
+				loop=self._loop,
+			)
+			self._supervised["commands"] = sup
+			sup.start()
 		while True:
 			yield await self._command_queue.get()
 
@@ -761,11 +844,13 @@ class FirebaseBackend(MessengerBackend):
 		)
 
 	async def start_inject_listener(self, session_id: str) -> None:
-		if session_id in self._inject_listeners:
-			return
 		from server.canonicalization import to_firebase_key
+		from server.firebase_supervisor import SupervisedListener
+
 		key = to_firebase_key(session_id)
-		inject_ref = db.reference(f"channels/{key}/inject_queue")
+		listener_name = f"inject:{session_id}"
+		if listener_name in self._supervised:
+			return  # already running for this session
 
 		def _on_inject(event):
 			if event.event_type != "put" or not event.data:
@@ -778,7 +863,16 @@ class FirebaseBackend(MessengerBackend):
 					(session_id, path, data["content"]),
 				)
 
-		self._inject_listeners[session_id] = inject_ref.listen(_on_inject)
+		err = self._logger.surface_error if self._logger else _no_op_async_logger
+		sup = SupervisedListener(
+			name=listener_name,
+			path=f"channels/{key}/inject_queue",
+			callback=_on_inject,
+			error_logger=err,
+			loop=self._loop,
+		)
+		self._supervised[listener_name] = sup
+		sup.start()
 
 	async def poll_inject_messages(self):
 		while True:

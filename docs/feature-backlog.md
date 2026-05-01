@@ -55,36 +55,31 @@ ResponsePoller      — poll_responses, poll_commands, poll_away_mode_commands
 
 ---
 
-### Listener thread supervision (M1)
+### Replace `firebase_admin.db.listen()` with own SSE consumer (M1 fallback)
 
-**Surfaced 2026-04-28** in the codebase review (`docs/2026-04-28-codebase-review.md` M1).
+**Surfaced 2026-05-01** in `docs/superpowers/specs/2026-05-01-listener-supervision-and-healthz-design.md` Q4.
 
-**Problem.** `server/firebase.py:start_away_mode_listeners` spawns `threading.Thread(target=…, daemon=True)` for the away-mode global and channel listeners. If a listener thread dies (network blip, exception inside `.listen()`), the in-memory cache freezes and the bug surfaces only when away-mode toggles silently fail to apply. There's no liveness signal.
+**Problem.** `SupervisedListener` detects SDK-thread death via `registration._thread.is_alive()` — a leading-underscore attribute on `firebase_admin.db.ListenerRegistration`. The check works because the SDK assigns `self._thread = threading.Thread(...)` in `ListenerRegistration.__init__`. If a future firebase_admin upgrade renames the attribute, the supervisor's `getattr(reg, "_thread", None)` fallback returns `None`, the registration is treated as alive, and we silently lose death detection again.
 
-**Target fix.** Wrap each listener in a supervised loop with reconnect + exponential backoff. Expose a per-listener "last event at" timestamp on `/healthz` so silent listener death is observable.
+**Trigger to pick up.** firebase_admin renames `_thread`, restructures `ListenerRegistration`, or otherwise breaks the liveness check. Symptom: `SupervisedListener.crash_count` stays at 0 across a known network outage, OR a future firebase_admin pin reveals the AttributeError fallback in tests.
 
-**Implementation pointer.** The crash-backoff shape we want already exists in `server/gateway/dispatch.py:_loop_crash_backoff` — consecutive-failure tracking, exponential backoff (1s → 2s → 4s … capped at `_LOOP_BACKOFF_MAX`), `surface_error` + admin-channel alert at `_LOOP_CRASH_ALERT_THRESHOLD`. Reuse or factor out rather than reinventing.
+**Target fix.** Replace `db.reference(path).listen(callback)` calls with our own SSE consumer built on `firebase_admin._sseclient.SSEClient` (the lower-level primitive). We control the SSE iteration loop, the try/except, and the reconnect — no reliance on private SDK attributes for liveness.
 
-**Effort estimate.** ~half day. Pairs nicely with M2 (deeper `/healthz`) since both feed the same operational-visibility story.
+**Effort estimate.** ~1 day. Larger surface than M1 (the listener machinery becomes ours rather than the SDK's), but the supervision/health-reporting interface from M1 stays identical so the consumer migration is internal.
 
 ---
 
-### Deeper `/healthz` + crash-alert cadence (M2)
+### Collab session garbage collection
 
-**Surfaced 2026-04-28** in the codebase review (`docs/2026-04-28-codebase-review.md` M2).
+**Surfaced 2026-05-01** in `docs/superpowers/specs/2026-05-01-listener-supervision-and-healthz-design.md` Q5.
 
-**Problem.** Two related operational-visibility gaps:
+**Problem.** Collab sessions are not actively garbage-collected. The 2026-04-23 BYO design explicitly accepted this (`docs/superpowers/specs/2026-04-23-bring-your-own-session-design.md` line 59 — "No explicit session teardown") at single-developer scale. Since listener supervision shipped (M1, 2026-05-01), each active collab session has its own supervised inject listener. **Wrinkle:** the supervisor outlives the listener registration if the session is purged without explicit teardown, leaving an idle supervisor task running until service shutdown. Today the leak is harmless (idle asyncio task); future work that GCs sessions must remember to call `await sup.stop()` for the inject supervisor as part of teardown.
 
-1. `server/main.py` `/healthz` reports only `pending_count`, `oldest_pending_age_seconds`, `total_answered`. Silent on dispatch-loop crash counts, FCM failure rate, listener thread liveness.
-2. `server/gateway/dispatch.py:_loop_crash_backoff` pages once at `consecutive_failures == 5` and never again. A 30-minute outage produces one alert and then silence — operator goes blind after the first salvo.
+**Target fix.** Active session GC — a background task that periodically scans `Registry._sessions` for idle sessions (no `_waiting`, no recent `deliver`, no recent `enroll`) older than some threshold and removes them. Teardown calls `await self._supervised[f"inject:{session_id}"].stop()` before removing the session from the registry, plus the existing Firebase metadata cleanup.
 
-**Target fix.**
+**Trigger to pick up.** Real friction from accumulated sessions (e.g. `/healthz` showing dozens of idle `inject:*` listeners after a few weeks of uptime) OR memory growth that traces to long-lived `CollabSession` objects.
 
-- Add per-loop `crash_count` and `last_crash_at` fields to `/healthz` (covers all four dispatch loops: `dispatch_responses`, `dispatch_commands`, `dispatch_inject_queue`, `dispatch_away_mode_commands`).
-- Change the crash alert to fire on a cadence — every Nth failure with N doubling (5, 10, 20, …) — rather than exactly once. Sustained outages produce ongoing visibility instead of silence after the first.
-- Combine with M1's listener-liveness timestamps so the endpoint becomes a single operational dashboard surface.
-
-**Effort estimate.** ~half day. Stack with M1 in a single sweep.
+**Effort estimate.** ~half day, including tests. Idle threshold is the main design call.
 
 ---
 

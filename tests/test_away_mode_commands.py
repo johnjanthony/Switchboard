@@ -16,7 +16,7 @@ import pytest
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
 from server.registry import Registry
-from tests.conftest import make_registry_with_loopback as _make_registry_with_loopback
+from tests.conftest import make_registry_with_loopback as _make_registry_with_loopback, _make_loop_supervisor
 
 
 def make_config(tmp_path: Path) -> Config:
@@ -71,7 +71,8 @@ async def _run_one_cmd(registry: Registry, backend: FakeBackend, cmd: dict, tmp_
 	cfg = make_config(tmp_path)
 	logger = JsonlLogger(cfg.log_path)
 	backend.push_command(cmd)
-	task = asyncio.create_task(dispatch_away_mode_commands(registry, backend, logger))
+	sup = _make_loop_supervisor(backend, logger, name="dispatch_away_mode_commands")
+	task = asyncio.create_task(dispatch_away_mode_commands(registry, backend, logger, sup))
 	# Give the loop time to process. send_default fans out
 	# send_resolution_confirmation + write_channel_message per pending plus
 	# now-async logger calls per stage; the await chain is far longer than a

@@ -10,7 +10,7 @@ from server.gateway import build_tool_handlers, dispatch_responses
 from server.logging_jsonl import JsonlLogger
 from server.messenger import IncomingResponse
 from server.registry import Registry
-from tests.conftest import make_registry_with_loopback
+from tests.conftest import make_registry_with_loopback, _make_loop_supervisor
 from tests.test_gateway_notify_human import RecordingBackend
 
 _CWD = "c:/work/sw"
@@ -285,8 +285,9 @@ async def test_dispatch_loop_routes_responses_to_registry(cfg, logger):
 
 	ask_task = asyncio.create_task(handlers.ask_human("q", _CWD, _SENDER))
 	await asyncio.sleep(0)  # let ask_human register
+	sup = _make_loop_supervisor(backend, logger, name="dispatch_responses")
 	dispatch_task = asyncio.create_task(
-		dispatch_responses(registry, backend, logger)
+		dispatch_responses(registry, backend, logger, sup)
 	)
 
 	try:
@@ -306,8 +307,9 @@ async def test_dispatch_loop_logs_unknown_correlation(cfg, logger, tmp_path):
 	backend = YieldingBackend(
 		[IncomingResponse(correlation=("c:/unknown", "Ghost"), text="stray")]
 	)
+	sup = _make_loop_supervisor(backend, logger, name="dispatch_responses")
 	dispatch_task = asyncio.create_task(
-		dispatch_responses(registry, backend, logger)
+		dispatch_responses(registry, backend, logger, sup)
 	)
 	# Give it a moment to consume the stray response.
 	await asyncio.sleep(0.05)
@@ -328,8 +330,9 @@ async def test_dispatch_loop_logs_legacy_correlation(cfg, logger, tmp_path):
 	backend = YieldingBackend(
 		[IncomingResponse(correlation=9999, text="stray")]
 	)
+	sup = _make_loop_supervisor(backend, logger, name="dispatch_responses")
 	dispatch_task = asyncio.create_task(
-		dispatch_responses(registry, backend, logger)
+		dispatch_responses(registry, backend, logger, sup)
 	)
 	await asyncio.sleep(0.05)
 	dispatch_task.cancel()
@@ -365,8 +368,9 @@ async def test_dispatch_loop_continues_after_iteration_exception(
 
 	monkeypatch.setattr(registry, "resolve", flaky_resolve)
 
+	sup = _make_loop_supervisor(backend, logger, name="dispatch_responses")
 	dispatch_task = asyncio.create_task(
-		dispatch_responses(registry, backend, logger)
+		dispatch_responses(registry, backend, logger, sup)
 	)
 	# Let both yielded responses be consumed.
 	await asyncio.sleep(0.1)
@@ -422,8 +426,9 @@ class FirstCallCrashesBackend(RecordingBackend):
 async def test_dispatch_loop_restarts_after_iterator_crash(cfg, logger, tmp_path):
 	registry = make_registry_with_loopback()
 	backend = FirstCallCrashesBackend()
+	sup = _make_loop_supervisor(backend, logger, name="dispatch_responses")
 	dispatch_task = asyncio.create_task(
-		dispatch_responses(registry, backend, logger)
+		dispatch_responses(registry, backend, logger, sup)
 	)
 	# Give the outer loop time to crash, log, sleep 1s, and re-enter.
 	await asyncio.sleep(1.3)
@@ -457,8 +462,9 @@ async def test_concurrent_ask_human_calls_resolve_independently(cfg, logger):
 	second = asyncio.create_task(handlers.ask_human("q2", _CWD_B, _SENDER))
 	await asyncio.sleep(0)
 
+	sup = _make_loop_supervisor(backend, logger, name="dispatch_responses")
 	dispatch_task = asyncio.create_task(
-		dispatch_responses(registry, backend, logger)
+		dispatch_responses(registry, backend, logger, sup)
 	)
 
 	try:
@@ -676,8 +682,9 @@ async def test_dispatch_loop_calls_stale_reply_notice_on_unknown_correlation(cfg
 			await asyncio.Event().wait()
 
 	combined = CombinedBackend()
+	sup = _make_loop_supervisor(combined, logger, name="dispatch_responses")
 	dispatch_task = asyncio.create_task(
-		dispatch_responses(registry, combined, logger)
+		dispatch_responses(registry, combined, logger, sup)
 	)
 	await asyncio.sleep(0.05)
 	dispatch_task.cancel()
@@ -708,8 +715,9 @@ async def test_dispatch_loop_deletes_stale_response_slot(cfg, logger):
 			await asyncio.Event().wait()
 
 	backend = DeleteRecordingBackend()
+	sup = _make_loop_supervisor(backend, logger, name="dispatch_responses")
 	dispatch_task = asyncio.create_task(
-		dispatch_responses(registry, backend, logger)
+		dispatch_responses(registry, backend, logger, sup)
 	)
 	await asyncio.sleep(0.05)
 	dispatch_task.cancel()
@@ -754,8 +762,9 @@ async def test_dispatch_loop_deletes_response_slot_on_success(cfg, logger):
 			await asyncio.Event().wait()
 
 	backend = DeleteRecordingBackend()
+	sup = _make_loop_supervisor(backend, logger, name="dispatch_responses")
 	dispatch_task = asyncio.create_task(
-		dispatch_responses(registry, backend, logger)
+		dispatch_responses(registry, backend, logger, sup)
 	)
 	# Give the dispatcher time to consume + spawn its background tasks.
 	await asyncio.sleep(0.1)
@@ -788,8 +797,9 @@ async def test_dispatch_loop_skips_slot_delete_when_slot_unknown(cfg, logger):
 			await asyncio.Event().wait()
 
 	backend = DeleteRecordingBackend()
+	sup = _make_loop_supervisor(backend, logger, name="dispatch_responses")
 	dispatch_task = asyncio.create_task(
-		dispatch_responses(registry, backend, logger)
+		dispatch_responses(registry, backend, logger, sup)
 	)
 	await asyncio.sleep(0.05)
 	dispatch_task.cancel()
