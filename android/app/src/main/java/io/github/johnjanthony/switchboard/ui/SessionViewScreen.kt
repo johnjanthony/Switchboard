@@ -12,6 +12,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Info
@@ -160,41 +162,43 @@ fun SessionViewScreen(
 			}
 		},
 	) { padding ->
-		LazyColumn(
-			state = listState,
-			modifier = Modifier.fillMaxSize().padding(padding),
-			contentPadding = PaddingValues(8.dp),
-		) {
-			items(messages.size, key = { idx -> messages[idx].first }) { idx ->
-				val (_, msg) = messages[idx]
-				val prevTitle = if (idx > 0) messages[idx - 1].second.title else null
-				val showSubheader = idx == 0 || (msg.title != null && msg.title != prevTitle)
-				if (showSubheader && msg.title != null) {
-					Column(modifier = Modifier.fillMaxWidth()) {
-						Divider(modifier = Modifier.padding(horizontal = 24.dp))
-						val titleText = msg.title
-						Text(
-							text = titleText ?: "",
-							style = MaterialTheme.typography.labelMedium,
-							color = MaterialTheme.colorScheme.onSurfaceVariant,
-							modifier = Modifier
-								.fillMaxWidth()
-								.padding(horizontal = 12.dp, vertical = 4.dp),
-							textAlign = TextAlign.Center,
-						)
-					}
-				}
-				MessageBubble(
-					message = msg,
-					isSelected = msg.request_id != null && msg.request_id == selectedRequestId,
-					onClick = {
-						if (msg.request_id != null && activePending.containsKey(msg.request_id)) {
-							selectedRequestId = msg.request_id
+		SelectionContainer {
+			LazyColumn(
+				state = listState,
+				modifier = Modifier.fillMaxSize().padding(padding),
+				contentPadding = PaddingValues(8.dp),
+			) {
+				items(messages.size, key = { idx -> messages[idx].first }) { idx ->
+					val (_, msg) = messages[idx]
+					val prevTitle = if (idx > 0) messages[idx - 1].second.title else null
+					val showSubheader = idx == 0 || (msg.title != null && msg.title != prevTitle)
+					if (showSubheader && msg.title != null) {
+						Column(modifier = Modifier.fillMaxWidth()) {
+							Divider(modifier = Modifier.padding(horizontal = 24.dp))
+							val titleText = msg.title
+							Text(
+								text = titleText ?: "",
+								style = MaterialTheme.typography.labelMedium,
+								color = MaterialTheme.colorScheme.onSurfaceVariant,
+								modifier = Modifier
+									.fillMaxWidth()
+									.padding(horizontal = 12.dp, vertical = 4.dp),
+								textAlign = TextAlign.Center,
+							)
 						}
-					},
-					onDownloadClick = onDownloadFile,
-					onDownloadLongClick = onLongPressDownloadFile,
-				)
+					}
+					MessageBubble(
+						message = msg,
+						isSelected = msg.request_id != null && msg.request_id == selectedRequestId,
+						onClick = {
+							if (msg.request_id != null && activePending.containsKey(msg.request_id)) {
+								selectedRequestId = msg.request_id
+							}
+						},
+						onDownloadClick = onDownloadFile,
+						onDownloadLongClick = onLongPressDownloadFile,
+					)
+				}
 			}
 		}
 	}
@@ -229,6 +233,7 @@ private fun ReplyInputBar(
 					modifier = Modifier.weight(1f),
 					placeholder = { Text("Reply to ${pending.sender}…") },
 					maxLines = 4,
+					shape = RoundedCornerShape(24.dp),
 				)
 				Spacer(Modifier.width(8.dp))
 				IconButton(onClick = { if (text.isNotBlank()) { onSubmit(text); text = "" } }) {

@@ -63,6 +63,8 @@ ResponsePoller      — poll_responses, poll_commands, poll_away_mode_commands
 
 **Target fix.** Wrap each listener in a supervised loop with reconnect + exponential backoff. Expose a per-listener "last event at" timestamp on `/healthz` so silent listener death is observable.
 
+**Implementation pointer.** The crash-backoff shape we want already exists in `server/gateway/dispatch.py:_loop_crash_backoff` — consecutive-failure tracking, exponential backoff (1s → 2s → 4s … capped at `_LOOP_BACKOFF_MAX`), `surface_error` + admin-channel alert at `_LOOP_CRASH_ALERT_THRESHOLD`. Reuse or factor out rather than reinventing.
+
 **Effort estimate.** ~half day. Pairs nicely with M2 (deeper `/healthz`) since both feed the same operational-visibility story.
 
 ---
@@ -180,21 +182,6 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 - **Manifest** — register the receiver
 
 **Constraint:** action buttons appear on the *expanded* notification, not the collapsed heads-up banner — the user swipes down on the banner to reveal them. Still faster than opening the app.
-
----
-
-### Android: copy message text to clipboard
-
-Allow the user to copy message contents from the channel view — both whole-message copy and partial text-selection copy — for any message type (agent updates, `ask_human` prompts, replies, system messages, collab injections, document captions, etc.).
-
-**What it takes:**
-
-- **Whole-message copy.** Long-press on a message bubble surfaces a context action (Material 3 dropdown menu or bottom sheet) with "Copy". Writes the full rendered text to `ClipboardManager` and shows a brief toast/snackbar confirmation. Should work uniformly across all message types — pull the source text from the `ChannelMessage` body rather than the rendered Compose tree.
-- **Partial selection copy.** Enable text selection inside message bubbles so the user can drag-select a span and copy via the standard Android selection toolbar. In Compose this means swapping the message body `Text(...)` for `SelectionContainer { Text(...) }` (or putting the whole message list inside one `SelectionContainer`). Markdown-rendered bubbles need the same treatment — verify the markdown renderer's output is selectable.
-- **Markdown messages.** When a message is rendered as markdown, the copied text should be the *plain* text (what the user sees), not the raw markdown source. If both are useful, the long-press menu can offer "Copy text" and "Copy as markdown" as separate actions.
-- **No new server work.** Pure client-side feature.
-
-Low-medium priority — improves quality-of-life for grabbing snippets out of agent output (paths, error messages, code) without retyping.
 
 ---
 

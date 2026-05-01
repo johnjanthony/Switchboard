@@ -306,6 +306,7 @@ fun MarkdownText(
 	content: String,
 	format: String,
 	color: Color = Color.Unspecified,
+	isSelectable: Boolean = true,
 	onInternalLinkClick: ((TextView, String) -> Unit)? = null,
 ) {
 	if (format == "markdown") {
@@ -321,11 +322,17 @@ fun MarkdownText(
 					// question-bubble click-to-select. Reset to false here — link taps still
 					// work because LinkMovementMethod handles them via onTouchEvent
 					// regardless of isClickable.
-					isClickable = false
-					isLongClickable = false
+					isClickable = isSelectable
+					isLongClickable = isSelectable
+					setTextIsSelectable(isSelectable)
 				}
 			},
 			update = { view ->
+				if (view.isTextSelectable != isSelectable) {
+					view.setTextIsSelectable(isSelectable)
+					view.isClickable = isSelectable
+					view.isLongClickable = isSelectable
+				}
 				if (color != Color.Unspecified) {
 					view.setTextColor(textColor)
 				}

@@ -72,10 +72,15 @@ fun MessageBubble(
 			border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
 			modifier = Modifier
 				.fillMaxWidth(0.9f)
-				.combinedClickable(
-					enabled = isPending,
-					onClick = onClick,
-				),
+				.let {
+					if (isPending) {
+						it.combinedClickable(
+							onClick = onClick
+						)
+					} else {
+						it
+					}
+				},
 		) {
 			Column(modifier = Modifier.padding(12.dp)) {
 				Row(verticalAlignment = Alignment.CenterVertically) {
@@ -130,7 +135,7 @@ fun MessageBubble(
 						Spacer(Modifier.width(8.dp))
 					}
 				}
-				MarkdownText(content = message.text, format = message.format, color = textColor)
+				MarkdownText(content = message.text, format = message.format, color = textColor, isSelectable = false)
 
 				if (isAnswered && message.response_text != null) {
 					Spacer(Modifier.height(8.dp))

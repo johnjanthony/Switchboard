@@ -121,10 +121,7 @@ fun WearApp(viewModel: MainViewModel) {
                 composable("channel_list") {
                     ChannelListScreen(
                         viewModel = viewModel, 
-                        navController = navController,
-                        onToggleAway = { desired ->
-                            viewModel.requestAwayModeToggle(null, desired)
-                        }
+                        navController = navController
                     )
                 }
                 composable("message_list/{cwdKey}") { backStackEntry ->
@@ -226,9 +223,8 @@ fun WearBulkRespondDialog(
 }
 
 @Composable
-fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController, onToggleAway: (Boolean) -> Unit) {
+fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController) {
     val channels by viewModel.channels.collectAsState()
-    val awayModeActive by viewModel.globalAway.collectAsState()
 
     val listState = rememberScalingLazyListState()
     
@@ -242,13 +238,6 @@ fun ChannelListScreen(viewModel: MainViewModel, navController: NavHostController
             modifier = Modifier.fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            item {
-                AwayModePillChip(
-                    active = awayModeActive,
-                    onLongPress = { onToggleAway(!awayModeActive) }
-                )
-            }
-            
             items(
                 channels.values
                     .filter { !it.hidden }
@@ -476,29 +465,3 @@ private fun leafName(cwdCanonical: String): String {
     return cwdCanonical.trimEnd('/').substringAfterLast('/')
 }
 
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun AwayModePillChip(active: Boolean, onLongPress: () -> Unit) {
-    val bg = if (active) MaterialTheme.colorScheme.error else Color.Transparent
-    val borderColor = if (active) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-    val textColor = if (active) Color.White else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
-    val label = if (active) "AWAY" else "AT DESK"
-
-    Box(
-        modifier = Modifier
-            .padding(bottom = 12.dp)
-            .border(1.dp, borderColor, RoundedCornerShape(50))
-            .background(bg, RoundedCornerShape(50))
-            .combinedClickable(
-                onClick = { /* No-op */ },
-                onLongClick = onLongPress,
-            )
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
-            color = textColor
-        )
-    }
-}
