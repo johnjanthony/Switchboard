@@ -156,6 +156,66 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 
 ---
 
+### Android: streamline duplicated reply rendering
+
+**Surfaced 2026-05-02.**
+
+**Problem.** When John replies to an `ask_human` question, the reply text appears twice in the channel: once attached to the original question bubble (the `response_text` block in `MessageBubble.kt`) and again as a standalone chat message at the current end of the feed. Visual clutter on a phone screen, easy to mis-read as two separate replies.
+
+**Target behavior.** Reply shown once, with the question→reply association still obvious. Preferred shape (per the surfacing conversation): insert the reply message immediately after its corresponding question in the message list and drop the duplicate attached-to-question rendering — a slight out-of-order timestamp is acceptable; the logical pairing reads more naturally than chronology here. Alternative shape worth a look during the design pass: keep the reply at the chronological tail, drop the attached-to-question copy, and surface the link via a tap-to-jump indicator on the question bubble.
+
+**What it takes:**
+
+- Pick one of the two shapes (or a hybrid).
+- `MessageBubble.kt` rendering change to remove the duplicated path.
+- Possibly `MainViewModel.kt` ordering / synthesis if the reply's position in the list changes.
+
+**Trigger to pick up.** Already friction-driving — every answered question is currently double-rendered. Low-effort; bundle with the next round of UI polish.
+
+---
+
+### Android: per-message timestamp reveal (long-press or pull)
+
+**Surfaced 2026-05-02.**
+
+**Problem.** Message bubbles in the channel feed don't surface their timestamps. Most of the time relative ordering is enough, but sometimes John wants to know exactly when a question landed or how long a reply took — and there's no path to that today without diving into Firebase. The data is already on the wire (`ChannelMessage.timestamp` in `Models.kt`), it's just not rendered.
+
+**Target behavior.** Timestamp visible on demand, hidden by default. Two natural shapes (pick one or hybrid):
+
+- **Long-press on a bubble** reveals an absolute (or relative + absolute) timestamp inline, dismissed on release or on tapping elsewhere. Good for one-off "when did this happen?" checks.
+- **Horizontal pull / swipe** on the message list slides timestamps in alongside each bubble while held — the iMessage pattern. Good for scanning multiple messages at once to reconstruct a timeline.
+
+**What it takes:**
+
+- `MessageBubble.kt` to render a hidden timestamp slot.
+- Gesture handling — Compose `pointerInput` / `combinedClickable` for long-press, or a list-level horizontal drag listener for the iMessage-style pull.
+- Format choice (absolute `14:32:05`, relative `3m ago`, or both).
+
+**Trigger to pick up.** Already friction-driving when correlating timing. Low-effort UI polish; bundle with the reply-rendering change above.
+
+---
+
+### Android: pinch-to-resize text in message and document viewers
+
+**Surfaced 2026-05-02.**
+
+**Problem.** Code blocks, log snippets, and full-document Markdown can be hard to read at the default font size on a phone — particularly for diffs and structured tables. No path today other than the system magnifier.
+
+**Target behavior.** Pinch gesture **adjusts the font size of the rendered text** (not a pixel-level canvas zoom). Text reflows at the new size, so no panning is needed — the existing vertical scroll continues to do the right thing. Applies in:
+
+- **Message bubbles** in the channel feed (`MessageBubble.kt`) — bump up the type for a code-heavy reply without leaving the chat.
+- **Markdown document viewer** (`MarkdownViewerScreen.kt`) — comfortable reading size for long documents shared via `send_document_human`.
+
+**What it takes:**
+
+- Compose `pointerInput` with `detectTransformGestures` to capture pinch deltas; map the scale factor onto the rendered content's `fontSize` / `LocalDensity` instead of a graphic-layer `scale`.
+- Min/max bound (e.g. 0.75x–2.5x) with sensible step granularity so pinches don't feel runaway.
+- Decide scope of the new size: persists per-channel? per-app session? resets on close? (Persisting per-app makes most sense — accessibility-style preference rather than a transient gesture state.)
+
+**Trigger to pick up.** Already friction-driving for code-heavy replies or shared documents. Bundle with the timestamp / reply-render polish.
+
+---
+
 ### Android: investigate MALFORMED MESSAGE deserialization warnings
 
 **Surfaced 2026-04-27** while debugging spawn-collision. `MainViewModel.kt` lines 175-198 log `MALFORMED MESSAGE at channels/<key>/messages/<id>` with `Value Type: java.lang.String, Value Content: <empty>` when `getValue(ChannelMessage::class.java)` throws. Direct Firebase admin queries against the same paths return correctly-shaped dicts, so the data IS dict-shaped at rest — the phone's listener appears to fire on a transient state where `snap.value` is a String. The catch swallows the error, so it's log noise plus an occasional missed render rather than data loss. Low priority — investigate whether it's a Firebase SDK race, a partial-write listener fire, or something else, and either suppress the log noise or fix the deserialization path.
@@ -227,6 +287,106 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 ---
 
 ## Combined (server + client)
+
+### Server presence heartbeat (offline indicator on the phone)
+
+**Surfaced 2026-05-02.** Companion to the no-login spawn gate (`server/spawn.py:_user_has_interactive_session`) shipped the same day, which covers the "desktop on but no user logged in" failure case server-side. This entry covers the harder case the server can't detect itself: **desktop powered off / network unreachable**. Without something like this, an off-desktop spawn just times out silently — Firebase queues the command, the app shows nothing, John doesn't know whether to wait or go reboot the box.
+
+**Target behavior.** A live "desktop online" indicator in the Android UI driven by a server heartbeat. When the desktop is unreachable (off, asleep, networked-off, service crashed), the indicator goes red and the spawn button surfaces "Desktop offline — your spawn will queue until it comes back" rather than producing no feedback at all.
+
+**What it takes:**
+
+- **Server.** A new dispatch task next to the existing loops in `server/gateway/dispatch.py`, e.g. `dispatch_presence_heartbeat`, writes `presence/server_alive_at: <iso-timestamp>` to Firebase RTDB on a 30s cadence. Sized like the other dispatch loops — `_BG_TASKS` registration, `LoopSupervisor` wiring for crash counting and `/healthz` reporting. Backend method `write_presence_heartbeat()` on `FirebaseBackend`.
+- **Android.** `MainViewModel` subscribes to the `presence/server_alive_at` node, computes `staleSeconds = now - server_alive_at`, exposes a `serverOnline: Boolean` state (true when stale ≤ ~60s, false otherwise). One indicator surface — Page A app-bar icon and the spawn dialog — both bind to the same flag. When offline, spawn-button copy adapts to set expectations.
+- **Tests.** Server side: dispatch loop writes on cadence, supervisor reports in `/healthz`. Android side: viewmodel state flips on stale data; UI binds correctly.
+
+**Open questions for the design pass.**
+
+- Cadence vs. staleness threshold. 30s write / 60s stale gives a 30-second worst-case false-online window after the server goes down; tightening burns a bit more Firebase write traffic for marginal UX gain. Loose default is probably right.
+- Does the spawn button stay tappable when the indicator is red, queueing the command optimistically (Firebase already retains it), or does it block? "Tappable with explicit queue-until-online copy" feels right — matches the design where Firebase is the durable transport.
+- Surface the offline state in the channel header too, or is the Page A indicator enough? Likely just Page A — the channel-level surface adds noise.
+- One presence path or per-process? Single server, one heartbeat — keep it simple.
+
+**Why not the simpler "client-side timeout on spawn ack" alternative.** A timeout-based detection (Option A in the original conversation: app waits N seconds for the spawn ack message and surfaces "no response" if absent) is cheaper to build but only fires *after* a failed attempt — John taps spawn, waits 10 seconds, gets a generic timeout error, has no way to know the desktop was the problem before he tried. The heartbeat lets him see status before he taps.
+
+**Trigger to pick up.** Real friction from off-desk spawn attempts where the desktop is off — i.e. John finding himself wondering "did my spawn go through, or is the box just off?" If that's a once-a-month occurrence, the timeout-based fallback is fine; if it's weekly, build the heartbeat.
+
+---
+
+### Spawn dialog: "resume last session" option
+
+**Surfaced 2026-05-02.**
+
+**Use case.** Today every spawn from the Android UI starts a fresh Claude / Gemini session — no chat history, no compacted memory of prior work in the same `cwd`. When John wants to pick up where he left off ("finish what we were debugging this morning"), he has to re-page-in context from the journal / git log instead of letting the agent's own session memory do it.
+
+**Target behavior.** Spawn dialog gains a "**Resume last session**" toggle. When set, instead of starting a clean spawn, the gateway resumes the most recent agent session in that `cwd` and injects the spawn prompt as the next user message.
+
+**What it takes:**
+
+- **Server.** `spawn.py` extended to accept a `resume_last: bool` flag. For Claude Code, append `--resume <session_id>` (or `--continue` if it's sufficient — needs a check on whether it's `cwd`-anchored). For Gemini CLI, the equivalent flag. Track per-cwd "last session id" — likely discoverable from each CLI's own session store; otherwise the gateway records it on each spawn.
+- **Android.** Toggle in the spawn dialog (`SpawnSessionDialog.kt`). Greyed out with a tooltip ("no prior session in this cwd") when no resumable session exists. Surface the prior session's title in the dialog so John can confirm which one he's picking up.
+
+**Open questions for the design pass.**
+
+- Does "last session" mean last-of-this-agent or last-overall in the cwd? Probably last-of-this-agent, matching how each CLI tracks its own history.
+- Both-Claude-and-Gemini spawns where only one has resumable history — degrade to fresh for the missing side, or block?
+- Interaction with `_SPAWN_COLLISION_TIMEOUT_SECONDS` — resuming an active (not just recent) session is a collision, not a fresh start. The collision dialog already handles this; resume should funnel through the same path.
+
+---
+
+### Inbound document/log upload (phone → agent)
+
+**Surfaced 2026-05-02.**
+
+**Use case.** Today files only flow agent → John (`send_document_human`); the reverse has no path. Two motivating cases:
+
+- **Screenshot share.** John spots an Android UI bug or an unexpected notification and wants to drop a screenshot into the active channel without round-tripping through email or scp.
+- **Client log capture.** When debugging the Switchboard Android app itself, the agent often wants the on-device logcat / app logs. Asking John to grab them manually is high-friction and error-prone.
+
+**Target behavior.**
+
+- **Push from phone (user-initiated).** Attachment affordance on each channel in the Android UI (camera roll, file picker, take-photo). File uploads to Firebase Storage; metadata lands under `channels/{key}/inbound_documents/{doc_id}`. The agent picks it up via a new MCP tool (e.g. `receive_document_human(cwd) → path`) or as part of the next `ask_human` reply payload.
+- **Pull by agent (log-specific).** New MCP tool `request_client_logs(cwd, sender)` causes the Android app to harvest its own logs (logcat filtered to the Switchboard package, plus any app-side structured logs) and upload them as an inbound document. The tool returns once delivery completes.
+
+**What it takes:**
+
+- Server: Firebase Storage path + registry entries for inbound documents, MCP tool(s) to receive them, separate tool / FCM data-message to trigger the client-side log harvest.
+- Android: attachment picker UI per channel; FCM handler for the "harvest logs" command; logcat capture via the standard system API filtered to the app's package; upload-to-Storage path.
+- Size and security caps mirroring `send_document_human` (5 MB, denied filename patterns).
+- SKILL.md — when to use each direction, format expectations.
+
+**Open questions for the design pass.**
+
+- Delivery shape for user-pushed files: pull-on-demand (`receive_document_human`) vs auto-inject into the next `ask_human` reply payload? On-demand is cleaner; auto-inject is fewer round trips for the common "screenshot + question" case.
+- Log harvest scope: app-package-only or full logcat? Privacy and size implications.
+- Persistence: ephemeral per-session, or retained like outbound documents?
+- Multi-file batch — one upload at a time, or a sequence?
+
+---
+
+### Pause button on each channel (collab interrupt)
+
+**Surfaced 2026-05-02.**
+
+**Use case.** Today there is no way to break into a running collab session mid-debate without ending it (`end_collab`) or waiting out the 24h `message_and_await_agent` timeout. A pause is the missing middle ground — interrupt both agents, force them to surface what they were doing, and have them ask John for further instructions before resuming.
+
+**Target behavior.** A pause button on each channel tab in the Android UI. When pressed, all in-flight `message_and_await_agent` calls for that `cwd` immediately return with a sentinel message indicating John has paused the collab session and that the agents must ask him for further instructions before resuming. The session itself is preserved — enrollment state, pending injects, etc. — so the conversation can resume in place once John gives direction.
+
+**What it takes:**
+
+- Firebase + gateway state (`paused: bool` per `cwd`).
+- New sentinel (e.g. `"__COLLAB_PAUSED__\n..."`) returned by `message_and_await_agent` when the flag flips during a pending call.
+- Android channel tab: pause button (visible / enabled when any agent in that cwd is currently waiting), "PAUSED" indicator while active.
+- SKILL.md update — document the sentinel and the required `ask_human` follow-up; pick a designation rule for which agent surfaces (parallel to the reporter rule in `end_collab`).
+
+**Open questions for the design pass.**
+
+- One agent reports / asks, or both? `end_collab` uses an explicit `hand_off_to_human` flag; pause needs the equivalent or a sensible default.
+- Resume mechanic: does John's reply implicitly clear the flag, or is there an explicit unpause control?
+- Does pause apply to single-agent `ask_human` channels too, or collab-only? (`ask_human` is already self-paced by John's reply, so pause arguably adds nothing there.)
+- Interaction with the H8/H9/H10 turn-end hook invariants — the sentinel must leave both agents in a state where they can call `ask_human` without tripping "live partner is blocked" guards.
+
+---
 
 ### Away-Mode Framing Check (terminal-leak detection mid-turn)
 

@@ -134,9 +134,52 @@ class SpawnHandler:
 		# the dispatcher.
 
 
+	async def _user_has_interactive_session(self) -> bool:
+		"""Return True if any user has an interactive (Active or Disconnected)
+		session on this host. Used as a precondition before /spawn — the
+		scheduled task that launches `wt` requires a desktop session to write
+		into, and `schtasks /run` reports success even when no session exists,
+		landing a Firebase channel with no agent behind it.
+
+		Disconnected (`Disc`) sessions count: an agent spawned now becomes
+		visible whenever the user reconnects (e.g. via RDP).
+
+		Degrades open: if `quser` is missing or fails to launch, return True
+		so the existing schtasks failure path stays the source of truth for
+		Windows-toolchain problems."""
+		try:
+			proc = await asyncio.create_subprocess_exec(
+				"quser",
+				stdout=asyncio.subprocess.PIPE,
+				stderr=asyncio.subprocess.PIPE,
+			)
+			stdout, _ = await proc.communicate()
+		except Exception:
+			return True
+
+		if proc.returncode != 0:
+			# quser exits non-zero when no users are logged on.
+			return False
+
+		text = stdout.decode("utf-8", errors="replace")
+		# Header line first; data rows after. Token-scan is robust to the
+		# column-shift that happens when SESSIONNAME is blank for Disc sessions.
+		for line in text.splitlines()[1:]:
+			tokens = line.split()
+			if any(t in ("Active", "Disc") for t in tokens):
+				return True
+		return False
+
 	async def _handle_spawn(self, text: str) -> None:
 		if self._spawn_root is None:
 			await self._backend.send_text("Spawn not configured.")
+			return
+
+		if not await self._user_has_interactive_session():
+			await self._backend.send_text(
+				"Cannot spawn: no one is logged in to the desktop. "
+				"Sign in (locally or via RDP) and try again."
+			)
 			return
 
 		now = datetime.now(timezone.utc)

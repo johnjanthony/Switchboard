@@ -300,9 +300,16 @@ async def test_end_collab_then_spawn_creates_fresh_session(tmp_path, monkeypatch
 		spawn_root=spawn_root
 	)
 
+	# Stdout shape covers both subprocess sites the spawn flow uses: the
+	# `quser` no-login precondition (looks for Active/Disc tokens) and
+	# `schtasks /run` (only checks returncode).
+	_quser_active = (
+		b" USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME\n"
+		b">johnanthony           console             1  Active      .     5/2/2026 1:23 PM\n"
+	)
 	monkeypatch.setattr("asyncio.create_subprocess_exec", AsyncMock(return_value=AsyncMock(
 		returncode=0,
-		communicate=AsyncMock(return_value=(b"ok", b""))
+		communicate=AsyncMock(return_value=(_quser_active, b""))
 	)))
 	spawn_handler = SpawnHandler(cfg_with_spawn, backend, logger, registry)
 
