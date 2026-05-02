@@ -162,6 +162,70 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 
 ---
 
+### Wear OS: notification tap should open the watch app on the relevant channel
+
+**Surfaced 2026-05-01.** The watch app's notifications are built in `SwitchboardFirebaseMessagingService.showNotification` (`android/wear/src/main/java/io/github/johnjanthony/switchboard/fcm/SwitchboardFirebaseMessagingService.kt:75`) with `NotificationCompat.BigTextStyle` and a `setContentIntent` carrying `EXTRA_AGENT_ID` / `EXTRA_MESSAGE_ID`. In practice they render as plain Wear OS notifications — the affordance to drop into the Switchboard wear app from the notification is not obvious, and the surface feels like a default-platform notification rather than part of the app.
+
+**Goal.** Tapping a notification on the watch reliably opens the Switchboard wear app and lands on the channel (and ideally the specific message) the notification was for. The deep-link plumbing already exists in `MainActivity.handleNotificationIntent` (`android/wear/src/main/java/io/github/johnjanthony/switchboard/MainActivity.kt:81`) — the gap is in making the notification itself invite that interaction.
+
+**Explicitly out of scope (for now):** Suggestion-button-as-notification-action behavior. The phone equivalent is tracked separately under [Android: suggestion buttons as notification actions](#android-suggestion-buttons-as-notification-actions). Whether that pattern is even the right shape for a watch (versus opening the app and using the existing reply flow) is a question for the spec pass on this item, not an assumed yes.
+
+**Likely investigation areas — pick the cheapest path that meets the goal:**
+
+- Whether `Notification.WearableExtender` / `setContentAction` provides a more obvious "open in app" affordance than the bare `setContentIntent` we use today.
+- Whether watch-only `MessagingStyle` (a sub-feature of [Multi-Surface Voice & Summary Integration](Multi-Surface%20Voice%20and%20Summary%20Integration.md) SB-04) gets us most of the way without pulling in the Cloud Function pieces.
+- Whether the wear app would benefit from an `OngoingActivity` (SB-03) for actively-pending questions so they persist on the watch face rather than living only in the notification stream.
+
+**Trigger to pick up.** Real friction during away-mode watch use — i.e. John finding himself wishing a tap on a watch notification just dropped him into the relevant channel.
+
+---
+
+### Android Auto: messaging-style integration for `ask_human` (with optional voice spawn)
+
+**Surfaced 2026-05-01.** A standalone Android Auto application that surfaces Switchboard `ask_human` traffic the way Auto's default messaging-app integration does — see and hear pending questions while driving, respond verbally, hands-free.
+
+**Core capabilities.**
+
+- **Inbound.** Pending `ask_human` questions land in the Auto messaging surface. The car reads the question (or a summary) aloud through the system's messaging-app TTS path — same UX shape as receiving a text message.
+- **Outbound.** John responds by voice; Auto's STT transcribes and routes the reply back through the existing `responses/{request_id}` Firebase write path. End-state is identical to a watch or phone reply, so server-side this should be free.
+- **Driver-distraction compliance.** Use system-managed `MessagingStyle` + `RemoteInput` with `SEMANTIC_ACTION_REPLY`. No custom UI — Android Auto's DD review rejects anything bespoke.
+
+**Stretch capability — likely yes, but parked until the messaging side ships.** Voice-command session spawn: "Hey Switchboard, start a session in `<project>` to `<task>`" hits the existing `server/spawn.py` pipeline. Open questions for the spec pass:
+
+- Where does the voice intent originate — Auto's App Actions, a Google Assistant integration, or a Switchboard-side mapping of pre-configured voice phrases to spawn calls?
+- How does John pick a `cwd` hands-free? Almost certainly via a small set of named "favorites" (e.g. `Switchboard`, `RPDM next-gen`) rather than spelling out paths.
+- What's the confirmation step before a session actually starts? Voice spawn is moderately destructive (costs API tokens, creates external work, may collide with `_SPAWN_COLLISION_TIMEOUT_SECONDS` rules in `server/spawn.py`) — likely needs a verbal "yes" before launch.
+
+**Relationship to existing backlog.** This is the concrete Auto-only pickup of [Multi-Surface Voice & Summary Integration](Multi-Surface%20Voice%20and%20Summary%20Integration.md) items SB-04 (`MessagingStyle`), SB-05 (TTS), SB-06 (`RemoteInput` STT), SB-07 (Auto Messaging Bridge), and SB-08 (Remote Session Kill Switch), scoped down to one surface and without a hard dependency on the `display_metadata` Cloud Function (SB-01) — v1 can pass through raw question text with a server-side length cap.
+
+**Trigger to pick up.** Explicit prioritization. Unlike most backlog items this won't surface as passive friction — John has to want hands-free Switchboard in the car badly enough to commit to a multi-day implementation across a new client surface.
+
+---
+
+### Android: App Actions for home Google Assistant voice use
+
+**Surfaced 2026-05-01** while talking through home Google Assistant integration options. Background: the obvious "voice app on Nest speakers" path (Conversational Actions) was killed by Google in June 2023, and the proposed replacement (third-party Gemini Extensions) isn't broadly open as of early 2026. Smart Home actions are the wrong shape (IoT-only). With no Home Assistant install in the picture, the realistic home-use surface is **the phone itself** — Pixel + Pixel Buds / Pixel Watch puts Google Assistant in John's ear while he's cooking, watching TV, or otherwise away from his desk but inside the house.
+
+**Goal.** Wire up Android App Actions on the phone so John can interact with Switchboard by voice via Google Assistant, without unlocking the phone or opening the app. Target invocations:
+
+- *"Hey Google, ask Switchboard what's pending"* → reads the latest unanswered `ask_human` aloud (or a summary if it's long).
+- *"Hey Google, tell Switchboard `<reply>`"* → writes a response to the active pending question via `responses/{request_id}`.
+- *"Hey Google, ask Switchboard to start a session for `<favorite>`"* → spawn (stretch; same caveats as the Auto entry below).
+
+**Mechanism.** Android App Actions via `shortcuts.xml` with custom intents (or Built-in Intents where one fits — `actions.intent.GET_THING`, `actions.intent.SEND_MESSAGE` are candidates worth checking against the App Actions catalog at spec time). The voice trigger lives on the phone; the response surface reuses whatever notification / TTS plumbing the [Android Auto](#android-auto-messaging-style-integration-for-ask_human-with-optional-voice-spawn) entry settles on.
+
+**Relationship to other backlog items.**
+
+- **Heavy overlap with the Auto entry above.** Both want: voice trigger → read question aloud → voice reply → write to Firebase. The Auto entry is the *surface* (Auto messaging bridge, DD compliance); this entry is the *voice trigger*. If the Auto entry lands first, App Actions on the phone is mostly registration + intent fulfillment glue.
+- **Subset of [Multi-Surface Voice & Summary Integration](Multi-Surface%20Voice%20and%20Summary%20Integration.md) SB-05 (TTS) and SB-06 (`RemoteInput` STT)**, scoped to the phone-via-Assistant surface.
+- **Sequencing suggestion (not a commitment):** spec the Auto entry and this entry together; they share enough that a single design pass covering "voice-driven `ask_human` interaction across Auto + Assistant" is cheaper than two.
+
+**Explicitly out of scope.** Nest speakers, Nest Hub, and anything that requires the agent to live somewhere other than a phone. That's gated on third-party Gemini Extensions opening up; track separately if/when that becomes a real SDK.
+
+**Trigger to pick up.** John finding himself wanting to interrupt cooking/TV to walk to the desk and check on an agent — i.e. real friction from the phone-not-in-hand-but-Assistant-in-ear case.
+
+---
+
 ## Combined (server + client)
 
 ### Away-Mode Framing Check (terminal-leak detection mid-turn)
