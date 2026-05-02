@@ -31,20 +31,6 @@ Open/proposed features for Switchboard, grouped by where the work lives. Shipped
 
 ---
 
-### Delete dead `FirebaseBackend` channel-data methods (cleanup follow-up)
-
-**Surfaced 2026-05-01** during the H4 trait-split implementation (`docs/superpowers/specs/2026-05-01-messengerbackend-trait-split-design.md`).
-
-**Problem.** Three methods on `FirebaseBackend` — `update_channel_title`, `update_last_activity`, `fetch_message_text` — have zero callers in production code (`server/`, cross-platform clients) and were used only by their own unit tests. H4 dropped them from the abstract trait surface but kept them as concrete methods to avoid behavior change in case of out-of-tree consumers.
-
-**Trigger to pick up.** Verification that no out-of-tree code in any related repo (mobile clients, scripts, integrations) imports or relies on these methods or the Firebase data they would have written. Once that's confirmed:
-
-**Target fix.** Delete the three concrete methods from `server/firebase.py`. Delete the corresponding tests in `tests/test_firebase_hidden.py` (and any other test file that exercises them). Verify `/healthz` and channel-listing UI continue to work — these methods may have been writing data the client reads even if the server never reads it back.
-
-**Effort estimate.** ~half hour, mostly verification time. The deletions themselves are mechanical.
-
----
-
 ### Replace `firebase_admin.db.listen()` with own SSE consumer (M1 fallback)
 
 **Surfaced 2026-05-01** in `docs/superpowers/specs/2026-05-01-listener-supervision-and-healthz-design.md` Q4.

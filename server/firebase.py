@@ -384,19 +384,6 @@ class FirebaseBackend(
 			rejected=True,
 		)
 
-	async def update_channel_title(self, cwd: str, title: str) -> None:
-		from server.canonicalization import to_firebase_key
-		key = to_firebase_key(cwd)
-		await asyncio.to_thread(lambda: db.reference(f'channels/{key}/title').set(title[:80]))
-
-	async def update_last_activity(self, cwd: str, timestamp_iso: str, preview: str) -> None:
-		from server.canonicalization import to_firebase_key
-		key = to_firebase_key(cwd)
-		await asyncio.to_thread(lambda: db.reference(f'channels/{key}').update({
-			'last_activity_at': timestamp_iso,
-			'preview': preview[:120],
-		}))
-
 	async def has_messages(self, cwd: str) -> bool:
 		from server.canonicalization import to_firebase_key
 		key = to_firebase_key(cwd)
@@ -460,16 +447,6 @@ class FirebaseBackend(
 		from server.canonicalization import to_firebase_key
 		key = to_firebase_key(cwd)
 		await asyncio.to_thread(lambda: db.reference(f'channels/{key}/hidden').set(hidden))
-
-	async def fetch_message_text(self, cwd: str, msg_id: str) -> str | None:
-		from server.canonicalization import to_firebase_key
-		key = to_firebase_key(cwd)
-		def _fetch():
-			snapshot = db.reference(f'channels/{key}/messages/{msg_id}').get()
-			if isinstance(snapshot, dict):
-				return snapshot.get("text")
-			return None
-		return await asyncio.to_thread(_fetch)
 
 	async def write_away_mode_mirror(self, cwd: str | None, active: bool | None) -> None:
 		from server.canonicalization import to_firebase_key

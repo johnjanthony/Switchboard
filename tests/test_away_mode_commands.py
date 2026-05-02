@@ -51,9 +51,6 @@ class FakeBackend:
 	async def write_away_mode_mirror(self, cwd, active) -> None:
 		self.away_mirror_calls.append((cwd, active))
 
-	async def fetch_message_text(self, cwd: str, msg_id: str) -> str | None:
-		return None
-
 	async def send_resolution_confirmation(self, request_id, channel_id, correlation, response_text=None):
 		self.resolution_confirmations.append((request_id, channel_id, response_text))
 
