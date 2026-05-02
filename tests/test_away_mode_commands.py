@@ -55,10 +55,9 @@ class FakeBackend:
 		self.resolution_confirmations.append((request_id, channel_id, response_text))
 
 	async def write_channel_message(
-		self, cwd, sender, message_type, content,
-		*, request_id=None, url=None, format="plain", suggestions=None, filename=None, title=None,
+		self, cwd, sender, message_type, content, **kwargs,
 	):
-		self.channel_writes.append((cwd, sender, message_type, content))
+		self.channel_writes.append((cwd, sender, message_type, content, kwargs))
 		return None, None
 
 
@@ -122,6 +121,13 @@ async def test_exit_global_send_default_via_command(tmp_path):
 	assert fut.done() and fut.result() == "Back at desk"
 	# write_away_mode_mirror called with (None, False) to flip global off
 	assert (None, False) in backend.away_mirror_calls
+	# write_channel_message must pass attached_to_msg_id linking the reply to the question's msg_id
+	human_msgs = [m for m in backend.channel_writes if m[2] == "human"]
+	assert len(human_msgs) >= 1
+	_, _, _, _, kwargs = human_msgs[0]
+	assert kwargs.get("attached_to_msg_id") == "msg-1", (
+		"send_default must pass attached_to_msg_id linking back to the question's msg_id"
+	)
 
 
 @pytest.mark.asyncio

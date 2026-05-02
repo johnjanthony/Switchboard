@@ -750,11 +750,8 @@ async def test_dispatch_loop_deletes_response_slot_on_success(cfg, logger):
 		async def delete_response_slot(self, slot: str) -> None:
 			self.deleted_slots.append(slot)
 
-		async def write_response_text(self, channel_id: str, msg_id: str, text: str) -> None:
-			pass
-
 		async def write_channel_message(self, cwd, sender, message_type, content, **kwargs):
-			self.channel_messages.append((cwd, sender, message_type, content))
+			self.channel_messages.append((cwd, sender, message_type, content, kwargs))
 			return (cwd, sender), "msg-id"
 
 		async def poll_responses(self):
@@ -776,6 +773,17 @@ async def test_dispatch_loop_deletes_response_slot_on_success(cfg, logger):
 
 	# Slot delete must be among the things the dispatcher fired off.
 	assert backend.deleted_slots == ["r1"]
+
+	# The tail "human" message must carry attached_to_msg_id pointing at the question.
+	assert len(backend.channel_messages) == 1, f"expected 1 history write, got {backend.channel_messages}"
+	cwd, sender, msg_type, content, kwargs = backend.channel_messages[0]
+	assert sender == "John"
+	assert msg_type == "human"
+	assert content == "yes"
+	assert kwargs.get("attached_to_msg_id") == "m1", (
+		f"expected attached_to_msg_id='m1' (the question's msg_id from registry.add), "
+		f"got {kwargs.get('attached_to_msg_id')!r}"
+	)
 
 
 @pytest.mark.asyncio

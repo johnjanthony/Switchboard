@@ -66,6 +66,7 @@ class MessageWriter(ABC):
 		filename: str | None = None,
 		title: str | None = None,
 		rejected: bool = False,
+		attached_to_msg_id: str | None = None,
 	) -> "tuple[CorrelationToken | None, str | None]":
 		"""Write a message to the channel. Returns (correlation, msg_id).
 		correlation is used for message_type='question' to match responses.

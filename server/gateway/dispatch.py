@@ -52,12 +52,6 @@ async def dispatch_responses(
 										f"delete_stale_response_failed: slot={response.slot} {exc}"
 									)
 						elif record is not None:
-							if record.msg_id and hasattr(backend, "write_response_text"):
-								# Update original question so it stays answered across restarts
-								_spawn_bg(
-									backend.write_response_text(cwd, record.msg_id, response.text),
-									label=f"response_update:{cwd}:{record.msg_id}",
-								)
 							# Drop the response slot now that resolution is committed.
 							# Done here (rather than only in handlers.ask_human's
 							# success path) so the cleanup runs even when the agent
@@ -69,10 +63,17 @@ async def dispatch_responses(
 									backend.delete_response_slot(response.slot),
 									label=f"response_slot_cleanup:{response.slot}",
 								)
-							# Add a NEW message to the history so it shows up in-line in the app
-							async def _write_history(cid=cwd, txt=response.text):
+							# Add a NEW message to the history so it shows up in-line in the app.
+							# The attached_to_msg_id field links it back to the question; the client
+							# uses this to splice the reply directly under its question and to derive
+							# the answered-state for the question's RESPONDED badge.
+							attached = record.msg_id
+							async def _write_history(cid=cwd, txt=response.text, attached=attached):
 								try:
-									await backend.write_channel_message(cid, "John", "human", txt)
+									await backend.write_channel_message(
+										cid, "John", "human", txt,
+										attached_to_msg_id=attached,
+									)
 									await logger.notify_sent(cid, f"Reply: {txt}")
 									await _append_session_log(logger.log_path, cid, "←", txt, logger)
 								except Exception as exc:

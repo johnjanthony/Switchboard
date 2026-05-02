@@ -39,9 +39,12 @@ async def _apply_bulk_respond_decision(
 		return False
 
 	if decision == "send_default":
-		# Resolve every pending in scope: registry.resolve + send_resolution_confirmation
-		# + (optional) write_response_text + write_channel_message, in parallel.
-		# Per-pending exceptions are caught so a single failure doesn't abort the fan-out.
+		# Resolve every pending in scope in parallel: registry.resolve +
+		# send_resolution_confirmation + write_channel_message. The reply's
+		# attached_to_msg_id links it back to the question; the client uses this
+		# to splice the reply directly under its question and to derive the
+		# answered-state for the question's RESPONDED badge. Per-pending
+		# exceptions are caught so a single failure doesn't abort the fan-out.
 		async def _resolve_one(p):
 			try:
 				req_id = registry.resolve(cwd=p.cwd, sender=p.sender, text=default_text)
@@ -49,10 +52,11 @@ async def _apply_bulk_respond_decision(
 					return
 				tasks = [
 					backend.send_resolution_confirmation(req_id, p.cwd, (p.cwd, p.sender), response_text=default_text),
+					backend.write_channel_message(
+						p.cwd, "John", "human", default_text,
+						attached_to_msg_id=p.msg_id,
+					),
 				]
-				if p.msg_id and hasattr(backend, "write_response_text"):
-					tasks.append(backend.write_response_text(p.cwd, p.msg_id, default_text))
-				tasks.append(backend.write_channel_message(p.cwd, "John", "human", default_text))
 				await asyncio.gather(*tasks)
 				await _append_session_log(logger.log_path, p.cwd, "←", default_text, logger)
 				await logger.notify_sent(p.cwd, f"Bulk Reply: {default_text}")

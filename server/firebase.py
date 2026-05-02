@@ -261,6 +261,7 @@ class FirebaseBackend(
 		suggestions: list[str] | None = None,
 		filename: str | None = None,
 		rejected: bool = False,
+		attached_to_msg_id: str | None = None,
 	) -> tuple[CorrelationToken | None, str | None]:
 		from server.canonicalization import to_firebase_key
 		from datetime import datetime, timezone
@@ -303,6 +304,8 @@ class FirebaseBackend(
 			payload["filename"] = effective_filename
 		if suggestions:
 			payload["suggestions"] = list(suggestions)
+		if attached_to_msg_id:
+			payload["attached_to_msg_id"] = attached_to_msg_id
 
 		if self._logger:
 			await self._logger.info(f"firebase_write_message: {key}/{msg_id}")
@@ -681,13 +684,6 @@ class FirebaseBackend(
 		def _delete():
 			self._resp_ref.child(slot).delete()
 		await self._loop.run_in_executor(None, _delete)
-
-	async def write_response_text(self, channel_id: str, msg_id: str, text: str) -> None:
-		from server.canonicalization import to_firebase_key
-		key = to_firebase_key(channel_id)
-		await asyncio.to_thread(
-			lambda: db.reference(f'channels/{key}/messages/{msg_id}/response_text').set(text)
-		)
 
 	def _on_away_mode_command(self, event):
 		if event.event_type != 'put' or not event.data:

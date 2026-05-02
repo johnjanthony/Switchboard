@@ -189,7 +189,7 @@ private fun SwitchboardNavHost(
 
 			SessionViewScreen(
 				channel = channel,
-				messages = channel.messages.sortedBy { it.second.timestamp },
+				messages = channel.messages,
 				awayActive = awayActive,
 				isAwayOverride = isOverride,
 				globalAway = globalAway,

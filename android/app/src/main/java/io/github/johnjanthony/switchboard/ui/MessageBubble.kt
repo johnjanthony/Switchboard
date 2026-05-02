@@ -1,4 +1,4 @@
-﻿package io.github.johnjanthony.switchboard.ui
+package io.github.johnjanthony.switchboard.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -6,7 +6,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,9 +17,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Description
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Divider
-import androidx.compose.material3.ElevatedButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -40,6 +36,8 @@ import io.github.johnjanthony.switchboard.ui.theme.SwitchboardTheme
 @Composable
 fun MessageBubble(
 	message: ChannelMessage,
+	isAnswered: Boolean = false,
+	timestampOpacity: Float = 0f,
 	isSelected: Boolean = false,
 	onClick: () -> Unit = {},
 	onDownloadClick: (url: String, filename: String) -> Unit = { _, _ -> },
@@ -49,23 +47,57 @@ fun MessageBubble(
 	val isQuestion = message.type == "question" || message.type == "ask_human"
 	val isCancelled = message.cancelled
 	val isRejected = message.rejected
-	val isAnswered = isQuestion && message.response_text != null
 	val isPending = (isQuestion && !isAnswered && !isCancelled && !isRejected)
 
 	val alpha = if (isCancelled) 0.5f else 1f
 	val bgColor = if (isHuman) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
 	val textColor = if (isHuman) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
 
+	val timestampLabel = formatBubbleTimestamp(message.timestamp)
+
 	Column(
 		modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp, horizontal = 8.dp).alpha(alpha),
 		horizontalAlignment = if (isHuman) Alignment.End else Alignment.Start,
 	) {
-		Text(
-			text = message.sender,
-			style = MaterialTheme.typography.labelSmall,
-			color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-			modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-		)
+		// Sender + timestamp row: width matches the bubble's effective width (90%).
+		// Sender stays at its alignment edge; timestamp lives centered, fading in/out
+		// with the pull-gesture's `timestampOpacity`.
+		Row(
+			modifier = Modifier
+				.fillMaxWidth(0.9f)
+				.padding(horizontal = 6.dp, vertical = 2.dp),
+			verticalAlignment = Alignment.CenterVertically,
+		) {
+			if (isHuman) {
+				Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+					Text(
+						text = timestampLabel,
+						style = MaterialTheme.typography.labelSmall,
+						color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+						modifier = Modifier.alpha(timestampOpacity),
+					)
+				}
+				Text(
+					text = message.sender,
+					style = MaterialTheme.typography.labelSmall,
+					color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+				)
+			} else {
+				Text(
+					text = message.sender,
+					style = MaterialTheme.typography.labelSmall,
+					color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+				)
+				Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+					Text(
+						text = timestampLabel,
+						style = MaterialTheme.typography.labelSmall,
+						color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+						modifier = Modifier.alpha(timestampOpacity),
+					)
+				}
+			}
+		}
 		Surface(
 			shape = RoundedCornerShape(12.dp),
 			color = bgColor,
@@ -137,24 +169,6 @@ fun MessageBubble(
 				}
 				MarkdownText(content = message.text, format = message.format, color = textColor, isSelectable = false)
 
-				if (isAnswered && message.response_text != null) {
-					Spacer(Modifier.height(8.dp))
-					Divider(color = textColor.copy(alpha = 0.2f))
-					Spacer(Modifier.height(8.dp))
-					Row(verticalAlignment = Alignment.CenterVertically) {
-						Text(
-							text = "John: ",
-							style = MaterialTheme.typography.labelMedium,
-							color = textColor.copy(alpha = 0.7f),
-						)
-						Text(
-							text = message.response_text!!,
-							style = MaterialTheme.typography.bodyMedium,
-							color = textColor,
-						)
-					}
-				}
-
 				if (!message.url.isNullOrBlank() && !message.filename.isNullOrBlank()) {
 					Spacer(Modifier.height(8.dp))
 					Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
@@ -204,8 +218,9 @@ fun PreviewMessageBubbleNormal() {
 			message = ChannelMessage(
 				sender = "Claude",
 				type = "notify",
-				text = "This is a normal message."
-			)
+				text = "This is a normal message.",
+				timestamp = "2026-05-02T18:32:05+00:00",
+			),
 		)
 	}
 }
@@ -219,8 +234,9 @@ fun PreviewMessageBubblePendingQuestion() {
 				sender = "Claude",
 				type = "question",
 				text = "Is this a pending question?",
-				request_id = "req1"
-			)
+				request_id = "req1",
+				timestamp = "2026-05-02T18:32:05+00:00",
+			),
 		)
 	}
 }
@@ -235,8 +251,9 @@ fun PreviewMessageBubbleAnsweredQuestion() {
 				type = "question",
 				text = "Was this question answered?",
 				request_id = "req2",
-				response_text = "Yes, it was."
-			)
+				timestamp = "2026-05-02T18:32:05+00:00",
+			),
+			isAnswered = true,
 		)
 	}
 }
@@ -251,8 +268,58 @@ fun PreviewMessageBubbleCancelledQuestion() {
 				type = "question",
 				text = "Was this question cancelled?",
 				request_id = "req3",
-				cancelled = true
-			)
+				cancelled = true,
+				timestamp = "2026-05-02T18:32:05+00:00",
+			),
+		)
+	}
+}
+
+@Preview(showBackground = true, name = "Timestamp visible (agent)")
+@Composable
+fun PreviewMessageBubbleTimestampVisibleAgent() {
+	SwitchboardTheme {
+		MessageBubble(
+			message = ChannelMessage(
+				sender = "Claude",
+				type = "notify",
+				text = "Timestamp visible at full opacity.",
+				timestamp = "2026-05-02T18:32:05+00:00",
+			),
+			timestampOpacity = 1f,
+		)
+	}
+}
+
+@Preview(showBackground = true, name = "Timestamp visible (human)")
+@Composable
+fun PreviewMessageBubbleTimestampVisibleHuman() {
+	SwitchboardTheme {
+		MessageBubble(
+			message = ChannelMessage(
+				sender = "John",
+				type = "human",
+				text = "Reply text",
+				timestamp = "2026-05-02T18:32:05+00:00",
+				attached_to_msg_id = "q1",
+			),
+			timestampOpacity = 1f,
+		)
+	}
+}
+
+@Preview(showBackground = true, name = "Timestamp visible (different day)")
+@Composable
+fun PreviewMessageBubbleTimestampDifferentDay() {
+	SwitchboardTheme {
+		MessageBubble(
+			message = ChannelMessage(
+				sender = "Claude",
+				type = "notify",
+				text = "Yesterday's message.",
+				timestamp = "2026-05-01T15:32:00+00:00",
+			),
+			timestampOpacity = 1f,
 		)
 	}
 }

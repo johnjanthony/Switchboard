@@ -156,45 +156,6 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 
 ---
 
-### Android: streamline duplicated reply rendering
-
-**Surfaced 2026-05-02.**
-
-**Problem.** When John replies to an `ask_human` question, the reply text appears twice in the channel: once attached to the original question bubble (the `response_text` block in `MessageBubble.kt`) and again as a standalone chat message at the current end of the feed. Visual clutter on a phone screen, easy to mis-read as two separate replies.
-
-**Target behavior.** Reply shown once, with the question→reply association still obvious. Preferred shape (per the surfacing conversation): insert the reply message immediately after its corresponding question in the message list and drop the duplicate attached-to-question rendering — a slight out-of-order timestamp is acceptable; the logical pairing reads more naturally than chronology here. Alternative shape worth a look during the design pass: keep the reply at the chronological tail, drop the attached-to-question copy, and surface the link via a tap-to-jump indicator on the question bubble.
-
-**What it takes:**
-
-- Pick one of the two shapes (or a hybrid).
-- `MessageBubble.kt` rendering change to remove the duplicated path.
-- Possibly `MainViewModel.kt` ordering / synthesis if the reply's position in the list changes.
-
-**Trigger to pick up.** Already friction-driving — every answered question is currently double-rendered. Low-effort; bundle with the next round of UI polish.
-
----
-
-### Android: per-message timestamp reveal (long-press or pull)
-
-**Surfaced 2026-05-02.**
-
-**Problem.** Message bubbles in the channel feed don't surface their timestamps. Most of the time relative ordering is enough, but sometimes John wants to know exactly when a question landed or how long a reply took — and there's no path to that today without diving into Firebase. The data is already on the wire (`ChannelMessage.timestamp` in `Models.kt`), it's just not rendered.
-
-**Target behavior.** Timestamp visible on demand, hidden by default. Two natural shapes (pick one or hybrid):
-
-- **Long-press on a bubble** reveals an absolute (or relative + absolute) timestamp inline, dismissed on release or on tapping elsewhere. Good for one-off "when did this happen?" checks.
-- **Horizontal pull / swipe** on the message list slides timestamps in alongside each bubble while held — the iMessage pattern. Good for scanning multiple messages at once to reconstruct a timeline.
-
-**What it takes:**
-
-- `MessageBubble.kt` to render a hidden timestamp slot.
-- Gesture handling — Compose `pointerInput` / `combinedClickable` for long-press, or a list-level horizontal drag listener for the iMessage-style pull.
-- Format choice (absolute `14:32:05`, relative `3m ago`, or both).
-
-**Trigger to pick up.** Already friction-driving when correlating timing. Low-effort UI polish; bundle with the reply-rendering change above.
-
----
-
 ### Android: pinch-to-resize text in message and document viewers
 
 **Surfaced 2026-05-02.**

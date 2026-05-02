@@ -347,9 +347,10 @@ fun MessageListScreen(cwdKey: String, viewModel: MainViewModel, navController: N
                 }
             }
             
-            items(sortedMessages) { (_, msg) ->
-                val isQuestion = (msg.type == "question" || msg.type == "ask_human") && 
-                                 msg.response_text == null && !msg.cancelled && !msg.rejected
+            val answeredMsgIds = sortedMessages.mapNotNull { (_, m) -> m.attached_to_msg_id }.toSet()
+            items(sortedMessages) { (msgId, msg) ->
+                val isQuestion = (msg.type == "question" || msg.type == "ask_human") &&
+                                 msgId !in answeredMsgIds && !msg.cancelled && !msg.rejected
                 
                 Card(
                     onClick = { 
