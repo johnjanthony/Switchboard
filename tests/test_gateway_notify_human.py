@@ -11,12 +11,20 @@ import pytest
 from server.config import Config
 from server.gateway import build_tool_handlers
 from server.logging_jsonl import JsonlLogger
-from server.messenger import IncomingResponse, MessengerBackend
+from server.messenger import (
+	IncomingResponse,
+	Backend,
+	MessageWriter,
+	ResponsePoller,
+	AwayModeMirror,
+	ChannelLifecycle,
+	InjectPort,
+)
 from server.rate_limiter import RateLimiter
 from server.registry import Registry
 
 
-class RecordingBackend(MessengerBackend):
+class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle, InjectPort, Backend):
 	def __init__(self) -> None:
 		self.channel_messages: list[dict] = []
 		self.sent_timeouts: list[tuple] = []

@@ -4,13 +4,22 @@ import asyncio
 from typing import Any
 from server.registry import Registry
 from server.logging_jsonl import JsonlLogger
-from server.messenger import MessengerBackend
+from server.messenger import (
+	MessageWriter,
+	ResponsePoller,
+	AwayModeMirror,
+	InjectPort,
+)
 from server.gateway.bg_tasks import _spawn_bg
 from server.firebase_supervisor import LoopSupervisor
 
+class _DispatchResponsesBackend(ResponsePoller, MessageWriter):
+	"""Backend surface used by dispatch_responses."""
+
+
 async def dispatch_responses(
 	registry: Registry,
-	backend: MessengerBackend,
+	backend: _DispatchResponsesBackend,
 	logger: JsonlLogger,
 	supervisor: LoopSupervisor,
 ) -> None:
@@ -94,7 +103,7 @@ async def _safe_handle(spawn_handler: Any, raw: str, logger: JsonlLogger) -> Non
 
 async def dispatch_commands(
 	spawn_handler: Any,
-	backend: Any,
+	backend: ResponsePoller,
 	logger: JsonlLogger,
 	supervisor: LoopSupervisor,
 ) -> None:
@@ -108,7 +117,7 @@ async def dispatch_commands(
 		except Exception as exc:
 			await supervisor.record_crash(exc)
 
-async def _clear_all_cwd_overrides(registry: Registry, backend: Any, logger: JsonlLogger) -> int:
+async def _clear_all_cwd_overrides(registry: Registry, backend: AwayModeMirror, logger: JsonlLogger) -> int:
 	"""Wipe every per-channel away_mode override.
 
 	Invoked after a successful global enter/exit so that flipping the global flag
@@ -134,9 +143,18 @@ async def _clear_all_cwd_overrides(registry: Registry, backend: Any, logger: Jso
 	return len(overrides)
 
 
+class _DispatchAwayModeBackend(ResponsePoller, AwayModeMirror, MessageWriter):
+	"""Backend surface used by dispatch_away_mode_commands.
+
+	Includes MessageWriter because the loop forwards `backend` to
+	`_apply_bulk_respond_decision` (in server/gateway/bulk_respond.py),
+	which uses MessageWriter methods directly.
+	"""
+
+
 async def dispatch_away_mode_commands(
 	registry: Registry,
-	backend: Any,
+	backend: _DispatchAwayModeBackend,
 	logger: JsonlLogger,
 	supervisor: LoopSupervisor,
 ) -> None:
@@ -149,13 +167,9 @@ async def dispatch_away_mode_commands(
 	from server.canonicalization import canonicalize_cwd, CanonicalizationError
 	from server.gateway.bulk_respond import _apply_bulk_respond_decision
 
-	poll = getattr(backend, "poll_away_mode_commands", None)
-	if poll is None:
-		return
-
 	while True:
 		try:
-			async for cmd in poll():
+			async for cmd in backend.poll_away_mode_commands():
 				supervisor.record_success()
 				cmd_type = cmd.get("type", "")
 				try:
@@ -226,17 +240,14 @@ async def dispatch_away_mode_commands(
 
 async def dispatch_inject_queue(
 	registry: Registry,
-	backend: Any,
+	backend: InjectPort,
 	logger: JsonlLogger,
 	supervisor: LoopSupervisor,
 ) -> None:
 	"""Deliver human inject messages from the Android compose box to collab sessions."""
-	poll = getattr(backend, "poll_inject_messages", None)
-	if poll is None:
-		return
 	while True:
 		try:
-			async for session_id, inject_id, text in poll():
+			async for session_id, inject_id, text in backend.poll_inject_messages():
 				supervisor.record_success()
 				try:
 					session = registry.get_session(session_id)

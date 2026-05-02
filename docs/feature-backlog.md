@@ -31,27 +31,17 @@ Open/proposed features for Switchboard, grouped by where the work lives. Shipped
 
 ---
 
-### `MessengerBackend` trait split (god-interface refactor)
+### Delete dead `FirebaseBackend` channel-data methods (cleanup follow-up)
 
-**Surfaced 2026-04-28** in the codebase review (`docs/2026-04-28-codebase-review.md` H4). Originally HIGH, demoted to MEDIUM after H1 persistence was deferred — the "prep work for clean persistence wiring" justification disappeared with H1, leaving only the testability argument.
+**Surfaced 2026-05-01** during the H4 trait-split implementation (`docs/superpowers/specs/2026-05-01-messengerbackend-trait-split-design.md`).
 
-**Problem.** `server/messenger.py` declares ~20 abstract or no-op methods, the majority of which are pure Firebase semantics: `write_away_mode_mirror`, `start_away_mode_listeners`, `load_away_mode_snapshot`, `delete_legacy_away_mode_node`, `reset_all_pending_responses`, `start_inject_listener`, `poll_inject_messages`, `write_spawn_collision_prompt`, `clear_spawn_collision_prompt`, `wipe_channel`, `set_channel_hidden`, `fetch_message_text`, `read_channel_meta`, `has_messages`, `poll_away_mode_commands`, `poll_spawn_collision_decision`. The "pluggable backends" promise in `AGENTS.md` is unsupported by this surface — replacing Firebase would require reimplementing 80% of these methods. `server/main.py` also does `if isinstance(backend, FirebaseBackend)` — a tell that the abstraction has leaked.
+**Problem.** Three methods on `FirebaseBackend` — `update_channel_title`, `update_last_activity`, `fetch_message_text` — have zero callers in production code (`server/`, cross-platform clients) and were used only by their own unit tests. H4 dropped them from the abstract trait surface but kept them as concrete methods to avoid behavior change in case of out-of-tree consumers.
 
-**Impact.** Tests have to mock 20+ methods on a single class. New features tend to add more. The class as a single test seam is unwieldy.
+**Trigger to pick up.** Verification that no out-of-tree code in any related repo (mobile clients, scripts, integrations) imports or relies on these methods or the Firebase data they would have written. Once that's confirmed:
 
-**Target fix.** Split into focused traits:
+**Target fix.** Delete the three concrete methods from `server/firebase.py`. Delete the corresponding tests in `tests/test_firebase_hidden.py` (and any other test file that exercises them). Verify `/healthz` and channel-listing UI continue to work — these methods may have been writing data the client reads even if the server never reads it back.
 
-```text
-MessageWriter       — write_channel_message, mark_question_cancelled, send_*_followup
-AwayModeMirror      — write_away_mode_mirror, load/start listeners, reset_pending
-SpawnCollisionPort  — write_spawn_collision_prompt, clear, poll_decision, wipe_channel, etc.
-InjectPort          — start_inject_listener, poll_inject_messages
-ResponsePoller      — poll_responses, poll_commands, poll_away_mode_commands
-```
-
-`FirebaseBackend` implements all five. `gateway.py` accepts only the ports it needs per handler. Tests can supply minimal fakes per port instead of mocking the full surface.
-
-**Effort estimate.** ~1 day. Mechanical split, no behavior change. Pairs naturally with H1 (persistence) when that ships — the persistence layer would extend `MessageWriter` / `AwayModeMirror` rather than the monolithic `MessengerBackend`.
+**Effort estimate.** ~half hour, mostly verification time. The deletions themselves are mechanical.
 
 ---
 

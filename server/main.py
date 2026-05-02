@@ -29,6 +29,7 @@ from server.spawn import SpawnHandler
 from server.rate_limiter import RateLimiter
 from server.firebase import FirebaseBackend
 from server.firebase_supervisor import LoopSupervisor
+from server.messenger import AwayModeMirror
 
 
 def _build_away_mode_route(registry: Registry):
@@ -201,7 +202,7 @@ def _build_fastmcp(handlers) -> FastMCP:
 	return mcp
 
 
-async def _wire_away_mode_mirror(registry: "Registry", backend: "MessengerBackend") -> None:
+async def _wire_away_mode_mirror(registry: "Registry", backend: "AwayModeMirror") -> None:
 	"""Register a callback that mirrors away-mode mutations to Firebase.
 	The callback writes the (cwd, active) pair as-is; the listener path
 	(start_away_mode_listeners, wired in Task 8) is responsible for updating
@@ -255,8 +256,9 @@ async def _run(config: Config) -> None:
 	await backend.start_away_mode_listeners(registry)
 	await backend.reset_all_pending_responses()
 
-	if isinstance(backend, FirebaseBackend):
-		registry.set_pending_mirror(backend.make_pending_mirror_writer())
+	mirror_writer_fn = getattr(backend, "make_pending_mirror_writer", None)
+	if callable(mirror_writer_fn):
+		registry.set_pending_mirror(mirror_writer_fn())
 
 	limiter = RateLimiter(config.rate_limit)
 	handlers = build_tool_handlers(config, registry, backend, logger, limiter)

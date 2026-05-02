@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from server.messenger import MessageWriter
 from server.registry import Registry
 from server.logging_jsonl import JsonlLogger
 
 async def _apply_bulk_respond_decision(
 	registry: Registry,
-	backend: Any,
+	backend: MessageWriter,
 	logger: JsonlLogger,
 	scope_cwd: str | None,
 	decision: str | None,

@@ -1,4 +1,4 @@
-"""Firebase MessengerBackend implementation."""
+"""Firebase backend implementation."""
 
 from __future__ import annotations
 
@@ -13,7 +13,16 @@ from firebase_admin import credentials, db, messaging, storage
 
 from server.gateway.bg_tasks import _spawn_bg
 from server.logging_jsonl import JsonlLogger
-from server.messenger import CorrelationToken, IncomingResponse, MessengerBackend
+from server.messenger import (
+	Backend,
+	MessageWriter,
+	ResponsePoller,
+	AwayModeMirror,
+	ChannelLifecycle,
+	InjectPort,
+	IncomingResponse,
+	CorrelationToken,
+)
 
 
 async def _no_op_async_logger(_message: str) -> None:
@@ -34,7 +43,14 @@ def _increment(n: int) -> object:
 	return {".sv": {"increment": n}}
 
 
-class FirebaseBackend(MessengerBackend):
+class FirebaseBackend(
+	MessageWriter,
+	ResponsePoller,
+	AwayModeMirror,
+	ChannelLifecycle,
+	InjectPort,
+	Backend,
+):
 	def __init__(
 		self,
 		service_account_json: str,

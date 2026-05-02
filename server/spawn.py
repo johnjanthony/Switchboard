@@ -9,11 +9,11 @@ import secrets
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from server.canonicalization import canonicalize_cwd
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
+from server.messenger import ChannelLifecycle, InjectPort, MessageWriter
 from server.registry import Registry
 
 RATE_LIMIT_SECONDS = 60
@@ -85,9 +85,13 @@ def _get_backend_name(backend: str) -> str:
 	return "Gemini" if backend == "gemini" else "Claude"
 
 
+class _SpawnBackend(MessageWriter, InjectPort, ChannelLifecycle):
+	"""Backend surface used by SpawnHandler."""
+
+
 class SpawnHandler:
 	def __init__(
-		self, config: Config, backend: Any, logger: JsonlLogger, registry: Registry
+		self, config: Config, backend: _SpawnBackend, logger: JsonlLogger, registry: Registry
 	) -> None:
 		self._spawn_root = config.spawn_root
 		self._pending_dir = Path(config.log_path).parent

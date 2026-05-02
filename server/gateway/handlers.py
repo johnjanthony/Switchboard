@@ -14,7 +14,7 @@ from server.canonicalization import CanonicalizationError, canonicalize_cwd
 from server.collab import CollabSession
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
-from server.messenger import MessengerBackend
+from server.messenger import MessageWriter, InjectPort, ChannelLifecycle
 from server.rate_limiter import RateLimiter
 from server.registry import Registry
 from server.title_tracker import TitleTracker
@@ -65,7 +65,7 @@ async def _write_byo_sidecar(log_path: str, channel_id: str) -> None:
 
 	await asyncio.to_thread(_write)
 
-async def _safe_mark_cancelled(backend: MessengerBackend, cwd: str, request_id: str, logger: JsonlLogger) -> None:
+async def _safe_mark_cancelled(backend: MessageWriter, cwd: str, request_id: str, logger: JsonlLogger) -> None:
 	try:
 		await backend.mark_question_cancelled(cwd, request_id)
 	except Exception as exc:
@@ -81,10 +81,13 @@ class ToolHandlers:
 	enter_away_mode: Callable[..., Coroutine[None, None, str]]
 	exit_away_mode: Callable[..., Coroutine[None, None, str]]
 
+class _ToolHandlersBackend(MessageWriter, InjectPort, ChannelLifecycle):
+	"""Backend surface used by build_tool_handlers (and its closures)."""
+
 def build_tool_handlers(
 	config: Config,
 	registry: Registry,
-	backend: MessengerBackend,
+	backend: _ToolHandlersBackend,
 	logger: JsonlLogger,
 	limiter: RateLimiter | None = None,
 ) -> ToolHandlers:
