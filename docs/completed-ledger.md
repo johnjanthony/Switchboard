@@ -14,8 +14,8 @@ Format and lifecycle rules: see [`task-tracking-design.md`](task-tracking-design
 | T-102 | I5 + I6 closed; docs sweep                                  | 2026-04-19  | `d622745` | 2026-04-19  |                                            |
 | T-103 | NSSM Windows service scripts                                | 2026-04-20  | `93d2934` | 2026-04-20  |                                            |
 | T-104 | ForceReply, never-stop-asking, SDDL fix                     | 2026-04-20  | `d9d7cd7` | 2026-04-20  |                                            |
-| T-105 | Agent CLI spawn via scheduled task                          | 2026-04-21  | `1241ac5` | 2026-04-21  | Author-date 2026-04-20 23:32; journal-dated. |
-| T-106 | HTML formatting and document delivery                       | 2026-04-21  | `7a54a34` | 2026-04-21  | Author-date 2026-04-20 23:59; journal-dated. |
+| T-105 | Agent CLI spawn via scheduled task                          | 2026-04-21  | `1241ac5` | 2026-04-21  |                                            |
+| T-106 | HTML formatting and document delivery                       | 2026-04-21  | `7a54a34` | 2026-04-21  |                                            |
 | T-107 | Inline keyboard with suggestion buttons                     | 2026-04-21  | `17e5afa` | 2026-04-21  |                                            |
 | T-108 | Android app UI, Markdown rendering, push                    | 2026-04-21  | `fbe9c5a` | 2026-04-21  |                                            |
 | T-109 | Unified channel routing                                     | 2026-04-22  | `c8f932e` | 2026-04-22  |                                            |
@@ -28,14 +28,14 @@ Format and lifecycle rules: see [`task-tracking-design.md`](task-tracking-design
 | T-116 | Away-mode enforcement shipped                               | 2026-04-23  | `7b9b00d` | 2026-04-23  |                                            |
 | T-117 | Channel hide + away-mode toggle                             | 2026-04-24  | `82a2a21` | 2026-04-24  |                                            |
 | T-118 | High-quality adaptive icon                                  | 2026-04-24  | `0ccdb4c` | 2026-04-24  |                                            |
-| T-119 | Cwd-as-channel + per-cwd away mode                          | 2026-04-24  | `217649f` | 2026-04-24  | Merged in PR #2 (`fa722df`); author-date 2026-04-25, journal-dated. |
+| T-119 | Cwd-as-channel + per-cwd away mode                          | 2026-04-24  | `217649f` | 2026-04-24  | PR #2 (`fa722df`)                          |
 | T-120 | Wear OS app — base functionality, deployed to physical app  | 2026-04-25  | `66e3b92` | missing     | Retro backfill — see Anomalies.            |
 | T-121 | Wear OS — message order fix + markdown rendering            | 2026-04-25  | `eadf178` | missing     | Retro backfill — see Anomalies.            |
 | T-122 | Wear OS — push notifications                                | 2026-04-25  | `b348753` | missing     | Retro backfill — see Anomalies.            |
 | T-123 | Android — restore suggestion buttons in phone app           | 2026-04-26  | `a4410e2` | missing     | Retro backfill — see Anomalies.            |
 | T-124 | Wear OS — away-mode confirmation + bulk-respond UI          | 2026-04-26  | `7e15470` | missing     | Retro backfill — see Anomalies.            |
 | T-125 | Slice-M follow-ups                                          | 2026-04-27  | `48b4d0c` | 2026-04-27  |                                            |
-| T-126 | Android — in-app markdown viewer, file-download UX, bubble refresh, wear away-mode pill | 2026-04-27  | `e698f5b` | missing     | Retro backfill — see Anomalies. Significant client surface added without backlog or journal coverage. |
+| T-126 | Android — in-app markdown viewer, file-download UX, bubble refresh, wear away-mode pill | 2026-04-27  | `e698f5b` | missing     | Retro backfill — see Anomalies.            |
 | T-127 | Collab termination protocol, parallel open                  | 2026-04-27  | `f8766ba` | 2026-04-27  |                                            |
 | T-128 | Multi-sender reply UX                                       | 2026-04-27  | `0ef2668` | 2026-04-27  |                                            |
 | T-129 | Cancel prop, stateful HTTP, schema repair                   | 2026-04-30  | `8a3110f` | 2026-04-30  |                                            |
