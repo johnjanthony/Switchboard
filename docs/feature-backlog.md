@@ -7,6 +7,7 @@ Open/proposed features for Switchboard, grouped by where the work lives. Shipped
 ## Server
 
 ### Persistence layer (Firebase hybrid write-behind)
+<!-- id: T-001 | status: open | surfaced: 2026-04-28 | priority: med | tags: server,persistence -->
 
 **Surfaced 2026-04-28** in the codebase review (`docs/2026-04-28-codebase-review.md` H1). Deferred at John's call.
 
@@ -32,6 +33,7 @@ Open/proposed features for Switchboard, grouped by where the work lives. Shipped
 ---
 
 ### Replace `firebase_admin.db.listen()` with own SSE consumer (M1 fallback)
+<!-- id: T-002 | status: open | surfaced: 2026-05-01 | priority: med | tags: server,firebase -->
 
 **Surfaced 2026-05-01** in `docs/superpowers/specs/2026-05-01-listener-supervision-and-healthz-design.md` Q4.
 
@@ -46,6 +48,7 @@ Open/proposed features for Switchboard, grouped by where the work lives. Shipped
 ---
 
 ### Collab session garbage collection
+<!-- id: T-003 | status: open | surfaced: 2026-05-01 | priority: low | tags: server,collab -->
 
 **Surfaced 2026-05-01** in `docs/superpowers/specs/2026-05-01-listener-supervision-and-healthz-design.md` Q5.
 
@@ -60,6 +63,7 @@ Open/proposed features for Switchboard, grouped by where the work lives. Shipped
 ---
 
 ### Non-blocking partner messaging — *tentative; needs design pass* (collab protocol enhancement)
+<!-- id: T-004 | status: open | surfaced: 2026-04-29 | priority: low | tags: server,collab -->
 
 **Surfaced 2026-04-29** in conversation while reviewing the 2026-04-28 sweep. **Not greenlit** — added here so it isn't lost, but a real design pass is needed before implementation. Wait until the H8/H9/H10 fixes have been shaken out in production use (i.e. don't bolt this on while the recent collab-protocol work is still settling).
 
@@ -102,18 +106,21 @@ A new guard would be needed alongside the new tool. Possible shapes:
 ---
 
 ### Log rotation
+<!-- id: T-005 | status: open | priority: low | tags: server,logs -->
 
 `logs/switchboard.jsonl` grows forever. At low volume this is a months-out concern, but worth a simple size-based rotation (`logs/switchboard.jsonl.1`, `.2`, with a cap).
 
 ---
 
 ### `ask_human` rate limiting
+<!-- id: T-006 | status: open | priority: low | tags: server -->
 
 Per-channel token bucket on `notify_human` and `send_document_human` shipped 2026-04-23; `ask_human` is not yet rate-limited. Low priority — `ask_human` is self-paced by the human reply, unlike fire-and-forget notifications.
 
 ---
 
 ### Database ageout sweep
+<!-- id: T-007 | status: open | priority: med | tags: server,firebase -->
 
 Periodically clean up old questions, responses, and documents from Firebase (e.g., delete entries older than 30 days). This prevents the Realtime Database and Storage from growing indefinitely and keeps the Android app's history retrieval performant.
 
@@ -122,6 +129,7 @@ Periodically clean up old questions, responses, and documents from Firebase (e.g
 ## Client
 
 ### Web Dashboard for Conversation Monitoring & Interaction
+<!-- id: T-008 | status: open | surfaced: 2026-04-23 | priority: med | tags: client,web -->
 
 **Proposed 2026-04-23.** A desktop-based web interface to supplement the Android app, allowing for more comfortable long-form replies and better visibility into multiple simultaneous sessions.
 
@@ -142,6 +150,7 @@ Periodically clean up old questions, responses, and documents from Firebase (e.g
 ---
 
 ### Android: suggestion buttons as notification actions
+<!-- id: T-009 | status: open | priority: med | tags: client,android -->
 
 When `ask_human` is called with suggestions, render them as tappable action buttons on the notification banner so the developer can reply without opening the app.
 
@@ -157,6 +166,7 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 ---
 
 ### Android: pinch-to-resize text in message and document viewers
+<!-- id: T-010 | status: open | surfaced: 2026-05-02 | priority: med | tags: client,android -->
 
 **Surfaced 2026-05-02.**
 
@@ -178,12 +188,14 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 ---
 
 ### Android: investigate MALFORMED MESSAGE deserialization warnings
+<!-- id: T-011 | status: open | surfaced: 2026-04-27 | priority: low | tags: client,android,bug -->
 
 **Surfaced 2026-04-27** while debugging spawn-collision. `MainViewModel.kt` lines 175-198 log `MALFORMED MESSAGE at channels/<key>/messages/<id>` with `Value Type: java.lang.String, Value Content: <empty>` when `getValue(ChannelMessage::class.java)` throws. Direct Firebase admin queries against the same paths return correctly-shaped dicts, so the data IS dict-shaped at rest — the phone's listener appears to fire on a transient state where `snap.value` is a String. The catch swallows the error, so it's log noise plus an occasional missed render rather than data loss. Low priority — investigate whether it's a Firebase SDK race, a partial-write listener fire, or something else, and either suppress the log noise or fix the deserialization path.
 
 ---
 
 ### Wear OS: notification tap should open the watch app on the relevant channel
+<!-- id: T-012 | status: open | surfaced: 2026-05-01 | priority: med | tags: client,wear -->
 
 **Surfaced 2026-05-01.** The watch app's notifications are built in `SwitchboardFirebaseMessagingService.showNotification` (`android/wear/src/main/java/io/github/johnjanthony/switchboard/fcm/SwitchboardFirebaseMessagingService.kt:75`) with `NotificationCompat.BigTextStyle` and a `setContentIntent` carrying `EXTRA_AGENT_ID` / `EXTRA_MESSAGE_ID`. In practice they render as plain Wear OS notifications — the affordance to drop into the Switchboard wear app from the notification is not obvious, and the surface feels like a default-platform notification rather than part of the app.
 
@@ -202,6 +214,7 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 ---
 
 ### Android Auto: messaging-style integration for `ask_human` (with optional voice spawn)
+<!-- id: T-013 | status: open | surfaced: 2026-05-01 | priority: med | tags: client,auto -->
 
 **Surfaced 2026-05-01.** A standalone Android Auto application that surfaces Switchboard `ask_human` traffic the way Auto's default messaging-app integration does — see and hear pending questions while driving, respond verbally, hands-free.
 
@@ -224,6 +237,7 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 ---
 
 ### Android: App Actions for home Google Assistant voice use
+<!-- id: T-014 | status: open | surfaced: 2026-05-01 | priority: med | tags: client,assistant -->
 
 **Surfaced 2026-05-01** while talking through home Google Assistant integration options. Background: the obvious "voice app on Nest speakers" path (Conversational Actions) was killed by Google in June 2023, and the proposed replacement (third-party Gemini Extensions) isn't broadly open as of early 2026. Smart Home actions are the wrong shape (IoT-only). With no Home Assistant install in the picture, the realistic home-use surface is **the phone itself** — Pixel + Pixel Buds / Pixel Watch puts Google Assistant in John's ear while he's cooking, watching TV, or otherwise away from his desk but inside the house.
 
@@ -250,6 +264,7 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 ## Combined (server + client)
 
 ### Server presence heartbeat (offline indicator on the phone)
+<!-- id: T-015 | status: open | surfaced: 2026-05-02 | priority: med | tags: server,android -->
 
 **Surfaced 2026-05-02.** Companion to the no-login spawn gate (`server/spawn.py:_user_has_interactive_session`) shipped the same day, which covers the "desktop on but no user logged in" failure case server-side. This entry covers the harder case the server can't detect itself: **desktop powered off / network unreachable**. Without something like this, an off-desktop spawn just times out silently — Firebase queues the command, the app shows nothing, John doesn't know whether to wait or go reboot the box.
 
@@ -275,6 +290,7 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 ---
 
 ### Spawn dialog: "resume last session" option
+<!-- id: T-016 | status: open | surfaced: 2026-05-02 | priority: med | tags: server,android -->
 
 **Surfaced 2026-05-02.**
 
@@ -296,6 +312,7 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 ---
 
 ### Inbound document/log upload (phone → agent)
+<!-- id: T-017 | status: open | surfaced: 2026-05-02 | priority: med | tags: server,android -->
 
 **Surfaced 2026-05-02.**
 
@@ -326,6 +343,7 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 ---
 
 ### Pause button on each channel (collab interrupt)
+<!-- id: T-018 | status: open | surfaced: 2026-05-02 | priority: med | tags: server,android -->
 
 **Surfaced 2026-05-02.**
 
@@ -350,6 +368,7 @@ When `ask_human` is called with suggestions, render them as tappable action butt
 ---
 
 ### Away-Mode Framing Check (terminal-leak detection mid-turn)
+<!-- id: T-019 | status: open | priority: low | tags: server,hook -->
 
 The Stop hook blocks any turn that ends without an `ask_human` / `notify_human` / `send_document_human` call while away-mode is active. SKILL.md "tool call IS the acknowledgment" reinforces that on the agent side. Together those cover the turn-end case.
 
@@ -360,12 +379,14 @@ Low priority — practical leakage is rare given current SKILL adherence. Pickup
 ---
 
 ### Skill Instruction Polish
+<!-- id: T-020 | status: open | priority: low | tags: docs,skill -->
 
 Periodically review and harden `SKILL.md` based on failure patterns (e.g., the 2026-04-23 terminal leak incident). Edit only the in-repo `skill/SKILL.md` — the user-level installs at `~/.claude/skills/switchboard/` and `~/.gemini/skills/switchboard/` are symlinks to it, so changes flow through automatically.
 
 ---
 
 ### Multi-Surface Voice & Summary Integration
+<!-- id: T-021 | status: open | surfaced: 2026-04-25 | priority: high | tags: server,client -->
 
 **Proposed 2026-04-25.** Major multi-surface UX initiative spanning phone, Wear OS, and Android Auto. Introduces a Firebase Cloud Function (Gen 2) that uses Gemini 3.0 Flash to transform raw agent updates into a `display_metadata` object — surface-specific strings tuned for each device (`summary_phone`, `glance_wrist`, `speech_payload`, `progress_state`). Surfaces consume the metadata via `Notification.ProgressStyle` + `MessagingStyle`, with TTS read-aloud, RemoteInput voice-reply, an Android Auto messaging bridge, and a remote-session kill switch. Includes smart-throttling, offline cache for the last N speech payloads, and cross-surface notification cancel-sync.
 
@@ -376,16 +397,14 @@ Requires Firebase Blaze plan upgrade (Cloud Functions Gen 2). Spec breaks into 1
 ---
 
 ### Timeout snooze via Android app
+<!-- id: T-022 | status: open | priority: med | tags: server,android -->
 
 Add a "Snooze" button to the `ask_human` notification/tab that extends the window by 2h. Implementation: Android app writes `snooze: true` to the question object; gateway intercepts the change and resets the wait clock in the registry.
 
 ---
 
-## Explicitly deferred / not recommended
+## Explicitly deferred
 
-- **Disconnect detection for unattended agent crash.** Investigated. Starlette/uvicorn does detect the dropped TCP/SSE connection, but FastMCP's transport doesn't propagate that to `ServerSession._in_flight[request_id]` or `responder.cancel()` — wiring it requires an upstream mcp-library patch, monkey-patching `ServerSession.__init__` from ASGI middleware, or a custom transport subclass. None are clean. Heartbeat alternative not pursued (per-turn round-trip not justified given the typical kill-and-respawn and cancel-tool-call paths are already covered). The 24h `ask_human` timeout is the backstop. Revisit if the MCP SDK adds a disconnect-propagation hook.
-- **Gemini CLI cancel notifications.** Not actionable server-side. Per snoop-log evidence, Gemini CLI does not send `notifications/cancelled` over MCP when the user cancels a tool call. File an issue with the Gemini CLI repo if it matters; nothing to fix here.
-- **Webhook instead of long-polling getUpdates.** Legacy Telegram concept, no longer applicable.
-- **Multi-user chat support.** Single-developer model is baked into the spec. Don't touch until there's a concrete second user.
-- **MarkdownV2** — Telegram flavour. Its 18-character escape list (including `.` and `-`) makes unescaped user strings a footgun; one stray period rejects the whole message. Obsolete after Telegram removal.
-- **Java rewrite** (considered 2026-04-20): no meaningful gain over NSSM for a single-developer tool. Python MCP SDK is the reference implementation; rewrite cost not justified.
+Rejected approaches with preserved reasoning live in [`docs/decisions-rejected.md`](decisions-rejected.md).
+
+*(No items currently in `deferred` status. When one surfaces, it lives here with `status: deferred` frontmatter and a documented revisit trigger.)*
