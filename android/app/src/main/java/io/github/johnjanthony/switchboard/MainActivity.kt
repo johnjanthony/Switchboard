@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.navigation.NavType
@@ -308,6 +309,7 @@ fun MarkdownText(
 	format: String,
 	color: Color = Color.Unspecified,
 	isSelectable: Boolean = true,
+	fontScale: Float = 1f,
 	onInternalLinkClick: ((TextView, String) -> Unit)? = null,
 ) {
 	if (format == "markdown") {
@@ -337,6 +339,9 @@ fun MarkdownText(
 				if (color != Color.Unspecified) {
 					view.setTextColor(textColor)
 				}
+				// Apply fontScale BEFORE markwon.setMarkdown so RelativeSizeSpan-based
+				// header/code sizing scales with the base.
+				view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f * fontScale)
 				val markwon = io.noties.markwon.Markwon.builder(view.context)
 					.usePlugin(io.noties.markwon.html.HtmlPlugin.create())
 					.usePlugin(io.noties.markwon.ext.tables.TablePlugin.create(view.context))
@@ -362,6 +367,12 @@ fun MarkdownText(
 			}
 		)
 	} else {
-		Text(content, style = MaterialTheme.typography.bodyMedium, color = color)
+		Text(
+			content,
+			style = MaterialTheme.typography.bodyMedium,
+			fontSize = 14.sp * fontScale,
+			lineHeight = 17.sp * fontScale,
+			color = color,
+		)
 	}
 }

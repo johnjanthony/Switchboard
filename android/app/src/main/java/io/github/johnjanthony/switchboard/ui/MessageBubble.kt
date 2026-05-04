@@ -50,6 +50,7 @@ fun MessageBubble(
 	isAnswered: Boolean = false,
 	timestampOpacity: Float = 0f,
 	isSelected: Boolean = false,
+	fontScale: Float = 1f,
 	onClick: () -> Unit = {},
 	onDownloadClick: (url: String, filename: String) -> Unit = { _, _ -> },
 	onDownloadLongClick: (url: String, filename: String) -> Unit = { _, _ -> },
@@ -158,7 +159,7 @@ fun MessageBubble(
 					},
 			) {
 				Column(modifier = Modifier.padding(12.dp)) {
-					MarkdownText(content = message.text, format = message.format, color = textColor, isSelectable = false)
+					MarkdownText(content = message.text, format = message.format, color = textColor, isSelectable = false, fontScale = fontScale)
 
 					if (!message.url.isNullOrBlank() && !message.filename.isNullOrBlank()) {
 						Spacer(Modifier.height(8.dp))
@@ -408,5 +409,41 @@ fun PreviewMessageBubbleTimestampDifferentDay() {
 			),
 			timestampOpacity = 1f,
 		)
+	}
+}
+
+@Preview(showBackground = true, name = "Font scale: 1.0 / 1.5 / 2.5", heightDp = 700)
+@Composable
+fun PreviewMessageBubbleFontScales() {
+	SwitchboardTheme {
+		Column {
+			MessageBubble(
+				message = ChannelMessage(
+					sender = "Claude",
+					type = "notify",
+					text = "**Bold** text and `inline code` at fontScale 1.0.",
+					timestamp = "2026-05-04T12:00:00+00:00",
+				),
+				fontScale = 1.0f,
+			)
+			MessageBubble(
+				message = ChannelMessage(
+					sender = "Claude",
+					type = "notify",
+					text = "**Bold** text and `inline code` at fontScale 1.5.",
+					timestamp = "2026-05-04T12:00:00+00:00",
+				),
+				fontScale = 1.5f,
+			)
+			MessageBubble(
+				message = ChannelMessage(
+					sender = "Claude",
+					type = "notify",
+					text = "**Bold** text and `inline code` at fontScale 2.5.",
+					timestamp = "2026-05-04T12:00:00+00:00",
+				),
+				fontScale = 2.5f,
+			)
+		}
 	}
 }

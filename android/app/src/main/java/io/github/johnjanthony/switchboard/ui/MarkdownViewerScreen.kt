@@ -1,5 +1,8 @@
 package io.github.johnjanthony.switchboard.ui
 
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -15,8 +18,13 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -35,6 +43,8 @@ fun MarkdownViewerScreen(
 	val scrollState = rememberScrollState()
 	val coroutineScope = rememberCoroutineScope()
 	val density = LocalDensity.current
+	val context = androidx.compose.ui.platform.LocalContext.current
+	var viewerFontScale by remember { androidx.compose.runtime.mutableFloatStateOf(context.viewerFontScale()) }
 
 	Scaffold(
 		topBar = {
@@ -59,6 +69,29 @@ fun MarkdownViewerScreen(
 			modifier = Modifier
 				.fillMaxSize()
 				.padding(padding)
+				.pointerInput(Unit) {
+					awaitEachGesture {
+						awaitFirstDown(requireUnconsumed = false)
+						var didPinch = false
+						do {
+							val event = awaitPointerEvent()
+							if (event.changes.size >= 2) {
+								val zoom = event.calculateZoom()
+								if (zoom != 1f) {
+									didPinch = true
+									val next = (viewerFontScale * zoom).coerceIn(MIN_FONT_SCALE, MAX_FONT_SCALE)
+									viewerFontScale = next
+									event.changes.forEach { it.consume() }
+								}
+							}
+						} while (event.changes.any { it.pressed })
+						if (didPinch) {
+							val snapped = snapFontScale(viewerFontScale)
+							viewerFontScale = snapped
+							context.setViewerFontScale(snapped)
+						}
+					}
+				}
 				.verticalScroll(scrollState)
 				.padding(16.dp),
 		) {
@@ -67,6 +100,7 @@ fun MarkdownViewerScreen(
 				format = "markdown",
 				color = MaterialTheme.colorScheme.onSurfaceVariant,
 				isSelectable = true,
+				fontScale = viewerFontScale,
 			) { textView, link ->
 				val anchor = link.removePrefix("#").lowercase()
 				val layout = textView.layout ?: return@MarkdownText
