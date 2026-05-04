@@ -72,6 +72,7 @@ fun SessionViewScreen(
 	onSubmitReply: (sender: String, text: String, requestId: String?) -> Unit,
 	onDownloadFile: (url: String, filename: String) -> Unit,
 	onLongPressDownloadFile: (url: String, filename: String) -> Unit,
+	onMarkMessageOpened: (msgId: String) -> Unit,
 	onShowTabInfo: () -> Unit,
 ) {
 	val listState = rememberLazyListState()
@@ -265,7 +266,10 @@ fun SessionViewScreen(
 									selectedRequestId = msg.request_id
 								}
 							},
-							onDownloadClick = onDownloadFile,
+							onDownloadClick = { url, filename ->
+								onDownloadFile(url, filename)
+								onMarkMessageOpened(msgId)
+							},
 							onDownloadLongClick = onLongPressDownloadFile,
 						)
 					}

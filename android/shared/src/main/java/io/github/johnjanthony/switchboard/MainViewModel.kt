@@ -443,6 +443,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		return _channels.value.values.any { it.pendingQuestions.isNotEmpty() }
 	}
 
+	fun markMessageOpened(cwdKey: String, msgId: String) {
+		channelsRef.child(cwdKey).child("messages").child(msgId).child("opened").setValue(true)
+	}
+
 	fun submitReply(cwdKey: String, sender: String, text: String, requestId: String?) {
 		val key = requestId ?: "${cwdKey}__$sender"
 		responsesRef.child(key).setValue(mapOf(

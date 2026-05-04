@@ -18,6 +18,7 @@ data class ChannelMessage(
 	@get:PropertyName("rejected") @set:PropertyName("rejected") var rejected: Boolean = false,
 	@get:PropertyName("title") @set:PropertyName("title") var title: String? = null,
 	@get:PropertyName("attached_to_msg_id") @set:PropertyName("attached_to_msg_id") var attached_to_msg_id: String? = null,
+	@get:PropertyName("opened") @set:PropertyName("opened") var opened: Boolean = false,
 )
 
 data class Pending(
