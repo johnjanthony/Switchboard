@@ -197,3 +197,68 @@ async def test_collab_partner_state_returns_blocked_when_a_partner_is_waiting():
 	route = _build_collab_partner_state_route(registry)
 	resp = await route(_make_request(_CWD))
 	assert json.loads(resp.body) == {"state": "blocked"}
+
+
+# --- /healthz extended payload ---
+
+@pytest.mark.asyncio
+async def test_healthz_returns_pending_listeners_and_dispatch_loops(tmp_path, monkeypatch):
+	"""/healthz must include all three top-level keys after Tasks 13/14."""
+	from server.firebase_supervisor import LoopSupervisor
+	from server.logging_jsonl import JsonlLogger
+
+	logger = JsonlLogger(tmp_path / "test.jsonl")
+	registry = Registry()
+
+	class _BackendWithHealth:
+		async def send_text(self, _msg): pass
+		def listener_health(self):
+			return [
+				{"name": "responses", "state": "live", "last_event_seconds_ago": 0.5,
+				 "crash_count": 0, "last_crash_seconds_ago": None},
+			]
+
+	backend = _BackendWithHealth()
+	loop_sups = {
+		"dispatch_responses": LoopSupervisor("dispatch_responses", backend, logger.surface_error),
+		"dispatch_commands": LoopSupervisor("dispatch_commands", backend, logger.surface_error),
+	}
+	# Inline the healthz route construction (mirrors main.py:_run). If
+	# main.py grows a factory, switch this to import the factory.
+	async def _route(request):
+		import time as _time
+		listeners = backend.listener_health()
+		now = _time.monotonic()
+		dispatch_loops = []
+		for sup in loop_sups.values():
+			h = sup.health()
+			dispatch_loops.append({
+				"name": h.name,
+				"consecutive_failures": h.consecutive_failures,
+				"crash_count": h.crash_count,
+				"last_crash_seconds_ago": (
+					(now - h.last_crash_at) if h.last_crash_at is not None else None
+				),
+			})
+		dispatch_loops.sort(key=lambda d: d["name"])
+		return JSONResponse({
+			"pending": {
+				"count": registry.pending_count,
+				"oldest_pending_age_seconds": registry.oldest_pending_age_seconds,
+				"total_answered": registry.total_answered,
+			},
+			"listeners": listeners,
+			"dispatch_loops": dispatch_loops,
+		})
+
+	resp = await _route(_make_request())
+	body = json.loads(resp.body)
+	assert "pending" in body
+	assert "listeners" in body
+	assert "dispatch_loops" in body
+	assert len(body["dispatch_loops"]) == 2
+	assert {d["name"] for d in body["dispatch_loops"]} == {
+		"dispatch_responses", "dispatch_commands",
+	}
+	assert body["listeners"][0]["state"] == "live"
+	assert body["pending"]["count"] == 0

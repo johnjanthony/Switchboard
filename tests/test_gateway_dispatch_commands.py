@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from server.logging_jsonl import JsonlLogger
+from tests.conftest import _make_loop_supervisor
 
 
 @pytest.fixture
@@ -32,7 +34,8 @@ async def test_dispatch_commands_routes_to_handler(logger):
 	backend = MagicMock()
 	backend.poll_commands = fake_poll_commands
 
-	task = asyncio.create_task(dispatch_commands(spawn_handler, backend, logger))
+	sup = _make_loop_supervisor(backend, logger, name="dispatch_commands")
+	task = asyncio.create_task(dispatch_commands(spawn_handler, backend, logger, sup))
 	await asyncio.sleep(0)
 	task.cancel()
 	with pytest.raises(asyncio.CancelledError):
@@ -64,7 +67,8 @@ async def test_dispatch_commands_continues_after_handler_exception(logger):
 	backend = MagicMock()
 	backend.poll_commands = fake_poll_commands
 
-	task = asyncio.create_task(dispatch_commands(spawn_handler, backend, logger))
+	sup = _make_loop_supervisor(backend, logger, name="dispatch_commands")
+	task = asyncio.create_task(dispatch_commands(spawn_handler, backend, logger, sup))
 	# Sleep 50ms — long enough for the to_thread-based async logger writes
 	# (now triggered on the exception path) to complete and the loop to
 	# advance to the second item.
@@ -96,7 +100,8 @@ async def test_dispatch_commands_logs_handler_exception(tmp_path, logger):
 	backend = MagicMock()
 	backend.poll_commands = fake_poll_commands
 
-	task = asyncio.create_task(dispatch_commands(spawn_handler, backend, logger))
+	sup = _make_loop_supervisor(backend, logger, name="dispatch_commands")
+	task = asyncio.create_task(dispatch_commands(spawn_handler, backend, logger, sup))
 	# Sleep 50ms — long enough for the to_thread-based async logger
 	# write to flush to disk before we read the log file.
 	await asyncio.sleep(0.05)
@@ -135,7 +140,8 @@ async def test_dispatch_commands_restarts_after_generator_crash(tmp_path):
 	backend = MagicMock()
 	backend.poll_commands = fake_poll_commands
 
-	task = asyncio.create_task(dispatch_commands(spawn_handler, backend, logger))
+	sup = _make_loop_supervisor(backend, logger, name="dispatch_commands")
+	task = asyncio.create_task(dispatch_commands(spawn_handler, backend, logger, sup))
 	# Let the crash + asyncio.sleep(1.0) elapse, then the second poll_commands call starts
 	await asyncio.sleep(1.1)
 	task.cancel()
@@ -177,7 +183,8 @@ async def test_dispatch_commands_fanned_out(logger):
 
 	backend.poll_commands = fake_poll_commands
 
-	task = asyncio.create_task(dispatch_commands(spawn_handler, backend, logger))
+	sup = _make_loop_supervisor(backend, logger, name="dispatch_commands")
+	task = asyncio.create_task(dispatch_commands(spawn_handler, backend, logger, sup))
 
 	# Wait for the first command to start
 	await asyncio.wait_for(start_event.wait(), timeout=1.0)
@@ -197,3 +204,47 @@ async def test_dispatch_commands_fanned_out(logger):
 		await task
 	except asyncio.CancelledError:
 		pass
+
+
+@pytest.mark.asyncio
+async def test_dispatch_commands_routes_crashes_through_supervisor(tmp_path):
+	"""When poll_commands raises, the LoopSupervisor's record_crash is called
+	(observable via crash_count incrementing). Alert cadence math is covered in
+	tests/test_firebase_supervisor.py — this is a wiring smoke test."""
+	from server.logging_jsonl import JsonlLogger
+	from server.firebase_supervisor import LoopSupervisor
+	from server.gateway import dispatch_commands
+
+	logger = JsonlLogger(tmp_path / "test.jsonl")
+
+	class _Backend:
+		def __init__(self) -> None:
+			self.alerts: list[str] = []
+
+		async def send_text(self, msg: str) -> None:
+			self.alerts.append(msg)
+
+		async def poll_commands(self):
+			# Async generator that raises on every iteration.
+			raise RuntimeError("boom")
+			yield  # unreachable; required to make this an async generator
+
+	backend = _Backend()
+
+	# Threshold above any crash count we'll hit, to keep the test isolated
+	# from the alert-cadence path (covered separately).
+	sup = LoopSupervisor("dispatch_commands", backend, logger.surface_error,
+	                     initial_alert_threshold=10_000)
+
+	task = asyncio.create_task(
+		dispatch_commands(spawn_handler=None, backend=backend, logger=logger, supervisor=sup)
+	)
+	# record_crash sleeps 1.0s on the first crash; wait long enough for the
+	# loop to complete one crash cycle (same cadence as the restart test).
+	await asyncio.sleep(1.3)
+	task.cancel()
+	with contextlib.suppress(asyncio.CancelledError):
+		await task
+
+	assert sup.health().crash_count >= 1, "supervisor did not see any crashes"
+	assert backend.alerts == [], "no alerts expected with high threshold"

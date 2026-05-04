@@ -10,7 +10,6 @@ data class ChannelMessage(
 	@get:PropertyName("text") @set:PropertyName("text") var text: String = "",
 	@get:PropertyName("url") @set:PropertyName("url") var url: String? = null,
 	@get:PropertyName("request_id") @set:PropertyName("request_id") var request_id: String? = null,
-	@get:PropertyName("response_text") @set:PropertyName("response_text") var response_text: String? = null,
 	@get:PropertyName("timestamp") @set:PropertyName("timestamp") var timestamp: String? = null,
 	@get:PropertyName("format") @set:PropertyName("format") var format: String = "plain",
 	@get:PropertyName("suggestions") @set:PropertyName("suggestions") var suggestions: List<String>? = null,
@@ -18,6 +17,8 @@ data class ChannelMessage(
 	@get:PropertyName("cancelled") @set:PropertyName("cancelled") var cancelled: Boolean = false,
 	@get:PropertyName("rejected") @set:PropertyName("rejected") var rejected: Boolean = false,
 	@get:PropertyName("title") @set:PropertyName("title") var title: String? = null,
+	@get:PropertyName("attached_to_msg_id") @set:PropertyName("attached_to_msg_id") var attached_to_msg_id: String? = null,
+	@get:PropertyName("opened") @set:PropertyName("opened") var opened: Boolean = false,
 )
 
 data class Pending(
@@ -42,6 +43,7 @@ data class Channel(
 	val pendingResponses: Int = 0,
 	val pendingQuestions: Map<String, Pending> = emptyMap(),
 	val messages: List<Pair<String, ChannelMessage>> = emptyList(),
+	val answeredQuestionMsgIds: Set<String> = emptySet(),
 ) {
 	val displayCount: Int get() = kotlin.math.max(unreadCount, pendingResponses)
 }

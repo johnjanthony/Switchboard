@@ -189,7 +189,7 @@ private fun SwitchboardNavHost(
 
 			SessionViewScreen(
 				channel = channel,
-				messages = channel.messages.sortedBy { it.second.timestamp },
+				messages = channel.messages,
 				awayActive = awayActive,
 				isAwayOverride = isOverride,
 				globalAway = globalAway,
@@ -201,6 +201,7 @@ private fun SwitchboardNavHost(
 				onSubmitReply = { sender, text, requestId -> viewModel.submitReply(cwdKey, sender, text, requestId) },
 				onDownloadFile = { url, filename -> viewModel.downloadAndOpenFile(context, url, filename) },
 				onLongPressDownloadFile = { url, filename -> viewModel.saveFileToDownloads(context, url, filename) },
+				onMarkMessageOpened = { msgId -> viewModel.markMessageOpened(cwdKey, msgId) },
 				onShowTabInfo = { infoOpen = true },
 			)
 			if (infoOpen) {

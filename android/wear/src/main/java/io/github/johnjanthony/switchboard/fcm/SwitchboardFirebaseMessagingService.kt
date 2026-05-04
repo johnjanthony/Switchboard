@@ -90,6 +90,13 @@ class SwitchboardFirebaseMessagingService : FirebaseMessagingService() {
 		}
 		val priority = if (messageType == "question") NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT
 
+		val wearableExtender = NotificationCompat.WearableExtender()
+			.setHintContentIntentLaunchesActivity(true) // Prioritize launching the contentIntent on tap
+		
+		if (messageId != null) {
+			wearableExtender.dismissalId = messageId
+		}
+
 		val notification = NotificationCompat.Builder(this, notificationChannelId)
 			.setSmallIcon(android.R.drawable.ic_dialog_info)
 			.setContentTitle(title)
@@ -98,6 +105,8 @@ class SwitchboardFirebaseMessagingService : FirebaseMessagingService() {
 			.setAutoCancel(true)
 			.setPriority(priority)
 			.setContentIntent(pendingIntent)
+			.setLocalOnly(true) // Prevent bridging to/from phone
+			.extend(wearableExtender)
 			.build()
 
 		val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

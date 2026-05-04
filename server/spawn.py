@@ -9,11 +9,11 @@ import secrets
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from server.canonicalization import canonicalize_cwd
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
+from server.messenger import ChannelLifecycle, InjectPort, MessageWriter
 from server.registry import Registry
 
 RATE_LIMIT_SECONDS = 60
@@ -85,9 +85,13 @@ def _get_backend_name(backend: str) -> str:
 	return "Gemini" if backend == "gemini" else "Claude"
 
 
+class _SpawnBackend(MessageWriter, InjectPort, ChannelLifecycle):
+	"""Backend surface used by SpawnHandler."""
+
+
 class SpawnHandler:
 	def __init__(
-		self, config: Config, backend: Any, logger: JsonlLogger, registry: Registry
+		self, config: Config, backend: _SpawnBackend, logger: JsonlLogger, registry: Registry
 	) -> None:
 		self._spawn_root = config.spawn_root
 		self._pending_dir = Path(config.log_path).parent
@@ -130,9 +134,52 @@ class SpawnHandler:
 		# the dispatcher.
 
 
+	async def _user_has_interactive_session(self) -> bool:
+		"""Return True if any user has an interactive (Active or Disconnected)
+		session on this host. Used as a precondition before /spawn — the
+		scheduled task that launches `wt` requires a desktop session to write
+		into, and `schtasks /run` reports success even when no session exists,
+		landing a Firebase channel with no agent behind it.
+
+		Disconnected (`Disc`) sessions count: an agent spawned now becomes
+		visible whenever the user reconnects (e.g. via RDP).
+
+		Degrades open: if `quser` is missing or fails to launch, return True
+		so the existing schtasks failure path stays the source of truth for
+		Windows-toolchain problems."""
+		try:
+			proc = await asyncio.create_subprocess_exec(
+				"quser",
+				stdout=asyncio.subprocess.PIPE,
+				stderr=asyncio.subprocess.PIPE,
+			)
+			stdout, _ = await proc.communicate()
+		except Exception:
+			return True
+
+		if proc.returncode != 0:
+			# quser exits non-zero when no users are logged on.
+			return False
+
+		text = stdout.decode("utf-8", errors="replace")
+		# Header line first; data rows after. Token-scan is robust to the
+		# column-shift that happens when SESSIONNAME is blank for Disc sessions.
+		for line in text.splitlines()[1:]:
+			tokens = line.split()
+			if any(t in ("Active", "Disc") for t in tokens):
+				return True
+		return False
+
 	async def _handle_spawn(self, text: str) -> None:
 		if self._spawn_root is None:
 			await self._backend.send_text("Spawn not configured.")
+			return
+
+		if not await self._user_has_interactive_session():
+			await self._backend.send_text(
+				"Cannot spawn: no one is logged in to the desktop. "
+				"Sign in (locally or via RDP) and try again."
+			)
 			return
 
 		now = datetime.now(timezone.utc)

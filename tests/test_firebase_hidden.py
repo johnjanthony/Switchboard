@@ -275,43 +275,6 @@ async def test_mark_question_cancelled_noop_when_not_found():
 	assert backend._cancelled_msg_ids == []
 
 
-class _UpdateTitleBackend(_FakeBackend):
-	"""Backend that stubs update_channel_title and update_last_activity."""
-
-	def __init__(self) -> None:
-		super().__init__()
-		self._title_writes: list[tuple[str, str]] = []
-		self._activity_writes: list[tuple[str, str, str]] = []
-
-	async def update_channel_title(self, cwd: str, title: str) -> None:
-		self._title_writes.append((cwd, title[:80]))
-
-	async def update_last_activity(self, cwd: str, timestamp_iso: str, preview: str) -> None:
-		self._activity_writes.append((cwd, timestamp_iso, preview[:120]))
-
-
-@pytest.mark.asyncio
-async def test_update_channel_title_records_write():
-	backend = _UpdateTitleBackend()
-	await backend.update_channel_title("c:/work/proj", "New Title")
-	assert backend._title_writes == [("c:/work/proj", "New Title")]
-
-
-@pytest.mark.asyncio
-async def test_update_channel_title_truncates():
-	backend = _UpdateTitleBackend()
-	long_title = "y" * 100
-	await backend.update_channel_title("c:/work/proj", long_title)
-	assert backend._title_writes[0][1] == "y" * 80
-
-
-@pytest.mark.asyncio
-async def test_update_last_activity_records_write():
-	backend = _UpdateTitleBackend()
-	await backend.update_last_activity("c:/work/proj", "2026-04-24T12:00:00+00:00", "hello world")
-	assert backend._activity_writes == [("c:/work/proj", "2026-04-24T12:00:00+00:00", "hello world")]
-
-
 class _MirrorFakeBackend(FirebaseBackend):
 	def __init__(self) -> None:
 		self._mirror_writes: list[tuple[str | None, bool]] = []

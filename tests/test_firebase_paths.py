@@ -91,3 +91,48 @@ async def test_reset_all_away_mode_with_no_channels_still_writes_global_false(ba
 	await be.reset_all_away_mode()
 	payload = mock_db.reference.return_value.update.call_args.args[0]
 	assert payload == {"global_settings/away_mode": False}
+
+
+@pytest.mark.asyncio
+async def test_write_channel_message_persists_attached_to_msg_id(backend):
+	"""When attached_to_msg_id is passed, it lands on the Firebase message payload."""
+	be, mock_db = backend
+	captured_payloads = []
+
+	fake_ref = MagicMock()
+	fake_ref.key = "msg-id-fake"
+	fake_ref.set.side_effect = lambda payload: captured_payloads.append(payload)
+	mock_db.reference.return_value.push.return_value = fake_ref
+
+	await be.write_channel_message(
+		cwd="/tmp/test",
+		sender="John",
+		message_type="human",
+		content="reply text",
+		attached_to_msg_id="question-msg-id-123",
+	)
+
+	assert len(captured_payloads) == 1
+	assert captured_payloads[0]["attached_to_msg_id"] == "question-msg-id-123"
+
+
+@pytest.mark.asyncio
+async def test_write_channel_message_omits_attached_to_msg_id_when_not_passed(backend):
+	"""When attached_to_msg_id is None, the field is absent from the payload (no null writes)."""
+	be, mock_db = backend
+	captured_payloads = []
+
+	fake_ref = MagicMock()
+	fake_ref.key = "msg-id-fake"
+	fake_ref.set.side_effect = lambda payload: captured_payloads.append(payload)
+	mock_db.reference.return_value.push.return_value = fake_ref
+
+	await be.write_channel_message(
+		cwd="/tmp/test",
+		sender="Claude",
+		message_type="notify",
+		content="status update",
+	)
+
+	assert len(captured_payloads) == 1
+	assert "attached_to_msg_id" not in captured_payloads[0]

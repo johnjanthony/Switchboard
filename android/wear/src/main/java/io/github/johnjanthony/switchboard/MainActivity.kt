@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.speech.RecognizerIntent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -20,7 +21,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -347,9 +348,10 @@ fun MessageListScreen(cwdKey: String, viewModel: MainViewModel, navController: N
                 }
             }
             
-            items(sortedMessages) { (_, msg) ->
-                val isQuestion = (msg.type == "question" || msg.type == "ask_human") && 
-                                 msg.response_text == null && !msg.cancelled && !msg.rejected
+            val answeredMsgIds = sortedMessages.mapNotNull { (_, m) -> m.attached_to_msg_id }.toSet()
+            items(sortedMessages) { (msgId, msg) ->
+                val isQuestion = (msg.type == "question" || msg.type == "ask_human") &&
+                                 msgId !in answeredMsgIds && !msg.cancelled && !msg.rejected
                 
                 Card(
                     onClick = { 
@@ -394,6 +396,19 @@ fun ReplyScreen(cwdKey: String, requestId: String, sender: String, viewModel: Ma
         ?: listOf("Yes", "No", "Maybe", "On it!", "Done")
     
     val listState = rememberScalingLazyListState()
+
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val results = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            val text = results?.get(0)
+            if (!text.isNullOrBlank()) {
+                viewModel.submitReply(cwdKey, sender, text, requestId)
+                navController.popBackStack()
+            }
+        }
+    }
     
     ScreenScaffold(
         scrollState = listState,
@@ -421,12 +436,22 @@ fun ReplyScreen(cwdKey: String, requestId: String, sender: String, viewModel: Ma
             }
             
             item {
-                Button(
-                    onClick = { /* Launch input */ },
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+                CompactButton(
+                    onClick = { 
+                        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                            putExtra(RecognizerIntent.EXTRA_PROMPT, "Dictate reply")
+                        }
+                        launcher.launch(intent)
+                    },
+                    modifier = Modifier.padding(top = 8.dp),
                     colors = ButtonDefaults.filledTonalButtonColors(),
-                    label = { Text("Custom...") }
-                )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Mic,
+                        contentDescription = "Dictate reply"
+                    )
+                }
             }
         }
     }

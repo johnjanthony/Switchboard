@@ -41,6 +41,21 @@ def spawn_dirs(tmp_path):
 	return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _assume_logged_in(monkeypatch):
+	"""Default precondition for spawn tests: a user is logged in to the desktop.
+
+	The no-login gate calls `quser` via `asyncio.create_subprocess_exec`, which
+	would otherwise be intercepted by the same mock that covers `schtasks` and
+	throw off existing call-count assertions. Tests that explicitly exercise
+	the gate opt out by patching `_user_has_interactive_session` themselves
+	(an inner `patch.object` wins inside its own context)."""
+	from server.spawn import SpawnHandler
+	monkeypatch.setattr(
+		SpawnHandler, "_user_has_interactive_session", AsyncMock(return_value=True)
+	)
+
+
 def _pending_path(cfg: Config) -> Path:
 	"""Find the per-spawn pending-config file written by SpawnHandler.
 
@@ -56,10 +71,20 @@ def _pending_path(cfg: Config) -> Path:
 	raise AssertionError(f"Expected 0 or 1 pending file, got {len(matches)}: {matches}")
 
 
+# Realistic `quser` output for a logged-in user — used by the default subprocess
+# mock so the no-login precondition gate in `_handle_spawn` lets the rest of the
+# spawn flow proceed. Calls that aren't `quser` (e.g. `schtasks /run`) ignore
+# stdout and only check returncode, so the same mock satisfies both call sites.
+_QUSER_ACTIVE_STDOUT = (
+	b" USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME\n"
+	b">johnanthony           console             1  Active      .     5/2/2026 1:23 PM\n"
+)
+
+
 def mock_subprocess_exec():
 	"""Helper to mock asyncio.create_subprocess_exec."""
 	mock_proc = AsyncMock()
-	mock_proc.communicate.return_value = (b"ok", b"")
+	mock_proc.communicate.return_value = (_QUSER_ACTIVE_STDOUT, b"")
 	mock_proc.returncode = 0
 	return AsyncMock(return_value=mock_proc)
 
@@ -203,6 +228,48 @@ async def test_rate_limit_clears_after_60_seconds(spawn_dirs):
 		await handler.handle("/spawn")
 	assert backend.send_spawn_ack.call_count == 2
 	backend.send_text.assert_not_called()
+
+
+# --- no interactive session precondition ---
+
+@pytest.mark.asyncio
+async def test_spawn_aborts_when_no_user_logged_in(spawn_dirs):
+	"""Spawn requires an interactive desktop session for the scheduled task to
+	launch `wt` into. If no user is logged in, fail fast with a clear error to
+	the app rather than landing a Firebase channel that has no agent behind it
+	(the silent-failure path that motivated this gate)."""
+	from server.spawn import SpawnHandler
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec) as mock_exec, \
+			patch.object(SpawnHandler, "_user_has_interactive_session", AsyncMock(return_value=False)):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn rpdm/next-gen do stuff")
+
+	# schtasks must not have been triggered, and no pending file written.
+	mock_exec.assert_not_called()
+	assert not _pending_path(cfg).exists()
+	# No spawn ack — the channel should remain untouched.
+	backend.send_spawn_ack.assert_not_called()
+	# Clear, actionable error surfaced to the app.
+	backend.send_text.assert_called_once()
+	msg = backend.send_text.call_args[0][0].lower()
+	assert "logged in" in msg or "log in" in msg or "sign in" in msg
+
+
+@pytest.mark.asyncio
+async def test_no_login_check_does_not_consume_rate_limit_slot(spawn_dirs):
+	"""A failed precondition shouldn't penalise the user: they should be free
+	to retry immediately after signing in, without waiting out the 60s rate
+	limit window."""
+	from server.spawn import SpawnHandler
+	cfg = make_config(spawn_dirs, spawn_root=spawn_dirs)
+	backend = make_backend()
+	with patch("asyncio.create_subprocess_exec", new_callable=mock_subprocess_exec), \
+			patch.object(SpawnHandler, "_user_has_interactive_session", AsyncMock(return_value=False)):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
+		await handler.handle("/spawn rpdm/next-gen do stuff")
+	assert handler._last_spawn_time is None
 
 
 # --- schtasks failure ---

@@ -11,12 +11,20 @@ import pytest
 from server.config import Config
 from server.gateway import build_tool_handlers
 from server.logging_jsonl import JsonlLogger
-from server.messenger import IncomingResponse, MessengerBackend
+from server.messenger import (
+	IncomingResponse,
+	Backend,
+	MessageWriter,
+	ResponsePoller,
+	AwayModeMirror,
+	ChannelLifecycle,
+	InjectPort,
+)
 from server.rate_limiter import RateLimiter
 from server.registry import Registry
 
 
-class RecordingBackend(MessengerBackend):
+class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle, InjectPort, Backend):
 	def __init__(self) -> None:
 		self.channel_messages: list[dict] = []
 		self.sent_timeouts: list[tuple] = []
@@ -55,12 +63,6 @@ class RecordingBackend(MessengerBackend):
 
 	async def send_resolution_confirmation(self, request_id, channel_id, correlation, response_text=None):
 		self.sent_confirmations.append((request_id, channel_id, correlation, response_text))
-
-	async def write_response_text(self, channel_id, msg_id, text):
-		for m in self.channel_messages:
-			if m["channel_id"] == channel_id and m["msg_id"] == msg_id:
-				m["response_text"] = text
-				return
 
 	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
 		if False:

@@ -268,14 +268,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 	private fun addMessage(cwdKey: String, msgId: String, msg: ChannelMessage) {
 		val channel = _channels.value[cwdKey] ?: return
-		val newMessages = channel.messages.toMutableList()
-		val idx = newMessages.indexOfFirst { it.first == msgId }
-		if (idx >= 0) newMessages[idx] = msgId to msg else newMessages.add(msgId to msg)
 
+		// Maintain the raw arrival-order list. The current channel.messages may already
+		// be spliced from a prior addMessage call, so we re-derive from a sorted-by-msgId
+		// snapshot. Firebase push keys are time-ordered, so sortedBy { it.first } gives
+		// us a deterministic arrival order regardless of in-list splice state.
+		val rawMessages = channel.messages.toMutableList()
+		val idx = rawMessages.indexOfFirst { it.first == msgId }
+		if (idx >= 0) rawMessages[idx] = msgId to msg else rawMessages.add(msgId to msg)
+		val sortedRaw = rawMessages.sortedBy { it.first }
+
+		// Apply splice to produce display order.
+		val displayMessages = applySpliceOrder(sortedRaw)
+
+		// Derive answered-set: any message whose attached_to_msg_id names a known message
+		// marks that named message as answered.
+		val answeredSet: Set<String> = sortedRaw
+			.mapNotNull { (_, m) -> m.attached_to_msg_id }
+			.filter { targetId -> sortedRaw.any { it.first == targetId } }
+			.toSet()
+
+		// pendingQuestions / pendingResponses: a question is "no longer pending"
+		// when it's cancelled, rejected, OR has a reply attached.
 		var newPending = channel.pendingQuestions.toMutableMap()
 		var newPendingResponses = channel.pendingResponses
 		if (isQuestionType(msg.type) && msg.request_id != null) {
-			if (msg.response_text != null || msg.cancelled || msg.rejected) {
+			val isAnsweredViaSplice = msgId in answeredSet
+			if (msg.cancelled || msg.rejected || isAnsweredViaSplice) {
 				if (newPending.containsKey(msg.request_id)) {
 					newPending.remove(msg.request_id!!)
 					newPendingResponses = (newPendingResponses - 1).coerceAtLeast(0)
@@ -294,11 +313,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 				)
 			}
 		}
+		// Also: when the new message itself is a reply (has attached_to_msg_id), the
+		// question it points at must drop out of pending.
+		msg.attached_to_msg_id?.let { targetMsgId ->
+			val targetQuestion = sortedRaw.firstOrNull { it.first == targetMsgId }?.second
+			val targetRequestId = targetQuestion?.request_id
+			if (targetRequestId != null && newPending.containsKey(targetRequestId)) {
+				newPending.remove(targetRequestId)
+				newPendingResponses = (newPendingResponses - 1).coerceAtLeast(0)
+			}
+		}
 
 		val updated = channel.copy(
-			messages = newMessages,
+			messages = displayMessages,
 			pendingQuestions = newPending,
-			pendingResponses = newPendingResponses
+			pendingResponses = newPendingResponses,
+			answeredQuestionMsgIds = answeredSet,
 		)
 		val newMap = _channels.value.toMutableMap()
 		newMap[cwdKey] = updated
@@ -319,10 +349,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 	private fun removeMessage(cwdKey: String, msgId: String) {
 		val channel = _channels.value[cwdKey] ?: return
-		val newMessages = channel.messages.filterNot { it.first == msgId }
-		if (newMessages.size == channel.messages.size) return
-		// If the removed message was a pending question, drop it from the pending map too.
+		val rawMessages = channel.messages.filterNot { it.first == msgId }
+		if (rawMessages.size == channel.messages.size) return
 		val removed = channel.messages.firstOrNull { it.first == msgId }?.second
+
+		// Re-derive both display order and answered set from the trimmed raw list.
+		val sortedRaw = rawMessages.sortedBy { it.first }
+		val displayMessages = applySpliceOrder(sortedRaw)
+		val answeredSet: Set<String> = sortedRaw
+			.mapNotNull { (_, m) -> m.attached_to_msg_id }
+			.filter { targetId -> sortedRaw.any { it.first == targetId } }
+			.toSet()
+
 		val newPending = channel.pendingQuestions.toMutableMap()
 		var newPendingResponses = channel.pendingResponses
 		if (removed != null && isQuestionType(removed.type) && removed.request_id != null) {
@@ -332,9 +370,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			}
 		}
 		val updated = channel.copy(
-			messages = newMessages,
+			messages = displayMessages,
 			pendingQuestions = newPending,
-			pendingResponses = newPendingResponses
+			pendingResponses = newPendingResponses,
+			answeredQuestionMsgIds = answeredSet,
 		)
 		val newMap = _channels.value.toMutableMap()
 		newMap[cwdKey] = updated
@@ -402,6 +441,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 	fun hasAnyPendingQuestions(): Boolean {
 		return _channels.value.values.any { it.pendingQuestions.isNotEmpty() }
+	}
+
+	fun markMessageOpened(cwdKey: String, msgId: String) {
+		channelsRef.child(cwdKey).child("messages").child(msgId).child("opened").setValue(true)
 	}
 
 	fun submitReply(cwdKey: String, sender: String, text: String, requestId: String?) {

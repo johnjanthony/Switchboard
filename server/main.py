@@ -28,6 +28,8 @@ from server.registry import Registry
 from server.spawn import SpawnHandler
 from server.rate_limiter import RateLimiter
 from server.firebase import FirebaseBackend
+from server.firebase_supervisor import LoopSupervisor
+from server.messenger import AwayModeMirror
 
 
 def _build_away_mode_route(registry: Registry):
@@ -200,7 +202,7 @@ def _build_fastmcp(handlers) -> FastMCP:
 	return mcp
 
 
-async def _wire_away_mode_mirror(registry: "Registry", backend: "MessengerBackend") -> None:
+async def _wire_away_mode_mirror(registry: "Registry", backend: "AwayModeMirror") -> None:
 	"""Register a callback that mirrors away-mode mutations to Firebase.
 	The callback writes the (cwd, active) pair as-is; the listener path
 	(start_away_mode_listeners, wired in Task 8) is responsible for updating
@@ -254,20 +256,52 @@ async def _run(config: Config) -> None:
 	await backend.start_away_mode_listeners(registry)
 	await backend.reset_all_pending_responses()
 
-	if isinstance(backend, FirebaseBackend):
-		registry.set_pending_mirror(backend.make_pending_mirror_writer())
+	mirror_writer_fn = getattr(backend, "make_pending_mirror_writer", None)
+	if callable(mirror_writer_fn):
+		registry.set_pending_mirror(mirror_writer_fn())
 
 	limiter = RateLimiter(config.rate_limit)
 	handlers = build_tool_handlers(config, registry, backend, logger, limiter)
+	loop_sups = {
+		"dispatch_responses": LoopSupervisor("dispatch_responses", backend, logger.surface_error),
+		"dispatch_commands": LoopSupervisor("dispatch_commands", backend, logger.surface_error),
+		"dispatch_inject_queue": LoopSupervisor("dispatch_inject_queue", backend, logger.surface_error),
+		"dispatch_away_mode_commands": LoopSupervisor("dispatch_away_mode_commands", backend, logger.surface_error),
+	}
 	mcp = _build_fastmcp(handlers)
 
 	app = mcp.streamable_http_app()
 
 	async def healthz(request: Request):
+		listeners = []
+		listener_health_fn = getattr(backend, "listener_health", None)
+		if callable(listener_health_fn):
+			try:
+				listeners = listener_health_fn()
+			except Exception as exc:
+				await logger.surface_error(f"healthz_listener_health_error: {exc}")
+		import time as _time
+		now = _time.monotonic()
+		dispatch_loops = []
+		for sup in loop_sups.values():
+			h = sup.health()
+			dispatch_loops.append({
+				"name": h.name,
+				"consecutive_failures": h.consecutive_failures,
+				"crash_count": h.crash_count,
+				"last_crash_seconds_ago": (
+					(now - h.last_crash_at) if h.last_crash_at is not None else None
+				),
+			})
+		dispatch_loops.sort(key=lambda d: d["name"])
 		return JSONResponse({
-			"pending_count": registry.pending_count,
-			"oldest_pending_age_seconds": registry.oldest_pending_age_seconds,
-			"total_answered": registry.total_answered,
+			"pending": {
+				"count": registry.pending_count,
+				"oldest_pending_age_seconds": registry.oldest_pending_age_seconds,
+				"total_answered": registry.total_answered,
+			},
+			"listeners": listeners,
+			"dispatch_loops": dispatch_loops,
 		})
 
 	app.add_route("/healthz", healthz, methods=["GET"])
@@ -283,20 +317,20 @@ async def _run(config: Config) -> None:
 	server = uvicorn.Server(uv_config)
 
 	dispatch_task = asyncio.create_task(
-		dispatch_responses(registry, backend, logger)
+		dispatch_responses(registry, backend, logger, loop_sups["dispatch_responses"])
 	)
 
 	spawn_handler = SpawnHandler(config, backend, logger, registry)
 	spawn_task = asyncio.create_task(
-		dispatch_commands(spawn_handler, backend, logger)
+		dispatch_commands(spawn_handler, backend, logger, loop_sups["dispatch_commands"])
 	)
 
 	inject_task = asyncio.create_task(
-		dispatch_inject_queue(registry, backend, logger)
+		dispatch_inject_queue(registry, backend, logger, loop_sups["dispatch_inject_queue"])
 	)
 
 	away_cmd_task = asyncio.create_task(
-		dispatch_away_mode_commands(registry, backend, logger)
+		dispatch_away_mode_commands(registry, backend, logger, loop_sups["dispatch_away_mode_commands"])
 	)
 
 	loop = asyncio.get_running_loop()

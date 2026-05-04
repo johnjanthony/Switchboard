@@ -11,6 +11,18 @@ def anyio_backend():
 	return "asyncio"
 
 
+def _make_loop_supervisor(backend, logger, name):
+	"""Test helper: construct a LoopSupervisor whose error_logger forwards
+	to the test logger's surface_error. Initial alert threshold is set
+	high so unit tests don't trip the alert path unintentionally.
+
+	`name` is required (not defaulted) so tests stay explicit about which
+	dispatch loop they're standing in for — the supervisor's name surfaces
+	in /healthz output and a stale default would silently misalign there."""
+	from server.firebase_supervisor import LoopSupervisor
+	return LoopSupervisor(name, backend, logger.surface_error, initial_alert_threshold=10_000)
+
+
 def make_registry_with_loopback() -> Registry:
 	"""Build a Registry whose away-mode callback loops straight back into
 	update_*_cache. Mimics what the Firebase listener will do in production

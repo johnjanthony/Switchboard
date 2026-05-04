@@ -16,7 +16,7 @@ import pytest
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
 from server.registry import Registry
-from tests.conftest import make_registry_with_loopback as _make_registry_with_loopback
+from tests.conftest import make_registry_with_loopback as _make_registry_with_loopback, _make_loop_supervisor
 
 
 def make_config(tmp_path: Path) -> Config:
@@ -51,17 +51,13 @@ class FakeBackend:
 	async def write_away_mode_mirror(self, cwd, active) -> None:
 		self.away_mirror_calls.append((cwd, active))
 
-	async def fetch_message_text(self, cwd: str, msg_id: str) -> str | None:
-		return None
-
 	async def send_resolution_confirmation(self, request_id, channel_id, correlation, response_text=None):
 		self.resolution_confirmations.append((request_id, channel_id, response_text))
 
 	async def write_channel_message(
-		self, cwd, sender, message_type, content,
-		*, request_id=None, url=None, format="plain", suggestions=None, filename=None, title=None,
+		self, cwd, sender, message_type, content, **kwargs,
 	):
-		self.channel_writes.append((cwd, sender, message_type, content))
+		self.channel_writes.append((cwd, sender, message_type, content, kwargs))
 		return None, None
 
 
@@ -71,7 +67,8 @@ async def _run_one_cmd(registry: Registry, backend: FakeBackend, cmd: dict, tmp_
 	cfg = make_config(tmp_path)
 	logger = JsonlLogger(cfg.log_path)
 	backend.push_command(cmd)
-	task = asyncio.create_task(dispatch_away_mode_commands(registry, backend, logger))
+	sup = _make_loop_supervisor(backend, logger, name="dispatch_away_mode_commands")
+	task = asyncio.create_task(dispatch_away_mode_commands(registry, backend, logger, sup))
 	# Give the loop time to process. send_default fans out
 	# send_resolution_confirmation + write_channel_message per pending plus
 	# now-async logger calls per stage; the await chain is far longer than a
@@ -124,6 +121,13 @@ async def test_exit_global_send_default_via_command(tmp_path):
 	assert fut.done() and fut.result() == "Back at desk"
 	# write_away_mode_mirror called with (None, False) to flip global off
 	assert (None, False) in backend.away_mirror_calls
+	# write_channel_message must pass attached_to_msg_id linking the reply to the question's msg_id
+	human_msgs = [m for m in backend.channel_writes if m[2] == "human"]
+	assert len(human_msgs) >= 1
+	_, _, _, _, kwargs = human_msgs[0]
+	assert kwargs.get("attached_to_msg_id") == "msg-1", (
+		"send_default must pass attached_to_msg_id linking back to the question's msg_id"
+	)
 
 
 @pytest.mark.asyncio
