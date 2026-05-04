@@ -218,7 +218,7 @@ Human injections write to `inject_queue`. Switchboard polls this and pushes into
 - **Git worktree isolation** — agents share the project directory. No per-session worktrees. (Forge feature; not needed for the Switchboard peer debate model.)
 - **Auto-commit / auto-PR on consensus** — John confirms consensus via `ask_human`; he decides what happens next.
 - **More than two agents** — `--agents=N` flag parses N but only N=2 is implemented. Groundwork for future expansion.
-- **Multi-CLI support (Gemini, etc.)** — tracked in `docs/feature-backlog.md`. Current implementation is Claude-only.
+- **Multi-CLI support (Gemini, etc.)** — tracked in `docs/tracking/backlog.md`. Current implementation is Claude-only.
 - **Session persistence across restarts** — sidecar provides notification only; session state is not restored. This is a deliberate gap: collab sessions do not survive restarts the way single-agent sessions do. Mitigating this would require persisting the message queue and transcript to disk, which conflicts with the in-memory design principle.
 - **Explicit `/end-session` command** — sessions end when both agents call `ask_human` signalling completion, or on timeout.
 

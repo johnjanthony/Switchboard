@@ -3,7 +3,7 @@
 **Date:** 2026-05-01
 **Status:** ✅ Implemented and verified 2026-05-01. End-to-end smoke test passed (queue `/spawn` while service down, restart, command picked up within 2 s). See PROJECT-JOURNAL.md 2026-05-01 entry. Decision log at the bottom.
 
-Tracks `docs/feature-backlog.md` items "Listener thread supervision (M1)" and "Deeper `/healthz` + crash-alert cadence (M2)" — surfaced in `docs/2026-04-28-codebase-review.md` as M1 and M2.
+Tracks `docs/tracking/backlog.md` items "Listener thread supervision (M1)" and "Deeper `/healthz` + crash-alert cadence (M2)" — surfaced in `docs/2026-04-28-codebase-review.md` as M1 and M2.
 
 ---
 
@@ -191,8 +191,8 @@ Resolved 2026-05-01.
 - **Q1 — Watchdog interval:** [x] **5 s**.
 - **Q2 — Alert cadence:** [x] **A=double-from-5, capped by 10-minute wall-clock gate.**
 - **Q3 — `/healthz` shape:** [x] **A=regrouped under `pending`.** No machine consumers.
-- **Q4 — Liveness detection:** [x] **A=`registration._thread.is_alive()`.** Defensive `getattr(reg, "_thread", None)` plus an entry in `feature-backlog.md` for the Option C fallback (own SSE consumer) if firebase_admin renames the attribute.
-- **Q5 — Inject listener supervision:** [x] **A=supervise.** Plus a `feature-backlog.md` entry for collab-session GC, cross-referencing the inject-supervisor wrinkle (supervisor outlives the registration if the session is purged without explicit teardown).
+- **Q4 — Liveness detection:** [x] **A=`registration._thread.is_alive()`.** Defensive `getattr(reg, "_thread", None)` plus an entry in `backlog.md` for the Option C fallback (own SSE consumer) if firebase_admin renames the attribute.
+- **Q5 — Inject listener supervision:** [x] **A=supervise.** Plus a `backlog.md` entry for collab-session GC, cross-referencing the inject-supervisor wrinkle (supervisor outlives the registration if the session is purged without explicit teardown).
 - **Q6 — Spawn-decision listener supervision:** [x] **A=skip.** Already bounded by the 600-second `asyncio.wait_for` timeout in `_maybe_handle_spawn_collision`. Rationale recorded in the journal entry for this work.
 
 Plan at `docs/superpowers/plans/2026-05-01-listener-supervision-and-healthz.md` revised to lock these in.

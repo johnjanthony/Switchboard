@@ -3,7 +3,7 @@
 **Date:** 2026-05-02
 **Status:** ⏳ Designed; implementation pending.
 
-Bundles two `docs/feature-backlog.md` items that both touch `android/app/src/main/java/io/github/johnjanthony/switchboard/ui/MessageBubble.kt`:
+Bundles two `docs/tracking/backlog.md` items that both touch `android/app/src/main/java/io/github/johnjanthony/switchboard/ui/MessageBubble.kt`:
 
 - **Android: streamline duplicated reply rendering** — drop the inline reply-on-question render in favor of inserting the reply chronologically-after-the-question via a new ordering field.
 - **Android: per-message timestamp reveal (long-press or pull)** — render `ChannelMessage.timestamp` on demand via a horizontal-pull gesture.

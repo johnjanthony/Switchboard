@@ -3,7 +3,7 @@
 **Date:** 2026-05-01
 **Status:** ⏳ Designed; implementation pending.
 
-Tracks `docs/feature-backlog.md` item "`MessengerBackend` trait split (god-interface refactor)" — surfaced in `docs/2026-04-28-codebase-review.md` as H4. Folds in the M1 surface from `docs/superpowers/specs/2026-05-01-listener-supervision-and-healthz-design.md` per the 2026-05-01 backlog addendum.
+Tracks `docs/tracking/backlog.md` item "`MessengerBackend` trait split (god-interface refactor)" — surfaced in `docs/2026-04-28-codebase-review.md` as H4. Folds in the M1 surface from `docs/superpowers/specs/2026-05-01-listener-supervision-and-healthz-design.md` per the 2026-05-01 backlog addendum.
 
 ---
 
@@ -35,7 +35,7 @@ After this work:
 ## Non-goals
 
 - **Deleting the three dead methods.** `update_channel_title`, `update_last_activity`, `fetch_message_text` get dropped from the trait surface but kept as concrete methods on `FirebaseBackend` so the existing unit tests of those methods pass untouched. A separate backlog item will track final deletion after verifying no out-of-tree consumers.
-- **Replacing `firebase_admin.db.listen()` with our own SSE consumer.** Tracked separately as the M1 fallback item in `docs/feature-backlog.md`.
+- **Replacing `firebase_admin.db.listen()` with our own SSE consumer.** Tracked separately as the M1 fallback item in `docs/tracking/backlog.md`.
 - **Adding new pluggable backends** (e.g. an in-memory test backend, an alternate transport). H4 makes that possible; it does not deliver one.
 - **Refactoring `SupervisedListener` internals**, the Firebase data model, or the JMS/REST transport.
 
@@ -220,9 +220,9 @@ The full set of changes lands as a single commit per John's bulk-review preferen
 
 6. Rename `test_messenger_contract.py` → `test_backend_contracts.py` and reorganize into per-trait classes. Drop the now-unnecessary dead-method stub overrides in `_StubBackend` / `_RecordingBackend`.
 
-7. Add a new entry to `docs/feature-backlog.md` capturing the dead-method follow-up: "Delete `FirebaseBackend.update_channel_title` / `update_last_activity` / `fetch_message_text` after verifying no out-of-tree consumers" (MEDIUM priority, following the H4 entry pattern). Doing this *before* removing the H4 entry guarantees the follow-up is captured in the same commit and isn't forgotten.
+7. Add a new entry to `docs/tracking/backlog.md` capturing the dead-method follow-up: "Delete `FirebaseBackend.update_channel_title` / `update_last_activity` / `fetch_message_text` after verifying no out-of-tree consumers" (MEDIUM priority, following the H4 entry pattern). Doing this *before* removing the H4 entry guarantees the follow-up is captured in the same commit and isn't forgotten.
 
-8. Remove the H4 entry (and its M1 addendum) from `docs/feature-backlog.md` since this spec supersedes. The M1 addendum is currently uncommitted on `develop`; deleting the entry it was inside resolves both as a single change.
+8. Remove the H4 entry (and its M1 addendum) from `docs/tracking/backlog.md` since this spec supersedes. The M1 addendum is currently uncommitted on `develop`; deleting the entry it was inside resolves both as a single change.
 
 9. Final verification: `pytest` passes (count may shift slightly because some contract-test signature assertions for the now-absent abstract surface are removed; no behavioral test is removed). `grep -rn "isinstance.*FirebaseBackend" server/` returns zero. `grep -rn "MessengerBackend" server/ tests/` returns zero. `/healthz` still returns valid `listener_health` snapshots.
 
@@ -236,7 +236,7 @@ The full set of changes lands as a single commit per John's bulk-review preferen
 
 - **Out-of-tree consumers of `MessengerBackend`.** This codebase is single-developer; no known external consumers exist. **Assumption: no out-of-tree code imports `MessengerBackend` from this repo.** If any future external consumer is identified, the dual-inheritance step 2 becomes a deprecation cycle with `MessengerBackend` retained as a deprecated alias instead of intermediate working state.
 
-- **Backlog drift between this spec and `docs/feature-backlog.md`.** The 2026-04-28 H4 entry plus the 2026-05-01 M1 addendum are stale relative to this spec (3 dead methods, 2 more Firebase-only methods, the trait rename, and the `write_session_meta` move all post-date the entry). Mitigation: this spec supersedes; on merge, the H4 entry is removed from `docs/feature-backlog.md`.
+- **Backlog drift between this spec and `docs/tracking/backlog.md`.** The 2026-04-28 H4 entry plus the 2026-05-01 M1 addendum are stale relative to this spec (3 dead methods, 2 more Firebase-only methods, the trait rename, and the `write_session_meta` move all post-date the entry). Mitigation: this spec supersedes; on merge, the H4 entry is removed from `docs/tracking/backlog.md`.
 
 ---
 
@@ -247,7 +247,7 @@ The full set of changes lands as a single commit per John's bulk-review preferen
 - `grep -rn "MessengerBackend" server/ tests/` returns zero matches; only `docs/` historical references survive (e.g. `docs/2026-04-28-codebase-review.md`).
 - `/healthz` payload still includes `listener_health` snapshots.
 - Gateway handler function signatures show specific trait names instead of `MessengerBackend`.
-- The H4 entry (with its M1 addendum) is removed from `docs/feature-backlog.md`; this spec is referenced from `PROJECT-JOURNAL.md`.
+- The H4 entry (with its M1 addendum) is removed from `docs/tracking/backlog.md`; this spec is referenced from `PROJECT-JOURNAL.md`.
 
 ---
 
