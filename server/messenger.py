@@ -112,6 +112,18 @@ class MessageWriter(ABC):
 		No-op default; FirebaseBackend overrides."""
 		pass
 
+	async def write_agent_status(
+		self,
+		cwd: str,
+		sender: str,
+		state: str,
+		detail: str | None,
+	) -> None:
+		"""Write the current agent status to the channel. Ephemeral
+		last-writer-wins; passing state == "clear" deletes the field.
+		No-op default; FirebaseBackend overrides."""
+		pass
+
 
 class ResponsePoller(ABC):
 	"""Response/command queues, cleanup, startup reset."""

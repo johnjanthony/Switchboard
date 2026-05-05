@@ -311,6 +311,11 @@ fun SessionViewScreen(
 							onDownloadLongClick = onLongPressDownloadFile,
 						)
 					}
+					if (channel.agentStatus?.isFresh() == true) {
+						item(key = "agent_status_row") {
+							AgentStatusRow(status = channel.agentStatus!!)
+						}
+					}
 				}
 			}
 		}

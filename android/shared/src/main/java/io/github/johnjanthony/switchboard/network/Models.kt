@@ -30,6 +30,18 @@ data class Pending(
 	val suggestions: List<String>? = null,
 )
 
+const val AGENT_STATUS_RECENCY_MS = 30L * 60L * 1000L  // 30 minutes
+
+data class AgentStatus(
+	val sender: String,
+	val state: String,        // "thinking" | "waiting" | "tool:<name>"
+	val detail: String?,
+	val updatedAt: Long       // epoch ms
+) {
+	fun isFresh(now: Long = System.currentTimeMillis()): Boolean =
+		(now - updatedAt) < AGENT_STATUS_RECENCY_MS
+}
+
 data class Channel(
 	val cwd: String,
 	val cwdKey: String,
@@ -44,6 +56,7 @@ data class Channel(
 	val pendingQuestions: Map<String, Pending> = emptyMap(),
 	val messages: List<Pair<String, ChannelMessage>> = emptyList(),
 	val answeredQuestionMsgIds: Set<String> = emptySet(),
+	val agentStatus: AgentStatus? = null,
 ) {
 	val displayCount: Int get() = kotlin.math.max(unreadCount, pendingResponses)
 }

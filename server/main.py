@@ -79,6 +79,27 @@ def _build_collab_partner_state_route(registry: Registry):
 	return collab_partner_state
 
 
+def _build_agent_status_route(handlers):
+	"""POST /agent_status — hook-driven status writes. Always returns 200 with
+	empty body, even on malformed input or backend failure (the handler swallows
+	exceptions internally). The Firebase write is awaited directly: it's a
+	~100ms operation, well inside the hook's 1-second timeout, and direct await
+	avoids the test-loop complications of background-spawned tasks."""
+	async def agent_status(request: Request):
+		try:
+			body = await request.json()
+		except Exception:
+			return JSONResponse({}, status_code=200)
+		cwd = body.get("cwd")
+		state = body.get("state")
+		detail = body.get("detail")
+		if not isinstance(cwd, str) or not cwd or not isinstance(state, str) or not state:
+			return JSONResponse({}, status_code=200)
+		await handlers.handle_agent_status(cwd, state, detail)
+		return JSONResponse({}, status_code=200)
+	return agent_status
+
+
 async def _notify_lost_collab_sessions(sidecar_path: _Path, backend) -> None:
 	if not sidecar_path.exists():
 		return
@@ -307,6 +328,7 @@ async def _run(config: Config) -> None:
 	app.add_route("/healthz", healthz, methods=["GET"])
 	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
 	app.add_route("/collab-partner-state", _build_collab_partner_state_route(registry), methods=["GET"])
+	app.add_route("/agent_status", _build_agent_status_route(handlers), methods=["POST"])
 
 	uv_config = uvicorn.Config(
 		app,

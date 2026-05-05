@@ -9,6 +9,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import io.github.johnjanthony.switchboard.MarkdownText
@@ -209,11 +211,22 @@ fun MessageBubble(
 					when {
 						isPending -> Box(
 							modifier = Modifier
-								.size(14.dp)
+								.size(18.dp)
 								.scale(pendingDotScale)
 								.alpha(pendingDotAlpha)
-								.background(MaterialTheme.colorScheme.primary, CircleShape),
-						)
+								.border(
+									width = 1.5.dp,
+									color = MaterialTheme.colorScheme.primary,
+									shape = CircleShape,
+								),
+							contentAlignment = Alignment.Center,
+						) {
+							Text(
+								text = "?",
+								style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+								color = MaterialTheme.colorScheme.primary,
+							)
+						}
 						message.rejected -> Icon(
 							imageVector = Icons.Default.Block,
 							contentDescription = "Rejected",

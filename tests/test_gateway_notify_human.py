@@ -30,6 +30,7 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLif
 		self.sent_timeouts: list[tuple] = []
 		self.sent_confirmations: list[tuple] = []
 		self.session_metas: list[dict] = []
+		self.agent_status_writes: list[tuple] = []
 		self.inject_listeners: list[str] = []
 		self._next_correlation = 1000
 
@@ -92,6 +93,9 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLif
 
 	async def start_inject_listener(self, channel_id: str) -> None:
 		self.inject_listeners.append(channel_id)
+
+	async def write_agent_status(self, cwd, sender, state, detail):
+		self.agent_status_writes.append((cwd, sender, state, detail))
 
 	# Helpers for assertions in existing tests
 	@property
@@ -223,3 +227,14 @@ async def test_notify_human_invalid_cwd_returns_error(cfg, logger):
 
 	assert result.startswith("ERROR: invalid cwd:")
 	assert len(backend.channel_messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_recording_backend_records_agent_status_writes():
+	backend = RecordingBackend()
+	await backend.write_agent_status("c:/work/foo", "Claude", "thinking", None)
+	await backend.write_agent_status("c:/work/foo", "Claude", "tool:Bash", "npm test")
+	assert backend.agent_status_writes == [
+		("c:/work/foo", "Claude", "thinking", None),
+		("c:/work/foo", "Claude", "tool:Bash", "npm test"),
+	]

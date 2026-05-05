@@ -1,5 +1,11 @@
 ﻿package io.github.johnjanthony.switchboard.ui
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -10,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -34,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
@@ -123,6 +131,40 @@ fun SessionRow(
 					.padding(horizontal = 16.dp, vertical = 12.dp),
 				verticalAlignment = Alignment.CenterVertically,
 			) {
+				val isStatusFresh = channel.agentStatus?.isFresh() == true
+				Box(
+					modifier = Modifier
+						.size(width = 14.dp, height = 14.dp)
+						.padding(end = 6.dp),
+					contentAlignment = Alignment.CenterStart,
+				) {
+					if (isStatusFresh) {
+						val transition = rememberInfiniteTransition(label = "channelListActiveDot")
+						val a by transition.animateFloat(
+							initialValue = 0.5f, targetValue = 1f,
+							animationSpec = infiniteRepeatable(
+								animation = tween(durationMillis = 1600, easing = FastOutSlowInEasing),
+								repeatMode = RepeatMode.Reverse,
+							),
+							label = "alpha",
+						)
+						val scl by transition.animateFloat(
+							initialValue = 0.92f, targetValue = 1.05f,
+							animationSpec = infiniteRepeatable(
+								animation = tween(durationMillis = 1600, easing = FastOutSlowInEasing),
+								repeatMode = RepeatMode.Reverse,
+							),
+							label = "scale",
+						)
+						Box(
+							modifier = Modifier
+								.size(8.dp)
+								.scale(scl)
+								.alpha(a)
+								.background(MaterialTheme.colorScheme.primary, CircleShape),
+						)
+					}
+				}
 				Column(modifier = Modifier.weight(1f)) {
 					Text(
 						text = buildAnnotatedString {

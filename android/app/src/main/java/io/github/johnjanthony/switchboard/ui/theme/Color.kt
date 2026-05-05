@@ -14,3 +14,8 @@ val DarkSecondary = Color(0xFF03DAC5)
 val DarkTextPrimary = Color(0xFFFFFFFF)
 val DarkTextSecondary = Color(0xFFB0B0B0)
 val DarkGreyPill = Color(0xFF3C3C3C)
+
+val DarkPrimaryBlue            = Color(0xFF6CB8FF)
+val DarkPrimaryContainerBlue   = Color(0xFF1F3656)
+val DarkOnPrimaryBlue          = Color(0xFF000000)
+val DarkOnPrimaryContainerBlue = Color(0xFFCFE2FF)

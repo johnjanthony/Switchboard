@@ -43,6 +43,7 @@ class Registry:
 		self.total_answered: int = 0
 		self._global_away = False
 		self._cwd_overrides: dict[str, bool] = {}
+		self._last_messaging_sender: dict[str, str] = {}
 		self._away_mode_callback = None
 		self._pending_mirror = None
 
@@ -250,3 +251,28 @@ class Registry:
 			self._pending_mirror(cwd, delta)
 		except Exception:
 			logging.getLogger(__name__).exception("pending_mirror callback raised")
+
+	def record_messaging_sender(self, cwd: str, sender: str) -> None:
+		"""Record that `sender` just made a messaging tool call in `cwd`. Used
+		by the agent_status sender resolver as the solo-session attribution
+		signal."""
+		self._last_messaging_sender[cwd] = sender
+
+	def last_messaging_sender_for(self, cwd: str) -> str | None:
+		return self._last_messaging_sender.get(cwd)
+
+	def get_collab_baton_holder(self, cwd: str) -> str | None:
+		"""Return the sender currently holding the collab baton in `cwd`.
+
+		The baton holder is the active agent: the one not currently blocked
+		on `message_and_await_agent`. Returns None if there's no two-agent
+		session, or if both agents are waiting (parallel opening), or if
+		neither is waiting (dormant)."""
+		session = self._sessions.get(cwd)
+		if session is None or len(session.agent_senders) < 2:
+			return None
+		waiting = set(session._waiting.keys())
+		not_waiting = [s for s in session.agent_senders if s not in waiting]
+		if len(not_waiting) == 1:
+			return not_waiting[0]
+		return None
