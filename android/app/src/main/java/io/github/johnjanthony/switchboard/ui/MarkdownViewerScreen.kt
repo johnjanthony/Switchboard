@@ -3,6 +3,7 @@ package io.github.johnjanthony.switchboard.ui
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -25,6 +26,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -43,8 +45,8 @@ fun MarkdownViewerScreen(
 	val scrollState = rememberScrollState()
 	val coroutineScope = rememberCoroutineScope()
 	val density = LocalDensity.current
-	val context = androidx.compose.ui.platform.LocalContext.current
-	var viewerFontScale by remember { androidx.compose.runtime.mutableFloatStateOf(context.viewerFontScale()) }
+	val context = LocalContext.current
+	var viewerFontScale by remember { mutableFloatStateOf(context.viewerFontScale()) }
 
 	Scaffold(
 		topBar = {
@@ -65,11 +67,12 @@ fun MarkdownViewerScreen(
 		},
 		containerColor = MaterialTheme.colorScheme.surfaceVariant,
 	) { padding ->
-		Column(
+		Box(
 			modifier = Modifier
 				.fillMaxSize()
 				.padding(padding)
 				.pointerInput(Unit) {
+					// See SessionViewScreen for the no-consume-bail rationale.
 					awaitEachGesture {
 						awaitFirstDown(requireUnconsumed = false)
 						var didPinch = false
@@ -91,48 +94,53 @@ fun MarkdownViewerScreen(
 							context.setViewerFontScale(snapped)
 						}
 					}
-				}
-				.verticalScroll(scrollState)
-				.padding(16.dp),
+				},
 		) {
-			MarkdownText(
-				content = content,
-				format = "markdown",
-				color = MaterialTheme.colorScheme.onSurfaceVariant,
-				isSelectable = true,
-				fontScale = viewerFontScale,
-			) { textView, link ->
-				val anchor = link.removePrefix("#").lowercase()
-				val layout = textView.layout ?: return@MarkdownText
-				val spanned = textView.text as? Spanned ?: return@MarkdownText
-				
-				// Find headers using HeadingSpans for precision
-				val headings = spanned.getSpans(0, spanned.length, HeadingSpan::class.java)
-				var foundLine = -1
-				
-				for (span in headings) {
-					val start = spanned.getSpanStart(span)
-					val end = spanned.getSpanEnd(span)
-					val headerText = spanned.subSequence(start, end).toString()
-					
-					val slug = headerText.trim().lowercase()
-						.replace(Regex("[^a-z0-9\\s-]"), "")
-						.replace(Regex("\\s+"), "-")
-						.trim('-')
-					
-					if (slug == anchor) {
-						foundLine = layout.getLineForOffset(start)
-						break
-					}
-				}
-				
-				if (foundLine != -1) {
-					// Add padding offset (16.dp converted to pixels)
-					val paddingOffset = with(density) { 16.dp.toPx() }.toInt()
-					val y = layout.getLineTop(foundLine) + paddingOffset
+			Column(
+				modifier = Modifier
+					.fillMaxSize()
+					.verticalScroll(scrollState)
+					.padding(16.dp),
+			) {
+				MarkdownText(
+					content = content,
+					format = "markdown",
+					color = MaterialTheme.colorScheme.onSurfaceVariant,
+					isSelectable = true,
+					fontScale = viewerFontScale,
+				) { textView, link ->
+					val anchor = link.removePrefix("#").lowercase()
+					val layout = textView.layout ?: return@MarkdownText
+					val spanned = textView.text as? Spanned ?: return@MarkdownText
 
-					coroutineScope.launch {
-						scrollState.animateScrollTo(y)
+					// Find headers using HeadingSpans for precision
+					val headings = spanned.getSpans(0, spanned.length, HeadingSpan::class.java)
+					var foundLine = -1
+
+					for (span in headings) {
+						val start = spanned.getSpanStart(span)
+						val end = spanned.getSpanEnd(span)
+						val headerText = spanned.subSequence(start, end).toString()
+
+						val slug = headerText.trim().lowercase()
+							.replace(Regex("[^a-z0-9\\s-]"), "")
+							.replace(Regex("\\s+"), "-")
+							.trim('-')
+
+						if (slug == anchor) {
+							foundLine = layout.getLineForOffset(start)
+							break
+						}
+					}
+
+					if (foundLine != -1) {
+						// Add padding offset (16.dp converted to pixels)
+						val paddingOffset = with(density) { 16.dp.toPx() }.toInt()
+						val y = layout.getLineTop(foundLine) + paddingOffset
+
+						coroutineScope.launch {
+							scrollState.animateScrollTo(y)
+						}
 					}
 				}
 			}

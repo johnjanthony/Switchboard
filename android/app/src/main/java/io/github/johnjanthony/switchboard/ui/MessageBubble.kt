@@ -159,7 +159,7 @@ fun MessageBubble(
 					},
 			) {
 				Column(modifier = Modifier.padding(12.dp)) {
-					MarkdownText(content = message.text, format = message.format, color = textColor, isSelectable = false, fontScale = fontScale)
+					MarkdownText(content = message.text, format = message.format, color = textColor, isSelectable = !isPending, fontScale = fontScale)
 
 					if (!message.url.isNullOrBlank() && !message.filename.isNullOrBlank()) {
 						Spacer(Modifier.height(8.dp))

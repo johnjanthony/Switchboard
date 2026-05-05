@@ -240,6 +240,11 @@ fun SessionViewScreen(
 					}
 				}
 				.pointerInput(Unit) {
+					// We don't bail on consumed events here: the embedded TextView (markdown
+					// bubbles with isSelectable=true) consumes single-finger touches for
+					// selection mode setup. A consume-gate would prevent multi-finger pinch
+					// from ever engaging on selectable bubbles. We only consume ourselves
+					// when zoom != 1f, which fires only on real pinches.
 					awaitEachGesture {
 						awaitFirstDown(requireUnconsumed = false)
 						var didPinch = false

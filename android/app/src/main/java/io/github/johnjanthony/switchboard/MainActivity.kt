@@ -316,7 +316,25 @@ fun MarkdownText(
 		val textColor = color.toArgb()
 		AndroidView(
 			factory = { ctx ->
-				TextView(ctx).apply {
+				// Subclass TextView to swallow a known Android framework bug: long-press
+				// on selectable text inside a Markwon table cell can call startDragAndDrop
+				// with non-positive bounds, throwing IllegalStateException("Drag shadow
+				// dimensions must be positive"). startDragAndDrop is final and can't be
+				// overridden, so catch at performLongClick — suppresses just the long-click
+				// fallout; the selection action bar still appears via the touch path.
+				object : TextView(ctx) {
+					override fun performLongClick(): Boolean = try {
+						super.performLongClick()
+					} catch (e: IllegalStateException) {
+						// Surgical filter on the known framework signature. Anything else rethrows.
+						if (e.message?.contains("Drag shadow") == true) {
+							android.util.Log.w("MarkdownText", "Suppressed framework drag-shadow crash", e)
+							false
+						} else {
+							throw e
+						}
+					}
+				}.apply {
 					android.text.method.LinkMovementMethod.getInstance().let { movementMethod = it }
 					// setMovementMethod(...) auto-flips isClickable/isLongClickable to true
 					// (Android-internal fixFocusableAndClickableSettings). That makes the

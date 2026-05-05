@@ -30,6 +30,9 @@ local.properties
 # Superpowers implementation plans (scaffolding, not history-worthy)
 docs/superpowers/plans/
 
+# Superpowers brainstorming visual-companion artifacts (per-session, ephemeral)
+.superpowers/
+
 # MCP stuff
 .repomap.tags.cache.v1/*
 android/.artifacts/*
