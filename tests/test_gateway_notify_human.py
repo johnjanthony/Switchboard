@@ -36,6 +36,7 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLif
 	async def write_channel_message(
 		self, channel_id, sender, message_type, content,
 		*, request_id=None, url=None, format="plain", suggestions=None, filename=None, title=None,
+		rejected=False, attached_to_msg_id=None,
 	):
 		msg_id = f"msg_{len(self.channel_messages)}"
 		data = {
@@ -50,6 +51,8 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLif
 			"filename": filename,
 			"title": title,
 			"msg_id": msg_id,
+			"rejected": rejected,
+			"attached_to_msg_id": attached_to_msg_id,
 		}
 		self.channel_messages.append(data)
 		if message_type == "question":
