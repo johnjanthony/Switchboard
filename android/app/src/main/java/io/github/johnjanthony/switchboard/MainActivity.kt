@@ -41,7 +41,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.google.firebase.auth.FirebaseAuth
 import io.github.johnjanthony.switchboard.fcm.SwitchboardFirebaseMessagingService
+import io.github.johnjanthony.switchboard.shared.GoogleAuthHelper
 import io.github.johnjanthony.switchboard.ui.BulkRespondDialog
 import io.github.johnjanthony.switchboard.ui.MarkdownViewerScreen
 import io.github.johnjanthony.switchboard.ui.SessionListScreen
@@ -111,6 +113,13 @@ private fun SwitchboardNavHost(
 	val projectMru by viewModel.projectMru.collectAsState()
 	var showHidden by remember { mutableStateOf(false) }
 	var showSpawnDialog by remember { mutableStateOf(false) }
+
+	// Automatic Google Sign-In on first start
+	LaunchedEffect(Unit) {
+		if (FirebaseAuth.getInstance().currentUser == null) {
+			GoogleAuthHelper.signInWithGoogle(context)
+		}
+	}
 
 	// K5: deep-link navigation from FCM tap
 	val cwdKey by deepLinkCwdKey
