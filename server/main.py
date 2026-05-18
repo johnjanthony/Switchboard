@@ -123,7 +123,7 @@ async def _notify_lost_collab_sessions(sidecar_path: _Path, backend) -> None:
 		sidecar_path.unlink(missing_ok=True)
 
 
-def _build_fastmcp(handlers) -> FastMCP:
+def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 	# Stateful HTTP: session-scoped transport so per-tool-call cancel
 	# notifications can find the in-flight responder. The cost is that an MCP
 	# session does not survive a server restart — Claude Code (issue #27142,
@@ -133,7 +133,15 @@ def _build_fastmcp(handlers) -> FastMCP:
 	#
 	# session_idle_timeout is left at the default (None) so a long-blocking
 	# `ask_human` awaiting John's reply for up to 24h is not reaped mid-call.
-	mcp = FastMCP("switchboard", stateless_http=False)
+	#
+	# Pass through the host the uvicorn server will actually bind to. FastMCP
+	# auto-enables DNS-rebinding protection (TrustedHostMiddleware with a
+	# localhost-only allowlist) when its host parameter is 127.0.0.1, localhost,
+	# or ::1 — independent of where uvicorn binds. Without passing host here,
+	# FastMCP defaulted to 127.0.0.1 while uvicorn bound 0.0.0.0, and any
+	# non-localhost client (e.g. WSL agents reaching us via the Windows host IP)
+	# got 421 Invalid Host header on /mcp.
+	mcp = FastMCP("switchboard", stateless_http=False, host=host)
 
 	@mcp.tool()
 	async def ask_human(
@@ -289,7 +297,7 @@ async def _run(config: Config) -> None:
 		"dispatch_inject_queue": LoopSupervisor("dispatch_inject_queue", backend, logger.surface_error),
 		"dispatch_away_mode_commands": LoopSupervisor("dispatch_away_mode_commands", backend, logger.surface_error),
 	}
-	mcp = _build_fastmcp(handlers)
+	mcp = _build_fastmcp(handlers, config.host)
 
 	app = mcp.streamable_http_app()
 
