@@ -22,15 +22,30 @@ _GIT_BASH_PREFIX = re.compile(r"^/([a-zA-Z])/(.*)$")
 def canonicalize_cwd(raw: str) -> str:
 	"""Normalize raw cwd to the canonical form used as a routing key.
 
-	Rules:
+	Accepts both Windows-style paths (drive letter + colon, with backslash or
+	forward-slash separators, plus Git-Bash-style /c/...) and POSIX-style
+	paths (absolute, starting with /). Both forms become opaque routing keys;
+	they are NOT mapped to each other. Cross-environment collab requires
+	both agents to pass the same string — by convention the Windows-style
+	form when sharing across OS boundaries — but that's a caller-side
+	convention, not enforced here.
+
+	Rules (Windows path):
 	1. Reject empty / non-absolute / syntactically invalid paths.
 	2. Convert Git-Bash-style /c/... to c:/...
 	3. Backslashes -> forward slashes.
-	4. Lowercase drive letter on Windows.
+	4. Lowercase drive letter (Windows is case-insensitive).
 	5. Resolve . and .. segments.
 	6. Strip trailing slash.
 
-	Returns: 'c:/work/switchboard' style string.
+	Rules (POSIX path):
+	1. Must start with /.
+	2. Preserve case (POSIX is case-sensitive).
+	3. Normalize . and .. segments.
+	4. Strip trailing slash.
+	5. Backslashes normalized to forward slashes if present (defensive; unusual on POSIX).
+
+	Returns: 'c:/work/switchboard' or '/home/janthony/work/rpdm' style string.
 	"""
 	if not raw or not isinstance(raw, str):
 		raise CanonicalizationError(f"cwd must be a non-empty string, got: {raw!r}")
@@ -39,22 +54,31 @@ def canonicalize_cwd(raw: str) -> str:
 	if gb:
 		raw = f"{gb.group(1)}:/{gb.group(2)}"
 
-	if len(raw) < 2 or raw[1] != ":":
-		raise CanonicalizationError(f"cwd must be absolute (with drive letter), got: {raw!r}")
+	# Windows-style: drive letter at position 1.
+	if len(raw) >= 2 and raw[1] == ":":
+		try:
+			win = PureWindowsPath(raw)
+		except (ValueError, TypeError) as exc:
+			raise CanonicalizationError(f"invalid path syntax: {raw!r}") from exc
 
-	try:
-		win = PureWindowsPath(raw)
-	except (ValueError, TypeError) as exc:
-		raise CanonicalizationError(f"invalid path syntax: {raw!r}") from exc
+		normalized = os.path.normpath(str(win))
+		forward = normalized.replace("\\", "/").lower()
 
-	normalized = os.path.normpath(str(win))
+		if len(forward) > 3 and forward.endswith("/"):
+			forward = forward.rstrip("/")
 
-	forward = normalized.replace("\\", "/").lower()
+		return forward
 
-	if len(forward) > 3 and forward.endswith("/"):
-		forward = forward.rstrip("/")
+	# POSIX-style: absolute path starting with /.
+	if raw.startswith("/"):
+		normalized = os.path.normpath(raw).replace("\\", "/")
+		if len(normalized) > 1 and normalized.endswith("/"):
+			normalized = normalized.rstrip("/")
+		return normalized
 
-	return forward
+	raise CanonicalizationError(
+		f"cwd must be absolute (Windows drive letter or POSIX root), got: {raw!r}"
+	)
 
 
 def to_firebase_key(canonical_cwd: str) -> str:
