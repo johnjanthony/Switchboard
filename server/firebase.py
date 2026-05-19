@@ -379,6 +379,27 @@ class FirebaseBackend(
 				lambda: msgs_ref.child(msg_id).child("cancelled").set(True)
 			)
 
+	async def write_agent_status(
+		self,
+		cwd: str,
+		sender: str,
+		state: str,
+		detail: str | None,
+	) -> None:
+		from server.canonicalization import to_firebase_key
+		key = to_firebase_key(cwd)
+		ref = db.reference(f'channels/{key}/agent_status')
+		if state == "clear":
+			await asyncio.to_thread(ref.delete)
+			return
+		payload = {
+			"sender": sender,
+			"state": state,
+			"detail": detail,
+			"updated_at": {".sv": "timestamp"},  # Firebase server timestamp sentinel
+		}
+		await asyncio.to_thread(lambda: ref.set(payload))
+
 	async def send_stale_reply_notice(self, cwd: str, sender: str) -> None:
 		await self.write_channel_message(
 			cwd, "system", "system",

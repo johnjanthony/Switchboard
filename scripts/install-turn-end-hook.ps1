@@ -1,13 +1,18 @@
 #Requires -Version 5.1
 param(
-	[switch]$Claude,
 	[switch]$Gemini
 )
 $ErrorActionPreference = "Stop"
 
-# If neither flag is set, install to both.
-if (-not $Claude -and -not $Gemini) {
-	$Claude = $true
+# Installs the Gemini CLI AfterAgent hook for Switchboard's away-mode
+# enforcement. The Claude Code equivalent now ships with the plugin
+# (see .claude-plugin/plugin.json + hooks/hooks.json) and is no longer
+# managed by this script. If you previously ran this script with -Claude,
+# remove the corresponding entries from %USERPROFILE%\.claude\settings.json
+# manually to avoid double-firing the hook.
+
+# Default to installing the Gemini hook when no flag is supplied.
+if (-not $Gemini) {
 	$Gemini = $true
 }
 
@@ -210,19 +215,6 @@ function Merge-Hook {
 
 	Write-SettingsFromHashtable -Path $SettingsPath -Data $data
 	Write-Host "Registered $EventName hook in $SettingsPath"
-}
-
-if ($Claude) {
-	$claudeCmd = "`"$PythonExe`" `"$ScriptPath`" --cli claude"
-	$claudeEntry = @{
-		type    = "command"
-		command = $claudeCmd
-		timeout = 5
-	}
-	Merge-Hook `
-		-SettingsPath "$env:USERPROFILE\.claude\settings.json" `
-		-EventName "Stop" `
-		-HookEntry $claudeEntry
 }
 
 if ($Gemini) {

@@ -1,0 +1,16 @@
+{
+	"name": "switchboard",
+	"owner": {
+		"name": "John Anthony"
+	},
+	"metadata": {
+		"description": "Switchboard — local MCP gateway, skill, and turn-end hooks"
+	},
+	"plugins": [
+		{
+			"name": "switchboard",
+			"source": "./",
+			"description": "Local MCP gateway for human-in-the-loop away-mode interaction with John's phone"
+		}
+	]
+}

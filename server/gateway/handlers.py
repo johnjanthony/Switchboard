@@ -80,9 +80,26 @@ class ToolHandlers:
 	end_collab: Callable[..., Coroutine[None, None, str]]
 	enter_away_mode: Callable[..., Coroutine[None, None, str]]
 	exit_away_mode: Callable[..., Coroutine[None, None, str]]
+	handle_agent_status: Callable[..., Coroutine[None, None, None]]
 
 class _ToolHandlersBackend(MessageWriter, InjectPort, ChannelLifecycle):
 	"""Backend surface used by build_tool_handlers (and its closures)."""
+
+def _resolve_sender_for_cwd(registry: Registry, canonical_cwd: str) -> str:
+	"""Resolve the sender to attribute an agent_status write to.
+
+	Priority order:
+	1. Collab baton holder, if cwd is in an active collab session.
+	2. Most recent messaging-call sender for this cwd.
+	3. Fallback to "Claude".
+	"""
+	baton = registry.get_collab_baton_holder(canonical_cwd)
+	if baton is not None:
+		return baton
+	last = registry.last_messaging_sender_for(canonical_cwd)
+	if last is not None:
+		return last
+	return "Claude"
 
 def build_tool_handlers(
 	config: Config,
@@ -111,6 +128,7 @@ def build_tool_handlers(
 			canonical = canonicalize_cwd(cwd)
 		except CanonicalizationError as exc:
 			return f"ERROR: invalid cwd: {exc}"
+		registry.record_messaging_sender(canonical, sender)
 		if limiter is not None and not limiter.consume(canonical):
 			await logger.rate_limited(canonical, "notify_human")
 			return (
@@ -141,6 +159,7 @@ def build_tool_handlers(
 			canonical = canonicalize_cwd(cwd)
 		except CanonicalizationError as exc:
 			return f"ERROR: invalid cwd: {exc}"
+		registry.record_messaging_sender(canonical, sender)
 
 		if not registry.is_away_mode_active(canonical):
 			# At-desk redirect: deliver the question as a notify (downgrade
@@ -242,6 +261,7 @@ def build_tool_handlers(
 			canonical = canonicalize_cwd(cwd)
 		except CanonicalizationError as exc:
 			return f"ERROR: invalid cwd: {exc}"
+		registry.record_messaging_sender(canonical, sender)
 		cwd_path = _cwd_path if _cwd_path is not None else Path(canonical)
 		try:
 			resolved = _validate_path(path, cwd=cwd_path)
@@ -291,6 +311,7 @@ def build_tool_handlers(
 			canonical = canonicalize_cwd(cwd)
 		except CanonicalizationError as exc:
 			return f"ERROR: invalid cwd: {exc}"
+		registry.record_messaging_sender(canonical, sender)
 		channel_id = canonical
 		session = registry.get_session(canonical)
 		if session is None:
@@ -442,6 +463,27 @@ def build_tool_handlers(
 			await logger.tool_error(None, canonical, str(exc))
 			return f"ERROR: {exc}"
 
+	async def handle_agent_status(cwd: str, state: str, detail: str | None) -> None:
+		"""Hook-driven write. Fire-and-forget — never raises to the caller.
+		Gated on away-mode: writes are only made when John is in away mode for
+		this cwd. At-desk events are silently dropped — when John is at the
+		terminal he's reading the live conversation, not the phone status row,
+		so the Firebase write would be pure cost with no observer."""
+		try:
+			canonical = canonicalize_cwd(cwd)
+		except CanonicalizationError:
+			return
+		if not registry.is_away_mode_active(canonical):
+			return
+		# Truncate oversized detail rather than rejecting the write.
+		if detail is not None and len(detail) > 200:
+			detail = detail[:200]
+		sender = _resolve_sender_for_cwd(registry, canonical)
+		try:
+			await backend.write_agent_status(canonical, sender, state, detail)
+		except Exception as exc:
+			await logger.surface_error(f"agent_status_backend_error: {exc}")
+
 	return ToolHandlers(
 		ask_human=ask_human,
 		notify_human=notify_human,
@@ -450,4 +492,5 @@ def build_tool_handlers(
 		end_collab=end_collab,
 		enter_away_mode=enter_away_mode,
 		exit_away_mode=exit_away_mode,
+		handle_agent_status=handle_agent_status,
 	)

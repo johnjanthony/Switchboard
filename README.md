@@ -56,18 +56,23 @@ Switchboard reads its configuration from OS env vars. A `.env` file is loaded as
 
 ```bash
 gemini mcp add switchboard http://localhost:9876/mcp --type http --trust
-gemini skills link .\skill
+gemini skills link .\skills\switchboard
 ```
 
 #### Claude Code
 
-```bash
-claude mcp add switchboard --scope user --transport http http://localhost:9876/mcp
-# Symlink the skill so edits in the repo flow live to the installed copy:
-MSYS=winsymlinks:nativestrict ln -s "$(pwd)/skill" ~/.claude/skills/switchboard
-# (Plain `ln -s` from Git Bash silently falls back to a deep copy on Windows
-# without the MSYS prefix or Developer Mode enabled.)
+Switchboard ships as a Claude Code plugin. From any Claude Code session:
+
 ```
+/plugin marketplace add C:/Work/switchboard
+/plugin install switchboard@switchboard
+```
+
+The plugin install wires the skill and the Claude turn-end + agent-status hooks. The MCP server connection is bootstrapped per host by a parallel chezmoi dotfiles effort (Windows uses `localhost:9876`; WSL uses the Windows host IP, resolvable from `/etc/resolv.conf` or `ip route show default | awk '{print $3}'`). If you are not using chezmoi, run `claude mcp add switchboard --scope user --transport http <resolved-url>` per host.
+
+WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` and a firewall inbound rule for TCP 9876 from the WSL subnet.
+
+If you previously installed via `claude mcp add` + `install-turn-end-hook.ps1 -Claude` + a `~/.claude/skills/switchboard` symlink, see [`CLAUDE.md`](CLAUDE.md)'s "Migrating from the pre-plugin setup" for cleanup steps before installing the plugin.
 
 ## Android App
 

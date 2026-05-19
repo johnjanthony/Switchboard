@@ -24,6 +24,7 @@ import io.github.johnjanthony.switchboard.network.Channel
 import io.github.johnjanthony.switchboard.network.ChannelMessage
 import io.github.johnjanthony.switchboard.network.Pending
 import io.github.johnjanthony.switchboard.network.PendingExitToggle
+import io.github.johnjanthony.switchboard.network.AgentStatus
 import io.github.johnjanthony.switchboard.network.SpawnCollisionData
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -170,6 +171,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		val pendingResponses = snapshot.child("pending_responses").getValue(Int::class.java) ?: 0
 		val cwd = cwdCanonical.ifBlank { fromFirebaseKey(cwdKey) }
 
+		val asSnap = snapshot.child("agent_status")
+		val agentStatus: AgentStatus? =
+			if (asSnap.exists()) {
+				val sender  = asSnap.child("sender").getValue(String::class.java)
+				val state   = asSnap.child("state").getValue(String::class.java)
+				val detail  = asSnap.child("detail").getValue(String::class.java)
+				val updated = asSnap.child("updated_at").getValue(Long::class.java) ?: 0L
+				if (sender != null && state != null && updated > 0L)
+					AgentStatus(sender, state, detail, updated)
+				else
+					null
+			} else null
+
 		val existing = _channels.value[cwdKey]
 		val updated = (existing ?: Channel(cwd = cwd, cwdKey = cwdKey)).copy(
 			cwd = cwd,
@@ -182,6 +196,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			unreadCount = unreadCount,
 			awayMode = awayMode,
 			pendingResponses = pendingResponses,
+			agentStatus = agentStatus,
 		)
 		val newMap = _channels.value.toMutableMap()
 		newMap[cwdKey] = updated

@@ -58,8 +58,9 @@ all switchboard tool calls. Read it from one of:
 2. `$PWD` via Bash.
 
 Both produce the same value. The server canonicalizes whatever form you send
-(Windows backslash, Git Bash `/c/...`, mixed case) — but use the form that's
-easiest to type.
+(Windows backslash, Windows forward-slash, Git Bash `/c/...`, mixed case,
+POSIX absolute path like `/home/user/project`) — use the form that matches
+your environment naturally.
 
 In a collab session, your `cwd` is shared with your partner — both agents in
 the collab use the same cwd. Distinct sender names disambiguate you.

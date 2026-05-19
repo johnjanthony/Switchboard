@@ -43,7 +43,9 @@ import android.text.method.LinkMovementMethod
 import android.widget.TextView
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.viewinterop.AndroidView
+import com.google.firebase.auth.FirebaseAuth
 import io.github.johnjanthony.switchboard.fcm.SwitchboardFirebaseMessagingService
+import io.github.johnjanthony.switchboard.shared.GoogleAuthHelper
 import io.github.johnjanthony.switchboard.network.BulkRespondPayload
 import io.github.johnjanthony.switchboard.network.Channel
 import androidx.wear.input.RemoteInputIntentHelper
@@ -91,9 +93,17 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun WearApp(viewModel: MainViewModel) {
+    val context = LocalContext.current
     val navController = rememberSwipeDismissableNavController()
     val selectedCwdKey by viewModel.selectedCwdKey.collectAsState()
     val pendingExitToggle by viewModel.pendingExitToggle.collectAsState()
+
+    // Automatic Google Sign-In on first start
+    LaunchedEffect(Unit) {
+        if (FirebaseAuth.getInstance().currentUser == null) {
+            GoogleAuthHelper.signInWithGoogle(context)
+        }
+    }
 
     LaunchedEffect(selectedCwdKey) {
         val key = selectedCwdKey

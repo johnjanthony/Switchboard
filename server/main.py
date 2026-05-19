@@ -79,6 +79,27 @@ def _build_collab_partner_state_route(registry: Registry):
 	return collab_partner_state
 
 
+def _build_agent_status_route(handlers):
+	"""POST /agent_status — hook-driven status writes. Always returns 200 with
+	empty body, even on malformed input or backend failure (the handler swallows
+	exceptions internally). The Firebase write is awaited directly: it's a
+	~100ms operation, well inside the hook's 1-second timeout, and direct await
+	avoids the test-loop complications of background-spawned tasks."""
+	async def agent_status(request: Request):
+		try:
+			body = await request.json()
+		except Exception:
+			return JSONResponse({}, status_code=200)
+		cwd = body.get("cwd")
+		state = body.get("state")
+		detail = body.get("detail")
+		if not isinstance(cwd, str) or not cwd or not isinstance(state, str) or not state:
+			return JSONResponse({}, status_code=200)
+		await handlers.handle_agent_status(cwd, state, detail)
+		return JSONResponse({}, status_code=200)
+	return agent_status
+
+
 async def _notify_lost_collab_sessions(sidecar_path: _Path, backend) -> None:
 	if not sidecar_path.exists():
 		return
@@ -102,7 +123,7 @@ async def _notify_lost_collab_sessions(sidecar_path: _Path, backend) -> None:
 		sidecar_path.unlink(missing_ok=True)
 
 
-def _build_fastmcp(handlers) -> FastMCP:
+def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 	# Stateful HTTP: session-scoped transport so per-tool-call cancel
 	# notifications can find the in-flight responder. The cost is that an MCP
 	# session does not survive a server restart — Claude Code (issue #27142,
@@ -112,7 +133,15 @@ def _build_fastmcp(handlers) -> FastMCP:
 	#
 	# session_idle_timeout is left at the default (None) so a long-blocking
 	# `ask_human` awaiting John's reply for up to 24h is not reaped mid-call.
-	mcp = FastMCP("switchboard", stateless_http=False)
+	#
+	# Pass through the host the uvicorn server will actually bind to. FastMCP
+	# auto-enables DNS-rebinding protection (TrustedHostMiddleware with a
+	# localhost-only allowlist) when its host parameter is 127.0.0.1, localhost,
+	# or ::1 — independent of where uvicorn binds. Without passing host here,
+	# FastMCP defaulted to 127.0.0.1 while uvicorn bound 0.0.0.0, and any
+	# non-localhost client (e.g. WSL agents reaching us via the Windows host IP)
+	# got 421 Invalid Host header on /mcp.
+	mcp = FastMCP("switchboard", stateless_http=False, host=host)
 
 	@mcp.tool()
 	async def ask_human(
@@ -268,7 +297,7 @@ async def _run(config: Config) -> None:
 		"dispatch_inject_queue": LoopSupervisor("dispatch_inject_queue", backend, logger.surface_error),
 		"dispatch_away_mode_commands": LoopSupervisor("dispatch_away_mode_commands", backend, logger.surface_error),
 	}
-	mcp = _build_fastmcp(handlers)
+	mcp = _build_fastmcp(handlers, config.host)
 
 	app = mcp.streamable_http_app()
 
@@ -307,6 +336,7 @@ async def _run(config: Config) -> None:
 	app.add_route("/healthz", healthz, methods=["GET"])
 	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
 	app.add_route("/collab-partner-state", _build_collab_partner_state_route(registry), methods=["GET"])
+	app.add_route("/agent_status", _build_agent_status_route(handlers), methods=["POST"])
 
 	uv_config = uvicorn.Config(
 		app,

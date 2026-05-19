@@ -3,6 +3,7 @@ package io.github.johnjanthony.switchboard.ui
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -35,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -88,6 +90,8 @@ fun SessionViewScreen(
 	val timestampOpacity = remember { Animatable(0f) }
 	val coroutineScope = rememberCoroutineScope()
 	val density = LocalDensity.current
+	val context = androidx.compose.ui.platform.LocalContext.current
+	var feedFontScale by remember { androidx.compose.runtime.mutableFloatStateOf(context.feedFontScale()) }
 	val fullThresholdPx = with(density) { 80.dp.toPx() }
 	val axisCommitThresholdPx = with(density) { 10.dp.toPx() }
 
@@ -197,6 +201,11 @@ fun SessionViewScreen(
 
 						while (true) {
 							val event = awaitPointerEvent(pass = PointerEventPass.Initial)
+							if (event.changes.size > 1) {
+								// Multi-pointer event: this is a pinch, not a horizontal pull.
+								// Yield to the pinch pointerInput below.
+								break
+							}
 							val change = event.changes.firstOrNull { it.id == down.id } ?: break
 							if (change.changedToUp()) break
 							val dx = change.position.x - down.position.x
@@ -228,6 +237,34 @@ fun SessionViewScreen(
 						// Launched (not awaited) so the next gesture can start without waiting for the
 						// fade-out animation to finish.
 						coroutineScope.launch { timestampOpacity.animateTo(0f) }
+					}
+				}
+				.pointerInput(Unit) {
+					// We don't bail on consumed events here: the embedded TextView (markdown
+					// bubbles with isSelectable=true) consumes single-finger touches for
+					// selection mode setup. A consume-gate would prevent multi-finger pinch
+					// from ever engaging on selectable bubbles. We only consume ourselves
+					// when zoom != 1f, which fires only on real pinches.
+					awaitEachGesture {
+						awaitFirstDown(requireUnconsumed = false)
+						var didPinch = false
+						do {
+							val event = awaitPointerEvent()
+							if (event.changes.size >= 2) {
+								val zoom = event.calculateZoom()
+								if (zoom != 1f) {
+									didPinch = true
+									val next = (feedFontScale * zoom).coerceIn(MIN_FONT_SCALE, MAX_FONT_SCALE)
+									feedFontScale = next
+									event.changes.forEach { it.consume() }
+								}
+							}
+						} while (event.changes.any { it.pressed })
+						if (didPinch) {
+							val snapped = snapFontScale(feedFontScale)
+							feedFontScale = snapped
+							context.setFeedFontScale(snapped)
+						}
 					}
 				},
 		) {
@@ -261,6 +298,7 @@ fun SessionViewScreen(
 							isAnswered = msgId in answeredSet,
 							timestampOpacity = timestampOpacity.value,
 							isSelected = msg.request_id != null && msg.request_id == selectedRequestId,
+							fontScale = feedFontScale,
 							onClick = {
 								if (msg.request_id != null && activePending.containsKey(msg.request_id)) {
 									selectedRequestId = msg.request_id
@@ -272,6 +310,11 @@ fun SessionViewScreen(
 							},
 							onDownloadLongClick = onLongPressDownloadFile,
 						)
+					}
+					if (channel.agentStatus?.isFresh() == true) {
+						item(key = "agent_status_row") {
+							AgentStatusRow(status = channel.agentStatus!!)
+						}
 					}
 				}
 			}

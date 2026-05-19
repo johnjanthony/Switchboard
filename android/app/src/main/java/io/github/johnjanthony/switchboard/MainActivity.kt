@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.navigation.NavType
@@ -40,7 +41,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.google.firebase.auth.FirebaseAuth
 import io.github.johnjanthony.switchboard.fcm.SwitchboardFirebaseMessagingService
+import io.github.johnjanthony.switchboard.shared.GoogleAuthHelper
 import io.github.johnjanthony.switchboard.ui.BulkRespondDialog
 import io.github.johnjanthony.switchboard.ui.MarkdownViewerScreen
 import io.github.johnjanthony.switchboard.ui.SessionListScreen
@@ -110,6 +113,13 @@ private fun SwitchboardNavHost(
 	val projectMru by viewModel.projectMru.collectAsState()
 	var showHidden by remember { mutableStateOf(false) }
 	var showSpawnDialog by remember { mutableStateOf(false) }
+
+	// Automatic Google Sign-In on first start
+	LaunchedEffect(Unit) {
+		if (FirebaseAuth.getInstance().currentUser == null) {
+			GoogleAuthHelper.signInWithGoogle(context)
+		}
+	}
 
 	// K5: deep-link navigation from FCM tap
 	val cwdKey by deepLinkCwdKey
@@ -308,13 +318,32 @@ fun MarkdownText(
 	format: String,
 	color: Color = Color.Unspecified,
 	isSelectable: Boolean = true,
+	fontScale: Float = 1f,
 	onInternalLinkClick: ((TextView, String) -> Unit)? = null,
 ) {
 	if (format == "markdown") {
 		val textColor = color.toArgb()
 		AndroidView(
 			factory = { ctx ->
-				TextView(ctx).apply {
+				// Subclass TextView to swallow a known Android framework bug: long-press
+				// on selectable text inside a Markwon table cell can call startDragAndDrop
+				// with non-positive bounds, throwing IllegalStateException("Drag shadow
+				// dimensions must be positive"). startDragAndDrop is final and can't be
+				// overridden, so catch at performLongClick — suppresses just the long-click
+				// fallout; the selection action bar still appears via the touch path.
+				object : TextView(ctx) {
+					override fun performLongClick(): Boolean = try {
+						super.performLongClick()
+					} catch (e: IllegalStateException) {
+						// Surgical filter on the known framework signature. Anything else rethrows.
+						if (e.message?.contains("Drag shadow") == true) {
+							android.util.Log.w("MarkdownText", "Suppressed framework drag-shadow crash", e)
+							false
+						} else {
+							throw e
+						}
+					}
+				}.apply {
 					android.text.method.LinkMovementMethod.getInstance().let { movementMethod = it }
 					// setMovementMethod(...) auto-flips isClickable/isLongClickable to true
 					// (Android-internal fixFocusableAndClickableSettings). That makes the
@@ -337,6 +366,9 @@ fun MarkdownText(
 				if (color != Color.Unspecified) {
 					view.setTextColor(textColor)
 				}
+				// Apply fontScale BEFORE markwon.setMarkdown so RelativeSizeSpan-based
+				// header/code sizing scales with the base.
+				view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f * fontScale)
 				val markwon = io.noties.markwon.Markwon.builder(view.context)
 					.usePlugin(io.noties.markwon.html.HtmlPlugin.create())
 					.usePlugin(io.noties.markwon.ext.tables.TablePlugin.create(view.context))
@@ -362,6 +394,12 @@ fun MarkdownText(
 			}
 		)
 	} else {
-		Text(content, style = MaterialTheme.typography.bodyMedium, color = color)
+		Text(
+			content,
+			style = MaterialTheme.typography.bodyMedium,
+			fontSize = 14.sp * fontScale,
+			lineHeight = 17.sp * fontScale,
+			color = color,
+		)
 	}
 }
