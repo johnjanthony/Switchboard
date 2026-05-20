@@ -17,22 +17,26 @@ class CanonicalizationError(ValueError):
 
 
 _GIT_BASH_PREFIX = re.compile(r"^/([a-zA-Z])/(.*)$")
+_WSL_MOUNT_PREFIX = re.compile(r"^/mnt/([a-z])/(.*)$")
 
 
 def canonicalize_cwd(raw: str) -> str:
 	"""Normalize raw cwd to the canonical form used as a routing key.
 
 	Accepts both Windows-style paths (drive letter + colon, with backslash or
-	forward-slash separators, plus Git-Bash-style /c/...) and POSIX-style
-	paths (absolute, starting with /). Both forms become opaque routing keys;
-	they are NOT mapped to each other. Cross-environment collab requires
-	both agents to pass the same string — by convention the Windows-style
-	form when sharing across OS boundaries — but that's a caller-side
-	convention, not enforced here.
+	forward-slash separators, plus Git-Bash-style /c/... and WSL-mount
+	/mnt/c/...) and POSIX-style paths (absolute, starting with /). The WSL
+	mount form is rewritten to its Windows equivalent so a WSL agent at
+	/mnt/c/Work and a Windows agent at C:/Work share a routing key (their
+	cwds are the same physical directory). Other POSIX paths become opaque
+	routing keys distinct from Windows ones; cross-environment collab across
+	separate filesystems requires both agents to pass the same string — by
+	convention the Windows-style form — but that's a caller-side convention,
+	not enforced here.
 
 	Rules (Windows path):
 	1. Reject empty / non-absolute / syntactically invalid paths.
-	2. Convert Git-Bash-style /c/... to c:/...
+	2. Convert WSL-mount /mnt/c/... and Git-Bash-style /c/... to c:/...
 	3. Backslashes -> forward slashes.
 	4. Lowercase drive letter (Windows is case-insensitive).
 	5. Resolve . and .. segments.
@@ -49,6 +53,10 @@ def canonicalize_cwd(raw: str) -> str:
 	"""
 	if not raw or not isinstance(raw, str):
 		raise CanonicalizationError(f"cwd must be a non-empty string, got: {raw!r}")
+
+	wsl = _WSL_MOUNT_PREFIX.match(raw)
+	if wsl:
+		raw = f"{wsl.group(1)}:/{wsl.group(2)}"
 
 	gb = _GIT_BASH_PREFIX.match(raw)
 	if gb:

@@ -65,6 +65,41 @@ class TestCanonicalize:
 		# Make case-preservation explicit: a POSIX path with mixed case stays as given.
 		assert canonicalize_cwd("/Home/User/Project") == "/Home/User/Project"
 
+	def test_wsl_mount_c_drive(self):
+		# WSL agents naturally pass /mnt/c/... when the cwd is on the Windows
+		# filesystem via drvfs. Treat it as the Windows path it actually points
+		# to so a WSL agent and a Windows agent at the same physical directory
+		# share a routing key.
+		assert canonicalize_cwd("/mnt/c/Work/Switchboard") == "c:/work/switchboard"
+
+	def test_wsl_mount_different_drive(self):
+		assert canonicalize_cwd("/mnt/d/Foo/Bar") == "d:/foo/bar"
+
+	def test_wsl_mount_trailing_slash(self):
+		assert canonicalize_cwd("/mnt/c/Work/Switchboard/") == "c:/work/switchboard"
+
+	def test_wsl_mount_resolve_dotdot(self):
+		assert canonicalize_cwd("/mnt/c/Work/Foo/../Switchboard") == "c:/work/switchboard"
+
+	def test_wsl_mount_resolve_dot(self):
+		assert canonicalize_cwd("/mnt/c/Work/./Switchboard") == "c:/work/switchboard"
+
+	def test_wsl_mount_multichar_falls_through_to_posix(self):
+		# Two-char "drive" is not a WSL mount — preserve as POSIX path so it
+		# stays distinct from any actual drive routing key.
+		assert canonicalize_cwd("/mnt/xx/foo") == "/mnt/xx/foo"
+
+	def test_wsl_mount_uppercase_drive_falls_through_to_posix(self):
+		# WSL produces lowercase mount letters. An uppercase /mnt/C/... isn't
+		# canonicalized — keep it as POSIX so the contract stays tight.
+		assert canonicalize_cwd("/mnt/C/Work") == "/mnt/C/Work"
+
+	def test_wsl_mount_idempotent_via_round_trip(self):
+		# After canonicalizing /mnt/c/..., feeding the result back in yields
+		# the same string. Guards against drift if the rewrite ever changed.
+		once = canonicalize_cwd("/mnt/c/Work/Switchboard")
+		assert canonicalize_cwd(once) == once
+
 
 class TestFirebaseKey:
 	def test_flatten_slashes(self):
