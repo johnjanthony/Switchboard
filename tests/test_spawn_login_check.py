@@ -23,7 +23,7 @@ def _handler(tmp_path: Path):
 		port=9876,
 		timeout_seconds=60,
 		log_path=str(tmp_path / "log.jsonl"),
-		spawn_root=tmp_path,
+		windows_spawn_root=tmp_path,
 	)
 	backend = AsyncMock()
 	return SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())

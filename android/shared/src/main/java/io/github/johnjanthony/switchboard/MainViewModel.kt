@@ -22,10 +22,11 @@ import io.github.johnjanthony.switchboard.network.BulkRespondPayload
 import io.github.johnjanthony.switchboard.network.BulkRespondSection
 import io.github.johnjanthony.switchboard.network.Channel
 import io.github.johnjanthony.switchboard.network.ChannelMessage
+import io.github.johnjanthony.switchboard.network.ConversationMember
+import io.github.johnjanthony.switchboard.network.ConversationSummary
 import io.github.johnjanthony.switchboard.network.Pending
 import io.github.johnjanthony.switchboard.network.PendingExitToggle
 import io.github.johnjanthony.switchboard.network.AgentStatus
-import io.github.johnjanthony.switchboard.network.SpawnCollisionData
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -59,13 +60,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _globalAway = MutableStateFlow(false)
 	val globalAway: StateFlow<Boolean> = _globalAway.asStateFlow()
 
-	// Keys are cwdKey
-	private val _cwdOverrides = MutableStateFlow<Map<String, Boolean>>(emptyMap())
-	val cwdOverrides: StateFlow<Map<String, Boolean>> = _cwdOverrides.asStateFlow()
-
-	private val _pendingCollision = MutableStateFlow<SpawnCollisionData?>(null)
-	val pendingCollision: StateFlow<SpawnCollisionData?> = _pendingCollision.asStateFlow()
-
 	private val _pendingExitToggle = MutableStateFlow<PendingExitToggle?>(null)
 	val pendingExitToggle: StateFlow<PendingExitToggle?> = _pendingExitToggle.asStateFlow()
 
@@ -82,24 +76,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _selectedCwdKey = MutableStateFlow<String?>(null)
 	val selectedCwdKey: StateFlow<String?> = _selectedCwdKey.asStateFlow()
 
+	private val _activeConversations = MutableStateFlow<List<ConversationSummary>>(emptyList())
+	val activeConversations: StateFlow<List<ConversationSummary>> = _activeConversations.asStateFlow()
+
+	private val _wslAvailable = MutableStateFlow(true)
+	val wslAvailable: StateFlow<Boolean> = _wslAvailable.asStateFlow()
+
+	private val _openConversationId = MutableStateFlow<String?>(null)
+	val openConversationId: StateFlow<String?> = _openConversationId.asStateFlow()
+
 	private val _pendingDeepLinkMessageId = MutableStateFlow<String?>(null)
 	val pendingDeepLinkMessageId: StateFlow<String?> = _pendingDeepLinkMessageId.asStateFlow()
+
+	// Maps requestId → convId so submitReply can write to the new
+	// /conversations/<convId>/answers/<requestId> path.
+	private val requestIdToConvId = mutableMapOf<String, String>()
+
+	// Maps msgId → convId so markMessageOpened can write to the correct
+	// /conversations/<convId>/messages/<msgId>/opened path.
+	// Populated in routeConversationMessage as messages arrive.
+	private val msgIdToConvId = mutableMapOf<String, String>()
+
+	// Maps cwdKey → convId so selectChannel can write the unread_count clear
+	// to /conversations/<convId>/unread_count instead of the legacy channel path.
+	// Populated in startConversationListener as conversations arrive.
+	private val cwdKeyToConvId = mutableMapOf<String, String>()
 
 	private val database = FirebaseDatabase.getInstance()
 	private val channelsRef = database.getReference("channels")
 	private val responsesRef = database.getReference("responses")
-	private val commandsRef = database.getReference("commands")
 	private val awayCommandsRef = database.getReference("away_mode_commands")
-	private val spawnCollisionsRef = database.getReference("spawn_collisions")
 	private val globalAwayRef = database.getReference("global_settings/away_mode")
+	private val conversationsRef = database.getReference("conversations")
+	private val adminNotificationsRef = database.getReference("admin_notifications")
 
 	private val messageListeners = mutableMapOf<String, ChildEventListener>()
+	private val conversationMessageListeners = mutableMapOf<String, ChildEventListener>()
+	private var adminListener: ChildEventListener? = null
 
 	init {
 		channelsRef.keepSynced(true)
 		setupChannelsListener()
 		setupAwayModeListener()
-		setupSpawnCollisionsListener()
+		startOpenConversationListener()
+		startWslAvailableListener()
+		startConversationListener()
+		startConversationMessageSubscriptions()
+		setupAdminNotificationsListener()
 		loadProjectMru()
 	}
 
@@ -134,10 +157,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		}
 	}
 
-	fun isAwayActive(cwdKey: String): Boolean {
-		val override = _cwdOverrides.value[cwdKey]
-		return override ?: _globalAway.value
-	}
+	fun isAwayActive(cwdKey: String): Boolean = _globalAway.value
 
 	// --- Firebase listeners ---
 
@@ -160,6 +180,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		})
 	}
 
+	private fun setupAdminNotificationsListener() {
+		val listener = object : ChildEventListener {
+			override fun onChildAdded(snapshot: DataSnapshot, prev: String?) {
+				val msgId = snapshot.key ?: return
+				val sender = snapshot.child("sender").getValue(String::class.java) ?: "system"
+				val text = snapshot.child("text").getValue(String::class.java) ?: ""
+				val format = snapshot.child("format").getValue(String::class.java) ?: "plain"
+				val timestamp = snapshot.child("timestamp").getValue(String::class.java) ?: ""
+				val msg = ChannelMessage(
+					sender = sender, type = "notify",
+					text = text, format = format, timestamp = timestamp,
+				)
+				// Surface via existing channel infrastructure: synthesize a synthetic "_admin" channel.
+				ensureAdminChannelExists()
+				addMessage("_admin", msgId, msg)
+			}
+			override fun onChildChanged(snapshot: DataSnapshot, prev: String?) {}
+			override fun onChildRemoved(snapshot: DataSnapshot) {}
+			override fun onChildMoved(snapshot: DataSnapshot, prev: String?) {}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "admin_notifications listener cancelled: $error")
+			}
+		}
+		adminNotificationsRef.addChildEventListener(listener)
+		adminListener = listener
+	}
+
+	/** Ensure the synthetic _admin channel exists in _channels so addMessage can target it. */
+	private fun ensureAdminChannelExists() {
+		if (!_channels.value.containsKey("_admin")) {
+			val newMap = _channels.value.toMutableMap()
+			newMap["_admin"] = Channel(cwd = "_admin", cwdKey = "_admin", title = "Admin")
+			_channels.value = newMap
+		}
+	}
+
 	private fun syncChannel(cwdKey: String, snapshot: DataSnapshot) {
 		val hidden = snapshot.child("hidden").getValue(Boolean::class.java) == true
 		val title = snapshot.child("title").getValue(String::class.java)
@@ -167,22 +223,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		val lastActivityAt = snapshot.child("last_activity_at").getValue(String::class.java)
 		val preview = snapshot.child("preview").getValue(String::class.java)
 		val unreadCount = snapshot.child("unread_count").getValue(Int::class.java) ?: 0
-		val awayMode = snapshot.child("away_mode").getValue(Boolean::class.java)
 		val pendingResponses = snapshot.child("pending_responses").getValue(Int::class.java) ?: 0
 		val cwd = cwdCanonical.ifBlank { fromFirebaseKey(cwdKey) }
-
-		val asSnap = snapshot.child("agent_status")
-		val agentStatus: AgentStatus? =
-			if (asSnap.exists()) {
-				val sender  = asSnap.child("sender").getValue(String::class.java)
-				val state   = asSnap.child("state").getValue(String::class.java)
-				val detail  = asSnap.child("detail").getValue(String::class.java)
-				val updated = asSnap.child("updated_at").getValue(Long::class.java) ?: 0L
-				if (sender != null && state != null && updated > 0L)
-					AgentStatus(sender, state, detail, updated)
-				else
-					null
-			} else null
 
 		val existing = _channels.value[cwdKey]
 		val updated = (existing ?: Channel(cwd = cwd, cwdKey = cwdKey)).copy(
@@ -194,14 +236,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			lastActivityAt = lastActivityAt,
 			preview = preview,
 			unreadCount = unreadCount,
-			awayMode = awayMode,
 			pendingResponses = pendingResponses,
-			agentStatus = agentStatus,
 		)
 		val newMap = _channels.value.toMutableMap()
 		newMap[cwdKey] = updated
 		_channels.value = newMap
-		recomputeCwdOverrides()
 
 		if (_selectedCwdKey.value == null && !hidden) {
 			_selectedCwdKey.value = cwdKey
@@ -256,25 +295,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		val newMap = _channels.value.toMutableMap()
 		if (newMap.remove(cwdKey) != null) {
 			_channels.value = newMap
-			recomputeCwdOverrides()
 			if (_selectedCwdKey.value == cwdKey) {
 				_selectedCwdKey.value = newMap.entries.firstOrNull { !it.value.hidden }?.key
 			}
 		}
-	}
-
-	private fun recomputeCwdOverrides() {
-		// Derive _cwdOverrides from each channel's awayMode field. A null awayMode
-		// means "follow global"; a non-null value (true or false) is the channel's
-		// own override of the global flag. This keeps a single source of truth —
-		// `channels/{key}/away_mode` — instead of mirroring overrides into a
-		// separate Firebase node.
-		val map = mutableMapOf<String, Boolean>()
-		for ((key, ch) in _channels.value) {
-			val v = ch.awayMode
-			if (v != null) map[key] = v
-		}
-		_cwdOverrides.value = map
 	}
 
 	private fun isQuestionType(type: String): Boolean {
@@ -350,7 +374,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		_channels.value = newMap
 
 		if (_selectedCwdKey.value == cwdKey) {
-			channelsRef.child(cwdKey).child("unread_count").setValue(0)
+			// Clear unread badge on the conversation side (server increments
+			// /conversations/<convId>/unread_count; we write 0 back there).
+			val convId = cwdKeyToConvId[cwdKey]
+			if (convId != null) {
+				conversationsRef.child(convId).child("unread_count").setValue(0)
+			}
 		} else if (_selectedCwdKey.value == null && !channel.hidden) {
 			_selectedCwdKey.value = cwdKey
 		}
@@ -396,9 +425,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	private fun setupAwayModeListener() {
-		// Per-channel away-mode lives in each channel snapshot's `away_mode` field
-		// (parsed in syncChannel + materialized via recomputeCwdOverrides). We only
-		// listen to the global flag here.
+		// Away mode is global-only. Listen to the global flag.
 		globalAwayRef.addValueEventListener(object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
 				_globalAway.value = snapshot.getValue(Boolean::class.java) == true
@@ -407,35 +434,221 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		})
 	}
 
-	private fun setupSpawnCollisionsListener() {
-		spawnCollisionsRef.addChildEventListener(object : ChildEventListener {
+	private fun startOpenConversationListener() {
+		val ref = database.getReference("global_settings/open_conversation_id")
+		ref.addValueEventListener(object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				val newId = snapshot.getValue(String::class.java)
+				val changed = _openConversationId.value != newId
+				_openConversationId.value = newId
+				// Re-emit conversations so isOpenConversation flags are updated
+				if (changed) recomputeConversationOpenFlags()
+			}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "open_conversation_id listener cancelled: $error")
+			}
+		})
+	}
+
+	private fun startWslAvailableListener() {
+		val ref = database.getReference("global_settings/wsl_available")
+		ref.addValueEventListener(object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				_wslAvailable.value = snapshot.getValue(Boolean::class.java) ?: true
+			}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "wsl_available listener cancelled: $error")
+			}
+		})
+	}
+
+	private fun startConversationListener() {
+		val ref = database.getReference("conversations")
+		ref.addValueEventListener(object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				val openId = _openConversationId.value
+				// Rebuild cwdKeyToConvId from the current snapshot so selectChannel
+				// and addMessage can clear unread_count on the conversation path.
+				val newCwdKeyToConvId = mutableMapOf<String, String>()
+				val summaries = snapshot.children.mapNotNull { convNode ->
+					try {
+						val convId = convNode.key ?: return@mapNotNull null
+						val meta = convNode.child("meta")
+						val title = meta.child("title").getValue(String::class.java) ?: convId
+						val state = meta.child("state").getValue(String::class.java) ?: "active"
+						val lastActivityAt = meta.child("last_activity_at").getValue(Double::class.java)
+							?.let { java.time.Instant.ofEpochMilli((it * 1000.0).toLong()).toString() } ?: ""
+
+						if (state != "active") return@mapNotNull null
+
+						val membersNode = convNode.child("members_active")
+						val members = membersNode.children.mapNotNull { memberNode ->
+							try {
+								val memberCwd = memberNode.child("cwd").getValue(String::class.java) ?: ""
+								if (memberCwd.isNotBlank()) {
+									newCwdKeyToConvId[toFirebaseKey(memberCwd)] = convId
+								}
+								ConversationMember(
+									cliSessionId = memberNode.child("cli_session_id").getValue(String::class.java) ?: return@mapNotNull null,
+									sender = memberNode.child("sender").getValue(String::class.java) ?: return@mapNotNull null,
+									cwd = memberCwd,
+									surface = memberNode.child("surface").getValue(String::class.java) ?: "windows",
+									alive = memberNode.child("alive").getValue(Boolean::class.java) ?: true,
+									sessionLostPermanently = memberNode.child("session_lost_permanently").getValue(Boolean::class.java) ?: false,
+									sessionEndedAt = memberNode.child("session_ended_at").getValue(String::class.java),
+									sessionEndReason = memberNode.child("session_end_reason").getValue(String::class.java),
+									joinedAt = memberNode.child("joined_at").getValue(Double::class.java) ?: 0.0,
+									leftAt = memberNode.child("left_at").getValue(Double::class.java),
+									lastSeenSeq = memberNode.child("last_seen_seq").getValue(Int::class.java) ?: 0,
+								)
+							} catch (e: Exception) { null }
+						}
+
+						val agentStatusNode = convNode.child("agent_status")
+						val agentStatuses = mutableMapOf<String, AgentStatus>()
+						for (asSnap in agentStatusNode.children) {
+							val asKey = asSnap.key ?: continue
+							val asState = asSnap.child("state").getValue(String::class.java) ?: continue
+							val asDetail = asSnap.child("detail").getValue(String::class.java)
+							val asUpdated = asSnap.child("updated_at").getValue(Long::class.java) ?: 0L
+							if (asUpdated > 0L) {
+								agentStatuses[asKey] = AgentStatus(asKey, asState, asDetail, asUpdated)
+							}
+						}
+
+						ConversationSummary(
+							id = convId,
+							title = title,
+							state = state,
+							members = members,
+							lastActivityAt = lastActivityAt,
+							isOpenConversation = (convId == openId),
+							agentStatuses = agentStatuses,
+						)
+					} catch (e: Exception) { null }
+				}
+				cwdKeyToConvId.clear()
+				cwdKeyToConvId.putAll(newCwdKeyToConvId)
+				_activeConversations.value = summaries
+			}
+
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "conversations listener cancelled: $error")
+			}
+		})
+	}
+
+	/**
+	 * Subscribe to /conversations/<id>/messages for each conversation as it appears/disappears.
+	 * Messages are routed into the existing addMessage pipeline by looking up the channel whose
+	 * cwd matches one of the conversation's active members.
+	 */
+	private fun startConversationMessageSubscriptions() {
+		conversationsRef.addChildEventListener(object : ChildEventListener {
 			override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
-				val spawnId = snapshot.key ?: return
-				val cwd = snapshot.child("cwd").getValue(String::class.java) ?: return
-				val cwdKey = snapshot.child("cwd_key").getValue(String::class.java) ?: return
-				val channelTitle = snapshot.child("channel_title").getValue(String::class.java)
-				val lastActivityAt = snapshot.child("last_activity_at").getValue(String::class.java)
-				val hidden = snapshot.child("hidden").getValue(Boolean::class.java) == true
-				_pendingCollision.value = SpawnCollisionData(spawnId, cwd, cwdKey, channelTitle, lastActivityAt, hidden)
+				val convId = snapshot.key ?: return
+				attachConversationMessageListener(convId)
 			}
 			override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {}
 			override fun onChildRemoved(snapshot: DataSnapshot) {
-				if (_pendingCollision.value?.spawnId == snapshot.key) {
-					_pendingCollision.value = null
-				}
+				val convId = snapshot.key ?: return
+				detachConversationMessageListener(convId)
 			}
 			override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
-			override fun onCancelled(error: DatabaseError) {}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "conversations child listener cancelled: $error")
+			}
 		})
+	}
+
+	private fun attachConversationMessageListener(convId: String) {
+		if (conversationMessageListeners.containsKey(convId)) return
+		val messagesRef = conversationsRef.child(convId).child("messages")
+		val listener = object : ChildEventListener {
+			override fun onChildAdded(snap: DataSnapshot, prev: String?) {
+				val msgId = snap.key ?: return
+				routeConversationMessage(convId, msgId, snap)
+			}
+			override fun onChildChanged(snap: DataSnapshot, prev: String?) {
+				val msgId = snap.key ?: return
+				routeConversationMessage(convId, msgId, snap)
+			}
+			override fun onChildRemoved(snap: DataSnapshot) {}
+			override fun onChildMoved(snap: DataSnapshot, prev: String?) {}
+			override fun onCancelled(error: DatabaseError) {}
+		}
+		conversationMessageListeners[convId] = listener
+		messagesRef.addChildEventListener(listener)
+	}
+
+	private fun detachConversationMessageListener(convId: String) {
+		val listener = conversationMessageListeners.remove(convId) ?: return
+		conversationsRef.child(convId).child("messages").removeEventListener(listener)
+	}
+
+	private fun routeConversationMessage(convId: String, msgId: String, snap: DataSnapshot) {
+		try {
+			val msg = snap.getValue(ChannelMessage::class.java) ?: return
+			// Track requestId → convId so submitReply can write to the conversation-scoped answer path.
+			if ((msg.type == "question" || msg.type == "ask_human") && msg.request_id != null) {
+				requestIdToConvId[msg.request_id!!] = convId
+			}
+			// Track msgId → convId so markMessageOpened writes to the correct conversation path.
+			msgIdToConvId[msgId] = convId
+			// Route to the channel whose cwd matches a conversation member, or fall back
+			// to the first channel that shares a cwd_key matching the legacy conv_id form.
+			val cwdKey = findCwdKeyForConversation(convId) ?: return
+			addMessage(cwdKey, msgId, msg)
+		} catch (e: Exception) {
+			android.util.Log.e("MainViewModel", "MALFORMED MESSAGE at conversations/$convId/messages/$msgId: ${e.message}")
+		}
+	}
+
+	/**
+	 * Find the cwdKey of the channel that corresponds to the given conversation.
+	 * We look at each conversation summary's members and match against the channels map by cwd.
+	 */
+	private fun findCwdKeyForConversation(convId: String): String? {
+		val conv = _activeConversations.value.firstOrNull { it.id == convId } ?: return null
+		val channels = _channels.value
+		for (member in conv.members) {
+			val memberCwdKey = toFirebaseKey(member.cwd)
+			if (channels.containsKey(memberCwdKey)) return memberCwdKey
+		}
+		return null
+	}
+
+	/** Convert a canonical cwd path to its Firebase-safe key form (inverse of fromFirebaseKey). */
+	fun toFirebaseKeyPublic(cwd: String): String = toFirebaseKey(cwd)
+
+	private fun toFirebaseKey(cwd: String): String {
+		val sb = StringBuilder()
+		for (ch in cwd) {
+			when (ch) {
+				'/' -> sb.append("__")
+				'_' -> sb.append("____")
+				else -> sb.append(ch)
+			}
+		}
+		return sb.toString()
+	}
+
+	/** Re-emit the current conversations list with refreshed isOpenConversation flags. */
+	private fun recomputeConversationOpenFlags() {
+		val openId = _openConversationId.value
+		_activeConversations.value = _activeConversations.value.map { it.copy(isOpenConversation = (it.id == openId)) }
 	}
 
 	// --- Public actions ---
 
 	fun selectChannel(cwdKey: String) {
 		_selectedCwdKey.value = cwdKey
-		// Clear the server-maintained unread badge for this channel so the
+		// Clear the server-maintained unread badge for this conversation so the
 		// indicator drops on every device subscribed to this Firebase node.
-		channelsRef.child(cwdKey).child("unread_count").setValue(0)
+		val convId = cwdKeyToConvId[cwdKey]
+		if (convId != null) {
+			conversationsRef.child(convId).child("unread_count").setValue(0)
+		}
 	}
 
 	fun clearSelectedChannel() {
@@ -459,18 +672,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	fun markMessageOpened(cwdKey: String, msgId: String) {
-		channelsRef.child(cwdKey).child("messages").child(msgId).child("opened").setValue(true)
+		// Look up convId from the msgIdToConvId map populated in routeConversationMessage.
+		// This writes to the canonical /conversations/<convId>/messages/<msgId>/opened path.
+		val convId = msgIdToConvId[msgId]
+		if (convId != null) {
+			conversationsRef.child(convId).child("messages").child(msgId).child("opened").setValue(true)
+		}
+		// If convId is unknown (message arrived before this session, or pre-migration data),
+		// we skip the write rather than creating phantom nodes on the wrong path.
 	}
 
 	fun submitReply(cwdKey: String, sender: String, text: String, requestId: String?) {
-		val key = requestId ?: "${cwdKey}__$sender"
-		responsesRef.child(key).setValue(mapOf(
-			"text" to text,
-			"cwd_key" to cwdKey,
-			"sender" to sender,
-			"request_id" to requestId,
-			"written_at" to nowIso(),
-		))
+		// Write to the conversation-scoped answer path when we know the convId.
+		// Fall back to the legacy /responses path for requests not tracked in requestIdToConvId
+		// (e.g. questions that arrived before this session started).
+		val convId = if (requestId != null) requestIdToConvId[requestId] else null
+		if (requestId != null && convId != null) {
+			database.getReference("conversations/$convId/answers/$requestId").setValue(mapOf(
+				"text" to text,
+				"sender" to sender,
+				"request_id" to requestId,
+				"written_at" to nowIso(),
+			))
+		} else {
+			val key = requestId ?: "${cwdKey}__$sender"
+			responsesRef.child(key).setValue(mapOf(
+				"text" to text,
+				"cwd_key" to cwdKey,
+				"sender" to sender,
+				"request_id" to requestId,
+				"written_at" to nowIso(),
+			))
+		}
 		// Remove from pending optimistically. Decrement pendingResponses by the
 		// number of pending entries we're dropping for this sender so the row-
 		// level pending dot clears immediately rather than after the Firebase
@@ -491,54 +724,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		_channels.value = _channels.value.toMutableMap().also {
 			it[cwdKey] = channel.copy(pendingQuestions = newPending, pendingResponses = newPendingResponses)
 		}
+		// Clean up the requestId→convId tracking entry once the reply is submitted.
+		if (requestId != null) requestIdToConvId.remove(requestId)
 	}
 
 	fun requestAwayModeToggle(cwdKey: String?, desired: Boolean) {
-		// "On" direction (entering away mode): no bulk-respond modal needed —
-		// fire the command immediately and let the Firebase listener carry the
-		// committed state back to the UI.
+		// Per-cwd away mode was retired. Both global and per-channel toggles now operate
+		// on the global flag only. cwdKey parameter is retained for call-site compatibility
+		// but is not used for routing.
+		// "On" direction: fire the global command immediately.
 		if (desired) {
-			if (cwdKey == null) enterGlobalAway()
-			else _channels.value[cwdKey]?.cwd?.let { enterCwdAway(it) }
+			enterGlobalAway()
 			return
 		}
 
-		// "Off" direction (exiting away mode). Per the schema-reorg spec, the
-		// modal lives on the phone. Build it locally from in-memory channel state
-		// when there are pending questions in scope; otherwise fire exit straight
-		// through. We do NOT optimistically flip _globalAway / _cwdOverrides here:
-		// (a) for the no-pending fast path the Firebase listener will reflect the
-		// committed state in well under a second, and (b) for the pending path
-		// the user may still cancel in the modal, in which case nothing should
-		// have changed.
-		if (cwdKey == null) {
-			val sections = buildBulkRespondSectionsForGlobal()
-			if (sections.isEmpty()) {
-				exitGlobalAway()
-			} else {
-				_pendingExitToggle.value = PendingExitToggle(
-					scopeCwdKey = null,
-					payload = BulkRespondPayload(
-						sections = sections,
-						defaultText = BULK_RESPOND_DEFAULT_TEXT,
-					),
-				)
-			}
+		// "Off" direction: build bulk-respond sections across all channels and show
+		// the modal if there are pending questions; otherwise fire global exit straight through.
+		val sections = buildBulkRespondSectionsForGlobal()
+		if (sections.isEmpty()) {
+			exitGlobalAway()
 		} else {
-			val channel = _channels.value[cwdKey] ?: return
-			val cwd = channel.cwd
-			val section = buildBulkRespondSectionForChannel(channel)
-			if (section == null) {
-				exitCwdAway(cwd)
-			} else {
-				_pendingExitToggle.value = PendingExitToggle(
-					scopeCwdKey = cwdKey,
-					payload = BulkRespondPayload(
-						sections = listOf(section),
-						defaultText = BULK_RESPOND_DEFAULT_TEXT,
-					),
-				)
-			}
+			_pendingExitToggle.value = PendingExitToggle(
+				scopeCwdKey = null,
+				payload = BulkRespondPayload(
+					sections = sections,
+					defaultText = BULK_RESPOND_DEFAULT_TEXT,
+				),
+			)
 		}
 	}
 
@@ -592,41 +804,90 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	fun hideChannel(cwdKey: String) {
+		// Write to conversation path; also write the legacy channel path so the
+		// channel-driven hidden state stays consistent while Channel.hidden is still
+		// the primary UI driver. TODO: retire the channels write once ConversationSummary.hidden feeds the UI.
+		val convId = cwdKeyToConvId[cwdKey]
+		if (convId != null) {
+			conversationsRef.child(convId).child("meta").child("hidden").setValue(true)
+		}
 		channelsRef.child(cwdKey).child("hidden").setValue(true)
 	}
 
 	fun unhideChannel(cwdKey: String) {
+		val convId = cwdKeyToConvId[cwdKey]
+		if (convId != null) {
+			conversationsRef.child(convId).child("meta").child("hidden").setValue(false)
+		}
 		channelsRef.child(cwdKey).child("hidden").setValue(false)
 		_selectedCwdKey.value = cwdKey
-	}
-
-	fun resolveSpawnCollision(spawnId: String, action: String) {
-		spawnCollisionsRef.child(spawnId).child("decision").setValue(mapOf("action" to action))
 	}
 
 	fun submitExitToggleDecision(decision: String, defaultText: String?) {
 		val pending = _pendingExitToggle.value ?: return
 		_pendingExitToggle.value = null
-		if (pending.scopeCwdKey == null) {
-			exitGlobalAway(decision = decision, defaultText = defaultText)
-		} else {
-			val cwd = _channels.value[pending.scopeCwdKey]?.cwd ?: return
-			exitCwdAway(cwd, decision = decision, defaultText = defaultText)
-		}
+		// Per-cwd away mode retired — all exits are global.
+		exitGlobalAway(decision = decision, defaultText = defaultText)
 	}
 
 	fun cancelExitToggle() {
 		_pendingExitToggle.value = null
 	}
 
-	fun spawnSession(project: String, prompt: String, useClaude: Boolean, useGemini: Boolean) {
+	/**
+	 * T-027 conversation-aware spawn. Writes a structured spawn_commands record.
+	 * Also auto-enables global away mode if not already on (Task 38).
+	 * Returns true if away mode was auto-enabled (caller can show a toast).
+	 */
+	fun spawnSession(
+		surface: String,
+		project: String,
+		prompt: String,
+		targetConversationId: String?,
+	): Boolean {
 		updateProjectMru(project)
-		val sb = StringBuilder("/spawn")
-		if (useClaude) sb.append(" --claude")
-		if (useGemini) sb.append(" --gemini")
-		if (project.isNotBlank()) sb.append(" $project")
-		sb.append(" $prompt")
-		commandsRef.push().setValue(sb.toString())
+		val wasAwayOff = !_globalAway.value
+		if (wasAwayOff) {
+			// Task 38: auto-enable away mode on spawn
+			enterGlobalAway()
+		}
+		val record = mutableMapOf<String, Any>(
+			"type" to "fresh",
+			"surface" to surface,
+			"project" to project,
+			"issued_at" to nowIso(),
+		)
+		if (prompt.isNotBlank()) record["prompt"] = prompt
+		if (targetConversationId != null) record["target_conversation_id"] = targetConversationId
+		database.getReference("spawn_commands").push().setValue(record)
+		return wasAwayOff
+	}
+
+	// --- Conversation command writers ---
+
+	fun endConversation(conversationId: String) {
+		database.getReference("force_end_commands").push().setValue(mapOf(
+			"conversation_id" to conversationId,
+			"issued_at" to nowIso(),
+		))
+	}
+
+	fun resumeConversation(sourceConversationId: String, newPrompt: String?) {
+		val record = mutableMapOf<String, Any>(
+			"type" to "resume",
+			"source_conversation_id" to sourceConversationId,
+			"issued_at" to nowIso(),
+		)
+		if (newPrompt != null) record["prompt"] = newPrompt
+		database.getReference("spawn_commands").push().setValue(record)
+	}
+
+	fun combineConversations(sourceConversationId: String, targetConversationId: String) {
+		database.getReference("combine_commands").push().setValue(mapOf(
+			"source_conversation_id" to sourceConversationId,
+			"target_conversation_id" to targetConversationId,
+			"issued_at" to nowIso(),
+		))
 	}
 
 	// --- Away mode command emitters ---
@@ -638,21 +899,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private fun exitGlobalAway(decision: String? = null, defaultText: String? = null) {
 		val payload = mutableMapOf<String, Any>(
 			"type" to "exit_global",
-			"issued_at" to nowIso(),
-		)
-		if (decision != null) payload["decision"] = decision
-		if (defaultText != null) payload["default_text"] = defaultText
-		awayCommandsRef.push().setValue(payload)
-	}
-
-	private fun enterCwdAway(cwd: String) {
-		awayCommandsRef.push().setValue(mapOf("type" to "enter_cwd", "cwd" to cwd, "issued_at" to nowIso()))
-	}
-
-	private fun exitCwdAway(cwd: String, decision: String? = null, defaultText: String? = null) {
-		val payload = mutableMapOf<String, Any>(
-			"type" to "exit_cwd",
-			"cwd" to cwd,
 			"issued_at" to nowIso(),
 		)
 		if (decision != null) payload["decision"] = decision

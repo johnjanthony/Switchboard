@@ -9,18 +9,16 @@ cancelled and replaced.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-	from server.collab import CollabSession
+from typing import Literal
 
 
 @dataclass
 class PendingRequest:
-	cwd: str
+	conversation_id: str
 	sender: str
 	request_id: str
 	future: asyncio.Future[str]
@@ -28,24 +26,101 @@ class PendingRequest:
 	msg_id: str | None = None
 
 
-_RECENTLY_ENDED_MAX_AGE_SECONDS = 60.0
+@dataclass
+class ConversationMember:
+	cli_session_id: str                          # primary routing key
+	sender: str                                  # display name, agent-supplied
+	cwd: str                                     # informational; not used for routing
+	surface: Literal["windows", "wsl"]
+	joined_at: float
+	alive: bool = True
+	session_lost_permanently: bool = False
+	session_ended_at: str | None = None
+	session_end_reason: str | None = None
+	left_at: float | None = None
+	last_seen_seq: int = 0
+
+
+@dataclass
+class Conversation:
+	id: str
+	title: str
+	state: Literal["active", "ended"] = "active"
+	continued_from: str | None = None
+	members_active: dict = None  # dict[sender, ConversationMember]
+	members_history: list = None  # list[ConversationMember]
+	messages: list = None
+	pending_responses: dict = None
+	wait_queue: collections.deque = None
+	created_at: float = 0.0
+	last_activity_at: float = 0.0
+	ended_at: float | None = None
+	hidden: bool = False
+	lock: asyncio.Lock = None
+
+	def __post_init__(self):
+		if self.members_active is None: self.members_active = {}
+		if self.members_history is None: self.members_history = []
+		if self.messages is None: self.messages = []
+		if self.pending_responses is None: self.pending_responses = {}
+		if self.wait_queue is None: self.wait_queue = collections.deque()
+		if self.lock is None: self.lock = asyncio.Lock()
 
 
 class Registry:
 	def __init__(self) -> None:
-		self._sessions: dict[str, "CollabSession"] = {}
-		# Breadcrumbs for recently ended sessions to handle simultaneous call races (E1).
-		# Keyed by canonical_cwd, value is (members, ended_at_monotonic). Entries
-		# older than _RECENTLY_ENDED_MAX_AGE_SECONDS are pruned on next access —
-		# the race window is sub-second; a minute of slack is plenty.
-		self._recently_ended: dict[str, tuple[list[str], float]] = {}
 		self._pending: dict[tuple[str, str], PendingRequest] = {}
 		self.total_answered: int = 0
 		self._global_away = False
-		self._cwd_overrides: dict[str, bool] = {}
-		self._last_messaging_sender: dict[str, str] = {}
-		self._away_mode_callback = None
 		self._pending_mirror = None
+		self._session_to_conversation_id: dict[str, str] = {}
+		self._session_home_conversation_id: dict[str, str] = {}
+		self._open_conversation_id: str | None = None
+		self.conversations: dict[str, "Conversation"] = {}
+		self._session_create_locks: dict[str, asyncio.Lock] = {}
+
+	def session_create_lock(self, cli_session_id: str) -> asyncio.Lock:
+		"""Returns (creating if needed) the per-session lock for the auto-create-on-first-call path.
+		Guards against parallel tool calls (e.g. two concurrent ask_human invocations) both creating
+		a new conversation for the same session."""
+		lock = self._session_create_locks.get(cli_session_id)
+		if lock is None:
+			lock = asyncio.Lock()
+			self._session_create_locks[cli_session_id] = lock
+		return lock
+
+	@property
+	def session_to_conversation_id(self) -> dict[str, str]:
+		return self._session_to_conversation_id
+
+	@property
+	def session_home_conversation_id(self) -> dict[str, str]:
+		return self._session_home_conversation_id
+
+	@property
+	def open_conversation_id(self) -> str | None:
+		return self._open_conversation_id
+
+	@open_conversation_id.setter
+	def open_conversation_id(self, value: str | None) -> None:
+		self._open_conversation_id = value
+
+	@property
+	def global_away_mode(self) -> bool:
+		return self._global_away
+
+	@global_away_mode.setter
+	def global_away_mode(self, value: bool) -> None:
+		self._global_away = bool(value)
+
+	def bind_session(self, session_id: str, conversation_id: str) -> None:
+		self._session_to_conversation_id[session_id] = conversation_id
+
+	def unbind_session(self, session_id: str) -> str | None:
+		return self._session_to_conversation_id.pop(session_id, None)
+
+	def set_session_home(self, session_id: str, conversation_id: str) -> None:
+		self._session_home_conversation_id[session_id] = conversation_id
 
 	@property
 	def pending_count(self) -> int:
@@ -61,36 +136,36 @@ class Registry:
 
 	def add(
 		self,
-		cwd: str,
+		conversation_id: str,
 		sender: str,
 		request_id: str,
 		msg_id: str | None = None,
 		return_superseded: bool = False,
 	) -> asyncio.Future | tuple[asyncio.Future, str | None]:
-		"""Add a pending request. If (cwd, sender) is already occupied, the
-		prior PendingRequest is superseded: its future is cancelled, the entry
+		"""Add a pending request. If (conversation_id, sender) is already occupied,
+		the prior PendingRequest is superseded: its future is cancelled, the entry
 		removed, and the prior request_id returned (when return_superseded=True)
 		so callers can mark the prior question's Firebase entry as cancelled.
 
 		Returns the new Future. If return_superseded=True, returns
 		(future, prior_request_id_or_None)."""
-		key = (cwd, sender)
+		key = (conversation_id, sender)
 		prior_request_id = None
 		existing = self._pending.pop(key, None)
 		if existing is not None:
 			prior_request_id = existing.request_id
 			if not existing.future.done():
 				existing.future.cancel()
-			self._fire_pending_mirror(cwd, -1)
+			self._fire_pending_mirror(conversation_id, -1)
 		future = asyncio.get_event_loop().create_future()
 		self._pending[key] = PendingRequest(
-			cwd=cwd,
+			conversation_id=conversation_id,
 			sender=sender,
 			request_id=request_id,
 			future=future,
 			msg_id=msg_id,
 		)
-		self._fire_pending_mirror(cwd, +1)
+		self._fire_pending_mirror(conversation_id, +1)
 		if return_superseded:
 			return future, prior_request_id
 		return future
@@ -98,47 +173,47 @@ class Registry:
 	def get(self, key: tuple[str, str]) -> "PendingRequest | None":
 		return self._pending.get(key)
 
-	def resolve(self, cwd: str, sender: str, text: str) -> str | None:
-		"""Resolve the pending request for (cwd, sender). Returns the
+	def resolve(self, conversation_id: str, sender: str, text: str) -> str | None:
+		"""Resolve the pending request for (conversation_id, sender). Returns the
 		request_id of the resolved entry, or None if no pending exists."""
-		key = (cwd, sender)
+		key = (conversation_id, sender)
 		record = self._pending.pop(key, None)
 		if record is None:
 			return None
 		if not record.future.done():
 			record.future.set_result(text)
-		self._fire_pending_mirror(cwd, -1)
+		self._fire_pending_mirror(conversation_id, -1)
 		return record.request_id
 
-	def remove(self, cwd: str, sender: str) -> str | None:
-		"""Remove the pending entry for (cwd, sender). Cancels the future if
+	def remove(self, conversation_id: str, sender: str) -> str | None:
+		"""Remove the pending entry for (conversation_id, sender). Cancels the future if
 		pending. Returns the request_id of the removed entry, or None."""
-		key = (cwd, sender)
+		key = (conversation_id, sender)
 		record = self._pending.pop(key, None)
 		if record is None:
 			return None
 		if not record.future.done():
 			record.future.cancel()
-		self._fire_pending_mirror(cwd, -1)
+		self._fire_pending_mirror(conversation_id, -1)
 		return record.request_id
 
 	def all_pending(self) -> list["PendingRequest"]:
 		"""Snapshot for bulk-respond on global exit (Slice I)."""
 		return list(self._pending.values())
 
-	def pending_for_cwd(self, cwd: str) -> list["PendingRequest"]:
-		"""Snapshot of pending requests for a specific channel (Slice L)."""
-		return [p for p in self._pending.values() if p.cwd == cwd]
+	def pending_for_conversation(self, conversation_id: str) -> list["PendingRequest"]:
+		"""Snapshot of pending requests for a specific conversation."""
+		return [p for p in self._pending.values() if p.conversation_id == conversation_id]
 
-	def cancel_pending_for_cwd(self, cwd: str) -> list[str]:
-		"""Pop and cancel every pending request whose cwd matches. Returns the
+	def cancel_pending_for_conversation(self, conversation_id: str) -> list[str]:
+		"""Pop and cancel every pending request for this conversation_id. Returns the
 		list of request_ids that were cancelled so the caller can mark each
 		question's Firebase entry cancelled (writing the WITHDRAWN marker).
 
-		Used by spawn-on-cwd to clear stale pendings from a prior agent that
-		died without surfacing CancelledError to its tool handler — the MCP
-		streamable-HTTP transport doesn't reliably propagate client disconnects."""
-		victims = [key for key, record in self._pending.items() if record.cwd == cwd]
+		Used by spawn to clear stale pendings from a prior agent that died without
+		surfacing CancelledError to its tool handler — the MCP streamable-HTTP
+		transport doesn't reliably propagate client disconnects."""
+		victims = [key for key, record in self._pending.items() if record.conversation_id == conversation_id]
 		cancelled_request_ids: list[str] = []
 		for key in victims:
 			record = self._pending.pop(key)
@@ -146,133 +221,27 @@ class Registry:
 			if not record.future.done():
 				record.future.cancel()
 		if cancelled_request_ids:
-			self._fire_pending_mirror(cwd, -len(cancelled_request_ids))
+			self._fire_pending_mirror(conversation_id, -len(cancelled_request_ids))
 		return cancelled_request_ids
-
-	def add_session(self, session: "CollabSession") -> None:
-		self._sessions[session.cwd] = session
-		# A new session on a cwd that was recently ended means agents have
-		# resumed; clear the breadcrumb so a future end_collab races report
-		# correctly against the new session, not the prior.
-		self._recently_ended.pop(session.cwd, None)
-
-	def get_session(self, cwd: str) -> "CollabSession | None":
-		return self._sessions.get(cwd)
-
-	def remove_session(self, cwd: str) -> None:
-		self._sessions.pop(cwd, None)
-
-	def mark_session_ended(self, cwd: str, members: list[str]) -> None:
-		"""Record that this cwd had an end_collab call, including who was in the
-		session. Used to distinguish 'partner ended first' (E1) from 'never a
-		member' (E4) when a second end_collab arrives after the session is
-		already purged."""
-		import time as _time
-		self._recently_ended[cwd] = (members, _time.monotonic())
-
-	def _prune_recently_ended(self) -> None:
-		import time as _time
-		now = _time.monotonic()
-		stale = [
-			k for k, (_, ts) in self._recently_ended.items()
-			if (now - ts) > _RECENTLY_ENDED_MAX_AGE_SECONDS
-		]
-		for k in stale:
-			self._recently_ended.pop(k, None)
-
-	def get_recently_ended_members(self, cwd: str) -> list[str] | None:
-		self._prune_recently_ended()
-		entry = self._recently_ended.get(cwd)
-		return entry[0] if entry is not None else None
-
-	def was_recently_ended(self, cwd: str) -> bool:
-		self._prune_recently_ended()
-		return cwd in self._recently_ended
-
-	def is_away_mode_active(self, cwd: str) -> bool:
-		# Exact-match only. Each channel is independent: an override on a parent
-		# path does NOT propagate to children. A spawn on c:/work must not flip
-		# every project under it into away-mode. The only fallback when no
-		# override exists for this exact cwd is the global flag.
-		if cwd in self._cwd_overrides:
-			return self._cwd_overrides[cwd]
-		return self._global_away
-
-	def set_cwd_override(self, cwd: str, active: bool) -> None:
-		# Write unconditionally. The listener will update the cache idempotently.
-		self._fire_callback(cwd, active)
-
-	def remove_cwd_override(self, cwd: str) -> None:
-		if cwd not in self._cwd_overrides:
-			return
-		self._fire_callback(cwd, None)
 
 	def update_global_away_cache(self, active: bool) -> None:
 		"""Listener entry point: update the in-memory cache to reflect a Firebase change."""
 		self._global_away = bool(active)
 
-	def update_cwd_override_cache(self, cwd: str, active: bool | None) -> None:
-		"""Listener entry point: set/remove an override in the in-memory cache to reflect Firebase."""
-		if active is None:
-			self._cwd_overrides.pop(cwd, None)
-		else:
-			self._cwd_overrides[cwd] = bool(active)
-
-	def cwd_overrides(self) -> dict[str, bool]:
-		return dict(self._cwd_overrides)
-
 	def global_away(self) -> bool:
 		return self._global_away
 
-	def set_away_mode_callback(self, callback) -> None:
-		"""Callback receives (cwd_or_None, active). cwd=None on global flips,
-		otherwise the canonical_cwd whose override changed. active=None signals
-		that the override entry was removed (mirror should clear it)."""
-		self._away_mode_callback = callback
-
-	def _fire_callback(self, cwd: str | None, active: bool | None) -> None:
-		if self._away_mode_callback is None:
-			return
-		try:
-			self._away_mode_callback(cwd, active)
-		except Exception:
-			logging.getLogger(__name__).exception("away_mode_callback raised")
-
 	def set_pending_mirror(self, callback) -> None:
-		"""Callback fires synchronously with (cwd, delta) on every pending-count
+		"""Callback fires synchronously with (conversation_id, delta) on every pending-count
 		mutation. Implementations typically schedule an asyncio task to write
 		to Firebase; the callback itself is sync to keep Registry's interface clean."""
 		self._pending_mirror = callback
 
-	def _fire_pending_mirror(self, cwd: str, delta: int) -> None:
+	def _fire_pending_mirror(self, conversation_id: str, delta: int) -> None:
 		if self._pending_mirror is None or delta == 0:
 			return
 		try:
-			self._pending_mirror(cwd, delta)
+			self._pending_mirror(conversation_id, delta)
 		except Exception:
 			logging.getLogger(__name__).exception("pending_mirror callback raised")
 
-	def record_messaging_sender(self, cwd: str, sender: str) -> None:
-		"""Record that `sender` just made a messaging tool call in `cwd`. Used
-		by the agent_status sender resolver as the solo-session attribution
-		signal."""
-		self._last_messaging_sender[cwd] = sender
-
-	def last_messaging_sender_for(self, cwd: str) -> str | None:
-		return self._last_messaging_sender.get(cwd)
-
-	def get_collab_baton_holder(self, cwd: str) -> str | None:
-		"""Return the sender currently holding the collab baton in `cwd`.
-
-		The baton holder is the active agent: the one not currently blocked
-		on `message_and_await_agent`. Returns None if there's no two-agent
-		session, or if both agents are waiting (parallel opening), or if
-		neither is waiting (dormant)."""
-		session = self._sessions.get(cwd)
-		if session is None or len(session.agent_senders) < 2:
-			return None
-		waiting = set(session._waiting.keys())
-		not_waiting = [s for s in session.agent_senders if s not in waiting]
-		if len(not_waiting) == 1:
-			return not_waiting[0]
-		return None

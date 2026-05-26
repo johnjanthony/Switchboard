@@ -1,4 +1,4 @@
-﻿package io.github.johnjanthony.switchboard.ui
+package io.github.johnjanthony.switchboard.ui
 
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
@@ -8,6 +8,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,9 +20,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -31,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -49,6 +53,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import io.github.johnjanthony.switchboard.network.Channel
+import io.github.johnjanthony.switchboard.network.ConversationSummary
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -59,19 +64,82 @@ fun SessionRow(
 	onHide: () -> Unit,
 	onUnhide: () -> Unit,
 	onExitAway: () -> Unit,
+	// New T-027 callbacks — default no-ops preserve backward compat with existing callers
+	conversationSummary: ConversationSummary? = null,
+	onResumeClick: (conversationId: String) -> Unit = {},
+	onCombineClick: (conversationId: String) -> Unit = {},
+	onEndClick: (conversationId: String) -> Unit = {},
 ) {
 	var contextMenuOpen by remember { mutableStateOf(false) }
+	var showHideConfirm by remember { mutableStateOf(false) }
+	var showEndConfirm by remember { mutableStateOf(false) }
+
+	val isOpenConversation = conversationSummary?.isOpenConversation == true
+	val isResumable = conversationSummary?.isResumable == true
+	val isActive = conversationSummary?.state == "active" || conversationSummary == null
+	val staleWarning = conversationSummary?.staleSessionWarning == true
+
+	// Resolve agent status from the conversation path (new) or fall back to the legacy
+	// channel path when no conversationSummary is available.
+	val agentStatus: io.github.johnjanthony.switchboard.network.AgentStatus? = if (conversationSummary != null) {
+		val memberSender = conversationSummary.members
+			.firstOrNull { it.cwd.equals(channel.cwdCanonical, ignoreCase = true) }
+			?.sender
+		memberSender?.let { conversationSummary.agentStatuses[it] }
+	} else {
+		channel.agentStatus
+	}
+
+	// Hide confirmation dialog
+	if (showHideConfirm) {
+		val label = channel.title ?: leafName(channel.cwdCanonical)
+		AlertDialog(
+			onDismissRequest = { showHideConfirm = false },
+			title = { Text("Hide conversation?") },
+			text = { Text("Hide '$label'? You can unhide it later from the menu.") },
+			confirmButton = {
+				TextButton(onClick = { onHide(); showHideConfirm = false }) { Text("Hide") }
+			},
+			dismissButton = {
+				TextButton(onClick = { showHideConfirm = false }) { Text("Cancel") }
+			},
+		)
+	}
+
+	// End conversation confirmation dialog — Task 37 wording
+	if (showEndConfirm) {
+		val label = channel.title ?: leafName(channel.cwdCanonical)
+		val convId = conversationSummary?.id ?: ""
+		AlertDialog(
+			onDismissRequest = { showEndConfirm = false },
+			title = { Text("End conversation?") },
+			text = {
+				Text(
+					"End conversation '$label'? Members will fall back to their home conversation " +
+					"(if away mode is on) or to terminal output (if off).",
+				)
+			},
+			confirmButton = {
+				TextButton(onClick = { onEndClick(convId); showEndConfirm = false }) { Text("End") }
+			},
+			dismissButton = {
+				TextButton(onClick = { showEndConfirm = false }) { Text("Cancel") }
+			},
+		)
+	}
 
 	val swipeState = rememberSwipeToDismissBoxState(
 		confirmValueChange = { value ->
 			when (value) {
 				SwipeToDismissBoxValue.StartToEnd -> {
-					onExitAway()
+					// Swipe-right → end conversation (Task 40)
+					showEndConfirm = true
 					false // Snap back
 				}
 				SwipeToDismissBoxValue.EndToStart -> {
-					onHide()
-					false // Snap back — we don't want the red overlay stuck if it's shown in "Show Hidden"
+					// Swipe-left → hide with confirmation (Task 40)
+					showHideConfirm = true
+					false // Snap back
 				}
 				else -> false
 			}
@@ -90,8 +158,8 @@ fun SessionRow(
 		backgroundContent = {
 			val direction = swipeState.dismissDirection
 			val color = when (direction) {
-				SwipeToDismissBoxValue.StartToEnd -> Color(0xFF4CAF50) // Green for At Desk
-				SwipeToDismissBoxValue.EndToStart -> Color(0xFFF44336) // Red for Hide
+				SwipeToDismissBoxValue.StartToEnd -> Color(0xFFF44336) // Red for End
+				SwipeToDismissBoxValue.EndToStart -> Color(0xFF9E9E9E) // Grey for Hide
 				else -> Color.Transparent
 			}
 			val alignment = when (direction) {
@@ -122,7 +190,16 @@ fun SessionRow(
 			}
 		}
 	) {
-		Box(modifier = Modifier.background(MaterialTheme.colorScheme.surface)) {
+		// Task 39: openConversation accent border
+		val rowModifier = if (isOpenConversation) {
+			Modifier
+				.background(MaterialTheme.colorScheme.surface)
+				.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(0.dp))
+		} else {
+			Modifier.background(MaterialTheme.colorScheme.surface)
+		}
+
+		Box(modifier = rowModifier) {
 			Row(
 				modifier = Modifier
 					.fillMaxWidth()
@@ -131,7 +208,17 @@ fun SessionRow(
 					.padding(horizontal = 16.dp, vertical = 12.dp),
 				verticalAlignment = Alignment.CenterVertically,
 			) {
-				val isStatusFresh = channel.agentStatus?.isFresh() == true
+				// Task 39: "open" badge on leading edge when this is the open conversation
+				if (isOpenConversation) {
+					Text(
+						"open",
+						style = MaterialTheme.typography.labelSmall,
+						color = MaterialTheme.colorScheme.primary,
+						modifier = Modifier.padding(end = 6.dp),
+					)
+				}
+
+				val isStatusFresh = agentStatus?.isFresh() == true
 				Box(
 					modifier = Modifier
 						.size(width = 14.dp, height = 14.dp)
@@ -197,11 +284,22 @@ fun SessionRow(
 					}
 				}
 				Column(horizontalAlignment = Alignment.End) {
-					Text(
-						text = formatRelativeTime(channel.lastActivityAt),
-						style = MaterialTheme.typography.labelSmall,
-						color = MaterialTheme.colorScheme.onSurfaceVariant,
-					)
+					Row(verticalAlignment = Alignment.CenterVertically) {
+						// Task 39: stale session warning indicator
+						if (staleWarning) {
+							Text(
+								"⚠",
+								style = MaterialTheme.typography.labelSmall,
+								color = MaterialTheme.colorScheme.error,
+							)
+							Spacer(Modifier.width(4.dp))
+						}
+						Text(
+							text = formatRelativeTime(channel.lastActivityAt),
+							style = MaterialTheme.typography.labelSmall,
+							color = MaterialTheme.colorScheme.onSurfaceVariant,
+						)
+					}
 					Row(verticalAlignment = Alignment.CenterVertically) {
 						if (awayActive) {
 							Text(
@@ -224,6 +322,22 @@ fun SessionRow(
 				}
 			}
 			DropdownMenu(expanded = contextMenuOpen, onDismissRequest = { contextMenuOpen = false }) {
+				// Task 35: Resume menu item
+				if (conversationSummary != null) {
+					DropdownMenuItem(
+						text = { Text("Resume") },
+						enabled = isResumable,
+						onClick = { onResumeClick(conversationSummary.id); contextMenuOpen = false },
+					)
+				}
+				// Task 35: Combine into… menu item
+				if (conversationSummary != null && isActive) {
+					DropdownMenuItem(
+						text = { Text("Combine into…") },
+						onClick = { onCombineClick(conversationSummary.id); contextMenuOpen = false },
+					)
+				}
+				// Hide / Unhide
 				if (channel.hidden) {
 					DropdownMenuItem(
 						text = { Text("Unhide channel") },
@@ -232,7 +346,14 @@ fun SessionRow(
 				} else {
 					DropdownMenuItem(
 						text = { Text("Hide channel") },
-						onClick = { onHide(); contextMenuOpen = false },
+						onClick = { showHideConfirm = true; contextMenuOpen = false },
+					)
+				}
+				// Task 37: End conversation — Active conversations only
+				if (conversationSummary != null && isActive) {
+					DropdownMenuItem(
+						text = { Text("End conversation") },
+						onClick = { showEndConfirm = true; contextMenuOpen = false },
 					)
 				}
 			}

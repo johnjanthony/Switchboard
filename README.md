@@ -6,13 +6,14 @@ Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task an
 
 ## Features
 
-- **cwd-as-channel routing**: Each agent's working directory IS its channel, with `sender` distinguishing agents that share a cwd (collab sessions). No manual channel_id wiring.
+- **Session-id routing**: Each agent session is identified by a `cli_session_id` injected automatically by the PreToolUse hook. No manual channel wiring; agents only pass `sender` and tool arguments.
+- **Conversations**: Messages, members, and state persist in Firebase as named conversations (Active / Ended). At most one is "open" — joinable by any new agent via `enter_conversation`.
 - **Asynchronous updates**: Send non-blocking notifications or deliver documents directly to your phone.
 - **In-line replies**: View your responses directly in the chat history for full context.
-- **Two-tier away mode**: Global flag plus per-channel overrides. Toggle from the phone (long-press the pill) or via the `enter_away_mode` / `exit_away_mode` MCP tools.
-- **Activity indicators**: Prominent high-visibility tab borders and tints for unseen activity or pending questions.
-- **Session spawning**: Launch fresh agent sessions on your desktop directly from your phone.
-- **Bring-your-own sessions**: Pair two already-running agents into a collab channel without spawning — both agents share the same cwd, distinct senders.
+- **Global away mode**: Single server-wide flag. Toggle from the phone's top-bar pill or via the `set_away_mode` MCP tool.
+- **Activity indicators**: Prominent high-visibility indicators for unseen activity or pending questions.
+- **Session spawning**: Launch fresh agent sessions on your desktop directly from your phone — choose surface (Windows / WSL), project, optional prompt, and whether to create a new conversation or add to an existing one.
+- **Conversation composition**: Open + enter, resume dormant sessions, or combine two conversations into one — all from the phone's long-press menu.
 - **Rich Markdown**: Full support for bold, italic, code blocks, checklists, and tables.
 
 ## Design & Architecture
@@ -140,12 +141,11 @@ Prompt for Authorization: Keep an eye on your watch face when you first click Ru
 
 Away mode activates when you tell your agent you're stepping away — any phrasing like *"I'm stepping away"* is sufficient. The agent immediately routes all output through `ask_human` or `notify_human`.
 
-- **`ask_human(question, cwd, sender, title?, format?, suggestions?)`** — blocks until you reply.
-- **`notify_human(message, cwd, sender, title?, format?)`** — fire-and-forget status update.
-- **`send_document_human(path, cwd, sender, title?, caption?)`** — delivers a file to your phone.
-- **`message_and_await_agent(cwd, sender, title?, message?)`** — collab session relay (sends to your partner, blocks until they reply).
-- **`end_collab(cwd, sender, message?, hand_off_to_human?)`** — terminate a collab session and optionally hand off to John.
-- **`enter_away_mode(cwd)` / `exit_away_mode(cwd)`** — flip THIS cwd's per-channel override.
+- **`ask_human(question, sender, title?, format?, suggestions?)`** — blocks until you reply.
+- **`notify_human(message, sender, title?, format?)`** — fire-and-forget status update.
+- **`send_document_human(path, sender, title?, caption?)`** — delivers a file to your phone.
+- **`message_and_await_agent(sender, title?, message?)`** — multi-agent relay (sends to your conversation partner, blocks until they reply).
+- **`set_away_mode(value)`** — toggle the global away-mode flag (agents use this; John can also toggle the phone pill).
 
 To exit away mode, reply *"I'm back"*. The agent will provide a **Welcome Back Summary** of what was accomplished while you were away and then resume normal terminal output.
 
@@ -153,18 +153,22 @@ To exit away mode, reply *"I'm back"*. The agent will provide a **Welcome Back S
 
 Switchboard correlates your reply to the waiting `ask_human` call via the Android app's reply input at the bottom of the channel tab. Type your answer and tap Send. If the question included suggestion buttons, tap one to reply instantly without typing.
 
-### Bring-your-own collab sessions
+### Conversation composition
 
-Two already-running agents can be paired into a collab channel without spawning. Give both agents the same `cwd` (working directory) and tell them to call `message_and_await_agent`. The first agent to call creates the session; the second joins. Call order doesn't matter — the gateway buffers the first message until both agents are enrolled.
+Multiple agents can share a conversation without spawning. Open one with `open_conversation(sender, title?)`, then have additional agents join via `enter_conversation(sender)`. Agents in the same conversation communicate through `message_and_await_agent`.
 
-Each agent uses its own display name as `sender` (e.g. `"Claude"`, `"Gemini"`), which is naturally unique across different agent types. BYO sessions do not enter away mode unless you explicitly step away.
+You can also merge two existing conversations with `combine_conversations(source_id, target_id)` — dormant members of the source are migrated into the target and revived. All three flows are also available from the phone's long-press menu on any conversation row.
 
 ### Spawning a new agent session
 
-With `SWITCHBOARD_SPAWN_ROOT` configured, you can launch a fresh agent session directly from the Android app. Tap the **spawn** button in the app, choose a project, and enter a prompt.
+With `SWITCHBOARD_SPAWN_ROOT` configured, you can launch a fresh agent session directly from the Android app. Tap the **+** (spawn) button in the app and fill out the dialog:
 
-- **Backend selection:** Choose between **Claude** or **Gemini** using the checkboxes.
-- **Collab mode:** Enable both to launch a heterogeneous collaborative session — Switchboard opens two terminal tabs that communicate with each other through the gateway.
+- **Surface:** Windows or WSL.
+- **Project:** Pick from projects under `SWITCHBOARD_SPAWN_ROOT`.
+- **Prompt:** Optional starting prompt for the agent.
+- **Conversation:** Create a new conversation, or add the spawned agent into an existing one.
+
+Spawn auto-enables global away mode if it is currently off; the phone shows a confirmation toast. Claude is the only supported spawn target.
 
 **Prerequisites:**
 
@@ -175,7 +179,7 @@ With `SWITCHBOARD_SPAWN_ROOT` configured, you can launch a fresh agent session d
   .\scripts\register-spawn-task.ps1
   ```
 
-- The task fires in your interactive desktop session so `claude` and `gemini` are reachable.
+- The task fires in your interactive desktop session so `claude` is reachable.
 
 A 60-second rate limit prevents accidental double-spawns. The spawn is audit-logged to `logs/switchboard.jsonl`.
 

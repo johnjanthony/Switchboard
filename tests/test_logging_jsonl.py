@@ -21,7 +21,7 @@ async def test_request_created_writes_expected_fields(tmp_path):
 	ev = events[0]
 	assert ev["event"] == "request_created"
 	assert ev["request_id"] == "a3f1"
-	assert ev["channel_id"] == "IR2"
+	assert ev["conversation_id"] == "IR2"
 	assert ev["question_preview"].startswith("Overwrite foo.java?")
 	assert "ts" in ev
 
@@ -111,7 +111,7 @@ async def test_document_sent_writes_required_fields(tmp_path):
 	)
 	ev = read_events(tmp_path / "log.jsonl")[0]
 	assert ev["event"] == "document_sent"
-	assert ev["channel_id"] == "IR2"
+	assert ev["conversation_id"] == "IR2"
 	assert ev["path"] == "/work/report.txt"
 	assert ev["size_bytes"] == 1024
 	assert ev["sha256"] == "abc123def456"
@@ -242,16 +242,6 @@ async def test_away_mode_cwd_changed_writes_expected_fields(tmp_path):
 	assert ev["active"] is True
 	assert "ts" in ev
 
-
-@pytest.mark.asyncio
-async def test_spawn_collision_detected_writes_expected_fields(tmp_path):
-	logger = JsonlLogger(tmp_path / "log.jsonl")
-	await logger.spawn_collision_detected("c:/work/rpdm", "spawn-id-abc123")
-	ev = read_events(tmp_path / "log.jsonl")[0]
-	assert ev["event"] == "spawn_collision_detected"
-	assert ev["cwd"] == "c:/work/rpdm"
-	assert ev["spawn_id"] == "spawn-id-abc123"
-	assert "ts" in ev
 
 
 @pytest.mark.asyncio

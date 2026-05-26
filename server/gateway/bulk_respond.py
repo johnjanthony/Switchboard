@@ -26,7 +26,7 @@ async def _apply_bulk_respond_decision(
 	
 	pendings = (
 		registry.all_pending() if scope_cwd is None
-		else registry.pending_for_cwd(scope_cwd)
+		else registry.pending_for_conversation(scope_cwd)
 	)
 
 	if decision is None:
@@ -47,21 +47,21 @@ async def _apply_bulk_respond_decision(
 		# exceptions are caught so a single failure doesn't abort the fan-out.
 		async def _resolve_one(p):
 			try:
-				req_id = registry.resolve(cwd=p.cwd, sender=p.sender, text=default_text)
+				req_id = registry.resolve(p.conversation_id, p.sender, default_text)
 				if req_id is None:
 					return
 				tasks = [
-					backend.send_resolution_confirmation(req_id, p.cwd, (p.cwd, p.sender), response_text=default_text),
-					backend.write_channel_message(
-						p.cwd, "John", "human", default_text,
+					backend.send_resolution_confirmation(req_id, p.conversation_id, (p.conversation_id, p.sender), response_text=default_text),
+					backend.write_conversation_message(
+						p.conversation_id, "John", "human", default_text,
 						attached_to_msg_id=p.msg_id,
 					),
 				]
 				await asyncio.gather(*tasks)
-				await _append_session_log(logger.log_path, p.cwd, "←", default_text, logger)
-				await logger.notify_sent(p.cwd, f"Bulk Reply: {default_text}")
+				await _append_session_log(logger.log_path, p.conversation_id, "←", default_text, logger)
+				await logger.notify_sent(p.conversation_id, f"Bulk Reply: {default_text}")
 			except Exception as exc:
-				await logger.surface_error(f"bulk_resolve_failed: cwd={p.cwd} sender={p.sender} err={exc}")
+				await logger.surface_error(f"bulk_resolve_failed: conversation_id={p.conversation_id} sender={p.sender} err={exc}")
 
 		if pendings:
 			try:

@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import io.github.johnjanthony.switchboard.AwayModePillChip
 import io.github.johnjanthony.switchboard.network.Channel
+import io.github.johnjanthony.switchboard.network.ConversationSummary
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -38,7 +39,6 @@ fun SessionListScreen(
 	hiddenChannels: List<Channel>,
 	showHidden: Boolean,
 	globalAway: Boolean,
-	cwdOverrides: Map<String, Boolean>,
 	onSessionClick: (Channel) -> Unit,
 	onToggleShowHidden: () -> Unit,
 	onEnterGlobalAway: () -> Unit,
@@ -47,6 +47,14 @@ fun SessionListScreen(
 	onUnhideChannel: (Channel) -> Unit,
 	onAwayToggle: (Channel) -> Unit,
 	onSpawnClick: () -> Unit,
+	// T-027 callbacks — default no-ops preserve backward compat
+	onResumeClick: (conversationId: String) -> Unit = {},
+	onCombineClick: (conversationId: String) -> Unit = {},
+	onEndClick: (conversationId: String) -> Unit = {},
+	// Active conversations used to match each channel row to its ConversationSummary.
+	// Menu items (Resume, Combine, End), the open-conversation accent, and the stale
+	// session warning are all gated on conversationSummary != null in SessionRow.
+	activeConversations: List<ConversationSummary> = emptyList(),
 ) {
 	var menuExpanded by remember { mutableStateOf(false) }
 
@@ -92,14 +100,24 @@ fun SessionListScreen(
 		} else {
 			LazyColumn(modifier = Modifier.fillMaxSize().padding(padding)) {
 				items(displayed, key = { it.cwdKey }) { channel ->
-					val awayActive = cwdOverrides[channel.cwdKey] ?: globalAway
+					val awayActive = globalAway
+					// Match this channel to its ConversationSummary by comparing
+					// the channel's cwdCanonical against each member's cwd in the
+					// active conversations list.
+					val conversationSummary = activeConversations.firstOrNull { conv ->
+						conv.members.any { it.cwd.equals(channel.cwdCanonical, ignoreCase = true) }
+					}
 					SessionRow(
 						channel = channel,
 						awayActive = awayActive,
+						conversationSummary = conversationSummary,
 						onClick = { onSessionClick(channel) },
 						onHide = { onHideChannel(channel) },
 						onUnhide = { onUnhideChannel(channel) },
 						onExitAway = { onAwayToggle(channel) },
+						onResumeClick = onResumeClick,
+						onCombineClick = onCombineClick,
+						onEndClick = onEndClick,
 					)
 					Divider()
 				}

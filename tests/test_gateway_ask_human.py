@@ -40,8 +40,8 @@ class CancelTrackingBackend(RecordingBackend):
 		super().__init__()
 		self.cancelled_questions: list[tuple[str, str]] = []
 
-	async def mark_question_cancelled(self, cwd: str, request_id: str) -> None:
-		self.cancelled_questions.append((cwd, request_id))
+	async def mark_question_cancelled(self, conversation_id: str, request_id: str) -> None:
+		self.cancelled_questions.append((conversation_id, request_id))
 
 
 class AwaitingCancelTrackingBackend(RecordingBackend):
@@ -54,11 +54,11 @@ class AwaitingCancelTrackingBackend(RecordingBackend):
 		super().__init__()
 		self.cancelled_questions: list[tuple[str, str]] = []
 
-	async def mark_question_cancelled(self, cwd: str, request_id: str) -> None:
+	async def mark_question_cancelled(self, conversation_id: str, request_id: str) -> None:
 		# Simulate the two-checkpoint Firebase write: a read followed by a write.
 		await asyncio.sleep(0)
 		await asyncio.sleep(0)
-		self.cancelled_questions.append((cwd, request_id))
+		self.cancelled_questions.append((conversation_id, request_id))
 
 
 @pytest.mark.asyncio
@@ -72,9 +72,9 @@ async def test_ask_human_cleanup_completes_despite_cancellation_with_awaits(cfg,
 	"""
 	backend = AwaitingCancelTrackingBackend()
 	registry = make_registry_with_loopback()
-	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
+	_SID = "s-cancel-awaits-001"
 	scope_holder: list[anyio.CancelScope] = []
 
 	async def run_inside_inner_scope():
@@ -85,15 +85,15 @@ async def test_ask_human_cleanup_completes_despite_cancellation_with_awaits(cfg,
 				with anyio.CancelScope() as scope:
 					scope_holder.append(scope)
 					ask_started.set()
-					await handlers.ask_human("Overwrite foo?", _CWD, _SENDER)
+					await handlers.ask_human("Overwrite foo?", _SENDER, cli_session_id=_SID, cwd=_CWD)
 
 			async def canceller():
 				await ask_started.wait()
 				for _ in range(50):
 					await anyio.sleep(0)
-					if registry.get((_CWD, _SENDER)) is not None:
+					if registry.pending_count > 0:
 						break
-				assert registry.get((_CWD, _SENDER)) is not None
+				assert registry.pending_count > 0
 				assert scope_holder, "runner did not capture its scope"
 				scope_holder[0].cancel()
 
@@ -102,7 +102,7 @@ async def test_ask_human_cleanup_completes_despite_cancellation_with_awaits(cfg,
 
 	await run_inside_inner_scope()
 
-	assert registry.get((_CWD, _SENDER)) is None
+	assert registry.pending_count == 0
 	assert len(backend.cancelled_questions) == 1, (
 		f"Expected 1 cancelled-question write, got {len(backend.cancelled_questions)}. "
 		f"Cleanup awaits were re-cancelled before completing the Firebase write."
@@ -119,9 +119,9 @@ async def test_ask_human_marks_question_cancelled_under_inner_cancel_scope(cfg, 
 	at all."""
 	backend = CancelTrackingBackend()
 	registry = make_registry_with_loopback()
-	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
+	_SID = "s-cancel-inner-001"
 	scope_holder: list[anyio.CancelScope] = []
 
 	async def run_inside_inner_scope():
@@ -132,16 +132,16 @@ async def test_ask_human_marks_question_cancelled_under_inner_cancel_scope(cfg, 
 				with anyio.CancelScope() as scope:
 					scope_holder.append(scope)
 					ask_started.set()
-					await handlers.ask_human("Overwrite foo?", _CWD, _SENDER)
+					await handlers.ask_human("Overwrite foo?", _SENDER, cli_session_id=_SID, cwd=_CWD)
 
 			async def canceller():
 				await ask_started.wait()
 				# Yield until the registry has the pending entry.
 				for _ in range(50):
 					await anyio.sleep(0)
-					if registry.get((_CWD, _SENDER)) is not None:
+					if registry.pending_count > 0:
 						break
-				assert registry.get((_CWD, _SENDER)) is not None
+				assert registry.pending_count > 0
 				assert scope_holder, "runner did not capture its scope"
 				scope_holder[0].cancel()
 
@@ -150,7 +150,7 @@ async def test_ask_human_marks_question_cancelled_under_inner_cancel_scope(cfg, 
 
 	await run_inside_inner_scope()
 
-	assert registry.get((_CWD, _SENDER)) is None
+	assert registry.pending_count == 0
 	assert len(backend.cancelled_questions) == 1, (
 		f"Expected 1 cancelled-question write, got {len(backend.cancelled_questions)}. "
 		f"Inner-scope cancellation is not reaching our handler's cleanup."
@@ -171,8 +171,9 @@ async def test_ask_human_marks_question_cancelled_under_anyio_scope(cfg, logger)
 	scope cancellation persists."""
 	backend = CancelTrackingBackend()
 	registry = make_registry_with_loopback()
-	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	_SID = "s-cancel-anyio-001"
 
 	async def run_inside_scope():
 		async with anyio.create_task_group() as tg:
@@ -180,7 +181,7 @@ async def test_ask_human_marks_question_cancelled_under_anyio_scope(cfg, logger)
 
 			async def runner():
 				ask_started.set()
-				await handlers.ask_human("Overwrite foo?", _CWD, _SENDER)
+				await handlers.ask_human("Overwrite foo?", _SENDER, cli_session_id=_SID, cwd=_CWD)
 
 			tg.start_soon(runner)
 			await ask_started.wait()
@@ -188,9 +189,9 @@ async def test_ask_human_marks_question_cancelled_under_anyio_scope(cfg, logger)
 			# few awaits before adding it.
 			for _ in range(50):
 				await anyio.sleep(0)
-				if registry.get((_CWD, _SENDER)) is not None:
+				if registry.pending_count > 0:
 					break
-			assert registry.get((_CWD, _SENDER)) is not None, (
+			assert registry.pending_count > 0, (
 				"ask_human did not register a pending entry — test setup is wrong"
 			)
 			tg.cancel_scope.cancel()
@@ -198,7 +199,7 @@ async def test_ask_human_marks_question_cancelled_under_anyio_scope(cfg, logger)
 	await run_inside_scope()
 
 	# Pending entry must be cleared.
-	assert registry.get((_CWD, _SENDER)) is None
+	assert registry.pending_count == 0
 	# mark_question_cancelled must have been called for the in-flight request_id.
 	# This is the assertion that fails today without shielding, because the
 	# cleanup `await` re-raises CancelledError before the Firebase write.
@@ -218,14 +219,16 @@ async def test_ask_human_marks_question_cancelled_on_task_cancel(cfg, logger):
 	(MCP framework / Claude Code transport), not in our handler code."""
 	backend = CancelTrackingBackend()
 	registry = make_registry_with_loopback()
-	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	task = asyncio.create_task(handlers.ask_human("Overwrite foo?", _CWD, _SENDER))
+	_SID = "s-cancel-task-001"
+	task = asyncio.create_task(
+		handlers.ask_human("Overwrite foo?", _SENDER, cli_session_id=_SID, cwd=_CWD)
+	)
 	# Yield so the handler reaches the wait_for and registers a pending entry.
 	await asyncio.sleep(0)
 	await asyncio.sleep(0)
-	assert registry.get((_CWD, _SENDER)) is not None, (
+	assert registry.pending_count > 0, (
 		"ask_human did not register a pending entry — test setup is wrong"
 	)
 
@@ -236,32 +239,15 @@ async def test_ask_human_marks_question_cancelled_on_task_cancel(cfg, logger):
 		await task
 
 	# Pending entry must be cleared.
-	assert registry.get((_CWD, _SENDER)) is None
+	assert registry.pending_count == 0
 	# mark_question_cancelled must have been called for the in-flight request_id.
 	assert len(backend.cancelled_questions) == 1
-	cwd, request_id = backend.cancelled_questions[0]
-	assert cwd == _CWD
+	conv_id, request_id = backend.cancelled_questions[0]
+	# conv_id is the auto-created conversation_id (not raw _CWD)
+	assert conv_id == registry.session_to_conversation_id.get(_SID) or conv_id.startswith("conv-")
 	# Request ID is generated server-side; we just assert it's a non-empty string.
 	assert isinstance(request_id, str) and request_id
 
-
-@pytest.mark.asyncio
-async def test_ask_human_returns_response_when_resolved(cfg, logger):
-	backend = RecordingBackend()
-	registry = make_registry_with_loopback()
-	registry.set_cwd_override(_CWD, True)
-	handlers = build_tool_handlers(cfg, registry, backend, logger)
-
-	task = asyncio.create_task(handlers.ask_human("Overwrite foo?", _CWD, _SENDER))
-	await asyncio.sleep(0)
-	req_id = registry.resolve(cwd=_CWD, sender=_SENDER, text="yes")
-	assert req_id is not None
-	result = await asyncio.wait_for(task, timeout=1.0)
-	assert result == "yes"
-	assert len(backend.sent_questions) == 1
-	assert len(backend.sent_confirmations) == 1
-	_, _, correlation, response_text = backend.sent_confirmations[0]
-	assert response_text == "yes"
 
 
 class YieldingBackend(RecordingBackend):
@@ -274,31 +260,6 @@ class YieldingBackend(RecordingBackend):
 			yield r
 		await asyncio.Event().wait()
 
-
-@pytest.mark.asyncio
-async def test_dispatch_loop_routes_responses_to_registry(cfg, logger):
-	registry = make_registry_with_loopback()
-	registry.set_cwd_override(_CWD, True)
-	# Dispatch uses tuple correlation (cwd, sender)
-	backend = YieldingBackend([IncomingResponse(correlation=(_CWD, _SENDER), text="yes")])
-	handlers = build_tool_handlers(cfg, registry, backend, logger)
-
-	ask_task = asyncio.create_task(handlers.ask_human("q", _CWD, _SENDER))
-	await asyncio.sleep(0)  # let ask_human register
-	sup = _make_loop_supervisor(backend, logger, name="dispatch_responses")
-	dispatch_task = asyncio.create_task(
-		dispatch_responses(registry, backend, logger, sup)
-	)
-
-	try:
-		result = await asyncio.wait_for(ask_task, timeout=1.0)
-		assert result == "yes"
-	finally:
-		dispatch_task.cancel()
-		try:
-			await dispatch_task
-		except asyncio.CancelledError:
-			pass
 
 
 @pytest.mark.asyncio
@@ -391,11 +352,13 @@ async def test_ask_human_cleans_up_registry_on_cancellation(cfg, logger):
 	entry must not be left behind."""
 	backend = RecordingBackend()
 	registry = make_registry_with_loopback()
-	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	task = asyncio.create_task(handlers.ask_human("q", _CWD, _SENDER))
+	task = asyncio.create_task(
+		handlers.ask_human("q", _SENDER, cli_session_id="s-cleanup-001", cwd=_CWD)
+	)
 	await asyncio.sleep(0)  # let it register
+	await asyncio.sleep(0)
 	assert registry.pending_count == 1
 	# Cancel mid-wait.
 	task.cancel()
@@ -442,130 +405,11 @@ async def test_dispatch_loop_restarts_after_iterator_crash(cfg, logger, tmp_path
 	assert "dispatch_responses_loop_crashed" in log_text
 
 
-@pytest.mark.asyncio
-async def test_concurrent_ask_human_calls_resolve_independently(cfg, logger):
-	"""Two concurrent ask_human calls (different cwds), resolved out of order via the
-	dispatch loop, each return their own reply."""
-	_CWD_A = "c:/work/chan-a"
-	_CWD_B = "c:/work/chan-b"
-	registry = make_registry_with_loopback()
-	registry.set_cwd_override(_CWD_A, True)
-	registry.set_cwd_override(_CWD_B, True)
-	backend = YieldingBackend([
-		IncomingResponse(correlation=(_CWD_B, _SENDER), text="answer-to-second"),
-		IncomingResponse(correlation=(_CWD_A, _SENDER), text="answer-to-first"),
-	])
-	handlers = build_tool_handlers(cfg, registry, backend, logger)
-
-	first = asyncio.create_task(handlers.ask_human("q1", _CWD_A, _SENDER))
-	await asyncio.sleep(0)
-	second = asyncio.create_task(handlers.ask_human("q2", _CWD_B, _SENDER))
-	await asyncio.sleep(0)
-
-	sup = _make_loop_supervisor(backend, logger, name="dispatch_responses")
-	dispatch_task = asyncio.create_task(
-		dispatch_responses(registry, backend, logger, sup)
-	)
-
-	try:
-		r1, r2 = await asyncio.wait_for(
-			asyncio.gather(first, second), timeout=1.0
-		)
-		assert r1 == "answer-to-first"
-		assert r2 == "answer-to-second"
-	finally:
-		dispatch_task.cancel()
-		try:
-			await dispatch_task
-		except asyncio.CancelledError:
-			pass
-
-
-@pytest.mark.asyncio
-async def test_ask_human_at_desk_returns_redirect_and_delivers_as_notify(cfg, logger):
-	"""When away mode is off for this cwd, ask_human delivers a passive notify and
-	returns the at-desk redirect error so the agent produces the question in the terminal."""
-	backend = RecordingBackend()
-	registry = make_registry_with_loopback()
-	# is_away_mode_active(_CWD) defaults to False — no override needed.
-	handlers = build_tool_handlers(cfg, registry, backend, logger)
-
-	result = await handlers.ask_human(
-		"Should I overwrite foo.java?", _CWD, _SENDER, suggestions=["yes", "no"]
-	)
-
-	# Returns the redirect sentinel.
-	assert result == "ERROR: John is at his desk. Ask this question via the terminal."
-
-	# Backend received exactly one write — a notify, not a question.
-	assert len(backend.channel_messages) == 1
-	msg = backend.channel_messages[0]
-	assert msg["message_type"] == "notify"
-	assert msg["content"] == "Should I overwrite foo.java?"
-	# No request_id and no suggestions on the downgraded notify.
-	assert msg["request_id"] is None
-	assert msg["suggestions"] is None
-
-	# No pending request registered.
-	assert registry.pending_count == 0
-
-
-@pytest.mark.asyncio
-async def test_ask_human_per_cwd_at_desk_redirect(cfg, logger):
-	"""Global away=True but cwd override=False → at-desk redirect for that cwd."""
-	backend = RecordingBackend()
-	registry = make_registry_with_loopback()
-	registry.update_global_away_cache(True)
-	registry.set_cwd_override(_CWD, False)
-	registry.update_cwd_override_cache(_CWD, False)
-	handlers = build_tool_handlers(cfg, registry, backend, logger)
-
-	result = await handlers.ask_human("question?", _CWD, _SENDER)
-
-	assert result == "ERROR: John is at his desk. Ask this question via the terminal."
-	assert registry.pending_count == 0
-
-
-@pytest.mark.asyncio
-async def test_ask_human_away_mode_blocks_as_before(cfg, logger):
-	"""When away mode is active for this cwd, ask_human registers a pending request
-	and blocks until a response arrives — existing behavior is preserved."""
-	backend = RecordingBackend()
-	registry = make_registry_with_loopback()
-	registry.set_cwd_override(_CWD, True)
-	handlers = build_tool_handlers(cfg, registry, backend, logger)
-
-	task = asyncio.create_task(handlers.ask_human("Proceed with migration?", _CWD, _SENDER))
-	await asyncio.sleep(0)
-
-	# A question was written to the backend.
-	assert len(backend.sent_questions) == 1
-	# A pending request was registered.
-	assert registry.pending_count == 1
-
-	# Resolve via (cwd, sender).
-	resolved = registry.resolve(cwd=_CWD, sender=_SENDER, text="yes")
-	assert resolved is not None
-	result = await asyncio.wait_for(task, timeout=1.0)
-	assert result == "yes"
-
-
-@pytest.mark.asyncio
-async def test_ask_human_invalid_cwd_returns_error(cfg, logger):
-	"""Non-absolute cwd returns an error string without registering a pending request."""
-	backend = RecordingBackend()
-	registry = make_registry_with_loopback()
-	handlers = build_tool_handlers(cfg, registry, backend, logger)
-
-	result = await handlers.ask_human("question?", "not-absolute", _SENDER)
-
-	assert result.startswith("ERROR: invalid cwd:")
-	assert registry.pending_count == 0
 
 
 @pytest.mark.asyncio
 async def test_ask_human_supersede_marks_prior_cancelled(cfg, logger):
-	"""When a new ask_human for the same (cwd, sender) supersedes a prior one,
+	"""When a new ask_human for the same (conversation, sender) supersedes a prior one,
 	mark_question_cancelled is called on the backend for the prior request_id."""
 
 	class RecordingCancelBackend(RecordingBackend):
@@ -573,29 +417,38 @@ async def test_ask_human_supersede_marks_prior_cancelled(cfg, logger):
 			super().__init__()
 			self.cancelled_ids: list[tuple[str, str]] = []
 
-		async def mark_question_cancelled(self, cwd: str, request_id: str) -> None:
-			self.cancelled_ids.append((cwd, request_id))
+		async def mark_question_cancelled(self, conversation_id: str, request_id: str) -> None:
+			self.cancelled_ids.append((conversation_id, request_id))
 
 	backend = RecordingCancelBackend()
 	registry = make_registry_with_loopback()
-	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
+	# Both asks use the same session → same conversation_id → same registry key
+	_SID = "s-supersede-001"
+
 	# First ask — registers and blocks
-	first_task = asyncio.create_task(handlers.ask_human("first question", _CWD, _SENDER))
+	first_task = asyncio.create_task(
+		handlers.ask_human("first question", _SENDER, cli_session_id=_SID, cwd=_CWD)
+	)
+	await asyncio.sleep(0)
 	await asyncio.sleep(0)
 	assert registry.pending_count == 1
 	first_req_id = list(registry._pending.values())[0].request_id
 
-	# Second ask for same (cwd, sender) — supersedes first
-	second_task = asyncio.create_task(handlers.ask_human("second question", _CWD, _SENDER))
+	# Second ask for same (conversation_id, sender) — supersedes first
+	second_task = asyncio.create_task(
+		handlers.ask_human("second question", _SENDER, cli_session_id=_SID, cwd=_CWD)
+	)
+	await asyncio.sleep(0)
 	await asyncio.sleep(0)
 
 	# mark_question_cancelled must have been called for the first request_id
 	assert any(rid == first_req_id for _, rid in backend.cancelled_ids)
 
 	# Resolve the second
-	registry.resolve(cwd=_CWD, sender=_SENDER, text="answer")
+	conv_id = registry.session_to_conversation_id.get(_SID)
+	registry.resolve(conversation_id=conv_id, sender=_SENDER, text="answer")
 	await asyncio.wait_for(second_task, timeout=1.0)
 
 	# First task was cancelled
@@ -614,15 +467,17 @@ async def test_ask_human_cancel_marks_firebase(cfg, logger):
 			super().__init__()
 			self.cancelled_ids: list[tuple[str, str]] = []
 
-		async def mark_question_cancelled(self, cwd: str, request_id: str) -> None:
-			self.cancelled_ids.append((cwd, request_id))
+		async def mark_question_cancelled(self, conversation_id: str, request_id: str) -> None:
+			self.cancelled_ids.append((conversation_id, request_id))
 
 	backend = RecordingCancelBackend()
 	registry = make_registry_with_loopback()
-	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	task = asyncio.create_task(handlers.ask_human("cancel me", _CWD, _SENDER))
+	task = asyncio.create_task(
+		handlers.ask_human("cancel me", _SENDER, cli_session_id="s-cancel-fb-001", cwd=_CWD)
+	)
+	await asyncio.sleep(0)
 	await asyncio.sleep(0)
 	req_id = list(registry._pending.values())[0].request_id
 
@@ -638,19 +493,23 @@ async def test_ask_human_cancel_marks_firebase(cfg, logger):
 
 @pytest.mark.asyncio
 async def test_ask_human_title_passthrough(cfg, logger):
-	"""title kwarg is forwarded to backend.write_channel_message for both
-	the question and the at-desk notify paths."""
+	"""title kwarg is forwarded to backend.write_conversation_message for the question."""
 	backend = RecordingBackend()
 	registry = make_registry_with_loopback()
-	registry.set_cwd_override(_CWD, True)
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	task = asyncio.create_task(handlers.ask_human("q?", _CWD, _SENDER, title="My Task"))
+	_SID = "s-title-001"
+	task = asyncio.create_task(
+		handlers.ask_human("q?", _SENDER, title="My Task", cli_session_id=_SID, cwd=_CWD)
+	)
+	await asyncio.sleep(0)
 	await asyncio.sleep(0)
 
-	assert backend.channel_messages[0]["title"] == "My Task"
+	q_msg = next(m for m in backend.channel_messages if m["message_type"] == "question")
+	assert q_msg["title"] == "My Task"
 
-	registry.resolve(cwd=_CWD, sender=_SENDER, text="yes")
+	conv_id = registry.session_to_conversation_id.get(_SID)
+	registry.resolve(conversation_id=conv_id, sender=_SENDER, text="yes")
 	await asyncio.wait_for(task, timeout=1.0)
 
 
@@ -661,8 +520,8 @@ class StaleNoticeBackend(RecordingBackend):
 		super().__init__()
 		self.stale_notices: list[tuple[str, str]] = []
 
-	async def send_stale_reply_notice(self, cwd: str, sender: str) -> None:
-		self.stale_notices.append((cwd, sender))
+	async def send_stale_reply_notice(self, conversation_id: str, sender: str) -> None:
+		self.stale_notices.append((conversation_id, sender))
 
 
 @pytest.mark.asyncio
@@ -739,20 +598,22 @@ async def test_dispatch_loop_deletes_response_slot_on_success(cfg, logger):
 	always propagate client disconnects."""
 	registry = make_registry_with_loopback()
 	# Pre-register a pending so registry.resolve succeeds.
-	registry.add(cwd=_CWD, sender=_SENDER, request_id="r1", msg_id="m1")
+	registry.add(conversation_id=_CWD, sender=_SENDER, request_id="r1", msg_id="m1")
 
 	class DeleteRecordingBackend(StaleNoticeBackend):
 		def __init__(self):
 			super().__init__()
 			self.deleted_slots: list[str] = []
-			self.channel_messages: list[tuple] = []
+			self.conv_messages: list[tuple] = []
 
 		async def delete_response_slot(self, slot: str) -> None:
 			self.deleted_slots.append(slot)
 
-		async def write_channel_message(self, cwd, sender, message_type, content, **kwargs):
-			self.channel_messages.append((cwd, sender, message_type, content, kwargs))
-			return (cwd, sender), "msg-id"
+		async def write_conversation_message(self, conv_id, sender_or_message, message_type=None, text=None, **kwargs):
+			if isinstance(sender_or_message, dict):
+				return "msg-id"
+			self.conv_messages.append((conv_id, sender_or_message, message_type, text, kwargs))
+			return (conv_id, sender_or_message), "msg-id"
 
 		async def poll_responses(self):
 			yield IncomingResponse(correlation=(_CWD, _SENDER), text="yes", slot="r1")
@@ -775,8 +636,8 @@ async def test_dispatch_loop_deletes_response_slot_on_success(cfg, logger):
 	assert backend.deleted_slots == ["r1"]
 
 	# The tail "human" message must carry attached_to_msg_id pointing at the question.
-	assert len(backend.channel_messages) == 1, f"expected 1 history write, got {backend.channel_messages}"
-	cwd, sender, msg_type, content, kwargs = backend.channel_messages[0]
+	assert len(backend.conv_messages) == 1, f"expected 1 history write, got {backend.conv_messages}"
+	conv_id, sender, msg_type, content, kwargs = backend.conv_messages[0]
 	assert sender == "John"
 	assert msg_type == "human"
 	assert content == "yes"

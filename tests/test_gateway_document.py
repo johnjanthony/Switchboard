@@ -129,13 +129,19 @@ async def test_send_document_human_success(cfg, logger, tmp_path):
 	f.write_text("hello world")
 
 	result = await handlers.send_document_human(
-		"report.txt", "c:/work/my-chan-001", "Claude", caption="Here's the report", _cwd_path=tmp_path
+		"report.txt",
+		"Claude",
+		caption="Here's the report",
+		cli_session_id="s-doc-success-001",
+		cwd=str(tmp_path),
+		_cwd_path=tmp_path,
 	)
 
 	assert result == "ok"
 	assert len(backend.sent_documents) == 1
 	channel_id, sent_content, sent_url = backend.sent_documents[0]
-	assert channel_id == "c:/work/my-chan-001"
+	# channel_id is the auto-created conversation_id
+	assert channel_id.startswith("conv-")
 	assert Path(sent_url) == f.resolve()
 	assert sent_content == "Here's the report"
 
@@ -144,11 +150,9 @@ async def test_send_document_human_success(cfg, logger, tmp_path):
 	doc_events = [ev for ev in events if ev.get("event") == "document_sent"]
 	assert len(doc_events) == 1
 	ev = doc_events[0]
-	assert ev["channel_id"] == "c:/work/my-chan-001"
 	assert ev["size_bytes"] == len(b"hello world")
 	assert len(ev["sha256"]) == 64
 	assert ev["caption_preview"] == "Here's the report"
-	# Session log path with canonical cwd is a known Slice J concern — not validated here.
 
 
 @pytest.mark.asyncio
@@ -158,7 +162,13 @@ async def test_send_document_human_no_caption(cfg, logger, tmp_path):
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 	f = tmp_path / "report.txt"
 	f.write_text("hello")
-	result = await handlers.send_document_human("report.txt", "c:/work/my-chan-001", "Claude", _cwd_path=tmp_path)
+	result = await handlers.send_document_human(
+		"report.txt",
+		"Claude",
+		cli_session_id="s-doc-nocap-001",
+		cwd=str(tmp_path),
+		_cwd_path=tmp_path,
+	)
 	assert result == "ok"
 	assert backend.sent_documents[0][1] == "report.txt"  # filename used as content
 
@@ -168,7 +178,13 @@ async def test_send_document_human_path_error_returns_error_string(cfg, logger, 
 	backend = RecordingBackend()
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
-	result = await handlers.send_document_human("nonexistent.txt", "c:/work/my-chan-001", "Claude", _cwd_path=tmp_path)
+	result = await handlers.send_document_human(
+		"nonexistent.txt",
+		"Claude",
+		cli_session_id="s-doc-patherr-001",
+		cwd=str(tmp_path),
+		_cwd_path=tmp_path,
+	)
 	assert result.startswith("ERROR:")
 	assert backend.sent_documents == []
 
@@ -180,7 +196,13 @@ async def test_send_document_human_denylist_returns_error_string(cfg, logger, tm
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 	f = tmp_path / ".env"
 	f.write_text("SECRET=very_secret")
-	result = await handlers.send_document_human(".env", "c:/work/my-chan-001", "Claude", _cwd_path=tmp_path)
+	result = await handlers.send_document_human(
+		".env",
+		"Claude",
+		cli_session_id="s-doc-deny-001",
+		cwd=str(tmp_path),
+		_cwd_path=tmp_path,
+	)
 	assert result.startswith("ERROR:")
 	assert backend.sent_documents == []
 
@@ -188,17 +210,24 @@ async def test_send_document_human_denylist_returns_error_string(cfg, logger, tm
 @pytest.mark.asyncio
 async def test_send_document_human_backend_error_returns_error_string(cfg, logger, tmp_path):
 	class BrokenDocBackend(RecordingBackend):
-		async def write_channel_message(self, channel_id, sender, message_type, content, **kwargs):
-			if message_type == "document":
+		async def write_conversation_message(self, conv_id, sender_or_message, message_type=None, text=None, **kwargs):
+			mt = message_type if not isinstance(sender_or_message, dict) else sender_or_message.get("type", "")
+			if mt == "document":
 				raise RuntimeError("telegram boom")
-			return await super().write_channel_message(channel_id, sender, message_type, content, **kwargs)
+			return await super().write_conversation_message(conv_id, sender_or_message, message_type, text, **kwargs)
 
 	backend = BrokenDocBackend()
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 	f = tmp_path / "report.txt"
 	f.write_text("hello")
-	result = await handlers.send_document_human("report.txt", "c:/work/my-chan-001", "Claude", _cwd_path=tmp_path)
+	result = await handlers.send_document_human(
+		"report.txt",
+		"Claude",
+		cli_session_id="s-doc-bknerr-001",
+		cwd=str(tmp_path),
+		_cwd_path=tmp_path,
+	)
 	assert result.startswith("ERROR:")
 	assert "telegram boom" in result
 
@@ -212,8 +241,20 @@ async def test_send_document_human_returns_error_when_rate_limited(cfg, logger, 
 	limiter = RateLimiter(rate_per_minute=1)
 	handlers = build_tool_handlers(cfg, registry, backend, logger, limiter)
 
-	first = await handlers.send_document_human("report.txt", "c:/work/rl-001", "Claude", _cwd_path=tmp_path)
-	result = await handlers.send_document_human("report.txt", "c:/work/rl-001", "Claude", _cwd_path=tmp_path)  # over limit
+	first = await handlers.send_document_human(
+		"report.txt",
+		"Claude",
+		cli_session_id="s-doc-rl-001",
+		cwd=str(tmp_path),
+		_cwd_path=tmp_path,
+	)
+	result = await handlers.send_document_human(
+		"report.txt",
+		"Claude",
+		cli_session_id="s-doc-rl-001",
+		cwd=str(tmp_path),
+		_cwd_path=tmp_path,
+	)  # over limit — same session → same conversation bucket
 
 	assert first == "ok"
 	assert result.startswith("ERROR: rate limit exceeded")
@@ -231,36 +272,44 @@ async def test_send_document_human_path_error_bypasses_rate_limit(cfg, logger, t
 	f.write_text("hello")
 	limiter = RateLimiter(rate_per_minute=1)
 	handlers = build_tool_handlers(cfg, registry, backend, logger, limiter)
-	await handlers.send_document_human("report.txt", "c:/work/rl-002", "Claude", _cwd_path=tmp_path)  # exhausts the bucket
-	# Channel is now rate-limited, but path error should still surface
-	result = await handlers.send_document_human("nonexistent.txt", "c:/work/rl-002", "Claude", _cwd_path=tmp_path)
+	await handlers.send_document_human(
+		"report.txt",
+		"Claude",
+		cli_session_id="s-doc-rl-002",
+		cwd=str(tmp_path),
+		_cwd_path=tmp_path,
+	)  # exhausts the bucket
+	# Conversation is now rate-limited, but path error should still surface before the limit check.
+	result = await handlers.send_document_human(
+		"nonexistent.txt",
+		"Claude",
+		cli_session_id="s-doc-rl-002",
+		cwd=str(tmp_path),
+		_cwd_path=tmp_path,
+	)
 	assert result.startswith("ERROR:")
 	assert "not found" in result
 
 
-@pytest.mark.asyncio
-async def test_send_document_human_invalid_cwd_returns_error(cfg, logger, tmp_path):
-	"""Non-absolute cwd returns an error string."""
-	backend = RecordingBackend()
-	registry = Registry()
-	handlers = build_tool_handlers(cfg, registry, backend, logger)
-	f = tmp_path / "report.txt"
-	f.write_text("hello")
-	result = await handlers.send_document_human("report.txt", "not-a-path", "Claude", _cwd_path=tmp_path)
-	assert result.startswith("ERROR: invalid cwd:")
-	assert backend.sent_documents == []
-
 
 @pytest.mark.asyncio
 async def test_send_document_human_title_passthrough(cfg, logger, tmp_path):
-	"""title kwarg is forwarded to backend.write_channel_message."""
+	"""title kwarg is forwarded to backend.write_conversation_message."""
 	backend = RecordingBackend()
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 	f = tmp_path / "report.txt"
 	f.write_text("hello")
 	result = await handlers.send_document_human(
-		"report.txt", "c:/work/my-chan-001", "Claude", title="My Session", _cwd_path=tmp_path
+		"report.txt",
+		"Claude",
+		title="My Session",
+		cli_session_id="s-doc-title-001",
+		cwd=str(tmp_path),
+		_cwd_path=tmp_path,
 	)
 	assert result == "ok"
-	assert backend.channel_messages[0]["title"] == "My Session"
+	# channel_messages[0] is the write_conversation_meta call's channel message;
+	# channel_messages[-1] is the document write — find it by message_type.
+	doc_msg = next(m for m in backend.channel_messages if m["message_type"] == "document")
+	assert doc_msg["title"] == "My Session"

@@ -46,39 +46,20 @@ class Backend(ABC):
 
 
 class MessageWriter(ABC):
-	"""Channel-message writes, acks, system messages.
+	"""Conversation-message writes, acks, system messages.
 
-	Anything that produces or annotates a message bubble in the channel.
+	Anything that produces or annotates a message bubble in the conversation.
+	write_conversation_message is the canonical write method (declared in
+	ConversationStore). MessageWriter is retained as a mixin for backends
+	that also implement send_timeout_followup, send_resolution_confirmation,
+	and the various send_* helpers.
 	"""
-
-	@abstractmethod
-	async def write_channel_message(
-		self,
-		cwd: str,
-		sender: str,
-		message_type: str,
-		content: str,
-		*,
-		request_id: str | None = None,
-		url: str | None = None,
-		format: str = "plain",
-		suggestions: list[str] | None = None,
-		filename: str | None = None,
-		title: str | None = None,
-		rejected: bool = False,
-		attached_to_msg_id: str | None = None,
-	) -> "tuple[CorrelationToken | None, str | None]":
-		"""Write a message to the channel. Returns (correlation, msg_id).
-		correlation is used for message_type='question' to match responses.
-		msg_id is the unique ID of the message in the backend.
-		rejected=True marks system messages that the client should surface
-		as a transient toast (e.g. stale-reply notices)."""
 
 	@abstractmethod
 	async def send_timeout_followup(
 		self,
 		request_id: str,
-		channel_id: str,
+		conversation_id: str,
 		timeout_seconds: int,
 		correlation: "CorrelationToken",
 	) -> None:
@@ -88,7 +69,7 @@ class MessageWriter(ABC):
 	async def send_resolution_confirmation(
 		self,
 		request_id: str,
-		channel_id: str,
+		conversation_id: str,
 		correlation: "CorrelationToken",
 		response_text: str | None = None,
 	) -> None:
@@ -102,26 +83,26 @@ class MessageWriter(ABC):
 		"""Acknowledge a successful spawn command. No-op by default."""
 		pass
 
-	async def send_stale_reply_notice(self, cwd: str, sender: str) -> None:
+	async def send_stale_reply_notice(self, conversation_id: str, sender: str) -> None:
 		"""Write a system message indicating a stale reply landed.
 		No-op default; FirebaseBackend overrides."""
 		pass
 
-	async def mark_question_cancelled(self, cwd: str, request_id: str) -> None:
+	async def mark_question_cancelled(self, conversation_id: str, request_id: str) -> None:
 		"""Mark the question with this request_id as cancelled in storage.
 		No-op default; FirebaseBackend overrides."""
 		pass
 
 	async def write_agent_status(
 		self,
-		cwd: str,
+		conv_id: str,
 		sender: str,
 		state: str,
 		detail: str | None,
 	) -> None:
-		"""Write the current agent status to the channel. Ephemeral
-		last-writer-wins; passing state == "clear" deletes the field.
-		No-op default; FirebaseBackend overrides."""
+		"""Write the current agent status to /conversations/<conv_id>/agent_status/<sender>.
+		Keyed by sender so multi-member conversations have per-member status entries.
+		Passing state == "clear" deletes the entry. No-op default; FirebaseBackend overrides."""
 		pass
 
 
@@ -191,50 +172,13 @@ class AwayModeMirror(ABC):
 class ChannelLifecycle(ABC):
 	"""Channel-state CRUD plus spawn-collision sub-flow."""
 
-	async def write_session_meta(
-		self,
-		channel_id: str,
-		type: str,
-		project_key: str,
-		*,
-		agent_senders: list[str] | None = None,
-		task: str | None = None,
-	) -> None:
-		"""Write session metadata to Firebase on session creation. No-op by default."""
-		pass
-
 	async def read_channel_meta(self, cwd: str) -> dict:
 		"""Return {'title': str|None, 'last_activity_at': str|None, 'hidden': bool}."""
 		return {"title": None, "last_activity_at": None, "hidden": False}
 
-	async def has_messages(self, cwd: str) -> bool:
-		"""Return True if channels/<key>/messages contains any entries."""
-		return False
-
-	async def wipe_channel(self, cwd: str) -> None:
-		"""Atomic wipe of channels/<key>/messages, responses/<key>__*, etc."""
+	async def set_conversation_hidden(self, conv_id: str, hidden: bool) -> None:
+		"""Set the hidden flag on the conversation at /conversations/<conv_id>/meta/hidden."""
 		pass
-
-	async def set_channel_hidden(self, cwd: str, hidden: bool) -> None:
-		"""Set the hidden flag on the channel."""
-		pass
-
-	async def write_spawn_collision_prompt(
-		self, spawn_id: str, cwd: str,
-		channel_title: str | None, last_activity_at: str | None, hidden: bool,
-	) -> None:
-		"""Push a spawn-collision dialog to the phone via Firebase."""
-		pass
-
-	async def clear_spawn_collision_prompt(self, spawn_id: str) -> None:
-		"""Remove the spawn-collision dialog node."""
-		pass
-
-	async def poll_spawn_collision_decision(self, spawn_id: str) -> dict:
-		"""Block until spawn_collisions/{spawn_id}/decision is written; return the decision dict.
-		Decision shape: {"action": "continue" | "clear" | "cancel"}.
-		Used by _handle_spawn to gate the collision-dialog flow."""
-		raise NotImplementedError
 
 
 class InjectPort(ABC):
@@ -248,3 +192,85 @@ class InjectPort(ABC):
 		"""Yield (session_id, inject_id, text) tuples. Empty by default."""
 		if False:
 			yield
+
+
+class ConversationStore:
+	"""Backend protocol for persisting the new /conversations/<id>/... Firebase schema.
+
+	All methods are no-ops by default so existing backends that don't implement them
+	continue to work unchanged. FirebaseBackend overrides all methods.
+	"""
+
+	async def write_conversation_meta(
+		self,
+		conv_id: str,
+		*,
+		title: str,
+		state: str,
+		continued_from: str | None,
+		created_at: float,
+		last_activity_at: float,
+		ended_at: float | None,
+		hidden: bool,
+	) -> None:
+		"""Write the top-level conversation fields (everything except members and messages)."""
+		pass
+
+	async def write_conversation_member(self, conv_id: str, member) -> None:
+		"""Write a member entry under /conversations/<id>/members_active/<sender>."""
+		pass
+
+	async def remove_conversation_member(self, conv_id: str, sender: str) -> None:
+		"""Remove a member entry under /conversations/<id>/members_active/<sender>."""
+		pass
+
+	async def write_conversation_message(
+		self,
+		conv_id: str,
+		sender_or_message,
+		message_type: str | None = None,
+		text: str | None = None,
+		*,
+		request_id: str | None = None,
+		format: str = "plain",
+		suggestions: list[str] | None = None,
+		title: str | None = None,
+		url: str | None = None,
+		filename: str | None = None,
+		attached_to_msg_id: str | None = None,
+		rejected: bool = False,
+	):
+		"""Append a message to /conversations/<id>/messages.
+
+		Two call forms:
+		- Legacy dict form: write_conversation_message(conv_id, message_dict) -> str push key
+		- Expanded form: write_conversation_message(conv_id, sender, type, text, ...) -> (correlation, msg_id)
+
+		No-op by default; FirebaseBackend overrides with the full implementation."""
+		if isinstance(sender_or_message, dict):
+			return ""
+		return (conv_id, sender_or_message), None
+
+	async def set_conversation_state(self, conv_id: str, state: str) -> None:
+		"""Update a conversation's state (active/ended)."""
+		pass
+
+	async def set_conversation_last_activity(self, conv_id: str, ts: float) -> None:
+		"""Update /conversations/<id>/meta/last_activity_at."""
+		pass
+
+	async def set_open_conversation_id(self, conv_id: str | None) -> None:
+		"""Write the global open-conversation pointer."""
+		pass
+
+	async def set_session_home(self, session_id: str, conv_id: str) -> None:
+		"""Persist a cli session's home-conversation pointer."""
+		pass
+
+	async def remove_session_binding(self, session_id: str) -> None:
+		"""Remove /cli_sessions/<session_id>/home_conversation_id."""
+		pass
+
+	async def set_global_wsl_available(self, available: bool) -> None:
+		"""Write whether WSL is detected on this host to /global_settings/wsl_available."""
+		pass

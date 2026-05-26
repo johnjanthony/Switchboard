@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 from server.registry import Registry
 from server.logging_jsonl import JsonlLogger
 from server.messenger import (
 	MessageWriter,
 	ResponsePoller,
-	AwayModeMirror,
 	InjectPort,
+	ConversationStore,
 )
 from server.gateway.bg_tasks import _spawn_bg
 from server.firebase_supervisor import LoopSupervisor
 
-class _DispatchResponsesBackend(ResponsePoller, MessageWriter):
+class _DispatchResponsesBackend(ResponsePoller, MessageWriter, ConversationStore):
 	"""Backend surface used by dispatch_responses."""
 
 
@@ -31,13 +30,13 @@ async def dispatch_responses(
 				try:
 					corr = response.correlation
 					if isinstance(corr, tuple) and len(corr) == 2:
-						cwd, sender = corr
-						record = registry.get((cwd, sender))
-						req_id = registry.resolve(cwd=cwd, sender=sender, text=response.text)
+						conversation_id, sender = corr
+						record = registry.get((conversation_id, sender))
+						req_id = registry.resolve(conversation_id, sender, response.text)
 						if req_id is None:
-							await logger.surface_error(f"unknown_correlation: cwd={cwd} sender={sender}")
+							await logger.surface_error(f"unknown_correlation: conversation_id={conversation_id} sender={sender}")
 							try:
-								await backend.send_stale_reply_notice(cwd, sender)
+								await backend.send_stale_reply_notice(conversation_id, sender)
 							except Exception as exc:
 								await logger.surface_error(f"stale_reply_notice_failed: {exc}")
 							# Drop the orphan from `responses/` so the listener doesn't
@@ -68,9 +67,9 @@ async def dispatch_responses(
 							# uses this to splice the reply directly under its question and to derive
 							# the answered-state for the question's RESPONDED badge.
 							attached = record.msg_id
-							async def _write_history(cid=cwd, txt=response.text, attached=attached):
+							async def _write_history(cid=conversation_id, txt=response.text, attached=attached):
 								try:
-									await backend.write_channel_message(
+									await backend.write_conversation_message(
 										cid, "John", "human", txt,
 										attached_to_msg_id=attached,
 									)
@@ -78,7 +77,7 @@ async def dispatch_responses(
 									await _append_session_log(logger.log_path, cid, "←", txt, logger)
 								except Exception as exc:
 									await logger.surface_error(f"history_write_failed: {exc}")
-							_spawn_bg(_write_history(), label=f"history_write:{cwd}")
+							_spawn_bg(_write_history(), label=f"history_write:{conversation_id}")
 					else:
 						await logger.surface_error(f"legacy_correlation_dropped: {corr}")
 				except asyncio.CancelledError:
@@ -93,174 +92,226 @@ async def dispatch_responses(
 		except Exception as exc:
 			await supervisor.record_crash(exc)
 
-async def _safe_handle(spawn_handler: Any, raw: str, logger: JsonlLogger) -> None:
-	try:
-		await spawn_handler.handle(raw)
-	except asyncio.CancelledError:
-		raise
-	except Exception as exc:
-		await logger.surface_error(f"dispatch_commands_error: {exc}")
+async def handle_force_end(registry, conversation_id: str, backend=None) -> None:
+	"""Force-end a conversation: resolve all waiters with sentinel, clear members,
+	apply session-fallback for each session.
 
+	Idempotent: if conversation is already Ended or doesn't exist, returns cleanly.
 
-async def dispatch_commands(
-	spawn_handler: Any,
-	backend: ResponsePoller,
-	logger: JsonlLogger,
-	supervisor: LoopSupervisor,
-) -> None:
-	while True:
-		try:
-			async for raw in backend.poll_commands():
-				supervisor.record_success()
-				_spawn_bg(_safe_handle(spawn_handler, raw, logger), label="dispatch_commands")
-		except asyncio.CancelledError:
-			raise
-		except Exception as exc:
-			await supervisor.record_crash(exc)
-
-async def _clear_all_cwd_overrides(registry: Registry, backend: AwayModeMirror, logger: JsonlLogger) -> int:
-	"""Wipe every per-channel away_mode override.
-
-	Invoked after a successful global enter/exit so that flipping the global flag
-	resets per-channel state — the user's mental model is that a global toggle is
-	a Big Hammer and channel-level overrides should not survive it. Returns the
-	number of overrides cleared.
-
-	Sources its key list from the registry's in-memory cache rather than re-
-	reading channels from Firebase: the cache is the live mirror, walking it is
-	cheap, and writing one delete per known override avoids a `channels/` shallow
-	read on every global flip.
+	backend: optional ConversationStore — if provided, Firebase writes are issued
+	for member removal, state change, open-pointer clear, and a force-end system message.
 	"""
-	overrides = registry.cwd_overrides()
-	if not overrides:
-		return 0
-	for cwd in list(overrides.keys()):
-		try:
-			await backend.write_away_mode_mirror(cwd, None)
-		except Exception as exc:
-			await logger.surface_error(
-				f"away_mode_commands: clear_override_failed cwd={cwd!r} {exc}"
+	import time as _time
+	from datetime import datetime, timezone
+	from server.session_fallback import apply_fallback
+
+	conv = registry.conversations.get(conversation_id)
+	if not conv or conv.state == "ended":
+		return  # idempotent
+
+	async with conv.lock:
+		# Resolve every queued future with the __CONVERSATION_ENDED__ sentinel
+		while conv.wait_queue:
+			entry = conv.wait_queue.popleft()
+			future = entry["future"]
+			if not future.done():
+				future.set_result("__CONVERSATION_ENDED__\n(force-ended)")
+
+		# Collect session_ids for fallback (before clearing members)
+		session_ids = [m.cli_session_id for m in conv.members_active.values() if m.alive]
+		# Note: dormant members (alive=False) don't need fallback — they have no
+		# active session to redirect. Their bindings will be cleaned up by
+		# whatever flow re-attaches them (resume/combine).
+
+		# Collect member senders for Firebase removal
+		member_senders = list(conv.members_active.keys())
+
+		# Clear active membership
+		conv.members_active.clear()
+
+		# Mark Ended
+		conv.state = "ended"
+		conv.ended_at = _time.time()
+		open_cleared = False
+		if registry.open_conversation_id == conversation_id:
+			registry.open_conversation_id = None
+			open_cleared = True
+
+		if backend is not None:
+			now_iso = datetime.now(timezone.utc).isoformat()
+			force_end_msg = {
+				"seq": len(conv.messages),
+				"sender": "<system>",
+				"type": "system",
+				"text": "Conversation force-ended.",
+				"timestamp": now_iso,
+			}
+			conv.messages.append(force_end_msg)
+			for sender in member_senders:
+				_spawn_bg(
+					backend.remove_conversation_member(conversation_id, sender),
+					label=f"fb_remove_member:{conversation_id}:{sender}",
+				)
+			_spawn_bg(
+				backend.set_conversation_state(conversation_id, "ended"),
+				label=f"fb_set_state:{conversation_id}:ended",
 			)
-	return len(overrides)
+			if open_cleared:
+				_spawn_bg(
+					backend.set_open_conversation_id(None),
+					label=f"fb_clear_open_id:{conversation_id}",
+				)
+			_spawn_bg(
+				backend.write_conversation_message(conversation_id, force_end_msg),
+				label=f"fb_write_force_end_msg:{conversation_id}",
+			)
+
+	# Apply session-fallback for each alive member's session
+	for sid in session_ids:
+		apply_fallback(registry, sid)
 
 
-class _DispatchAwayModeBackend(ResponsePoller, AwayModeMirror, MessageWriter):
-	"""Backend surface used by dispatch_away_mode_commands.
+async def dispatch_combine_commands(registry, backend, logger, supervisor):
+	"""Watch /combine_commands for new entries; route to _perform_combine.
 
-	Includes MessageWriter because the loop forwards `backend` to
-	`_apply_bulk_respond_decision` (in server/gateway/bulk_respond.py),
-	which uses MessageWriter methods directly.
+	combine command shape:
+	{
+		"source_conversation_id": "<conv-id>",
+		"target_conversation_id": "<conv-id>",
+		"issued_at": "<ISO-8601>",
+	}
+
+	The Firebase listener stubs on the backend (start_combine_command_listener) are
+	pass-through no-ops until Task 31's full listener implementation is wired. The
+	dispatcher is fully functional once the backend method is implemented.
+	"""
+	from server.conversation_ops import _perform_combine as _conv_perform_combine
+
+	async def _handle(cmd: dict, ack=None):
+		source_id = cmd.get("source_conversation_id")
+		target_id = cmd.get("target_conversation_id")
+		if not source_id or not target_id:
+			await logger.surface_error(f"combine_command_missing_ids: {cmd}")
+			return
+		result = await _conv_perform_combine(registry, source_id, target_id, logger, pending_dir=None, backend=backend)
+		await logger.info(f"combine_command_handled: {result}")
+
+	if hasattr(backend, "start_combine_command_listener"):
+		await backend.start_combine_command_listener(_handle)
+	else:
+		await logger.info("combine_command_listener not wired (backend missing method)")
+
+
+async def dispatch_force_end_commands(registry, backend, logger, supervisor):
+	"""Watch Firebase /force_end_commands/ for force-end requests.
+	On each command, call handle_force_end(registry, conversation_id).
+
+	The Firebase listener stub on the backend (start_force_end_command_listener) is a
+	pass-through no-op until the full listener implementation is wired.
+	"""
+	async def _handle(cmd: dict, ack=None):
+		conv_id = cmd.get("conversation_id")
+		if not conv_id:
+			await logger.surface_error(f"force_end_command_missing_id: {cmd}")
+			return
+		await handle_force_end(registry, conv_id, backend=backend)
+		await logger.info(f"force_end_command_handled: conv_id={conv_id}")
+
+	if hasattr(backend, "start_force_end_command_listener"):
+		await backend.start_force_end_command_listener(_handle)
+	else:
+		await logger.info("force_end_command_listener not wired (backend missing method)")
+
+
+async def dispatch_spawn_commands(spawn_handler, backend, logger, supervisor):
+	"""Watch /spawn_commands for new entries; route on cmd['type'].
+
+	Dispatches 'fresh' and 'resume' spawn commands to SpawnHandler.
+	The Firebase listener stub on the backend (start_spawn_command_listener) is a
+	pass-through no-op until the full listener implementation is wired.
 	"""
 
+	async def _handle(cmd: dict, ack=None):
+		cmd_type = cmd.get("type")
+		if cmd_type == "fresh":
+			await spawn_handler.handle_fresh(cmd)
+		elif cmd_type == "resume":
+			await spawn_handler.handle_resume(cmd)
+		else:
+			await logger.surface_error(f"spawn_command_unknown_type: {cmd_type}")
+			return
+		await logger.info(f"spawn_command_handled: type={cmd_type}")
 
-async def dispatch_away_mode_commands(
-	registry: Registry,
-	backend: _DispatchAwayModeBackend,
-	logger: JsonlLogger,
-	supervisor: LoopSupervisor,
-) -> None:
-	"""Consume away_mode_commands queue entries and dispatch to registry/bulk-respond.
+	if hasattr(backend, "start_spawn_command_listener"):
+		await backend.start_spawn_command_listener(_handle)
+	else:
+		await logger.info("spawn_command_listener not wired (backend missing method)")
 
-	Decisions about pending questions arrive as fields on the exit_global / exit_cwd
-	command (set by the phone after showing its dialog). The server applies the
-	decision via `_apply_bulk_respond_decision` and only flips the away-mode mirror
-	if the decision allows commit."""
-	from server.canonicalization import canonicalize_cwd, CanonicalizationError
+
+async def dispatch_away_mode_commands(registry, backend, logger, supervisor):
+	"""Watch /away_mode_commands for phone-initiated away mode toggles.
+
+	Command shapes (Android-emitted via MainViewModel):
+	- {type: "enter_global", issued_at: "<ISO>"}
+	- {type: "exit_global", issued_at: "<ISO>", default_text?: "<text>"}
+
+	enter_global flips global_away_mode True.
+	exit_global flips False, optionally bulk-resolves pending ask_human requests
+	with `default_text`.
+	"""
 	from server.gateway.bulk_respond import _apply_bulk_respond_decision
 
 	while True:
 		try:
 			async for cmd in backend.poll_away_mode_commands():
 				supervisor.record_success()
-				cmd_type = cmd.get("type", "")
 				try:
+					cmd_type = cmd.get("type")
 					if cmd_type == "enter_global":
-						await backend.write_away_mode_mirror(None, True)
-						cleared = await _clear_all_cwd_overrides(registry, backend, logger)
-						await logger.info(
-							f"away_mode_commands: enter_global applied (cleared_overrides={cleared})"
-						)
+						registry.global_away_mode = True
+						try:
+							await backend.set_global_away_mode(True)
+						except Exception as exc:
+							await logger.surface_error(f"away_mode_enter_persist_failed: {exc}")
+						await logger.info("away_mode_enter_global")
 
 					elif cmd_type == "exit_global":
-						decision = cmd.get("decision")
-						default_text = cmd.get("default_text", "")
-						commit = await _apply_bulk_respond_decision(
-							registry, backend, logger,
-							scope_cwd=None, decision=decision, default_text=default_text,
-						)
-						cleared = 0
-						if commit:
-							await backend.write_away_mode_mirror(None, False)
-							cleared = await _clear_all_cwd_overrides(registry, backend, logger)
-						await logger.info(
-							f"away_mode_commands: exit_global applied "
-							f"(decision={decision}, commit={commit}, cleared_overrides={cleared})"
-						)
-
-					elif cmd_type == "enter_cwd":
-						raw_cwd = cmd.get("cwd") or ""
+						registry.global_away_mode = False
 						try:
-							canonical = canonicalize_cwd(raw_cwd)
-						except CanonicalizationError as exc:
-							await logger.surface_error(f"away_mode_commands: enter_cwd bad cwd={raw_cwd!r} {exc}")
-							continue
-						await backend.write_away_mode_mirror(canonical, True)
-						await logger.info(f"away_mode_commands: enter_cwd {canonical}")
+							await backend.set_global_away_mode(False)
+						except Exception as exc:
+							await logger.surface_error(f"away_mode_exit_persist_failed: {exc}")
 
-					elif cmd_type == "exit_cwd":
-						raw_cwd = cmd.get("cwd") or ""
-						try:
-							canonical = canonicalize_cwd(raw_cwd)
-						except CanonicalizationError as exc:
-							await logger.surface_error(f"away_mode_commands: exit_cwd bad cwd={raw_cwd!r} {exc}")
-							continue
-						decision = cmd.get("decision")
-						default_text = cmd.get("default_text", "")
-						commit = await _apply_bulk_respond_decision(
-							registry, backend, logger,
-							scope_cwd=canonical, decision=decision, default_text=default_text,
-						)
-						if commit:
-							await backend.write_away_mode_mirror(canonical, False)
-						await logger.info(
-							f"away_mode_commands: exit_cwd {canonical} applied "
-							f"(decision={decision}, commit={commit})"
-						)
+						default_text = cmd.get("default_text")
+						if default_text:
+							try:
+								await _apply_bulk_respond_decision(
+									registry, backend, logger,
+									scope_cwd=None,
+									decision="send_default",
+									default_text=default_text,
+								)
+							except Exception as exc:
+								await logger.surface_error(f"bulk_respond_failed: {exc}")
+
+						await logger.info(f"away_mode_exit_global default_text={bool(default_text)}")
 
 					else:
-						await logger.surface_error(f"away_mode_commands: unknown type={cmd_type!r}")
+						await logger.surface_error(f"away_mode_command_unknown_type: {cmd_type}")
 
 				except asyncio.CancelledError:
 					raise
 				except Exception as exc:
-					await logger.surface_error(f"away_mode_commands_dispatch_error: {exc}")
+					await logger.surface_error(f"away_mode_command_iteration_error: {exc}")
+
 		except asyncio.CancelledError:
 			raise
 		except Exception as exc:
 			await supervisor.record_crash(exc)
 
-async def dispatch_inject_queue(
-	registry: Registry,
-	backend: InjectPort,
-	logger: JsonlLogger,
-	supervisor: LoopSupervisor,
-) -> None:
-	"""Deliver human inject messages from the Android compose box to collab sessions."""
-	while True:
-		try:
-			async for session_id, inject_id, text in backend.poll_inject_messages():
-				supervisor.record_success()
-				try:
-					session = registry.get_session(session_id)
-					if session is None:
-						await logger.surface_error(f"inject_unknown_session: {session_id} inject_id={inject_id}")
-					else:
-						session.deliver_inject(text)
-				except asyncio.CancelledError:
-					raise
-				except Exception as exc:
-					await logger.surface_error(f"inject_dispatch_error: inject_id={inject_id} {exc}")
-		except asyncio.CancelledError:
-			raise
-		except Exception as exc:
-			await supervisor.record_crash(exc)
+
+# dispatch_inject_queue was retired when Android dropped inject_queue writes.
+# The legacy CollabSession BYO flow that consumed these no longer exists.
+# registry.get_session() was deleted with that cleanup. The function is gone.
+# InjectPort protocol and FirebaseBackend.poll_inject_messages are kept for
+# backward compat with existing backend contract tests; they are not called.

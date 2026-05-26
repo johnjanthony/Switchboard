@@ -14,22 +14,26 @@ from mcp.server.fastmcp import FastMCP
 from starlette.responses import JSONResponse
 from starlette.requests import Request
 
+import dataclasses
+
 from server.config import Config, ConfigError, load_config
 from server.gateway import (
 	build_tool_handlers,
-	dispatch_away_mode_commands,
-	dispatch_commands,
-	dispatch_inject_queue,
 	dispatch_responses,
 )
+from server.gateway.dispatch import (
+	dispatch_combine_commands,
+	dispatch_force_end_commands,
+	dispatch_spawn_commands,
+	dispatch_away_mode_commands,
+)
 from server.gateway.bg_tasks import _spawn_bg
+from server.hydration import hydrate_from_firebase
 from server.logging_jsonl import JsonlLogger
 from server.registry import Registry
-from server.spawn import SpawnHandler
 from server.rate_limiter import RateLimiter
 from server.firebase import FirebaseBackend
 from server.firebase_supervisor import LoopSupervisor
-from server.messenger import AwayModeMirror
 
 
 def _build_away_mode_route(registry: Registry):
@@ -42,41 +46,39 @@ def _build_away_mode_route(registry: Registry):
 			canonical = canonicalize_cwd(cwd_raw)
 		except CanonicalizationError:
 			return JSONResponse({"active": False})
-		return JSONResponse({"active": registry.is_away_mode_active(canonical)})
+		return JSONResponse({"active": bool(registry.global_away_mode)})
 	return away_mode
 
 
-def _build_collab_partner_state_route(registry: Registry):
-	"""Read-only route used by the turn-end hook (Option G / H9). Returns the
-	state of the collab session at this cwd from the live agent's perspective:
+def _build_cli_session_end_route(registry, backend=None):
+	"""POST /cli-session/end — SessionEnd hook posts here to mark the matching
+	conversation member dormant. Best-effort: returns 200 even on bad input or
+	unknown session so the hook never blocks shutdown."""
+	from datetime import datetime, timezone
+	from server.cli_session_end import handle_session_end
 
-	- `none` — no session for this cwd, or session has fewer than two enrolled agents
-	- `live` — session exists, no agent is currently blocked in `_waiting`
-	- `blocked` — at least one agent is blocked in `_waiting`. The hook treats
-	  this as "your partner is blocked awaiting your reply" (in a 2-agent collab,
-	  if anyone is blocked, the agent firing the Stop hook is by definition the
-	  live one — they're generating output, not suspended on a tool await).
-
-	Sender is intentionally NOT a query param: matching by sender is brittle
-	when agents rename themselves (e.g. "Sparkles"), and the cwd-level signal
-	is sufficient since collab is 2-agent and exactly one agent can be `live`
-	at a time."""
-	from server.canonicalization import canonicalize_cwd, CanonicalizationError
-	async def collab_partner_state(request: Request):
-		cwd_raw = request.query_params.get("cwd", "")
-		if not cwd_raw:
-			return JSONResponse({"state": "none"})
+	async def cli_session_end(request: Request):
 		try:
-			canonical = canonicalize_cwd(cwd_raw)
-		except CanonicalizationError:
-			return JSONResponse({"state": "none"})
-		session = registry.get_session(canonical)
-		if session is None or len(session.agent_senders) < 2:
-			return JSONResponse({"state": "none"})
-		if session._waiting:
-			return JSONResponse({"state": "blocked"})
-		return JSONResponse({"state": "live"})
-	return collab_partner_state
+			body = await request.json()
+		except Exception:
+			return JSONResponse({}, status_code=200)
+		session_id = body.get("session_id")
+		reason = body.get("reason", "other")
+		if not isinstance(session_id, str) or not session_id:
+			return JSONResponse({}, status_code=200)
+		try:
+			await handle_session_end(
+				registry=registry,
+				session_id=session_id,
+				reason=reason if isinstance(reason, str) else "other",
+				now=lambda: datetime.now(timezone.utc).isoformat(),
+				backend=backend,
+			)
+		except Exception:
+			# Don't surface server errors to the hook — best-effort.
+			pass
+		return JSONResponse({}, status_code=200)
+	return cli_session_end
 
 
 def _build_agent_status_route(handlers):
@@ -93,34 +95,13 @@ def _build_agent_status_route(handlers):
 		cwd = body.get("cwd")
 		state = body.get("state")
 		detail = body.get("detail")
+		session_id = body.get("session_id")
 		if not isinstance(cwd, str) or not cwd or not isinstance(state, str) or not state:
 			return JSONResponse({}, status_code=200)
-		await handlers.handle_agent_status(cwd, state, detail)
+		await handlers.handle_agent_status(cwd, state, detail, session_id=session_id if isinstance(session_id, str) else None)
 		return JSONResponse({}, status_code=200)
 	return agent_status
 
-
-async def _notify_lost_collab_sessions(sidecar_path: _Path, backend) -> None:
-	if not sidecar_path.exists():
-		return
-	try:
-		entries = _json.loads(sidecar_path.read_text(encoding="utf-8"))
-	except Exception:
-		sidecar_path.unlink(missing_ok=True)
-		return
-	try:
-		for entry in entries:
-			channel_id = entry.get("channel_id", "unknown")
-			try:
-				await backend.write_channel_message(
-					channel_id, "system", "notify",
-					f"Switchboard restarted. Collab session `{channel_id}` was lost — agents will time out.",
-					format="markdown",
-				)
-			except Exception:
-				pass
-	finally:
-		sidecar_path.unlink(missing_ok=True)
 
 
 def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
@@ -146,111 +127,221 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 	@mcp.tool()
 	async def ask_human(
 		question: str,
-		cwd: str,
 		sender: str,
 		title: str | None = None,
 		format: str = "plain",
 		suggestions: list[str] | None = None,
+		cli_session_id: str | None = None,
+		cwd: str | None = None,
 	) -> str:
 		"""Block until John responds from his phone. Returns the response text,
 		or '__TIMEOUT__' if the timeout window elapses.
 
-		cwd: Your current working directory (from $PWD or the system prompt's
-		'Primary working directory' field). Used as the channel routing key —
-		canonicalized server-side.
+		sender: your display name (kebab-case recommended).
+		title: optional session label shown on John's phone tab.
+		format: 'plain' (default) or 'markdown'.
+		suggestions: optional list of quick-reply options.
 
-		title: Optional. Session label shown on John's phone tab. SKILL mandates
-		first-call set; omit on later calls when scope hasn't changed. Server
-		truncates to 80 chars."""
-		return await handlers.ask_human(question, cwd, sender, title, format, suggestions)
+		cli_session_id and cwd are injected automatically by the switchboard
+		PreToolUse hook. Agents should not pass them."""
+		return await handlers.ask_human(
+			question, sender, title=title, format=format, suggestions=suggestions,
+			cli_session_id=cli_session_id, cwd=cwd,
+		)
 
 	@mcp.tool()
 	async def notify_human(
 		message: str,
-		cwd: str,
 		sender: str,
 		title: str | None = None,
 		format: str = "plain",
+		cli_session_id: str | None = None,
+		cwd: str | None = None,
 	) -> str:
-		"""Fire a status message to John. Non-blocking. cwd routes to the channel."""
-		return await handlers.notify_human(message, cwd, sender, title, format)
+		"""Fire a status message to John. Non-blocking.
+
+		cli_session_id and cwd are injected by the PreToolUse hook."""
+		return await handlers.notify_human(
+			message, sender, title=title, format=format,
+			cli_session_id=cli_session_id, cwd=cwd,
+		)
 
 	@mcp.tool()
 	async def send_document_human(
 		path: str,
-		cwd: str,
 		sender: str,
 		title: str | None = None,
 		caption: str | None = None,
+		cli_session_id: str | None = None,
+		cwd: str | None = None,
 	) -> str:
-		"""Deliver a file to John. Non-blocking. path is relative to cwd. Max 5 MB."""
-		return await handlers.send_document_human(path, cwd, sender, title, caption)
+		"""Deliver a file to John. Non-blocking. path is relative to cwd. Max 5 MB.
+
+		cli_session_id and cwd are injected by the PreToolUse hook."""
+		return await handlers.send_document_human(
+			path, sender, title=title, caption=caption,
+			cli_session_id=cli_session_id, cwd=cwd,
+		)
 
 	@mcp.tool()
 	async def message_and_await_agent(
-		cwd: str,
+		sender: str,
+		message: str,
+		title: str | None = None,
+		cli_session_id: str | None = None,
+		cwd: str | None = None,
+	) -> str:
+		"""Send a message to your collab partners and block until one of them speaks.
+		Returns the talking-stick payload (delta since you last saw the conversation,
+		excluding your own messages).
+
+		cli_session_id and cwd are injected by the PreToolUse hook."""
+		return await handlers.message_and_await_agent(
+			sender, message, title=title,
+			cli_session_id=cli_session_id, cwd=cwd,
+		)
+
+	@mcp.tool()
+	async def open_conversation(
 		sender: str,
 		title: str | None = None,
-		message: str | None = None,
+		cli_session_id: str | None = None,
+		cwd: str | None = None,
 	) -> str:
-		"""Send to your collab partner and block until they reply.
-		cwd is the shared session key. sender is your unique display name.
-		Omit message on your first call if you are Agent 2.
-		Markdown is supported and is the default for collab messages."""
-		return await handlers.message_and_await_agent(cwd, sender, title, message)
+		"""Promote your current conversation to be the globally open one. Other
+		agents calling enter_conversation() will join it. Replaces any prior open
+		marker. Non-blocking.
+
+		cli_session_id and cwd are injected by the PreToolUse hook."""
+		return await handlers.open_conversation(
+			sender, title=title,
+			cli_session_id=cli_session_id, cwd=cwd,
+		)
 
 	@mcp.tool()
-	async def end_collab(
-		cwd: str,
+	async def enter_conversation(
 		sender: str,
-		message: str | None = None,
-		hand_off_to_human: bool = True,
+		cli_session_id: str | None = None,
+		cwd: str | None = None,
 	) -> str:
-		"""End the collab session for this cwd. Non-blocking. Resolves any
-		partner's pending message_and_await_agent with sentinel
-		'__COLLAB_ENDED__\\n<message>' then purges the session so future calls
-		create a fresh session.
+		"""Join the open conversation (or queue for intro in your current one).
+		Blocks until you receive the conversation's payload via the talking-stick.
 
-		hand_off_to_human=True (default): caller is the designated reporter.
-		hand_off_to_human=False: partner is the reporter; caller exits silently.
-		See skill/SKILL.md 'Ending a collab session' for full protocol."""
-		return await handlers.end_collab(cwd, sender, message, hand_off_to_human)
+		Five behaviors depending on caller's state and the open pointer:
+		- bound + open is yours OR no open exists: queue for intro in current
+		- unbound + open exists: join open, queue for intro (full history)
+		- bound + open != current: migrate from current to open, queue for intro
+		- unbound + no open: error
+		- bound + no open: queue for intro in current
+
+		cli_session_id and cwd are injected by the PreToolUse hook."""
+		return await handlers.enter_conversation(
+			sender,
+			cli_session_id=cli_session_id, cwd=cwd,
+		)
 
 	@mcp.tool()
-	async def enter_away_mode(cwd: str) -> str:
-		"""Mark this Switchboard session (cwd) as 'John is away'. Sets the
-		per-cwd override True. Idempotent."""
-		return await handlers.enter_away_mode(cwd)
+	async def combine_conversations(
+		source_id: str,
+		target_id: str,
+		cli_session_id: str | None = None,
+		cwd: str | None = None,
+	) -> str:
+		"""Move all movable members of source_id into target_id, then end source_id.
+		Permanently-lost members stay in source. Alive members are rebound immediately;
+		dormant members are queued for launcher resume into target. Non-blocking.
+
+		cli_session_id and cwd are injected by the PreToolUse hook."""
+		return await handlers.combine_conversations(
+			source_id, target_id,
+			cli_session_id=cli_session_id, cwd=cwd,
+		)
 
 	@mcp.tool()
-	async def exit_away_mode(cwd: str) -> str:
-		"""Mark this Switchboard session (cwd) as 'John is back'. Sets the
-		per-cwd override False. Idempotent."""
-		return await handlers.exit_away_mode(cwd)
+	async def lookup_conversation_ids(
+		cwd_filter: str | None = None,
+		sender_contains: str | None = None,
+		title_contains: str | None = None,
+		cli_session_id: str | None = None,
+		cwd: str | None = None,
+	) -> str:
+		"""Returns a JSON-encoded list of active conversation_ids matching ALL
+		provided filters. At least one filter required.
+
+		cwd_filter: exact case-insensitive match against members' cwd.
+		sender_contains: case-insensitive substring match.
+		title_contains: case-insensitive substring match.
+
+		cli_session_id and cwd are injected by the PreToolUse hook."""
+		return await handlers.lookup_conversation_ids(
+			cwd_filter=cwd_filter,
+			sender_contains=sender_contains,
+			title_contains=title_contains,
+			cli_session_id=cli_session_id, cwd=cwd,
+		)
+
+	@mcp.tool()
+	async def leave_conversation(
+		sender: str,
+		parting_message: str,
+		cli_session_id: str | None = None,
+		cwd: str | None = None,
+	) -> str:
+		"""Leave the conversation this session is bound to. parting_message is required.
+		Appends the parting to the log, wakes blocked peers, applies session-fallback
+		(rebind home if away, else unbind). Conversation ends if you were the last
+		alive member and no dormant members remain.
+
+		cli_session_id and cwd are injected by the PreToolUse hook."""
+		return await handlers.leave_conversation(
+			sender, parting_message,
+			cli_session_id=cli_session_id, cwd=cwd,
+		)
+
+	@mcp.tool()
+	async def set_away_mode(
+		value: bool,
+		cli_session_id: str | None = None,
+		cwd: str | None = None,
+	) -> str:
+		"""Set the global away_mode flag. Persisted to Firebase.
+
+		cli_session_id and cwd are injected by the PreToolUse hook."""
+		return await handlers.set_away_mode(
+			value,
+			cli_session_id=cli_session_id, cwd=cwd,
+		)
 
 	return mcp
 
 
-async def _wire_away_mode_mirror(registry: "Registry", backend: "AwayModeMirror") -> None:
-	"""Register a callback that mirrors away-mode mutations to Firebase.
-	The callback writes the (cwd, active) pair as-is; the listener path
-	(start_away_mode_listeners, wired in Task 8) is responsible for updating
-	the in-memory cache."""
-	loop = asyncio.get_running_loop()
 
-	def _on_change(cwd: "str | None", active: bool | None) -> None:
-		scope = "global" if cwd is None else cwd
-		_spawn_bg(
-			backend.write_away_mode_mirror(cwd, active),
-			label=f"away_mode_mirror:{scope}",
+async def resolve_wsl_home() -> str | None:
+	"""Resolve the WSL user's home path by running `echo $HOME` inside WSL.
+	Returns None if WSL is unavailable, the command fails, or output is empty."""
+	try:
+		proc = await asyncio.create_subprocess_exec(
+			"wsl.exe", "-e", "bash", "-lc", "echo $HOME",
+			stdout=asyncio.subprocess.PIPE,
+			stderr=asyncio.subprocess.PIPE,
 		)
-
-	registry.set_away_mode_callback(_on_change)
+		stdout, _ = await proc.communicate()
+		if proc.returncode != 0:
+			return None
+		result = stdout.decode("utf-8", errors="replace").strip()
+		return result or None
+	except Exception:
+		return None
 
 
 async def _run(config: Config) -> None:
 	logger = JsonlLogger(config.log_path)
 	registry = Registry()
+
+	# Resolve WSL home at startup so downstream code can compute WSL paths
+	# without spawning subprocesses per-request. Config is frozen; use replace().
+	wsl_home = await resolve_wsl_home()
+	config = dataclasses.replace(config, wsl_home_resolved=wsl_home)
 
 	if not (config.firebase_service_account_json and config.firebase_database_url):
 		raise ConfigError(
@@ -265,18 +356,14 @@ async def _run(config: Config) -> None:
 		logger=logger,
 	)
 
-	sidecar_path = _Path(config.log_path).parent / "collab-sessions.json"
-	await _notify_lost_collab_sessions(sidecar_path, backend)
-
-	await _wire_away_mode_mirror(registry, backend)
-
 	# Reset away-mode state BEFORE loading the snapshot. In stateful HTTP mode
 	# (which we use to get cancel-notification propagation), a server restart
 	# invalidates every pre-existing CC session and those agents lose access to
 	# switchboard tools. Leaving away_mode=true would trap them in a Stop-hook
 	# loop ("call ask_human" → tool unavailable → repeat). Resetting to off
 	# lets them gracefully fall back to terminal output. The user re-enables
-	# away mode via spawn (per-channel) or the phone (global).
+	# away mode from the phone (via /away_mode_commands) or from a spawned
+	# agent (via the set_away_mode MCP tool).
 	await backend.reset_all_away_mode()
 	# Populate cache from Firebase (now reflects the post-reset state), start
 	# listeners, zero pending counters.
@@ -284,6 +371,14 @@ async def _run(config: Config) -> None:
 	await backend.delete_legacy_away_mode_node()
 	await backend.start_away_mode_listeners(registry)
 	await backend.reset_all_pending_responses()
+	await backend.start_conversation_answers_listener()
+
+	await hydrate_from_firebase(registry, backend, logger)
+
+	try:
+		await backend.set_global_wsl_available(bool(config.wsl_home_resolved))
+	except Exception as exc:
+		await logger.surface_error(f"set_global_wsl_available_failed: {exc}")
 
 	mirror_writer_fn = getattr(backend, "make_pending_mirror_writer", None)
 	if callable(mirror_writer_fn):
@@ -291,10 +386,15 @@ async def _run(config: Config) -> None:
 
 	limiter = RateLimiter(config.rate_limit)
 	handlers = build_tool_handlers(config, registry, backend, logger, limiter)
+
+	from server.spawn import SpawnHandler
+	spawn_handler = SpawnHandler(config, backend, logger, registry)
+
 	loop_sups = {
 		"dispatch_responses": LoopSupervisor("dispatch_responses", backend, logger.surface_error),
-		"dispatch_commands": LoopSupervisor("dispatch_commands", backend, logger.surface_error),
-		"dispatch_inject_queue": LoopSupervisor("dispatch_inject_queue", backend, logger.surface_error),
+		"dispatch_combine_commands": LoopSupervisor("dispatch_combine_commands", backend, logger.surface_error),
+		"dispatch_force_end_commands": LoopSupervisor("dispatch_force_end_commands", backend, logger.surface_error),
+		"dispatch_spawn_commands": LoopSupervisor("dispatch_spawn_commands", backend, logger.surface_error),
 		"dispatch_away_mode_commands": LoopSupervisor("dispatch_away_mode_commands", backend, logger.surface_error),
 	}
 	mcp = _build_fastmcp(handlers, config.host)
@@ -335,8 +435,8 @@ async def _run(config: Config) -> None:
 
 	app.add_route("/healthz", healthz, methods=["GET"])
 	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
-	app.add_route("/collab-partner-state", _build_collab_partner_state_route(registry), methods=["GET"])
 	app.add_route("/agent_status", _build_agent_status_route(handlers), methods=["POST"])
+	app.add_route("/cli-session/end", _build_cli_session_end_route(registry, backend=backend), methods=["POST"])
 
 	uv_config = uvicorn.Config(
 		app,
@@ -350,16 +450,19 @@ async def _run(config: Config) -> None:
 		dispatch_responses(registry, backend, logger, loop_sups["dispatch_responses"])
 	)
 
-	spawn_handler = SpawnHandler(config, backend, logger, registry)
+	combine_task = asyncio.create_task(
+		dispatch_combine_commands(registry, backend, logger, loop_sups["dispatch_combine_commands"])
+	)
+
+	force_end_task = asyncio.create_task(
+		dispatch_force_end_commands(registry, backend, logger, loop_sups["dispatch_force_end_commands"])
+	)
+
 	spawn_task = asyncio.create_task(
-		dispatch_commands(spawn_handler, backend, logger, loop_sups["dispatch_commands"])
+		dispatch_spawn_commands(spawn_handler, backend, logger, loop_sups["dispatch_spawn_commands"])
 	)
 
-	inject_task = asyncio.create_task(
-		dispatch_inject_queue(registry, backend, logger, loop_sups["dispatch_inject_queue"])
-	)
-
-	away_cmd_task = asyncio.create_task(
+	away_mode_task = asyncio.create_task(
 		dispatch_away_mode_commands(registry, backend, logger, loop_sups["dispatch_away_mode_commands"])
 	)
 
@@ -381,17 +484,20 @@ async def _run(config: Config) -> None:
 		await server.serve()
 	finally:
 		dispatch_task.cancel()
+		combine_task.cancel()
+		force_end_task.cancel()
 		spawn_task.cancel()
-		inject_task.cancel()
-		away_cmd_task.cancel()
+		away_mode_task.cancel()
 		with contextlib.suppress(asyncio.CancelledError):
 			await dispatch_task
 		with contextlib.suppress(asyncio.CancelledError):
+			await combine_task
+		with contextlib.suppress(asyncio.CancelledError):
+			await force_end_task
+		with contextlib.suppress(asyncio.CancelledError):
 			await spawn_task
 		with contextlib.suppress(asyncio.CancelledError):
-			await inject_task
-		with contextlib.suppress(asyncio.CancelledError):
-			await away_cmd_task
+			await away_mode_task
 		await backend.aclose()
 
 

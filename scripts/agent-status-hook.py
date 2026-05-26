@@ -85,6 +85,7 @@ def main() -> int:
 	if not cwd:
 		return 0
 
+	session_id = payload.get("session_id") or ""
 	event = payload.get("hook_event_name", "")
 
 	state: str | None = None
@@ -111,6 +112,8 @@ def main() -> int:
 
 	url = os.environ.get("SWITCHBOARD_AGENT_STATUS_URL", DEFAULT_URL)
 	body = {"cwd": cwd, "state": state}
+	if session_id:
+		body["session_id"] = session_id
 	if detail is not None:
 		body["detail"] = detail
 	try:

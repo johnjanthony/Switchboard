@@ -5,19 +5,13 @@ Reads the working directory from stdin JSON (Claude Code passes it as
 gateway. When the agent shouldn't be allowed to silently end its turn, emits
 the appropriate block/deny JSON on stdout.
 
-Two checks compose:
+Single check: `GET /away-mode?cwd=<cwd>` — when active, the agent is forced
+to route output through the switchboard MCP tools instead of leaking to the
+terminal. John is on his phone, not watching.
 
-1. **Away-mode** (existing): `GET /away-mode?cwd=<cwd>` — when active, the
-   agent is forced to route output through `ask_human` / `notify_human`
-   instead of leaking to the terminal. John is on his phone, not watching.
-
-2. **Collab-partner-blocked** (H9 / Option G): when away-mode is active AND
-   the cwd has an active collab session with a blocked partner,
-   `GET /collab-partner-state?cwd=<cwd>` returns `state: "blocked"`. The
-   block message gains a partner-blocked clause so the agent knows to either
-   reply via `message_and_await_agent` or close the session via `end_collab`
-   before ending its turn. Gated on away-mode because at-desk dialogs with
-   John shouldn't be hindered (he's reading the terminal and can intervene).
+The old /collab-partner-state endpoint was deleted in the v2 conversations
+redesign. Partner state is no longer tracked per-cwd; the talking-stick FIFO
+inside Conversation.wait_queue is the source of truth and is not exposed via HTTP.
 
 Fails open: any error (connection refused, timeout, unknown --cli, malformed
 response, missing cwd) results in silent exit 0, so non-Switchboard sessions
@@ -34,20 +28,17 @@ import urllib.error
 import urllib.request
 
 DEFAULT_AWAY_MODE_URL = "http://127.0.0.1:9876/away-mode"
-DEFAULT_PARTNER_STATE_URL = "http://127.0.0.1:9876/collab-partner-state"
 TIMEOUT_SECONDS = 0.5
 
 REDIRECT_REASON_AWAY_MODE = (
-	"You are in away mode. John is not watching the terminal. End this turn "
-	"by calling ask_human() to check in, or notify_human() to report status "
-	"followed by ask_human(). Do not produce terminal output. If John states "
-	"that he has returned, call exit_away_mode() first."
-)
-
-REDIRECT_REASON_PARTNER_BLOCKED_SUFFIX = (
-	"\n\nAdditionally, your collab partner is blocked awaiting your reply. "
-	"Send a message via message_and_await_agent (with a non-empty message arg) "
-	"or close the session via end_collab before ending your turn."
+	"You are in away mode. John is not watching the terminal. Do not produce "
+	"terminal output. Instead:\n"
+	"- Use ask_human() to check in or ask a question.\n"
+	"- Use notify_human() to send a non-blocking status update.\n"
+	"- Use message_and_await_agent() to speak to collab partners and wait for their reply.\n"
+	"- Use leave_conversation() to step out of a conversation when done.\n"
+	"- Use set_away_mode(False) to turn away mode off if John has returned.\n"
+	"End this turn only after routing output through one of the above tools."
 )
 
 
@@ -63,21 +54,6 @@ def _fetch_active(url: str, cwd: str) -> bool:
 		return bool(data.get("active", False))
 	except (urllib.error.URLError, TimeoutError, ValueError, OSError):
 		return False
-
-
-def _fetch_partner_state(url: str, cwd: str) -> str:
-	"""Returns 'none', 'live', 'blocked', or 'none' on any error (fail-open)."""
-	from urllib.parse import urlencode
-	full_url = f"{url}?{urlencode({'cwd': cwd})}"
-	try:
-		with urllib.request.urlopen(full_url, timeout=TIMEOUT_SECONDS) as resp:
-			if resp.status != 200:
-				return "none"
-			body = resp.read()
-		data = json.loads(body)
-		return str(data.get("state", "none"))
-	except (urllib.error.URLError, TimeoutError, ValueError, OSError):
-		return "none"
 
 
 def _emit_claude(reason: str) -> None:
@@ -117,20 +93,12 @@ def main() -> int:
 
 	away_url = os.environ.get("SWITCHBOARD_URL", DEFAULT_AWAY_MODE_URL)
 	if not _fetch_active(away_url, cwd):
-		return 0  # away-mode inactive — don't block, don't even check partner state
-
-	# Away-mode is active — base block message applies. Augment if partner is blocked.
-	reason = REDIRECT_REASON_AWAY_MODE
-	partner_url = os.environ.get(
-		"SWITCHBOARD_PARTNER_STATE_URL", DEFAULT_PARTNER_STATE_URL
-	)
-	if _fetch_partner_state(partner_url, cwd) == "blocked":
-		reason = reason + REDIRECT_REASON_PARTNER_BLOCKED_SUFFIX
+		return 0  # away-mode inactive — don't block
 
 	if args.cli == "claude":
-		_emit_claude(reason)
+		_emit_claude(REDIRECT_REASON_AWAY_MODE)
 	else:
-		_emit_gemini(reason)
+		_emit_gemini(REDIRECT_REASON_AWAY_MODE)
 	return 0
 
 

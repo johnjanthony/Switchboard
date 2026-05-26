@@ -51,7 +51,6 @@ data class Channel(
 	val lastActivityAt: String? = null,
 	val preview: String? = null,
 	val unreadCount: Int = 0,
-	val awayMode: Boolean? = null,
 	val pendingResponses: Int = 0,
 	val pendingQuestions: Map<String, Pending> = emptyMap(),
 	val messages: List<Pair<String, ChannelMessage>> = emptyList(),
@@ -60,15 +59,6 @@ data class Channel(
 ) {
 	val displayCount: Int get() = kotlin.math.max(unreadCount, pendingResponses)
 }
-
-data class SpawnCollisionData(
-	val spawnId: String,
-	val cwd: String,
-	val cwdKey: String,
-	val channelTitle: String?,
-	val lastActivityAt: String?,
-	val hidden: Boolean,
-)
 
 data class BulkRespondSection(
 	val cwd: String,
@@ -90,3 +80,58 @@ data class PendingExitToggle(
 	val scopeCwdKey: String?,    // null = global; otherwise per-channel cwdKey
 	val payload: BulkRespondPayload,
 )
+
+// --- Conversation model (T-027 spawn-conversation-aware redesign) ---
+// TODO: wire Firebase sync to /conversations/<id>/... once server migration ships;
+// currently the existing /channels/<cwd>/... sync feeds Channel objects above.
+// ConversationSummary is the new data model; Channel is deprecated.
+
+data class ConversationMember(
+	val cliSessionId: String = "",
+	val sender: String = "",
+	val cwd: String = "",
+	val surface: String = "",  // "windows" | "wsl"
+	val alive: Boolean = true,
+	val sessionLostPermanently: Boolean = false,
+	val sessionEndedAt: String? = null,  // ISO-8601
+	val sessionEndReason: String? = null,
+	val joinedAt: Double = 0.0,
+	val leftAt: Double? = null,
+	val lastSeenSeq: Int = 0,
+)
+
+data class ConversationSummary(
+	val id: String,
+	val title: String,
+	val state: String,  // "active" | "ended"
+	val members: List<ConversationMember>,
+	val lastActivityAt: String,
+	val isOpenConversation: Boolean = false,
+	val hidden: Boolean = false,
+	val unreadCount: Int = 0,
+	val agentStatuses: Map<String, AgentStatus> = emptyMap(),  // keyed by sender
+) {
+	/** True if at least one member can be resumed (dormant, not permanently lost, has a session ID). */
+	val isResumable: Boolean
+		get() = members.any { !it.alive && !it.sessionLostPermanently && it.cliSessionId.isNotEmpty() }
+
+	/**
+	 * True if any member's session ended 25-29 days ago — warning that Claude Code's
+	 * 30-day cleanupPeriodDays window is approaching and resume may fail soon.
+	 */
+	val staleSessionWarning: Boolean
+		get() {
+			val now = System.currentTimeMillis()
+			return members.any { m ->
+				m.sessionEndedAt?.let { iso ->
+					val ms = java.time.Instant.parse(iso).toEpochMilli()
+					val days = (now - ms) / (1000L * 60 * 60 * 24)
+					days in 25L..29L
+				} ?: false
+			}
+		}
+
+	/** Comma-separated list of member sender names for display. */
+	val memberRoster: String
+		get() = members.joinToString(", ") { it.sender }
+}

@@ -20,6 +20,7 @@ from server.messenger import (
 	AwayModeMirror,
 	ChannelLifecycle,
 	InjectPort,
+	ConversationStore,
 	IncomingResponse,
 	CorrelationToken,
 )
@@ -49,6 +50,7 @@ class FirebaseBackend(
 	AwayModeMirror,
 	ChannelLifecycle,
 	InjectPort,
+	ConversationStore,
 	Backend,
 ):
 	def __init__(
@@ -93,8 +95,6 @@ class FirebaseBackend(
 		self._supervised: dict[str, SupervisedListener] = {}
 		self._away_mode_cmd_queue: asyncio.Queue[dict] = asyncio.Queue()
 		self._away_mode_cmd_listener = None
-		self._spawn_decision_future: asyncio.Future[dict] | None = None
-		self._spawn_decision_listener = None
 
 	def _on_response(self, event):
 		if event.event_type == 'put' and event.data:
@@ -208,7 +208,6 @@ class FirebaseBackend(
 		listeners = []
 		for attr in (
 			"_resp_listener", "_cmd_listener", "_away_mode_cmd_listener",
-			"_spawn_decision_listener",
 		):
 			lst = getattr(self, attr)
 			if lst:
@@ -247,124 +246,10 @@ class FirebaseBackend(
 		out.sort(key=lambda d: d["name"])
 		return out
 
-	async def write_channel_message(
-		self,
-		cwd: str,
-		sender: str,
-		message_type: str,
-		content: str,
-		*,
-		request_id: str | None = None,
-		title: str | None = None,
-		url: str | None = None,
-		format: str = "plain",
-		suggestions: list[str] | None = None,
-		filename: str | None = None,
-		rejected: bool = False,
-		attached_to_msg_id: str | None = None,
-	) -> tuple[CorrelationToken | None, str | None]:
-		from server.canonicalization import to_firebase_key
-		from datetime import datetime, timezone
-
-		# If this is a document and we have a local path instead of a URL, upload it
-		effective_url = url
-		effective_filename = filename
-		if message_type == "document" and url and not (url.startswith("http://") or url.startswith("https://")):
-			try:
-				path = Path(url)
-				effective_url = await self._upload_file(path)
-				if effective_filename is None:
-					effective_filename = path.name
-				if self._logger:
-					await self._logger.info(f"firebase_upload_success: {effective_url}")
-			except Exception as exc:
-				if self._logger:
-					await self._logger.surface_error(f"firebase_upload_failed: {exc}")
-
-		key = to_firebase_key(cwd)
-		now = datetime.now(timezone.utc).isoformat()
-		ref = db.reference(f'channels/{key}/messages').push()
-		msg_id = ref.key
-		payload = {
-			"type": message_type,
-			"sender": sender,
-			"text": content,
-			"format": format,
-			"timestamp": now,
-			"cancelled": False,
-			"rejected": rejected,
-		}
-		if title is not None:
-			payload["title"] = title[:80]
-		if request_id:
-			payload["request_id"] = request_id
-		if effective_url:
-			payload["url"] = effective_url
-		if effective_filename:
-			payload["filename"] = effective_filename
-		if suggestions:
-			payload["suggestions"] = list(suggestions)
-		if attached_to_msg_id:
-			payload["attached_to_msg_id"] = attached_to_msg_id
-
-		if self._logger:
-			await self._logger.info(f"firebase_write_message: {key}/{msg_id}")
-
-		# Auto-unhide on question writes only
-		if message_type == "question":
-			await asyncio.to_thread(lambda: db.reference(f'channels/{key}/hidden').set(False))
-
-		await asyncio.to_thread(lambda: ref.set(payload))
-
-		# cwd_canonical for popover display
-		await asyncio.to_thread(lambda: db.reference(f'channels/{key}/cwd_canonical').set(cwd))
-
-		# Channel-level title only when non-empty
-		if title:
-			await asyncio.to_thread(lambda: db.reference(f'channels/{key}/title').set(title[:80]))
-
-		# last_activity_at + preview
-		preview = content[:120].replace("\n", " ").strip()
-		await asyncio.to_thread(lambda: db.reference(f'channels/{key}').update({
-			'last_activity_at': now,
-			'preview': preview,
-		}))
-
-		# unread_count: atomic increment for every non-Human message
-		if message_type != "human":
-			await asyncio.to_thread(
-				lambda: db.reference(f'channels/{key}/unread_count').set(_increment(1))
-			)
-
-		# pending_responses is owned by the Registry mirror callback (see
-		# make_pending_mirror_writer): registry.add fires +1, registry.resolve /
-		# remove / cancel-on-spawn / cancel_pending_for_cwd fire -1. Doing it here
-		# AND there double-counts every question by exactly +1, drifting the
-		# counter upward over time.
-
-		# FCM notification
-		if message_type != "human":
-			fcm_data: dict = {
-				"channel_key": key,
-				"sb_message_type": message_type,
-				"message_id": msg_id,
-			}
-			if message_type == "question" and request_id is not None:
-				fcm_data["request_id"] = request_id
-			try:
-				await self._send_fcm(key, message_type, sender, content, fcm_data)
-			except Exception as exc:
-				if self._logger:
-					await self._logger.surface_error(f"firebase_fcm_error: {exc}")
-
-		# Correlation: encode (cwd, sender) so the dispatch loop can route by key
-		correlation = (cwd, sender)
-		return correlation, msg_id
-
-	async def mark_question_cancelled(self, cwd: str, request_id: str) -> None:
-		from server.canonicalization import to_firebase_key
-		key = to_firebase_key(cwd)
-		msgs_ref = db.reference(f'channels/{key}/messages')
+	async def mark_question_cancelled(self, conversation_id: str, request_id: str) -> None:
+		# Messages live at /conversations/<conv_id>/messages.
+		conv_id = conversation_id
+		msgs_ref = db.reference(f"conversations/{conv_id}/messages")
 		def _walk():
 			snapshot = msgs_ref.get()
 			if not isinstance(snapshot, dict):
@@ -381,41 +266,29 @@ class FirebaseBackend(
 
 	async def write_agent_status(
 		self,
-		cwd: str,
+		conv_id: str,
 		sender: str,
 		state: str,
 		detail: str | None,
 	) -> None:
-		from server.canonicalization import to_firebase_key
-		key = to_firebase_key(cwd)
-		ref = db.reference(f'channels/{key}/agent_status')
+		ref = db.reference(f'conversations/{conv_id}/agent_status/{sender}')
 		if state == "clear":
 			await asyncio.to_thread(ref.delete)
 			return
 		payload = {
-			"sender": sender,
 			"state": state,
 			"detail": detail,
 			"updated_at": {".sv": "timestamp"},  # Firebase server timestamp sentinel
 		}
 		await asyncio.to_thread(lambda: ref.set(payload))
 
-	async def send_stale_reply_notice(self, cwd: str, sender: str) -> None:
-		await self.write_channel_message(
-			cwd, "system", "system",
+	async def send_stale_reply_notice(self, conversation_id: str, sender: str) -> None:
+		await self.write_conversation_message(
+			conversation_id, "system", "system",
 			f"Reply for {sender} couldn't be delivered — the question was withdrawn.",
 			format="plain",
 			rejected=True,
 		)
-
-	async def has_messages(self, cwd: str) -> bool:
-		from server.canonicalization import to_firebase_key
-		key = to_firebase_key(cwd)
-		def _check():
-			ref = db.reference(f'channels/{key}/messages')
-			snapshot = ref.get(shallow=True)
-			return bool(snapshot)
-		return await asyncio.to_thread(_check)
 
 	async def read_channel_meta(self, cwd: str) -> dict:
 		from server.canonicalization import to_firebase_key
@@ -430,47 +303,8 @@ class FirebaseBackend(
 			}
 		return await asyncio.to_thread(_read)
 
-	async def write_spawn_collision_prompt(self, spawn_id, cwd, channel_title, last_activity_at, hidden):
-		from server.canonicalization import to_firebase_key
-		from datetime import datetime, timezone
-		def _write():
-			db.reference(f'spawn_collisions/{spawn_id}').set({
-				'cwd': cwd,
-				'cwd_key': to_firebase_key(cwd),
-				'channel_title': channel_title,
-				'last_activity_at': last_activity_at,
-				'hidden': hidden,
-				'pushed_at': datetime.now(timezone.utc).isoformat(),
-			})
-		await asyncio.to_thread(_write)
-
-	async def clear_spawn_collision_prompt(self, spawn_id):
-		def _clear():
-			db.reference(f'spawn_collisions/{spawn_id}').delete()
-		await asyncio.to_thread(_clear)
-
-	async def wipe_channel(self, cwd: str) -> None:
-		from server.canonicalization import to_firebase_key
-		key = to_firebase_key(cwd)
-		def _wipe():
-			db.reference(f'channels/{key}/messages').delete()
-			db.reference(f'channels/{key}/title').delete()
-			db.reference(f'channels/{key}/preview').delete()
-			db.reference(f'channels/{key}/last_activity_at').delete()
-			db.reference(f'channels/{key}/unread_count').delete()
-			db.reference(f'channels/{key}/pending_responses').delete()
-			db.reference(f'channels/{key}/away_mode').delete()
-			responses_ref = db.reference('responses')
-			all_responses = responses_ref.get(shallow=True) or {}
-			for slot in list(all_responses.keys()):
-				if slot.startswith(f"{key}__"):
-					responses_ref.child(slot).delete()
-		await asyncio.to_thread(_wipe)
-
-	async def set_channel_hidden(self, cwd: str, hidden: bool) -> None:
-		from server.canonicalization import to_firebase_key
-		key = to_firebase_key(cwd)
-		await asyncio.to_thread(lambda: db.reference(f'channels/{key}/hidden').set(hidden))
+	async def set_conversation_hidden(self, conv_id: str, hidden: bool) -> None:
+		await asyncio.to_thread(lambda: db.reference(f'conversations/{conv_id}/meta/hidden').set(hidden))
 
 	async def write_away_mode_mirror(self, cwd: str | None, active: bool | None) -> None:
 		from server.canonicalization import to_firebase_key
@@ -485,29 +319,13 @@ class FirebaseBackend(
 			await asyncio.to_thread(lambda: db.reference(ref_path).set(active))
 
 	async def load_away_mode_snapshot(self, registry) -> None:
-		from server.canonicalization import from_firebase_key
 		def _read():
 			global_val = db.reference('global_settings/away_mode').get()
-			channels = db.reference('channels').get(shallow=False) or {}
-			return global_val, channels
-		global_val, channels = await asyncio.to_thread(_read)
+			return global_val
+		global_val = await asyncio.to_thread(_read)
 		registry.update_global_away_cache(bool(global_val))
-		if not isinstance(channels, dict):
-			return
-		for key, channel in channels.items():
-			if not isinstance(channel, dict):
-				continue
-			away = channel.get('away_mode')
-			if away is None:
-				continue
-			try:
-				cwd = from_firebase_key(key)
-			except Exception:
-				continue
-			registry.update_cwd_override_cache(cwd, bool(away))
 
 	async def start_away_mode_listeners(self, registry) -> None:
-		from server.canonicalization import from_firebase_key
 		from server.firebase_supervisor import SupervisedListener
 
 		def _on_global(event):
@@ -521,24 +339,6 @@ class FirebaseBackend(
 						self._loop,
 					)
 
-		def _on_channel(event):
-			if not event.path or event.path == "/":
-				return
-			parts = event.path.strip("/").split("/")
-			if len(parts) == 2 and parts[1] == "away_mode":
-				cwd = from_firebase_key(parts[0])
-				active = None if event.data is None else bool(event.data)
-				try:
-					self._loop.call_soon_threadsafe(registry.update_cwd_override_cache, cwd, active)
-				except Exception as exc:
-					if self._logger:
-						asyncio.run_coroutine_threadsafe(
-							self._logger.surface_error(
-								f"away_mode_channel listener error ({cwd!r}): {exc}"
-							),
-							self._loop,
-						)
-
 		err = self._logger.surface_error if self._logger else _no_op_async_logger
 		self._supervised["away_mode_global"] = SupervisedListener(
 			name="away_mode_global",
@@ -547,15 +347,9 @@ class FirebaseBackend(
 			error_logger=err,
 			loop=self._loop,
 		)
-		self._supervised["away_mode_channels"] = SupervisedListener(
-			name="away_mode_channels",
-			path="channels",
-			callback=_on_channel,
-			error_logger=err,
-			loop=self._loop,
-		)
 		self._supervised["away_mode_global"].start()
-		self._supervised["away_mode_channels"].start()
+		# Per-channel away_mode overrides were retired in the conversations redesign.
+		# The global flag (above) is the only away-mode signal the server now uses.
 
 	async def reset_all_pending_responses(self) -> None:
 		def _reset():
@@ -669,13 +463,13 @@ class FirebaseBackend(
 	async def send_timeout_followup(
 		self,
 		request_id: str,
-		channel_id: str,
+		conversation_id: str,
 		timeout_seconds: int,
 		correlation: CorrelationToken,
 	) -> None:
 		try:
-			await self.write_channel_message(
-				channel_id, "system", "notify",
+			await self.write_conversation_message(
+				conversation_id, "system", "notify",
 				f"Question timed out after {timeout_seconds}s (request: {request_id})",
 			)
 		except Exception as exc:
@@ -685,7 +479,7 @@ class FirebaseBackend(
 	async def send_resolution_confirmation(
 		self,
 		request_id: str,
-		channel_id: str,
+		conversation_id: str,
 		correlation: CorrelationToken,
 		response_text: str | None = None,
 	) -> None:
@@ -703,7 +497,12 @@ class FirebaseBackend(
 
 	async def delete_response_slot(self, slot: str) -> None:
 		def _delete():
-			self._resp_ref.child(slot).delete()
+			# Slots from the new path have the form "conv_id/answers/request_id";
+			# legacy slots are a simple key under /responses.
+			if "/answers/" in slot:
+				db.reference(f"conversations/{slot}").delete()
+			else:
+				self._resp_ref.child(slot).delete()
 		await self._loop.run_in_executor(None, _delete)
 
 	def _on_away_mode_command(self, event):
@@ -744,45 +543,6 @@ class FirebaseBackend(
 		while True:
 			yield await self._away_mode_cmd_queue.get()
 
-	def _on_spawn_decision(self, event):
-		# Resolves on the first 'decision' write under spawn_collisions/{spawn_id}.
-		# The dialog write itself is also a 'put' event (path=''), so guard on the
-		# decision payload shape rather than path alone.
-		if event.event_type != 'put' or not event.data:
-			return
-		path = event.path.strip('/')
-		data = event.data
-		decision = None
-		if path == 'decision' and isinstance(data, dict) and 'action' in data:
-			decision = data
-		elif not path and isinstance(data, dict):
-			# Root write — extract decision child if it landed in the same payload.
-			child = data.get('decision')
-			if isinstance(child, dict) and 'action' in child:
-				decision = child
-		if decision is not None and self._spawn_decision_future and not self._spawn_decision_future.done():
-			self._loop.call_soon_threadsafe(self._spawn_decision_future.set_result, decision)
-
-	async def poll_spawn_collision_decision(self, spawn_id: str) -> dict:
-		self._spawn_decision_future = asyncio.get_running_loop().create_future()
-		if self._spawn_decision_listener:
-			# Fire-and-forget; the SSE teardown can stall the event loop for many seconds.
-			self._loop.run_in_executor(None, self._spawn_decision_listener.close)
-		self._spawn_decision_listener = db.reference(f'spawn_collisions/{spawn_id}').listen(
-			self._on_spawn_decision
-		)
-		try:
-			return await self._spawn_decision_future
-		finally:
-			if self._spawn_decision_listener:
-				listener = self._spawn_decision_listener
-				self._spawn_decision_listener = None
-				# listener.close() blocks for many seconds while the SSE stream tears down.
-				# Run it in the executor so the dispatch loop can immediately proceed to the
-				# clear_spawn_collision_prompt call and dismiss the phone-side dialog.
-				self._loop.run_in_executor(None, listener.close)
-			self._spawn_decision_future = None
-
 	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
 		from server.firebase_supervisor import SupervisedListener
 		if "responses" not in self._supervised:
@@ -820,38 +580,28 @@ class FirebaseBackend(
 		msg = f"Spawned: `{channel_id}`"
 		if prompt:
 			msg += f"\n{prompt[:80]}"
-		await self.write_channel_message(channel_id, "system", "notify", msg, format="markdown")
+		await self.write_conversation_message(channel_id, "system", "notify", msg, format="markdown")
+
+	async def write_admin_notification(self, text: str) -> None:
+		"""Push a system broadcast to /admin_notifications/<push_key>.
+		Phone-side admin listener surfaces these in a dedicated synthetic channel."""
+		from datetime import datetime, timezone
+		now = datetime.now(timezone.utc).isoformat()
+		ref = db.reference("admin_notifications").push()
+		payload = {
+			"sender": "system",
+			"type": "notify",
+			"text": text,
+			"format": "markdown",
+			"timestamp": now,
+		}
+		await asyncio.to_thread(ref.set, payload)
 
 	async def send_text(self, text: str) -> None:
 		# Admin/system channel for global errors/notifies that have no natural cwd.
 		# Leading underscore can't appear in any canonical cwd (which start with a drive
 		# letter), so this key never collides with a user-named workspace channel.
-		await self.write_channel_message("_admin", "system", "notify", text, title="Switchboard System")
-
-	async def write_session_meta(
-		self,
-		channel_id: str,
-		type: str,
-		project_key: str,
-		*,
-		agent_senders: list[str] | None = None,
-		task: str | None = None,
-	) -> None:
-		from server.canonicalization import to_firebase_key
-		from datetime import datetime, timezone
-		key = to_firebase_key(channel_id)
-		meta: dict = {
-			"type": type,
-			"project_key": project_key,
-			"created_at": datetime.now(timezone.utc).isoformat(),
-		}
-		if agent_senders is not None:
-			meta["agent_senders"] = agent_senders
-		if task is not None:
-			meta["task"] = task
-		await asyncio.to_thread(
-			lambda: db.reference(f'channels/{key}/meta').set(meta),
-		)
+		await self.write_admin_notification(text)
 
 	async def start_inject_listener(self, session_id: str) -> None:
 		from server.canonicalization import to_firebase_key
@@ -887,3 +637,395 @@ class FirebaseBackend(
 	async def poll_inject_messages(self):
 		while True:
 			yield await self._inject_queue_internal.get()
+
+	# -------------------------------------------------------------------------
+	# New-schema node writers (Task 29)
+	# -------------------------------------------------------------------------
+
+	async def set_open_conversation_id(self, conv_id: str | None) -> None:
+		"""Write the global open-conversation pointer to /global_settings/open_conversation_id."""
+		ref = db.reference("global_settings/open_conversation_id")
+		await asyncio.to_thread(ref.set, conv_id)
+
+	async def set_global_away_mode(self, value: bool) -> None:
+		"""Write the global away-mode flag to /global_settings/away_mode."""
+		ref = db.reference("global_settings/away_mode")
+		await asyncio.to_thread(ref.set, bool(value))
+
+	async def set_global_wsl_available(self, available: bool) -> None:
+		"""Write whether WSL is detected on this host to /global_settings/wsl_available."""
+		ref = db.reference("global_settings/wsl_available")
+		await asyncio.to_thread(ref.set, bool(available))
+
+	async def set_session_home(self, session_id: str, conv_id: str) -> None:
+		"""Persist a cli session's home-conversation pointer."""
+		ref = db.reference(f"cli_sessions/{session_id}/home_conversation_id")
+		await asyncio.to_thread(ref.set, conv_id)
+
+	async def write_combine_command(self, source_id: str, target_id: str) -> str:
+		"""Push a combine command to /combine_commands; returns the push key."""
+		from datetime import datetime, timezone
+		push_ref = db.reference("combine_commands").push()
+		await asyncio.to_thread(push_ref.set, {
+			"source_conversation_id": source_id,
+			"target_conversation_id": target_id,
+			"issued_at": datetime.now(timezone.utc).isoformat(),
+		})
+		return push_ref.key
+
+	async def write_conversation_member(self, conv_id: str, member) -> None:
+		"""Write a member entry under /conversations/<id>/members_active/<sender>."""
+		ref = db.reference(f"conversations/{conv_id}/members_active/{member.sender}")
+		await asyncio.to_thread(ref.set, {
+			"cli_session_id": member.cli_session_id,
+			"sender": member.sender,
+			"cwd": member.cwd,
+			"surface": member.surface,
+			"alive": member.alive,
+			"session_lost_permanently": member.session_lost_permanently,
+			"session_ended_at": member.session_ended_at,
+			"session_end_reason": member.session_end_reason,
+			"joined_at": member.joined_at,
+			"last_seen_seq": member.last_seen_seq,
+		})
+
+	async def set_conversation_state(self, conv_id: str, state: str) -> None:
+		"""Update a conversation's state (active/ended)."""
+		ref = db.reference(f"conversations/{conv_id}/state")
+		await asyncio.to_thread(ref.set, state)
+
+	async def write_conversation_meta(
+		self,
+		conv_id: str,
+		*,
+		title: str,
+		state: str,
+		continued_from: str | None,
+		created_at: float,
+		last_activity_at: float,
+		ended_at: float | None,
+		hidden: bool,
+	) -> None:
+		"""Write the top-level conversation fields (everything except members and messages)."""
+		ref = db.reference(f"conversations/{conv_id}/meta")
+		await asyncio.to_thread(ref.set, {
+			"title": title,
+			"state": state,
+			"continued_from": continued_from,
+			"created_at": created_at,
+			"last_activity_at": last_activity_at,
+			"ended_at": ended_at,
+			"hidden": hidden,
+		})
+
+	async def remove_conversation_member(self, conv_id: str, sender: str) -> None:
+		"""Remove a member entry under /conversations/<id>/members_active/<sender>."""
+		ref = db.reference(f"conversations/{conv_id}/members_active/{sender}")
+		await asyncio.to_thread(ref.delete)
+
+	async def write_conversation_message(
+		self,
+		conv_id: str,
+		sender_or_message,
+		message_type: str | None = None,
+		text: str | None = None,
+		*,
+		request_id: str | None = None,
+		format: str = "plain",
+		suggestions: list[str] | None = None,
+		title: str | None = None,
+		url: str | None = None,
+		filename: str | None = None,
+		attached_to_msg_id: str | None = None,
+		rejected: bool = False,
+	):
+		"""Append a message to /conversations/<id>/messages.
+
+		Two call forms are accepted:
+
+		1. Legacy dict form (used by conversation_ops / dispatch callers that pass
+		   the in-memory message dict directly):
+		     write_conversation_message(conv_id, message_dict) -> str (push key)
+
+		2. Expanded keyword form (matches write_channel_message semantics; used by
+		   all migrated callers that previously called write_channel_message):
+		     write_conversation_message(conv_id, sender, message_type, text, ...)
+		     -> tuple[CorrelationToken, str | None]  i.e. (correlation, msg_id)
+
+		Returns:
+		  - dict form: str push key (for backward compat)
+		  - expanded form: (correlation, msg_id) tuple matching write_channel_message
+		    return semantics so callers are drop-in replaceable.
+		"""
+		from datetime import datetime, timezone
+
+		# ---- Legacy dict form: second arg is a dict --------------------------------
+		if isinstance(sender_or_message, dict):
+			message = sender_or_message
+			ref = db.reference(f"conversations/{conv_id}/messages").push()
+			await asyncio.to_thread(ref.set, message)
+			return ref.key
+
+		# ---- Expanded form: second arg is sender string ----------------------------
+		sender = sender_or_message
+		if message_type is None or text is None:
+			raise TypeError("write_conversation_message: message_type and text are required when sender is a str")
+
+		# Document upload: if url is a local path, upload to Firebase Storage first
+		effective_url = url
+		effective_filename = filename
+		if message_type == "document" and url and not (url.startswith("http://") or url.startswith("https://")):
+			try:
+				from pathlib import Path as _Path
+				path = _Path(url)
+				effective_url = await self._upload_file(path)
+				if effective_filename is None:
+					effective_filename = path.name
+				if self._logger:
+					await self._logger.info(f"firebase_upload_success: {effective_url}")
+			except Exception as exc:
+				if self._logger:
+					await self._logger.surface_error(f"firebase_upload_failed: {exc}")
+
+		now = datetime.now(timezone.utc).isoformat()
+		payload = {
+			"type": message_type,
+			"sender": sender,
+			"text": text,
+			"format": format,
+			"timestamp": now,
+			"cancelled": False,
+			"rejected": rejected,
+		}
+		if title is not None:
+			payload["title"] = title[:80]
+		if request_id is not None:
+			payload["request_id"] = request_id
+		if effective_url is not None:
+			payload["url"] = effective_url
+		if effective_filename is not None:
+			payload["filename"] = effective_filename
+		if suggestions is not None:
+			payload["suggestions"] = list(suggestions)
+		if attached_to_msg_id is not None:
+			payload["attached_to_msg_id"] = attached_to_msg_id
+
+		if self._logger:
+			await self._logger.info(f"firebase_write_conv_message: {conv_id}")
+
+		# Auto-unhide conversation on question writes — mirror the write_channel_message
+		# behaviour so the phone surfaces the conversation when a question arrives.
+		if message_type == "question":
+			await asyncio.to_thread(lambda: db.reference(f"conversations/{conv_id}/meta/hidden").set(False))
+
+		ref = db.reference(f"conversations/{conv_id}/messages").push()
+		await asyncio.to_thread(ref.set, payload)
+		msg_id = ref.key
+
+		# Atomically increment unread_count for every non-human message so the
+		# Android badge reflects unread activity on all device surfaces.
+		if message_type != "human":
+			try:
+				def _bump_unread():
+					db.reference(f"conversations/{conv_id}/unread_count").set(_increment(1))
+				await asyncio.to_thread(_bump_unread)
+			except Exception:
+				pass  # best-effort; don't fail the message write on counter glitch
+
+		# Update conversation-level last_activity_at + preview (mirrors channel behaviour)
+		preview = text[:120].replace("\n", " ").strip()
+		await asyncio.to_thread(lambda: db.reference(f"conversations/{conv_id}/meta").update({
+			"last_activity_at": now,
+			"preview": preview,
+		}))
+
+		# FCM notification (same topics / payload as write_channel_message)
+		if message_type != "human":
+			fcm_data: dict = {
+				"conv_id": conv_id,
+				"sb_message_type": message_type,
+				"message_id": msg_id,
+			}
+			if message_type == "question" and request_id is not None:
+				fcm_data["request_id"] = request_id
+			try:
+				await self._send_fcm(conv_id, message_type, sender, text, fcm_data)
+			except Exception as exc:
+				if self._logger:
+					await self._logger.surface_error(f"firebase_fcm_error: {exc}")
+
+		# Correlation: encode (conv_id, sender) so dispatch_responses can route replies
+		correlation = (conv_id, sender)
+		return correlation, msg_id
+
+	async def set_conversation_last_activity(self, conv_id: str, ts: float) -> None:
+		"""Update /conversations/<id>/meta/last_activity_at."""
+		ref = db.reference(f"conversations/{conv_id}/meta/last_activity_at")
+		await asyncio.to_thread(ref.set, ts)
+
+	async def remove_session_binding(self, session_id: str) -> None:
+		"""Remove /cli_sessions/<session_id>/home_conversation_id when session is unbound."""
+		ref = db.reference(f"cli_sessions/{session_id}/home_conversation_id")
+		await asyncio.to_thread(ref.delete)
+
+	async def start_combine_command_listener(self, handler) -> None:
+		"""Listen for new entries under /combine_commands; call handler(cmd_dict) for each new entry.
+
+		Skips the initial bulk-load snapshot (path == "/") so only entries written
+		after the listener starts are dispatched. Follows the SupervisedListener /
+		start_inject_listener pattern.
+		"""
+		from server.firebase_supervisor import SupervisedListener
+
+		listener_name = "combine_commands"
+		if listener_name in self._supervised:
+			return
+
+		def _on_combine(event):
+			if event.event_type != "put" or not event.data:
+				return
+			path = event.path.strip("/")
+			# Skip the initial snapshot (path == "" means the whole subtree).
+			if not path:
+				return
+			data = event.data
+			if isinstance(data, dict):
+				self._loop.call_soon_threadsafe(
+					self._loop.create_task,
+					handler(data),
+				)
+
+		err = self._logger.surface_error if self._logger else _no_op_async_logger
+		sup = SupervisedListener(
+			name=listener_name,
+			path="combine_commands",
+			callback=_on_combine,
+			error_logger=err,
+			loop=self._loop,
+		)
+		self._supervised[listener_name] = sup
+		sup.start()
+
+	async def start_force_end_command_listener(self, handler) -> None:
+		"""Listen for new entries under /force_end_commands; call handler(cmd_dict) for each new entry.
+
+		Skips the initial bulk-load snapshot (path == "/") so only entries written
+		after the listener starts are dispatched. Follows the SupervisedListener /
+		start_inject_listener pattern.
+		"""
+		from server.firebase_supervisor import SupervisedListener
+
+		listener_name = "force_end_commands"
+		if listener_name in self._supervised:
+			return
+
+		def _on_force_end(event):
+			if event.event_type != "put" or not event.data:
+				return
+			path = event.path.strip("/")
+			# Skip the initial snapshot (path == "" means the whole subtree).
+			if not path:
+				return
+			data = event.data
+			if isinstance(data, dict):
+				self._loop.call_soon_threadsafe(
+					self._loop.create_task,
+					handler(data),
+				)
+
+		err = self._logger.surface_error if self._logger else _no_op_async_logger
+		sup = SupervisedListener(
+			name=listener_name,
+			path="force_end_commands",
+			callback=_on_force_end,
+			error_logger=err,
+			loop=self._loop,
+		)
+		self._supervised[listener_name] = sup
+		sup.start()
+
+	async def start_conversation_answers_listener(self) -> None:
+		"""Listen for answer events under /conversations/<conv_id>/answers/<request_id>.
+
+		When Android writes a reply to this path, we enqueue it as an IncomingResponse
+		with correlation=(conv_id, sender) so dispatch_responses can route it without
+		needing the legacy cwd_key encoding.
+
+		Answers payload written by Android: {text, sender, request_id, written_at}.
+		The slot stored in IncomingResponse is 'conv_id/answers/request_id' so
+		send_resolution_confirmation can clean up both paths.
+		"""
+		from server.firebase_supervisor import SupervisedListener
+
+		listener_name = "conversation_answers"
+		if listener_name in self._supervised:
+			return
+
+		def _on_answer(event):
+			if event.event_type != "put" or not event.data:
+				return
+			# path form: /<conv_id>/answers/<request_id>
+			path = event.path.strip("/")
+			parts = path.split("/")
+			if len(parts) != 3 or parts[1] != "answers":
+				return
+			conv_id = parts[0]
+			data = event.data
+			if not isinstance(data, dict):
+				return
+			text = data.get("text")
+			sender = data.get("sender")
+			if not isinstance(text, str) or not isinstance(sender, str):
+				return
+			slot = path  # used for cleanup: conv_id/answers/request_id
+			resp = IncomingResponse(correlation=(conv_id, sender), text=text, slot=slot)
+			_spawn_bg(self._response_queue.put(resp), label=f"conv_answer_enqueue:{conv_id}:{sender}")
+
+		err = self._logger.surface_error if self._logger else _no_op_async_logger
+		sup = SupervisedListener(
+			name=listener_name,
+			path="conversations",
+			callback=_on_answer,
+			error_logger=err,
+			loop=self._loop,
+		)
+		self._supervised[listener_name] = sup
+		sup.start()
+
+	async def start_spawn_command_listener(self, handler) -> None:
+		"""Listen for new entries under /spawn_commands; call handler(cmd_dict) for each new entry.
+
+		Skips the initial bulk-load snapshot (path == "/") so only entries written
+		after the listener starts are dispatched. Follows the SupervisedListener /
+		start_combine_command_listener pattern.
+		"""
+		from server.firebase_supervisor import SupervisedListener
+
+		listener_name = "spawn_commands"
+		if listener_name in self._supervised:
+			return
+
+		def _on_spawn(event):
+			if event.event_type != "put" or not event.data:
+				return
+			path = event.path.strip("/")
+			# Skip the initial snapshot (path == "" means the whole subtree).
+			if not path:
+				return
+			data = event.data
+			if isinstance(data, dict):
+				self._loop.call_soon_threadsafe(
+					self._loop.create_task,
+					handler(data),
+				)
+
+		err = self._logger.surface_error if self._logger else _no_op_async_logger
+		sup = SupervisedListener(
+			name=listener_name,
+			path="spawn_commands",
+			callback=_on_spawn,
+			error_logger=err,
+			loop=self._loop,
+		)
+		self._supervised[listener_name] = sup
+		sup.start()

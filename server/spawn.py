@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import secrets
 import subprocess
 from datetime import datetime, timezone
@@ -13,79 +12,13 @@ from pathlib import Path
 from server.canonicalization import canonicalize_cwd
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
-from server.messenger import ChannelLifecycle, InjectPort, MessageWriter
+from server.messenger import ChannelLifecycle, InjectPort, MessageWriter, ConversationStore
 from server.registry import Registry
 
-RATE_LIMIT_SECONDS = 60
 _TASK_NAME = "SwitchboardSpawn"
-_SPAWN_COLLISION_TIMEOUT_SECONDS = 600.0
-
-_BASE_INSTRUCTION = (
-	"John is currently away. All communications MUST go through the switchboard "
-	"using one or more of its tools. "
-	"Your `cwd` for switchboard tool calls is your current working directory — "
-	"read it via $PWD or from your system prompt's 'Primary working directory' field. "
-	"sender is REQUIRED on every messaging tool call (notify_human, ask_human, "
-	"send_document_human, message_and_await_agent, end_collab). Use '{sender_default}' "
-	"unless you were given a different name. "
-	"Title: optional on every messaging tool. SET ONE on your first call — "
-	"synthesize from your task or use the leaf folder name if fresh. Update when scope "
-	"materially changes; otherwise omit."
-)
-_DEFAULT_PROMPT = "Ask John what he'd like you to work on."
-_DEFAULT_COLLAB_PROMPT = (
-	"Perform a comprehensive technical review of this codebase. Identify architectural "
-	"weaknesses, potential bugs, and high-to-medium priority areas for improvement. Debate "
-	"these points critically with your partner until you reach consensus on what needs to "
-	"change. Once consensus is reached, send John a document detailing the issues found "
-	"and your proposed fixes using send_document_human. Then, use ask_human to await "
-	"John's approval before proceeding with implementing the proposal."
-)
-_COLLAB_INSTRUCTION = (
-	"John is currently away. All communications MUST go through the Switchboard MCP. "
-	"Follow the \"Collab mode\" protocol in skill/SKILL.md for every collab rule, "
-	"including how to terminate via end_collab and how the designated reporter "
-	"reaches John.\n\n"
-	"Your `cwd` is the shared session key — both agents in this collab use the same cwd. "
-	"Read it from $PWD or your system prompt's 'Primary working directory' field. "
-	"Use your own agent name as the `sender` for every Switchboard tool call.\n\n"
-	"Both agents start in parallel. Do your initial research / analysis, then send "
-	"your opening position via message_and_await_agent. You will receive your "
-	"partner's independent opening as your first delivery — treat it as their "
-	"opening position and respond to it.\n\n"
-	"TASK:\n"
-	"{task}"
-)
 
 
-def _parse_spawn_flags(text: str) -> tuple[str, list[str]]:
-	"""Extract --claude, --gemini, --collab flags; return (remaining_text, backends)."""
-	backends: list[str] = []
-	parts: list[str] = []
-	for part in text.split():
-		if part == "--claude":
-			backends.append("claude")
-		elif part == "--gemini":
-			backends.append("gemini")
-		elif part == "--collab":
-			backends.extend(["claude", "gemini"])
-		elif re.match(r"--agents=\d+$", part):
-			raise ValueError("--agents is no longer supported; use --claude, --gemini, or --collab flags")
-		elif part == "--relay":
-			raise ValueError("--relay is no longer supported; use --collab for relay sessions")
-		else:
-			parts.append(part)
-	
-	if not backends:
-		backends = ["claude"]
-	return " ".join(parts), backends
-
-
-def _get_backend_name(backend: str) -> str:
-	return "Gemini" if backend == "gemini" else "Claude"
-
-
-class _SpawnBackend(MessageWriter, InjectPort, ChannelLifecycle):
+class _SpawnBackend(MessageWriter, InjectPort, ChannelLifecycle, ConversationStore):
 	"""Backend surface used by SpawnHandler."""
 
 
@@ -93,13 +26,13 @@ class SpawnHandler:
 	def __init__(
 		self, config: Config, backend: _SpawnBackend, logger: JsonlLogger, registry: Registry
 	) -> None:
-		self._spawn_root = config.spawn_root
+		self._config = config
+		self._spawn_root = config.windows_spawn_root
 		self._pending_dir = Path(config.log_path).parent
 		self._sidecar_path = self._pending_dir / "collab-sessions.json"
 		self._backend = backend
 		self._logger = logger
 		self._registry = registry
-		self._last_spawn_time: datetime | None = None
 
 	def _pending_path_for(self, spawn_id: str) -> Path:
 		"""Return the per-spawn pending-config file path. Each spawn writes a
@@ -108,31 +41,356 @@ class SpawnHandler:
 		to claim ownership."""
 		return self._pending_dir / f"spawn-pending-{spawn_id}.json"
 
-	async def _cancel_prior_pending(self, canonical_cwd: str) -> None:
-		"""Cancel any pending ask_human requests left over for this cwd before launching
+	async def _cancel_prior_pending(self, conversation_id: str) -> None:
+		"""Cancel any pending ask_human requests left over for this conversation before launching
 		a new agent. Without this, a prior agent that died without reaching its tool-handler
 		cancellation path (common with MCP streamable-HTTP transport) leaves stale questions
-		hanging on phone and server until the 24h timeout."""
-		cancelled = self._registry.cancel_pending_for_cwd(canonical_cwd)
+		hanging on phone and server until the 24h timeout.
+
+		After Phase 3 rename: takes conversation_id (not a filesystem cwd).
+		"""
+		cancelled = self._registry.cancel_pending_for_conversation(conversation_id)
 		if not cancelled:
 			return
 		for request_id in cancelled:
 			try:
-				await self._backend.mark_question_cancelled(canonical_cwd, request_id)
+				await self._backend.mark_question_cancelled(conversation_id, request_id)
 			except Exception as exc:
 				await self._logger.surface_error(
-					f"mark_cancelled_failed_on_spawn: cwd={canonical_cwd} req={request_id} {exc}"
+					f"mark_cancelled_failed_on_spawn: conv={conversation_id} req={request_id} {exc}"
 				)
-		await self._logger.pending_cancelled_on_spawn(canonical_cwd, cancelled)
+		await self._logger.pending_cancelled_on_spawn(conversation_id, cancelled)
 
-	async def handle(self, raw: str) -> None:
-		stripped = raw.strip()
-		if stripped.startswith("/spawn"):
-			await self._handle_spawn(stripped[len("/spawn"):].strip())
-		# Unknown command: silently ignore. The command watcher surfaces its
-		# own errors, and we don't want a typo in the Android app to crash
-		# the dispatcher.
+	# ------------------------------------------------------------------
+	# Structured-command handlers (Tasks 25 & 26)
+	# ------------------------------------------------------------------
 
+	async def _invoke_launcher(self) -> None:
+		"""Trigger spawn-launcher.ps1 via the SwitchboardSpawn scheduled task."""
+		try:
+			proc = await asyncio.create_subprocess_exec(
+				"schtasks", "/run", "/tn", _TASK_NAME,
+				stdout=asyncio.subprocess.PIPE,
+				stderr=asyncio.subprocess.PIPE,
+			)
+			stdout, stderr = await proc.communicate()
+			if proc.returncode != 0:
+				error_msg = stderr.decode().strip() or f"exit code {proc.returncode}"
+				raise RuntimeError(error_msg)
+		except Exception as exc:
+			await self._logger.surface_error(f"spawn_invoke_launcher_failed: {exc}")
+
+	def _format_fresh_prompt(self, cmd: dict, conv_id: str, join_existing: bool) -> str:
+		"""Build the initial prompt for a fresh-spawn agent."""
+		base = (
+			"John is currently away. All communications MUST go through the switchboard MCP. "
+			"Tool calls auto-inject your cli_session_id; you don't need to provide it manually. "
+			"Pick your own sender name (kebab-case, e.g. 'claude-win-1') — agents in the same "
+			"conversation should pick distinct names. "
+		)
+		if join_existing:
+			base += (
+				f"You're joining an existing conversation (id={conv_id}). "
+				"Call enter_conversation(sender='<your_name>') to receive the recent history; "
+				"reply via message_and_await_agent."
+			)
+		else:
+			user_prompt = cmd.get("prompt")
+			if user_prompt:
+				base += f"\n\nINITIAL TASK:\n{user_prompt}"
+			else:
+				base += "\n\nWait for John's first message via ask_human or notify_human."
+		return base
+
+	def _format_resume_prompt(self, cmd: dict, member, new_conv_id: str) -> str:
+		"""Build the resume prompt for a returning agent."""
+		base = (
+			f"You are resuming as '{member.sender}' in conversation '{new_conv_id}' "
+			f"(continued from {cmd.get('source_conversation_id')}). "
+			"Tool calls auto-inject your cli_session_id. "
+			f"Call enter_conversation(sender='{member.sender}') to receive the conversation's "
+			"new context. You will get the recent history since your session ended."
+		)
+		user_prompt = cmd.get("prompt")
+		if user_prompt:
+			base += f"\n\nADDITIONAL CONTEXT FROM JOHN:\n{user_prompt}"
+		return base
+
+	async def handle_fresh(self, cmd: dict) -> None:
+		"""Handle a 'fresh' spawn command from Firebase.
+
+		cmd shape:
+		{
+			"type": "fresh",
+			"surface": "windows" | "wsl",
+			"project": "<project name>",  # relative to surface's spawn root
+			"prompt": "<optional prompt text>" | None,
+			"target_conversation_id": "<conv-id>" | None,  # if set, join existing conv
+			"issued_at": "<ISO-8601>",
+		}
+		"""
+		import uuid
+		from server.registry import Conversation
+		from server.conversation_ops import _now_iso
+
+		surface = cmd.get("surface", "windows")
+		project = cmd.get("project")
+		if not project:
+			await self._logger.surface_error("spawn_fresh: missing project")
+			return
+
+		# Validate WSL availability if surface is wsl
+		if surface == "wsl" and not getattr(self._config, "wsl_home_resolved", None):
+			await self._logger.surface_error(
+				"spawn_fresh: WSL spawn requested but WSL is not available on this host."
+			)
+			return
+
+		if not await self._user_has_interactive_session():
+			await self._backend.send_text(
+				"Cannot spawn: no one is logged in to the desktop. Sign in (locally or via RDP) and try again."
+			)
+			return
+
+		# Auto-enable away mode if currently off
+		if not self._registry.global_away_mode:
+			self._registry.global_away_mode = True
+			try:
+				if hasattr(self._backend, "set_global_away_mode"):
+					await self._backend.set_global_away_mode(True)
+				elif hasattr(self._backend, "set_away_mode"):
+					await self._backend.set_away_mode(True)
+			except Exception as exc:
+				await self._logger.surface_error(f"spawn_fresh_away_mode_persist_failed: {exc}")
+
+		# Resolve project path per surface
+		if surface == "windows":
+			if self._config.windows_spawn_root is None:
+				await self._logger.surface_error("spawn_fresh: windows_spawn_root not configured")
+				return
+			project_path = str(Path(self._config.windows_spawn_root) / project)
+		else:  # wsl
+			segment = getattr(self._config, "wsl_spawn_root_segment", "work")
+			wsl_home = getattr(self._config, "wsl_home_resolved", None)
+			project_path = f"{wsl_home}/{segment}/{project}"
+
+		# Determine conversation: join existing OR mint new
+		target_conv_id = cmd.get("target_conversation_id")
+		if target_conv_id:
+			conv = self._registry.conversations.get(target_conv_id)
+			if not conv or conv.state != "active":
+				await self._logger.surface_error(
+					f"spawn_fresh: target_conversation_id {target_conv_id} not Active"
+				)
+				return
+			# Cancel any stale pending requests from a prior agent that died without cleanup
+			await self._cancel_prior_pending(target_conv_id)
+			conv_id = target_conv_id
+			join_existing = True
+		else:
+			conv_id = "conv-" + uuid.uuid4().hex
+			conv = Conversation(id=conv_id, title=f"{project} ({surface})")
+			spawn_msg = {
+				"seq": 0,
+				"sender": "<system>",
+				"type": "system",
+				"text": f"Spawning Claude in {project} ({surface})",
+				"timestamp": _now_iso(),
+			}
+			conv.messages.append(spawn_msg)
+			conv.created_at = datetime.now(timezone.utc).timestamp()
+			conv.last_activity_at = conv.created_at
+			self._registry.conversations[conv_id] = conv
+			join_existing = False
+
+			# Firebase: write new conv meta + spawn message
+			from server.gateway.bg_tasks import _spawn_bg as _sbg
+			_sbg(
+				self._backend.write_conversation_meta(
+					conv_id,
+					title=conv.title,
+					state="active",
+					continued_from=None,
+					created_at=conv.created_at,
+					last_activity_at=conv.last_activity_at,
+					ended_at=None,
+					hidden=False,
+				),
+				label=f"fb_write_conv_meta:{conv_id}",
+			)
+			_sbg(
+				self._backend.write_conversation_message(conv_id, spawn_msg),
+				label=f"fb_write_spawn_msg:{conv_id}",
+			)
+
+		# Pre-generate session_id, bind
+		new_session_id = str(uuid.uuid4())
+		self._registry.bind_session(new_session_id, conv_id)
+		home_newly_set = new_session_id not in self._registry.session_home_conversation_id
+		if home_newly_set:
+			self._registry.set_session_home(new_session_id, conv_id)
+
+		# Firebase: set session home
+		if not join_existing:
+			from server.gateway.bg_tasks import _spawn_bg as _sbg
+			if home_newly_set:
+				_sbg(
+					self._backend.set_session_home(new_session_id, conv_id),
+					label=f"fb_set_session_home:{new_session_id}:{conv_id}",
+				)
+
+		# Build prompt
+		prompt = self._format_fresh_prompt(cmd, conv_id, join_existing=join_existing)
+
+		# Write spawn-pending file
+		spawn_id = uuid.uuid4().hex
+		pending = {
+			"type": "fresh",
+			"conversation_id": conv_id,
+			"agents": [{
+				"surface": surface,
+				"cli_session_id": new_session_id,
+				"prompt": prompt,
+				"project_path": project_path,
+				"join_existing": join_existing,
+			}],
+		}
+		pending_path = self._pending_dir / f"spawn-pending-{spawn_id}.json"
+		pending_path.write_text(json.dumps(pending, indent=2), encoding="utf-8")
+
+		# Trigger launcher
+		await self._invoke_launcher()
+
+	async def handle_resume(self, cmd: dict) -> None:
+		"""Handle a 'resume' spawn command from Firebase.
+
+		cmd shape:
+		{
+			"type": "resume",
+			"source_conversation_id": "<conv-id>",
+			"prompt": "<optional prompt>" | None,
+			"issued_at": "<ISO-8601>",
+		}
+		"""
+		import uuid
+
+		source_id = cmd.get("source_conversation_id")
+		if not source_id:
+			await self._logger.surface_error("spawn_resume: missing source_conversation_id")
+			return
+		source = self._registry.conversations.get(source_id)
+		if not source:
+			await self._logger.surface_error(f"spawn_resume: source {source_id} not found")
+			return
+
+		# Auto-enable away mode if currently off
+		if not self._registry.global_away_mode:
+			self._registry.global_away_mode = True
+			try:
+				if hasattr(self._backend, "set_global_away_mode"):
+					await self._backend.set_global_away_mode(True)
+			except Exception as exc:
+				await self._logger.surface_error(f"spawn_resume_away_mode_persist_failed: {exc}")
+
+		# Cancel any stale pending requests in the source before minting the resume conversation
+		await self._cancel_prior_pending(source_id)
+
+		# Identify resumable members: not alive, not permanently_lost, not currently bound
+		resumable = [
+			m for m in source.members_active.values()
+			if (not m.alive
+				and not m.session_lost_permanently
+				and m.cli_session_id not in self._registry.session_to_conversation_id)
+		]
+		if not resumable:
+			await self._logger.surface_error(f"spawn_resume: no resumable members in source {source_id}")
+			return
+
+		# Mint new conversation with continued_from
+		from server.registry import Conversation
+		from server.conversation_ops import _now_iso
+		from server.gateway.bg_tasks import _spawn_bg as _sbg
+		new_id = "conv-" + uuid.uuid4().hex
+		new_conv = Conversation(id=new_id, title=source.title, continued_from=source_id)
+		resume_msg = {
+			"seq": 0,
+			"sender": "<system>",
+			"type": "system",
+			"text": f"Resuming '{source.title}' (continued from {source_id}).",
+			"timestamp": _now_iso(),
+		}
+		new_conv.messages.append(resume_msg)
+		new_conv.created_at = datetime.now(timezone.utc).timestamp()
+		new_conv.last_activity_at = new_conv.created_at
+		self._registry.conversations[new_id] = new_conv
+
+		# Firebase: write new conv meta + resume system message
+		_sbg(
+			self._backend.write_conversation_meta(
+				new_id,
+				title=new_conv.title,
+				state="active",
+				continued_from=source_id,
+				created_at=new_conv.created_at,
+				last_activity_at=new_conv.last_activity_at,
+				ended_at=None,
+				hidden=False,
+			),
+			label=f"fb_write_conv_meta:{new_id}",
+		)
+		_sbg(
+			self._backend.write_conversation_message(new_id, resume_msg),
+			label=f"fb_write_resume_msg:{new_id}",
+		)
+
+		# Pre-bind each resumable session, move member entry to new conv
+		agents = []
+		for m in resumable:
+			self._registry.bind_session(m.cli_session_id, new_id)
+			new_conv.members_active[m.sender] = m
+			del source.members_active[m.sender]
+			agents.append({
+				"surface": m.surface,
+				"cli_session_id": m.cli_session_id,
+				"prompt": self._format_resume_prompt(cmd, m, new_id),
+				"project_path": m.cwd,
+				"prior_sender": m.sender,
+			})
+			# Firebase: move member from source to new conv
+			_sbg(
+				self._backend.remove_conversation_member(source_id, m.sender),
+				label=f"fb_remove_member:{source_id}:{m.sender}",
+			)
+			_sbg(
+				self._backend.write_conversation_member(new_id, m),
+				label=f"fb_write_member:{new_id}:{m.sender}",
+			)
+
+		# If source has no remaining members (all were resumable), end it
+		source_ended = False
+		if not source.members_active:
+			source.state = "ended"
+			source.ended_at = datetime.now(timezone.utc).timestamp()
+			source_ended = True
+			if self._registry.open_conversation_id == source_id:
+				self._registry.open_conversation_id = None
+		if source_ended:
+			_sbg(
+				self._backend.set_conversation_state(source_id, "ended"),
+				label=f"fb_set_state:{source_id}:ended",
+			)
+
+		# Write spawn-pending file (type "resume")
+		spawn_id = uuid.uuid4().hex
+		pending = {
+			"type": "resume",
+			"conversation_id": new_id,
+			"continued_from": source_id,
+			"agents": agents,
+		}
+		pending_path = self._pending_dir / f"spawn-pending-{spawn_id}.json"
+		pending_path.write_text(json.dumps(pending, indent=2), encoding="utf-8")
+		await self._invoke_launcher()
 
 	async def _user_has_interactive_session(self) -> bool:
 		"""Return True if any user has an interactive (Active or Disconnected)
@@ -170,350 +428,3 @@ class SpawnHandler:
 				return True
 		return False
 
-	async def _handle_spawn(self, text: str) -> None:
-		if self._spawn_root is None:
-			await self._backend.send_text("Spawn not configured.")
-			return
-
-		if not await self._user_has_interactive_session():
-			await self._backend.send_text(
-				"Cannot spawn: no one is logged in to the desktop. "
-				"Sign in (locally or via RDP) and try again."
-			)
-			return
-
-		now = datetime.now(timezone.utc)
-		if self._last_spawn_time is not None:
-			elapsed = (now - self._last_spawn_time).total_seconds()
-			if elapsed < RATE_LIMIT_SECONDS:
-				remaining = int(RATE_LIMIT_SECONDS - elapsed)
-				await self._backend.send_text(f"Rate limited. Try again in {remaining}s.")
-				return
-
-		try:
-			remaining_text, backends = _parse_spawn_flags(text)
-		except ValueError as exc:
-			await self._backend.send_text(str(exc))
-			return
-
-		tokens = remaining_text.split(None, 1)
-		if not tokens:
-			project_path = self._spawn_root
-			project_key = self._spawn_root.name
-			prompt: str | None = None
-		else:
-			candidate = self._spawn_root / tokens[0]
-			if candidate.is_dir():
-				project_path = candidate
-				project_key = tokens[0]
-				prompt = tokens[1] if len(tokens) > 1 else None
-			else:
-				# tokens[0] doesn't resolve as a direct child. Search one level down for
-				# matching subdirs (e.g. "develop" → rpdm/develop, rpg-one/develop).
-				# If exactly one match: use it. Multiple: ambiguous, error with suggestions.
-				# None: preserve the terminal-form fallback (treat full input as prompt).
-				try:
-					nested = [p for p in self._spawn_root.glob(f"*/{tokens[0]}") if p.is_dir()]
-				except OSError:
-					nested = []
-				if len(nested) == 1:
-					project_path = nested[0]
-					project_key = nested[0].relative_to(self._spawn_root).as_posix()
-					prompt = tokens[1] if len(tokens) > 1 else None
-				elif len(nested) > 1:
-					suggestions = ", ".join(
-						p.relative_to(self._spawn_root).as_posix() for p in nested
-					)
-					await self._logger.spawn_invalid_path(tokens[0], f"ambiguous: {suggestions}")
-					await self._backend.send_text(
-						f"Ambiguous project '{tokens[0]}'. Multiple matches: {suggestions}. "
-						f"Use the full relative path."
-					)
-					return
-				else:
-					project_path = self._spawn_root
-					project_key = self._spawn_root.name
-					prompt = remaining_text or None
-
-		try:
-			project_path.resolve().relative_to(self._spawn_root.resolve())
-		except ValueError:
-			await self._logger.spawn_invalid_path(project_key, str(project_path.resolve()))
-			await self._backend.send_text(f"Unknown project: {project_key}.")
-			return
-
-		if not project_path.is_dir():
-			await self._logger.spawn_invalid_path(project_key, str(project_path.resolve()))
-			await self._backend.send_text(f"Unknown project: {project_key}.")
-			return
-
-		canonical_cwd = canonicalize_cwd(str(project_path))
-		collision_outcome = await self._maybe_handle_spawn_collision(canonical_cwd)
-		if collision_outcome == "cancel":
-			# User cancelled at the collision dialog — don't launch and don't bump rate-limit.
-			return
-
-		if len(backends) > 1:
-			await self._handle_collab_spawn(project_path, project_key, prompt, backends[:2])
-		else:
-			await self._handle_single_spawn(project_path, project_key, prompt, backends[0])
-
-	async def _maybe_handle_spawn_collision(self, canonical_cwd: str) -> str | None:
-		"""Detect a channel-content collision and surface the spawn-collision dialog.
-
-		Returns:
-			- None — no collision, proceed normally
-			- "continue" — user kept the existing channel; spawn proceeds
-			- "clear" — user wiped the channel (already done here); spawn proceeds
-			- "cancel" — user cancelled; caller must not launch
-
-		Best-effort: if any step of the collision check fails (Firebase blip, missing
-		listener support, etc.), fall through to spawn rather than blocking the user."""
-		import uuid
-
-		try:
-			has_msgs = await self._backend.has_messages(canonical_cwd)
-		except Exception as exc:
-			# Includes the test-double case where has_messages isn't a real coroutine.
-			await self._logger.surface_error(f"spawn_collision_check_failed: {exc}")
-			return None
-
-		if not has_msgs:
-			return None
-
-		spawn_id = str(uuid.uuid4())
-
-		try:
-			meta = await self._backend.read_channel_meta(canonical_cwd)
-		except Exception as exc:
-			await self._logger.surface_error(f"spawn_collision_meta_read_failed: {exc}")
-			meta = {"title": None, "last_activity_at": None, "hidden": False}
-
-		try:
-			await self._backend.write_spawn_collision_prompt(
-				spawn_id=spawn_id,
-				cwd=canonical_cwd,
-				channel_title=meta.get("title"),
-				last_activity_at=meta.get("last_activity_at"),
-				hidden=meta.get("hidden", False),
-			)
-		except Exception as exc:
-			await self._logger.surface_error(f"spawn_collision_dialog_write_failed: {exc}")
-			return None
-
-		await self._logger.spawn_collision_detected(canonical_cwd, spawn_id)
-
-		try:
-			# H2-mini: Add a timeout to the collision poll to prevent permanent wedges.
-			decision = await asyncio.wait_for(
-				self._backend.poll_spawn_collision_decision(spawn_id),
-				timeout=_SPAWN_COLLISION_TIMEOUT_SECONDS,
-			)
-		except asyncio.TimeoutError:
-			await self._logger.surface_error(
-				f"spawn_collision_timeout: spawn_id={spawn_id} (treating as cancel)"
-			)
-			await self._safe_clear_spawn_collision_prompt(spawn_id)
-			return "cancel"
-		except NotImplementedError:
-			# No listener support (e.g., local-only backend). Fall through to spawn.
-			await self._safe_clear_spawn_collision_prompt(spawn_id)
-			return None
-		except Exception as exc:
-			await self._logger.surface_error(f"spawn_collision_decision_poll_failed: {exc}")
-			await self._safe_clear_spawn_collision_prompt(spawn_id)
-			return None
-
-		await self._safe_clear_spawn_collision_prompt(spawn_id)
-
-		action = (decision or {}).get("action", "cancel")
-		if action == "cancel":
-			return "cancel"
-		if action == "clear":
-			try:
-				await self._backend.wipe_channel(canonical_cwd)
-				await self._backend.set_channel_hidden(canonical_cwd, False)
-			except Exception as exc:
-				await self._logger.surface_error(f"spawn_collision_wipe_failed: {exc}")
-				# Wipe failed but user wanted to proceed — fall through as continue.
-				return "continue"
-			return "clear"
-		if action == "continue":
-			return "continue"
-		await self._logger.surface_error(f"spawn_collision_unknown_action: {action!r}")
-		return "cancel"
-
-	async def _safe_clear_spawn_collision_prompt(self, spawn_id: str) -> None:
-		try:
-			await self._backend.clear_spawn_collision_prompt(spawn_id)
-		except Exception as exc:
-			await self._logger.surface_error(f"spawn_collision_clear_failed: {exc}")
-
-	async def _handle_single_spawn(
-		self, project_path: Path, project_key: str, prompt: str | None, backend_type: str
-	) -> None:
-		channel_id = canonicalize_cwd(str(project_path))
-		sender = _get_backend_name(backend_type)
-		base = _BASE_INSTRUCTION.format(sender_default=sender)
-		user_prompt = prompt or _DEFAULT_PROMPT
-		effective_prompt = f"{base} {user_prompt}"
-
-		await self._cancel_prior_pending(channel_id)
-
-		# Generate spawn_id up-front so the per-spawn pending file is unique;
-		# the same id is reused for the spawn_started log entry below.
-		spawn_id = secrets.token_hex(8)
-		pending_path = self._pending_path_for(spawn_id)
-
-		pending = {
-			"channel_id": channel_id,
-			"backend": backend_type,
-			"prompt": effective_prompt,
-			"project_path": str(project_path),
-		}
-		try:
-			pending_path.write_text(json.dumps(pending), encoding="utf-8")
-			proc = await asyncio.create_subprocess_exec(
-				"schtasks", "/run", "/tn", _TASK_NAME,
-				stdout=asyncio.subprocess.PIPE,
-				stderr=asyncio.subprocess.PIPE,
-			)
-			stdout, stderr = await proc.communicate()
-			if proc.returncode != 0:
-				error_msg = stderr.decode().strip() or f"exit code {proc.returncode}"
-				raise RuntimeError(error_msg)
-		except Exception as exc:
-			pending_path.unlink(missing_ok=True)
-			await self._logger.spawn_failed(project_key, str(project_path), [_TASK_NAME], str(exc))
-			await self._backend.send_text(f"Failed to spawn: {exc}.")
-			return
-
-		self._last_spawn_time = datetime.now(timezone.utc)
-		self._registry.set_cwd_override(channel_id, True)
-		await self._logger.away_mode_cwd_changed(channel_id, True)
-
-		try:
-			await self._backend.write_session_meta(
-				channel_id, "single", project_key,
-			)
-		except Exception as exc:
-			await self._logger.surface_error(f"single_meta_write_error: {exc}")
-
-		await self._logger.spawn_started(
-			spawn_id, project_key, str(project_path),
-			prompt if prompt is not None else "(ask on start)",
-		)
-		await self._backend.send_spawn_ack(channel_id, prompt)
-
-	async def _handle_collab_spawn(
-		self, project_path: Path, project_key: str, prompt: str | None, backends: list[str]
-	) -> None:
-		from server.collab import CollabSession
-		task = prompt or _DEFAULT_COLLAB_PROMPT
-		channel_id = canonicalize_cwd(str(project_path))
-
-		await self._cancel_prior_pending(channel_id)
-
-		# `--collab` defaults to claude+gemini, so agent_senders are distinct
-		# by construction. Explicit `--claude --claude` is allowed but a
-		# sharp edge — the duplicate-sender error path is documented in the
-		# SKILL's BYO caveat for that case.
-		agent_senders = [_get_backend_name(b) for b in backends]
-		s1, s2 = agent_senders
-		prompt_text = _COLLAB_INSTRUCTION.format(task=task)
-
-		# Generate spawn_id up-front so the per-spawn pending file is unique.
-		spawn_id = secrets.token_hex(8)
-		pending_path = self._pending_path_for(spawn_id)
-
-		pending = {
-			"channel_id": channel_id,
-			"agents": [
-				{
-					"backend": backends[0],
-					"sender": s1,
-					"prompt": prompt_text,
-					"project_path": str(project_path),
-				},
-				{
-					"backend": backends[1],
-					"sender": s2,
-					"prompt": prompt_text,
-					"project_path": str(project_path),
-				},
-			],
-		}
-
-		existing: list = []
-		if self._sidecar_path.exists():
-			try:
-				existing = json.loads(self._sidecar_path.read_text(encoding="utf-8"))
-			except Exception as exc:
-				await self._logger.surface_error(f"collab_sidecar_read_error: {exc}")
-		existing.append({
-			"channel_id": channel_id,
-			"agent_senders": agent_senders,
-			"task": task,
-			"created_at": datetime.now(timezone.utc).isoformat(),
-		})
-		self._sidecar_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-
-		try:
-			pending_path.write_text(json.dumps(pending), encoding="utf-8")
-			proc = await asyncio.create_subprocess_exec(
-				"schtasks", "/run", "/tn", _TASK_NAME,
-				stdout=asyncio.subprocess.PIPE,
-				stderr=asyncio.subprocess.PIPE,
-			)
-			stdout, stderr = await proc.communicate()
-			if proc.returncode != 0:
-				error_msg = stderr.decode().strip() or f"exit code {proc.returncode}"
-				raise RuntimeError(error_msg)
-		except Exception as exc:
-			pending_path.unlink(missing_ok=True)
-			# Roll back the sidecar entry we appended above; without this,
-			# a failed spawn leaves a phantom session record that survives until
-			# the next service restart and triggers a "session was lost" notice
-			# for a session that never existed.
-			try:
-				current = json.loads(self._sidecar_path.read_text(encoding="utf-8"))
-				current = [e for e in current if e.get("channel_id") != channel_id]
-				self._sidecar_path.write_text(json.dumps(current, indent=2), encoding="utf-8")
-			except Exception as rb_exc:
-				await self._logger.surface_error(f"collab_sidecar_rollback_error: {rb_exc}")
-			await self._logger.spawn_failed(project_key, str(project_path), [_TASK_NAME], str(exc))
-			await self._backend.send_text(f"Failed to spawn collab: {exc}.")
-			return
-
-		self._last_spawn_time = datetime.now(timezone.utc)
-		self._registry.set_cwd_override(channel_id, True)
-		await self._logger.away_mode_cwd_changed(channel_id, True)
-
-		# Initialize the in-memory session with empty agent_senders so each agent
-		# enrolls dynamically with whatever name they use — `_BASE_INSTRUCTION`
-		# tells them they may use a name other than the backend default. The
-		# resolved-name list still goes to the Firebase metadata write below as
-		# an "expected senders" hint for the phone UI; that data is read-only
-		# from the session's perspective.
-		session = CollabSession(
-			cwd=channel_id,
-			agent_senders=[],
-			task=task,
-		)
-		self._registry.add_session(session)
-
-		try:
-			await self._backend.write_session_meta(
-				channel_id, "collab", project_key,
-				agent_senders=agent_senders, task=task,
-			)
-		except Exception as exc:
-			await self._logger.surface_error(f"collab_meta_write_error: {exc}")
-
-		try:
-			await self._backend.start_inject_listener(channel_id)
-		except Exception as exc:
-			await self._logger.surface_error(f"collab_inject_listener_error: {exc}")
-
-		await self._logger.spawn_started(spawn_id, project_key, str(project_path), f"[collab] {task[:60]}")
-		await self._backend.send_spawn_ack(channel_id, f"[collab] {task[:60]}")

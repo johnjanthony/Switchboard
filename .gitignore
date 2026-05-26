@@ -37,3 +37,4 @@ docs/superpowers/plans/
 .repomap.tags.cache.v1/*
 android/.artifacts/*
 .artifacts/*
+scripts/verify/*

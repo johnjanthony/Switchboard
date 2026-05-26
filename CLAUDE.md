@@ -8,6 +8,23 @@ This file contains Claude-specific instructions for working in the Switchboard w
 - **Read [`skills/switchboard/SKILL.md`](skills/switchboard/SKILL.md)** for MCP tool signatures and the Away Mode protocol.
 - **If [`docs/project_next_session.md`](docs/project_next_session.md) exists**, read it first — it contains branch-specific resumption notes (committed with whichever feature branch you're on) describing in-progress work, remaining steps, and any pre-merge cleanup items.
 
+## MCP tool surface (current)
+
+Active tools: `ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `open_conversation`, `enter_conversation`, `combine_conversations`, `lookup_conversation_ids`, `leave_conversation`, `set_away_mode`.
+
+Retired tools (do not call): `end_collab`, `enter_away_mode`, `exit_away_mode`.
+
+The `channel` parameter is gone — routing is by `cli_session_id`, injected by the `cli-session-injector-hook.py` PreToolUse hook. Agents pass `sender` and tool-specific args only.
+
+## Conversation model (current)
+
+Conversations replace channels as the persistence + routing unit. States: `Active` / `Ended`. At most one Active conversation is the "open" singleton (set by `open_conversation()`; joinable via `enter_conversation()`). Routing key is `cli_session_id` (hook-injected), not cwd. Away mode is a single global flag (`set_away_mode(bool)`); per-cwd overrides are retired.
+
+## New hooks (plugin bundle)
+
+- **`cli-session-injector-hook.py`** (PreToolUse) — injects `cli_session_id` and `cwd` into every switchboard MCP call. Agent never passes these.
+- **`cli-session-end-hook.py`** (SessionEnd) — fires on orderly exit; POSTs to `POST /cli-session/end` to mark the member dormant (not auto-leave).
+
 ## Setup
 
 Switchboard ships as a Claude Code plugin. From any Claude Code session:
@@ -30,6 +47,8 @@ The plugin install wires the skill and the Claude turn-end + agent-status hooks.
 	```
 
 	WSL must be running in bridge networking mode (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` and a firewall inbound rule for TCP 9876 from the WSL subnet.
+
+	For WSL agents, also set `SWITCHBOARD_BASE_URL=http://<windows-host-ip>:9876` in the WSL environment (e.g., in `~/.bashrc`). The hook scripts (`cli-session-end-hook.py`, `agent-status-hook.py`) read this env var to construct the correct server URL; without it they fall back to `http://127.0.0.1:9876` which is unreachable from WSL.
 
 2. **The Python server (NSSM Windows service).** Install with `scripts/install-service.ps1`. The plugin's MCP connection is useless until this is running.
 

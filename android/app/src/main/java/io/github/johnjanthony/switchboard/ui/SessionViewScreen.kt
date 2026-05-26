@@ -52,6 +52,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import io.github.johnjanthony.switchboard.AwayModePillChip
 import io.github.johnjanthony.switchboard.network.Channel
 import io.github.johnjanthony.switchboard.network.ChannelMessage
 import io.github.johnjanthony.switchboard.network.Pending
@@ -64,8 +65,6 @@ fun SessionViewScreen(
 	channel: Channel,
 	messages: List<Pair<String, ChannelMessage>>,
 	awayActive: Boolean,
-	isAwayOverride: Boolean,
-	globalAway: Boolean,
 	currentPending: Map<String, Pending>,
 	scrollToMessageId: String? = null,
 	onScrollConsumed: () -> Unit = {},
@@ -76,6 +75,9 @@ fun SessionViewScreen(
 	onLongPressDownloadFile: (url: String, filename: String) -> Unit,
 	onMarkMessageOpened: (msgId: String) -> Unit,
 	onShowTabInfo: () -> Unit,
+	// Agent status resolved from /conversations/<id>/agent_status/<sender>; falls back
+	// to the legacy channel field when null so old data still renders during transition.
+	agentStatus: io.github.johnjanthony.switchboard.network.AgentStatus? = null,
 ) {
 	val listState = rememberLazyListState()
 	val activePending = currentPending.filterValues { !it.cancelled }
@@ -150,10 +152,8 @@ fun SessionViewScreen(
 					IconButton(onClick = onShowTabInfo) {
 						Icon(Icons.Default.Info, contentDescription = "Tab info")
 					}
-					PerCwdAwayPill(
-						awayActive = awayActive,
-						isOverride = isAwayOverride,
-						globalAway = globalAway,
+					AwayModePillChip(
+						active = awayActive,
 						onLongPress = onLongPressPill,
 					)
 				},
@@ -311,9 +311,10 @@ fun SessionViewScreen(
 							onDownloadLongClick = onLongPressDownloadFile,
 						)
 					}
-					if (channel.agentStatus?.isFresh() == true) {
+					val effectiveAgentStatus = agentStatus ?: channel.agentStatus
+					if (effectiveAgentStatus?.isFresh() == true) {
 						item(key = "agent_status_row") {
-							AgentStatusRow(status = channel.agentStatus!!)
+							AgentStatusRow(status = effectiveAgentStatus)
 						}
 					}
 				}

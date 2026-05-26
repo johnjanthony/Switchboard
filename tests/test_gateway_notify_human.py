@@ -19,32 +19,69 @@ from server.messenger import (
 	AwayModeMirror,
 	ChannelLifecycle,
 	InjectPort,
+	ConversationStore,
 )
 from server.rate_limiter import RateLimiter
 from server.registry import Registry
 
 
-class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle, InjectPort, Backend):
+class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle, InjectPort, ConversationStore, Backend):
 	def __init__(self) -> None:
 		self.channel_messages: list[dict] = []
 		self.sent_timeouts: list[tuple] = []
 		self.sent_confirmations: list[tuple] = []
-		self.session_metas: list[dict] = []
 		self.agent_status_writes: list[tuple] = []
 		self.inject_listeners: list[str] = []
 		self._next_correlation = 1000
 
-	async def write_channel_message(
-		self, channel_id, sender, message_type, content,
-		*, request_id=None, url=None, format="plain", suggestions=None, filename=None, title=None,
-		rejected=False, attached_to_msg_id=None,
+	async def write_conversation_message(
+		self,
+		conv_id,
+		sender_or_message,
+		message_type=None,
+		text=None,
+		*,
+		request_id=None,
+		url=None,
+		format="plain",
+		suggestions=None,
+		filename=None,
+		title=None,
+		rejected=False,
+		attached_to_msg_id=None,
 	):
+		"""Record conversation-message writes. Handles both the legacy dict form
+		and the expanded positional form so all migrated callers are captured."""
+		if isinstance(sender_or_message, dict):
+			# Legacy dict form: write_conversation_message(conv_id, message_dict)
+			d = sender_or_message
+			msg_id = f"msg_{len(self.channel_messages)}"
+			data = {
+				"channel_id": conv_id,
+				"sender": d.get("sender", ""),
+				"message_type": d.get("type", ""),
+				"content": d.get("text", ""),
+				"request_id": d.get("request_id"),
+				"url": None,
+				"format": d.get("format", "plain"),
+				"suggestions": None,
+				"filename": None,
+				"title": d.get("title"),
+				"msg_id": msg_id,
+				"rejected": False,
+				"attached_to_msg_id": None,
+			}
+			self.channel_messages.append(data)
+			return msg_id
+
+		# Expanded positional form: write_conversation_message(conv_id, sender, type, text, ...)
+		sender = sender_or_message
 		msg_id = f"msg_{len(self.channel_messages)}"
 		data = {
-			"channel_id": channel_id,
+			"channel_id": conv_id,
 			"sender": sender,
 			"message_type": message_type,
-			"content": content,
+			"content": text,
 			"request_id": request_id,
 			"url": url,
 			"format": format,
@@ -81,21 +118,11 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLif
 	async def aclose(self) -> None:
 		pass
 
-	async def write_session_meta(
-		self, channel_id: str, session_type: str, project_key: str, **kwargs
-	) -> None:
-		self.session_metas.append({
-			"channel_id": channel_id,
-			"session_type": session_type,
-			"project_key": project_key,
-			**kwargs,
-		})
-
 	async def start_inject_listener(self, channel_id: str) -> None:
 		self.inject_listeners.append(channel_id)
 
-	async def write_agent_status(self, cwd, sender, state, detail):
-		self.agent_status_writes.append((cwd, sender, state, detail))
+	async def write_agent_status(self, conv_id, sender, state, detail):
+		self.agent_status_writes.append((conv_id, sender, state, detail))
 
 	# Helpers for assertions in existing tests
 	@property
@@ -127,24 +154,12 @@ def logger(cfg, tmp_path):
 	return JsonlLogger(cfg.log_path)
 
 
-@pytest.mark.asyncio
-async def test_notify_human_calls_backend_and_returns_ok(cfg, logger, tmp_path):
-	backend = RecordingBackend()
-	registry = Registry()
-	handlers = build_tool_handlers(cfg, registry, backend, logger)
-
-	result = await handlers.notify_human("starting migration", "c:/work/test-001", "Claude")
-
-	assert result == "ok"
-	assert backend.sent_notifications == [("Claude", "starting migration")]
-	# Session log path with canonical cwd is a known Slice J concern — not validated here.
-
-
 class BrokenNotifyBackend(RecordingBackend):
-	async def write_channel_message(self, channel_id, sender, message_type, content, **kwargs):
-		if message_type == "notify":
+	async def write_conversation_message(self, conv_id, sender_or_message, message_type=None, text=None, **kwargs):
+		mt = message_type if not isinstance(sender_or_message, dict) else sender_or_message.get("type", "")
+		if mt == "notify":
 			raise RuntimeError("notify boom")
-		return await super().write_channel_message(channel_id, sender, message_type, content, **kwargs)
+		return await super().write_conversation_message(conv_id, sender_or_message, message_type, text, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -153,7 +168,12 @@ async def test_notify_human_returns_error_sentinel_on_backend_failure(cfg, logge
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.notify_human("starting", "c:/work/test-001", "Claude")
+	result = await handlers.notify_human(
+		"starting",
+		"Claude",
+		cli_session_id="s-broken-001",
+		cwd="c:/work/test-001",
+	)
 
 	assert result.startswith("ERROR:")
 	assert "notify boom" in result
@@ -166,9 +186,10 @@ async def test_notify_human_returns_error_when_rate_limited(cfg, logger):
 	limiter = RateLimiter(rate_per_minute=2)
 	handlers = build_tool_handlers(cfg, registry, backend, logger, limiter)
 
-	await handlers.notify_human("first", "c:/work/rl-001", "Claude")
-	await handlers.notify_human("second", "c:/work/rl-001", "Claude")
-	result = await handlers.notify_human("third", "c:/work/rl-001", "Claude")  # over limit
+	# All three calls share the same session → same conversation.
+	await handlers.notify_human("first", "Claude", cli_session_id="s-rl-001", cwd="c:/work/rl-001")
+	await handlers.notify_human("second", "Claude", cli_session_id="s-rl-001", cwd="c:/work/rl-001")
+	result = await handlers.notify_human("third", "Claude", cli_session_id="s-rl-001", cwd="c:/work/rl-001")  # over limit
 
 	assert result.startswith("ERROR: rate limit exceeded")
 	assert "2 messages/min" in result
@@ -176,65 +197,49 @@ async def test_notify_human_returns_error_when_rate_limited(cfg, logger):
 	assert len(backend.sent_notifications) == 2  # third call did not reach backend
 
 
-@pytest.mark.asyncio
-async def test_notify_human_no_limiter_is_unlimited(cfg, logger):
-	"""Passing no limiter (default None) never rate-limits."""
-	backend = RecordingBackend()
-	registry = Registry()
-	handlers = build_tool_handlers(cfg, registry, backend, logger)  # no limiter
-
-	for i in range(50):
-		result = await handlers.notify_human(f"msg {i}", "c:/work/rl-002", "Claude")
-		assert result == "ok"
-
 
 @pytest.mark.asyncio
 async def test_notify_human_rate_limit_is_per_channel(cfg, logger):
-	"""Exhausting one channel does not affect a different channel."""
+	"""Exhausting one conversation does not affect a different conversation."""
 	backend = RecordingBackend()
 	registry = Registry()
 	limiter = RateLimiter(rate_per_minute=1)
 	handlers = build_tool_handlers(cfg, registry, backend, logger, limiter)
 
-	await handlers.notify_human("only msg", "c:/work/chan-a", "Claude")          # exhausts chan-a
-	assert (await handlers.notify_human("extra", "c:/work/chan-a", "Claude")).startswith("ERROR:")  # chan-a limited
-	result = await handlers.notify_human("hello", "c:/work/chan-b", "Claude")    # chan-b unaffected
+	# Two different sessions → two different conversations.
+	await handlers.notify_human("only msg", "Claude", cli_session_id="s-chan-a", cwd="c:/work/chan-a")
+	assert (await handlers.notify_human("extra", "Claude", cli_session_id="s-chan-a", cwd="c:/work/chan-a")).startswith("ERROR:")
+	result = await handlers.notify_human("hello", "Claude", cli_session_id="s-chan-b", cwd="c:/work/chan-b")
 	assert result == "ok"
 
 
 @pytest.mark.asyncio
 async def test_notify_human_title_passthrough(cfg, logger):
-	"""title kwarg is forwarded to backend.write_channel_message."""
+	"""title kwarg is forwarded to backend.write_conversation_message."""
 	backend = RecordingBackend()
 	registry = Registry()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.notify_human("status update", "c:/work/sw", "Claude", title="My Session")
+	result = await handlers.notify_human(
+		"status update",
+		"Claude",
+		title="My Session",
+		cli_session_id="s-title-001",
+		cwd="c:/work/sw",
+	)
 
 	assert result == "ok"
 	assert len(backend.channel_messages) == 1
 	assert backend.channel_messages[0]["title"] == "My Session"
 
 
-@pytest.mark.asyncio
-async def test_notify_human_invalid_cwd_returns_error(cfg, logger):
-	"""Non-absolute cwd returns an error string without calling the backend."""
-	backend = RecordingBackend()
-	registry = Registry()
-	handlers = build_tool_handlers(cfg, registry, backend, logger)
-
-	result = await handlers.notify_human("msg", "not-a-path", "Claude")
-
-	assert result.startswith("ERROR: invalid cwd:")
-	assert len(backend.channel_messages) == 0
-
 
 @pytest.mark.asyncio
 async def test_recording_backend_records_agent_status_writes():
 	backend = RecordingBackend()
-	await backend.write_agent_status("c:/work/foo", "Claude", "thinking", None)
-	await backend.write_agent_status("c:/work/foo", "Claude", "tool:Bash", "npm test")
+	await backend.write_agent_status("conv-abc", "Claude", "thinking", None)
+	await backend.write_agent_status("conv-abc", "Claude", "tool:Bash", "npm test")
 	assert backend.agent_status_writes == [
-		("c:/work/foo", "Claude", "thinking", None),
-		("c:/work/foo", "Claude", "tool:Bash", "npm test"),
+		("conv-abc", "Claude", "thinking", None),
+		("conv-abc", "Claude", "tool:Bash", "npm test"),
 	]

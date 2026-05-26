@@ -44,11 +44,13 @@ import androidx.navigation.navArgument
 import com.google.firebase.auth.FirebaseAuth
 import io.github.johnjanthony.switchboard.fcm.SwitchboardFirebaseMessagingService
 import io.github.johnjanthony.switchboard.shared.GoogleAuthHelper
+import android.widget.Toast
 import io.github.johnjanthony.switchboard.ui.BulkRespondDialog
+import io.github.johnjanthony.switchboard.ui.CombineDialog
 import io.github.johnjanthony.switchboard.ui.MarkdownViewerScreen
 import io.github.johnjanthony.switchboard.ui.SessionListScreen
 import io.github.johnjanthony.switchboard.ui.SessionViewScreen
-import io.github.johnjanthony.switchboard.ui.SpawnCollisionDialog
+import io.github.johnjanthony.switchboard.ui.SpawnResumeDialog
 import io.github.johnjanthony.switchboard.ui.SpawnSessionDialog
 import io.github.johnjanthony.switchboard.ui.TabInfoPopover
 import io.github.johnjanthony.switchboard.ui.leafName
@@ -105,14 +107,17 @@ private fun SwitchboardNavHost(
 	val navController = rememberNavController()
 	val channels by viewModel.channels.collectAsState()
 	val globalAway by viewModel.globalAway.collectAsState()
-	val cwdOverrides by viewModel.cwdOverrides.collectAsState()
-	val pendingCollision by viewModel.pendingCollision.collectAsState()
 	val pendingExitToggle by viewModel.pendingExitToggle.collectAsState()
 	val pendingSwipeAtDeskConfirm by viewModel.pendingSwipeAtDeskConfirm.collectAsState()
 	val markdownViewerContent by viewModel.markdownViewerContent.collectAsState()
 	val projectMru by viewModel.projectMru.collectAsState()
+	val activeConversations by viewModel.activeConversations.collectAsState()
+	val wslAvailable by viewModel.wslAvailable.collectAsState()
 	var showHidden by remember { mutableStateOf(false) }
 	var showSpawnDialog by remember { mutableStateOf(false) }
+	// T-027 dialogs
+	var resumeConversationId by remember { mutableStateOf<String?>(null) }
+	var combineConversationId by remember { mutableStateOf<String?>(null) }
 
 	// Automatic Google Sign-In on first start
 	LaunchedEffect(Unit) {
@@ -121,14 +126,29 @@ private fun SwitchboardNavHost(
 		}
 	}
 
-	// K5: deep-link navigation from FCM tap
-	val cwdKey by deepLinkCwdKey
-	LaunchedEffect(cwdKey) {
-		val key = cwdKey
-		if (key != null) {
-			navController.navigate("session/$key") { launchSingleTop = true }
+	// K5: deep-link navigation from FCM tap.
+	// deepLinkCwdKey now holds a conv_id (server standardized on this in Fix 9).
+	// Resolve the conv_id to a cwdKey by finding a matching channel via activeConversations.
+	val deepConvId by deepLinkCwdKey
+	LaunchedEffect(deepConvId, activeConversations, channels) {
+		val convId = deepConvId ?: return@LaunchedEffect
+		// Find a cwdKey whose channel cwd matches a member of this conversation.
+		val conv = activeConversations.firstOrNull { it.id == convId }
+		val resolvedCwdKey = if (conv != null) {
+			conv.members.mapNotNull { member ->
+				val memberCwdKey = viewModel.toFirebaseKeyPublic(member.cwd)
+				if (channels.containsKey(memberCwdKey)) memberCwdKey else null
+			}.firstOrNull()
+		} else {
+			// Conversation not yet in activeConversations (race on cold-start): wait for next recomposition.
+			null
+		}
+		if (resolvedCwdKey != null) {
+			navController.navigate("session/$resolvedCwdKey") { launchSingleTop = true }
 			deepLinkCwdKey.value = null
 		}
+		// If resolvedCwdKey is null, we don't clear deepLinkCwdKey — let the next
+		// recomposition retry once activeConversations or channels populate.
 	}
 
 	// Navigation to markdown viewer when content is loaded
@@ -152,7 +172,6 @@ private fun SwitchboardNavHost(
 				hiddenChannels = hiddenChannels,
 				showHidden = showHidden,
 				globalAway = globalAway,
-				cwdOverrides = cwdOverrides,
 				onSessionClick = { ch -> navController.navigate("session/${ch.cwdKey}") },
 				onToggleShowHidden = { showHidden = !showHidden },
 				onEnterGlobalAway = { viewModel.requestAwayModeToggle(null, true) },
@@ -161,6 +180,12 @@ private fun SwitchboardNavHost(
 				onUnhideChannel = { viewModel.unhideChannel(it.cwdKey) },
 				onAwayToggle = { viewModel.requestSwipeAtDesk(it.cwdKey) },
 				onSpawnClick = { showSpawnDialog = true },
+				onResumeClick = { convId -> resumeConversationId = convId },
+				onCombineClick = { convId -> combineConversationId = convId },
+				onEndClick = { convId ->
+					viewModel.endConversation(convId)
+				},
+				activeConversations = activeConversations,
 			)
 		}
 		composable(
@@ -187,8 +212,18 @@ private fun SwitchboardNavHost(
 				return@composable
 			}
 			val awayActive = viewModel.isAwayActive(cwdKey)
-			val isOverride = cwdOverrides.containsKey(cwdKey)
 			var infoOpen by remember { mutableStateOf(false) }
+
+			// Resolve agent status for this channel from the conversation path.
+			val sessionViewAgentStatus = run {
+				val conv = activeConversations.firstOrNull { conv ->
+					conv.members.any { it.cwd.equals(channel.cwdCanonical, ignoreCase = true) }
+				}
+				val memberSender = conv?.members
+					?.firstOrNull { it.cwd.equals(channel.cwdCanonical, ignoreCase = true) }
+					?.sender
+				memberSender?.let { conv?.agentStatuses?.get(it) }
+			}
 
 			DisposableEffect(cwdKey) {
 				viewModel.selectChannel(cwdKey)
@@ -201,8 +236,6 @@ private fun SwitchboardNavHost(
 				channel = channel,
 				messages = channel.messages,
 				awayActive = awayActive,
-				isAwayOverride = isOverride,
-				globalAway = globalAway,
 				currentPending = channel.pendingQuestions,
 				scrollToMessageId = deepLinkMessageId.value,
 				onScrollConsumed = { deepLinkMessageId.value = null },
@@ -213,6 +246,7 @@ private fun SwitchboardNavHost(
 				onLongPressDownloadFile = { url, filename -> viewModel.saveFileToDownloads(context, url, filename) },
 				onMarkMessageOpened = { msgId -> viewModel.markMessageOpened(cwdKey, msgId) },
 				onShowTabInfo = { infoOpen = true },
+				agentStatus = sessionViewAgentStatus,
 			)
 			if (infoOpen) {
 				TabInfoPopover(
@@ -242,15 +276,6 @@ private fun SwitchboardNavHost(
 		}
 	}
 
-	// K4: surface dialogs regardless of which page is active
-	if (pendingCollision != null) {
-		SpawnCollisionDialog(
-			collision = pendingCollision!!,
-			onContinue = { viewModel.resolveSpawnCollision(pendingCollision!!.spawnId, "continue") },
-			onClear = { viewModel.resolveSpawnCollision(pendingCollision!!.spawnId, "clear") },
-			onCancel = { viewModel.resolveSpawnCollision(pendingCollision!!.spawnId, "cancel") },
-		)
-	}
 	pendingExitToggle?.let { pending ->
 		BulkRespondDialog(
 			payload = pending.payload,
@@ -277,13 +302,55 @@ private fun SwitchboardNavHost(
 	if (showSpawnDialog) {
 		SpawnSessionDialog(
 			mruList = projectMru,
+			activeConversations = activeConversations,
+			wslAvailable = wslAvailable,
 			onDismiss = { showSpawnDialog = false },
-			onSpawn = { project, prompt, useClaude, useGemini ->
-				viewModel.spawnSession(project, prompt, useClaude, useGemini)
+			onSpawn = { surface, project, prompt, targetConversationId ->
+				// Task 38: show toast if away mode was auto-enabled
+				val wasAwayOff = viewModel.spawnSession(surface, project, prompt, targetConversationId)
+				if (wasAwayOff) {
+					Toast.makeText(context, "Away mode enabled", Toast.LENGTH_SHORT).show()
+				}
 				showSpawnDialog = false
 			},
 			onRemoveFromMru = { viewModel.removeFromProjectMru(it) },
 		)
+	}
+
+	// T-027: Resume dialog
+	resumeConversationId?.let { convId ->
+		val conv = activeConversations.firstOrNull { it.id == convId }
+		if (conv != null) {
+			SpawnResumeDialog(
+				sourceConversation = conv,
+				onDismiss = { resumeConversationId = null },
+				onResume = { newPrompt ->
+					viewModel.resumeConversation(convId, newPrompt)
+					resumeConversationId = null
+				},
+			)
+		} else {
+			resumeConversationId = null
+		}
+	}
+
+	// T-027: Combine dialog
+	combineConversationId?.let { sourceId ->
+		val source = activeConversations.firstOrNull { it.id == sourceId }
+		val targets = activeConversations.filter { it.id != sourceId }
+		if (source != null) {
+			CombineDialog(
+				sourceConversation = source,
+				activeConversations = targets,
+				onDismiss = { combineConversationId = null },
+				onCombine = { targetId ->
+					viewModel.combineConversations(sourceId, targetId)
+					combineConversationId = null
+				},
+			)
+		} else {
+			combineConversationId = null
+		}
 	}
 }
 

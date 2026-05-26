@@ -23,7 +23,8 @@ class SwitchboardFirebaseMessagingService : FirebaseMessagingService() {
 		// intent extras. When the app is in background/killed, Android handles the
 		// notification itself and attaches the FCM data fields as intent extras
 		// using the original key names — so we must read the same names in both paths.
-		const val EXTRA_AGENT_ID = "channel_key"
+		// EXTRA_AGENT_ID now carries conv_id (server standardized on this in Fix 9).
+		const val EXTRA_AGENT_ID = "conv_id"
 		const val EXTRA_MESSAGE_ID = "message_id"
 		private val notificationId = AtomicInteger(1)
 
@@ -54,18 +55,18 @@ class SwitchboardFirebaseMessagingService : FirebaseMessagingService() {
 		// and killed states. Title/body live in the data dict, not remoteMessage.notification.
 		val title = remoteMessage.data["title"] ?: "Switchboard"
 		val body = remoteMessage.data["body"] ?: return
-		val channelKey = remoteMessage.data["channel_key"]
+		val convId = remoteMessage.data["conv_id"]
 		val messageId = remoteMessage.data["message_id"]
 		val messageType = remoteMessage.data["sb_message_type"] ?: "notify"
 
-		// Warm up database connection and sync the specific channel immediately
-		if (channelKey != null) {
+		// Warm up database connection and sync the specific conversation immediately
+		if (convId != null) {
 			com.google.firebase.database.FirebaseDatabase.getInstance()
-				.getReference("channels/$channelKey")
+				.getReference("conversations/$convId")
 				.keepSynced(true)
 		}
 
-		showNotification(title, body, channelKey, messageId, messageType)
+		showNotification(title, body, convId, messageId, messageType)
 	}
 
 	override fun onNewToken(token: String) {
