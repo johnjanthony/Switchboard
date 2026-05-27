@@ -18,7 +18,10 @@ Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task an
 
 ## Design & Architecture
 
-For a deep dive into Switchboard's design, architecture, and operational principles, see the [Comprehensive Design Specification](docs/switchboard-design-spec-comprehensive.md).
+For an agent-oriented project tour, see [`AGENTS.md`](AGENTS.md). The current architecture is defined by two dated design specs:
+
+- [Conversations + collab redesign](docs/superpowers/specs/2026-05-19-conversations-collab-redesign-design.md) — the `Conversation` primitive, session_id routing, the active tool surface.
+- [Spawn conversation-aware redesign](docs/superpowers/specs/2026-05-20-spawn-conversation-aware-redesign-design.md) — fresh / resume / combine spawn flows, launcher WSL support, hook plumbing.
 
 ## Install
 
@@ -48,6 +51,9 @@ Switchboard reads its configuration from OS env vars. A `.env` file is loaded as
 | `FIREBASE_DATABASE_URL` | If enabled | | The URL of your Firebase Realtime Database. |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | If enabled | | Absolute path to your Firebase service account key JSON file. |
 | `FIREBASE_STORAGE_BUCKET` | No | | Hostname of your Firebase Storage bucket. |
+| **Spawn** | | | |
+| `SWITCHBOARD_WINDOWS_SPAWN_ROOT` | For spawn | | Windows root containing your project folders (e.g. `C:\Work`). Legacy alias: `SWITCHBOARD_SPAWN_ROOT`. |
+| `SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT` | No | `work` | Segment appended to the resolved WSL home to locate the workspace root (e.g. `/home/john/work`). |
 
 ## Wire your agent to it
 
@@ -141,11 +147,21 @@ Prompt for Authorization: Keep an eye on your watch face when you first click Ru
 
 Away mode activates when you tell your agent you're stepping away — any phrasing like *"I'm stepping away"* is sufficient. The agent immediately routes all output through `ask_human` or `notify_human`.
 
+**Human-facing tools:**
+
 - **`ask_human(question, sender, title?, format?, suggestions?)`** — blocks until you reply.
 - **`notify_human(message, sender, title?, format?)`** — fire-and-forget status update.
 - **`send_document_human(path, sender, title?, caption?)`** — delivers a file to your phone.
-- **`message_and_await_agent(sender, title?, message?)`** — multi-agent relay (sends to your conversation partner, blocks until they reply).
 - **`set_away_mode(value)`** — toggle the global away-mode flag (agents use this; John can also toggle the phone pill).
+
+**Multi-agent (conversation) tools:**
+
+- **`message_and_await_agent(sender, message, title?)`** — speak to peers in your conversation and block for the next reply.
+- **`open_conversation(sender, title?)`** — promote your conversation to the global "open" singleton so other agents can join via `enter_conversation`.
+- **`enter_conversation(sender)`** — join the open conversation (or queue for the next intro in your current one) and block until a peer speaks.
+- **`combine_conversations(source_id, target_id)`** — merge two conversations; dormant members of `source_id` are migrated and auto-resumed.
+- **`lookup_conversation_ids(cwd_filter?, sender_contains?, title_contains?)`** — find conversation IDs to feed `combine_conversations`.
+- **`leave_conversation(sender, parting_message)`** — leave the conversation with a final summary; session falls back to its home conversation (away on) or terminal output (away off).
 
 To exit away mode, reply *"I'm back"*. The agent will provide a **Welcome Back Summary** of what was accomplished while you were away and then resume normal terminal output.
 
@@ -161,10 +177,10 @@ You can also merge two existing conversations with `combine_conversations(source
 
 ### Spawning a new agent session
 
-With `SWITCHBOARD_SPAWN_ROOT` configured, you can launch a fresh agent session directly from the Android app. Tap the **+** (spawn) button in the app and fill out the dialog:
+With a spawn root configured, you can launch a fresh agent session directly from the Android app. Tap the **+** (spawn) button in the app and fill out the dialog:
 
 - **Surface:** Windows or WSL.
-- **Project:** Pick from projects under `SWITCHBOARD_SPAWN_ROOT`.
+- **Project:** Pick from projects under your configured spawn root for that surface.
 - **Prompt:** Optional starting prompt for the agent.
 - **Conversation:** Create a new conversation, or add the spawned agent into an existing one.
 
@@ -172,16 +188,18 @@ Spawn auto-enables global away mode if it is currently off; the phone shows a co
 
 **Prerequisites:**
 
-- Set `SWITCHBOARD_SPAWN_ROOT` in `.env` and restart the service.
+- Set the spawn root env vars in `.env` and restart the service:
+  - `SWITCHBOARD_WINDOWS_SPAWN_ROOT` — Windows root path containing your project folders (e.g. `C:\Work`). The legacy name `SWITCHBOARD_SPAWN_ROOT` is still accepted as an alias.
+  - `SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT` — segment appended to the resolved WSL home (default `work`, giving e.g. `/home/john/work`).
 - Register the `SwitchboardSpawn` scheduled task (one-time, elevated PowerShell):
 
   ```powershell
   .\scripts\register-spawn-task.ps1
   ```
 
-- The task fires in your interactive desktop session so `claude` is reachable.
+- The task fires in your interactive desktop session so `claude` is reachable. The WSL surface additionally requires WSL to be installed and reachable from the same desktop session.
 
-A 60-second rate limit prevents accidental double-spawns. The spawn is audit-logged to `logs/switchboard.jsonl`.
+The spawn is audit-logged to `logs/switchboard.jsonl`.
 
 ### Formatting messages
 

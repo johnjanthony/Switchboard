@@ -374,3 +374,60 @@ async def test_hydrate_handles_partial_member_data():
 	assert "HasSession" in conv.members_active
 	assert "NoSession" not in conv.members_active
 	assert conv.members_active["HasSession"].cli_session_id == "sess-valid"
+
+
+@pytest.mark.asyncio
+async def test_hydrate_restores_members_history():
+	"""Departed members under /conversations/<id>/members_history are restored
+	with parting metadata (left_at, session_ended_at, session_end_reason)."""
+	registry = Registry()
+	logger = make_logger()
+
+	departed_data = member_data(
+		cli_session_id="sess-departed",
+		sender="Departed",
+		alive=False,
+		left_at=2000.0,
+		session_ended_at="2026-05-26T12:00:00Z",
+		session_end_reason="hook_sessionend",
+		last_seen_seq=7,
+	)
+	snapshot = {
+		"conversations": {
+			"conv-with-history": {
+				"meta": {
+					"state": "active",
+					"title": "Has History",
+					"created_at": 1000.0,
+					"last_activity_at": 2000.0,
+					"ended_at": None,
+					"hidden": False,
+				},
+				"members_active": {
+					"Alive": member_data(cli_session_id="sess-alive", sender="Alive", alive=True),
+				},
+				"members_history": {
+					"Departed": departed_data,
+				},
+			}
+		}
+	}
+	mock_db = make_firebase_db_mock(snapshot)
+
+	with patch("server.hydration.db", mock_db):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, None, logger)
+
+	conv = registry.conversations["conv-with-history"]
+	assert len(conv.members_history) == 1
+	departed = conv.members_history[0]
+	assert departed.sender == "Departed"
+	assert departed.cli_session_id == "sess-departed"
+	assert departed.alive is False
+	assert departed.left_at == 2000.0
+	assert departed.session_ended_at == "2026-05-26T12:00:00Z"
+	assert departed.session_end_reason == "hook_sessionend"
+	assert departed.last_seen_seq == 7
+	# Active members still loaded
+	assert "Alive" in conv.members_active
+	assert conv.members_active["Alive"].cli_session_id == "sess-alive"

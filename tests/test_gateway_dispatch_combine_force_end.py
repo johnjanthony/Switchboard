@@ -135,6 +135,12 @@ async def test_dispatch_force_end_command_invokes_handle_force_end(logger):
 	backend.set_conversation_state = AsyncMock()
 	backend.set_open_conversation_id = AsyncMock()
 	backend.write_conversation_message = AsyncMock(return_value="key-1")
+	# handle_force_end now calls apply_fallback(..., backend=backend) for every
+	# member session — including alive members whose fallback path may issue
+	# remove_session_binding / set_session_home Firebase writes. Mock those so
+	# _spawn_bg's create_task doesn't choke on MagicMock returns.
+	backend.remove_session_binding = AsyncMock()
+	backend.set_session_home = AsyncMock()
 	registered_handler = None
 
 	async def fake_start_listener(handler):
@@ -182,3 +188,62 @@ async def test_dispatch_force_end_command_logs_missing_id(logger, tmp_path):
 	events = [json.loads(line) for line in log_path.read_text().splitlines() if line]
 	errors = [e for e in events if e["event"] == "surface_error"]
 	assert any("force_end_command_missing_id" in e["detail"] for e in errors)
+
+
+@pytest.mark.asyncio
+async def test_handle_force_end_clears_dormant_member_home_pointer(logger):
+	"""Force-ending a conv with both alive and dormant members:
+	- Alive member's session takes its normal fallback path.
+	- Dormant member's home pointer at the now-Ended conv is cleared.
+	- No new conversation is minted for the dormant session.
+	- Dormant session was never re-added to session_to_conversation_id.
+	"""
+	from server.gateway.dispatch import handle_force_end
+	from server.registry import Registry, Conversation, ConversationMember
+
+	registry = Registry()
+	conv = Conversation(id="conv-fe", title="dual-member")
+	# Alice: alive and bound.
+	alice = ConversationMember(
+		cli_session_id="s-alice", sender="Alice",
+		cwd="C:/X", surface="windows", joined_at=0.0,
+	)
+	# Bob: dormant. cli_session_end has already cleared his binding but his
+	# member entry survives in members_active with alive=False, and his home
+	# pointer still references this (about-to-end) conversation.
+	bob = ConversationMember(
+		cli_session_id="s-bob", sender="Bob",
+		cwd="C:/Y", surface="windows", joined_at=0.0,
+		alive=False, session_end_reason="logout",
+	)
+	conv.members_active["Alice"] = alice
+	conv.members_active["Bob"] = bob
+	registry.conversations["conv-fe"] = conv
+	registry.bind_session("s-alice", "conv-fe")
+	# Bob is intentionally NOT in session_to_conversation_id (dormant).
+	registry.set_session_home("s-alice", "conv-fe")
+	registry.set_session_home("s-bob", "conv-fe")
+
+	backend = MagicMock()
+	backend.remove_conversation_member = AsyncMock()
+	backend.set_conversation_state = AsyncMock()
+	backend.set_open_conversation_id = AsyncMock()
+	backend.write_conversation_message = AsyncMock(return_value="key-fe")
+	backend.remove_session_binding = AsyncMock()
+	backend.set_session_home = AsyncMock()
+
+	conv_count_before = len(registry.conversations)
+	await handle_force_end(registry, "conv-fe", backend=backend)
+
+	# Conversation ended.
+	assert conv.state == "ended"
+	# Alice was alive: she went through fallback. With away mode OFF (default),
+	# her binding was removed.
+	assert "s-alice" not in registry.session_to_conversation_id
+	# Bob's home pointer cleared by dormant short-circuit.
+	assert "s-bob" not in registry.session_home_conversation_id
+	# Bob was never re-bound.
+	assert "s-bob" not in registry.session_to_conversation_id
+	# No new conversation minted (away mode is OFF so even Alice doesn't get
+	# a create_new — she's just unbound).
+	assert len(registry.conversations) == conv_count_before

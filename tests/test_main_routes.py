@@ -23,23 +23,28 @@ def _make_request(cwd: str = "") -> Request:
 
 
 @pytest.mark.asyncio
-async def test_away_mode_route_returns_false_when_no_cwd_param(tmp_path):
-	"""No cwd query param → False (fail-open)."""
+async def test_away_mode_route_returns_global_flag_invariant_of_cwd(tmp_path):
+	"""Post-conversations-redesign the route returns the global flag regardless
+	of any `?cwd=` query (which is accepted but ignored for back-compat with
+	older hook deployments)."""
 	registry = make_registry_with_loopback()
 	registry.update_global_away_cache(True)
 	route = _build_away_mode_route(registry)
-	resp = await route(_make_request())  # no cwd
+
+	# No cwd → reflects global flag
+	resp = await route(_make_request())
 	assert resp.status_code == 200
-	assert json.loads(resp.body) == {"active": False}
+	assert json.loads(resp.body) == {"active": True}
 
-
-@pytest.mark.asyncio
-async def test_away_mode_route_returns_false_on_invalid_cwd(tmp_path):
-	"""Non-absolute cwd fails canonicalization → returns False."""
-	registry = make_registry_with_loopback()
-	registry.update_global_away_cache(True)
-	route = _build_away_mode_route(registry)
+	# Garbage cwd → still reflects global flag (legacy clients send these;
+	# server ignores)
 	resp = await route(_make_request("relative/path"))
+	assert resp.status_code == 200
+	assert json.loads(resp.body) == {"active": True}
+
+	# Flag flips → response flips
+	registry.update_global_away_cache(False)
+	resp = await route(_make_request("c:/work/sw"))
 	assert resp.status_code == 200
 	assert json.loads(resp.body) == {"active": False}
 

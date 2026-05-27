@@ -13,7 +13,7 @@ from typing import Any, Callable, Coroutine
 
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
-from server.messenger import MessageWriter, InjectPort, ChannelLifecycle, ConversationStore
+from server.messenger import MessageWriter, ChannelLifecycle, ConversationStore
 from server.rate_limiter import RateLimiter
 from server.registry import Registry
 from server.gateway.document import _validate_path, _sha256_hex
@@ -30,10 +30,10 @@ def _now_iso() -> str:
 def _new_request_id() -> str:
 	return uuid.uuid4().hex[:8]
 
-async def _append_session_log(log_path: str, channel_id: str, direction: str, text: str, logger: JsonlLogger) -> None:
-	from server.canonicalization import to_firebase_key
-	key = to_firebase_key(channel_id).replace(":", "_")
-	path = Path(log_path).parent / "sessions" / f"{key}_{_SESSION_START}.log"
+async def _append_session_log(log_path: str, conversation_id: str, direction: str, text: str, logger: JsonlLogger) -> None:
+	# conversation_id is a server-minted `conv-<uuid>` string — already filesystem-safe,
+	# no Firebase-key sanitization needed.
+	path = Path(log_path).parent / "sessions" / f"{conversation_id}_{_SESSION_START}.log"
 	ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 	line = f"{ts} {direction} {text}\n"
 
@@ -95,7 +95,7 @@ class ToolHandlers:
 	combine_conversations: Callable[..., Coroutine[None, None, str]]
 	handle_agent_status: Callable[..., Coroutine[None, None, None]]
 
-class _ToolHandlersBackend(MessageWriter, InjectPort, ChannelLifecycle, ConversationStore):
+class _ToolHandlersBackend(MessageWriter, ChannelLifecycle, ConversationStore):
 	"""Backend surface used by build_tool_handlers (and its closures)."""
 
 def build_tool_handlers(
@@ -164,6 +164,26 @@ def build_tool_handlers(
 				registry, cli_session_id, cwd, sender, backend=backend,
 			)
 
+		# At-desk redirect: when global away mode is OFF, John is at his desk
+		# watching the terminal. Don't block the agent for 24h — write the
+		# question to the phone as a one-way notify (so it's still surfaced)
+		# and return the documented sentinel so the agent can repeat the
+		# question in the terminal where John is actually watching.
+		if not registry.global_away_mode:
+			try:
+				await backend.write_conversation_message(
+					conversation_id, sender, "notify", question,
+					format=format, title=title,
+				)
+				await logger.notify_sent(conversation_id, question)
+				await _append_session_log(config.log_path, conversation_id, "→", question, logger)
+			except Exception as exc:
+				await logger.tool_error(None, conversation_id, str(exc))
+				# Even if the Firebase write fails, return the at-desk sentinel:
+				# the agent's next action should still be to ask John in the
+				# terminal, not to surface a backend error.
+			return "ERROR: John is at his desk. Ask this question via the terminal."
+
 		request_id = _new_request_id()
 		started = datetime.now(timezone.utc)
 		correlation = None
@@ -177,6 +197,15 @@ def build_tool_handlers(
 			)
 			if prior_request_id is not None:
 				await _safe_mark_cancelled(backend, conversation_id, prior_request_id, logger)
+			# Persist pending_questions record per 2026-05-19 spec lines 349-355
+			_spawn_bg(
+				backend.add_pending_question_record(
+					conversation_id, request_id,
+					sender=sender, msg_id=msg_id,
+					question_text=question, suggestions=suggestions,
+				),
+				label=f"fb_add_pending_question:{conversation_id}:{request_id}",
+			)
 			await logger.request_created(request_id, conversation_id, question)
 			await _append_session_log(config.log_path, conversation_id, "→", question, logger)
 		except asyncio.CancelledError:
@@ -198,6 +227,10 @@ def build_tool_handlers(
 		except asyncio.TimeoutError:
 			await logger.timeout(request_id, conversation_id, config.timeout_seconds)
 			registry.remove(conversation_id, sender)
+			_spawn_bg(
+				backend.remove_pending_question_record(conversation_id, request_id),
+				label=f"fb_remove_pending_question:timeout:{conversation_id}:{request_id}",
+			)
 			try:
 				await backend.send_timeout_followup(
 					request_id, conversation_id, config.timeout_seconds, correlation,
@@ -215,7 +248,23 @@ def build_tool_handlers(
 		except Exception as exc:
 			await logger.tool_error(request_id, conversation_id, str(exc))
 			registry.remove(conversation_id, sender)
+			_spawn_bg(
+				backend.remove_pending_question_record(conversation_id, request_id),
+				label=f"fb_remove_pending_question:error:{conversation_id}:{request_id}",
+			)
 			return f"ERROR: {exc}"
+
+		# Successful resolution: pending_questions record is cleared and
+		# answered_question_msg_ids is marked. Both writes are best-effort.
+		_spawn_bg(
+			backend.remove_pending_question_record(conversation_id, request_id),
+			label=f"fb_remove_pending_question:resolved:{conversation_id}:{request_id}",
+		)
+		if msg_id:
+			_spawn_bg(
+				backend.mark_question_answered(conversation_id, msg_id),
+				label=f"fb_mark_question_answered:{conversation_id}:{msg_id}",
+			)
 
 		await _append_session_log(config.log_path, conversation_id, "←", result, logger)
 		duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
@@ -321,9 +370,11 @@ def build_tool_handlers(
 			return "ERROR: session bound to conversation but not a member."
 
 		from server.conversation_ops import _wake_one_from
+		from server.session_fallback import apply_fallback
 		import time
 
 		wait_entry = None
+		empty_result: str | None = None
 		async with conv.lock:
 			# Append speak event to the conversation log
 			now_ts = time.time()
@@ -359,7 +410,11 @@ def build_tool_handlers(
 				if m.alive and m.cli_session_id != cli_session_id
 			]
 			if not alive_peers:
-				# Sole alive member: return __CONVERSATION_EMPTY__ with any partings since last_seen_seq
+				# Sole alive member: build __CONVERSATION_EMPTY__ payload, then
+				# remove the caller from the conversation (mirroring
+				# leave_conversation) so the agent's "I was removed" belief
+				# matches reality. Session-fallback is applied AFTER the lock
+				# is released (it may touch other conversations).
 				partings = [
 					m for m in conv.messages[caller_member.last_seen_seq:]
 					if m.get("type") == "parting"
@@ -367,22 +422,72 @@ def build_tool_handlers(
 				caller_member.last_seen_seq = len(conv.messages)
 				if partings:
 					parting_text = "\n".join(f"{p['sender']}: {p['text']}" for p in partings)
-					return f"__CONVERSATION_EMPTY__\n{parting_text}"
-				return "__CONVERSATION_EMPTY__"
+					empty_result = f"__CONVERSATION_EMPTY__\n{parting_text}"
+				else:
+					empty_result = "__CONVERSATION_EMPTY__"
 
-			# Wake FIFO-oldest waiter (if any)
-			_wake_one_from(conv)
+				# Remove caller from members_active; record in history
+				caller_member.left_at = now_ts
+				old_key = caller_member.sender
+				del conv.members_active[old_key]
+				conv.members_history.append(caller_member)
+				# Persist members_history entry so it survives restart
+				_spawn_bg(
+					backend.write_conversation_member_history(conversation_id, caller_member),
+					label=f"fb_write_member_history:{conversation_id}:{caller_member.sender}",
+				)
 
-			# Enqueue caller
-			future = asyncio.get_event_loop().create_future()
-			wait_entry = {
-				"member": caller_member,
-				"future": future,
-				"waiting_kind": "msg_and_await",
-				"block_position": time.monotonic(),
-			}
-			conv.wait_queue.append(wait_entry)
-			caller_member.last_seen_seq = len(conv.messages)
+				# Terminal-state check (same logic as leave_conversation)
+				has_dormant = any(not m.alive for m in conv.members_active.values())
+				has_alive = any(m.alive for m in conv.members_active.values())
+				conv_ended = not has_alive and not has_dormant
+				open_cleared = False
+				if conv_ended:
+					conv.state = "ended"
+					conv.ended_at = now_ts
+					if registry.open_conversation_id == conversation_id:
+						registry.open_conversation_id = None
+						open_cleared = True
+
+				_spawn_bg(
+					backend.remove_conversation_member(conversation_id, old_key),
+					label=f"fb_remove_member:{conversation_id}:{old_key}",
+				)
+				_spawn_bg(
+					backend.set_conversation_last_activity(conversation_id, now_ts),
+					label=f"fb_last_activity:{conversation_id}",
+				)
+				if conv_ended:
+					_spawn_bg(
+						backend.set_conversation_state(conversation_id, "ended"),
+						label=f"fb_set_state:{conversation_id}:ended",
+					)
+				if open_cleared:
+					_spawn_bg(
+						backend.set_open_conversation_id(None),
+						label=f"fb_clear_open_id:{conversation_id}",
+					)
+				# Fall through past the lock to apply session-fallback.
+			else:
+				# Wake FIFO-oldest waiter (if any)
+				_wake_one_from(conv)
+
+				# Enqueue caller
+				future = asyncio.get_event_loop().create_future()
+				wait_entry = {
+					"member": caller_member,
+					"future": future,
+					"waiting_kind": "msg_and_await",
+					"block_position": time.monotonic(),
+				}
+				conv.wait_queue.append(wait_entry)
+				caller_member.last_seen_seq = len(conv.messages)
+
+		# If sole-alive-member EMPTY path was taken, apply session-fallback
+		# OUTSIDE the conv.lock (it may touch other conversations) and return.
+		if empty_result is not None:
+			apply_fallback(registry, cli_session_id, backend=backend)
+			return empty_result
 
 		# Lock released; now wait
 		try:
@@ -585,6 +690,11 @@ def build_tool_handlers(
 			caller_member.left_at = now_ts
 			del conv.members_active[old_key]
 			conv.members_history.append(caller_member)
+			# Persist members_history entry so it survives restart
+			_spawn_bg(
+				backend.write_conversation_member_history(conv_id, caller_member),
+				label=f"fb_write_member_history:{conv_id}:{caller_member.sender}",
+			)
 
 			# Wake FIFO-oldest (so peer gets the parting)
 			_wake_one_from(conv)
@@ -661,16 +771,16 @@ def build_tool_handlers(
 			pending_dir = Path(config.log_path).parent
 		return await _perform_combine(registry, source_id, target_id, logger, pending_dir, backend=backend)
 
-	async def handle_agent_status(cwd: str, state: str, detail: str | None, *, session_id: str | None = None) -> None:
+	async def handle_agent_status(session_id: str, state: str, detail: str | None) -> None:
 		"""Hook-driven write. Fire-and-forget — never raises to the caller.
 		Gated on away-mode: writes are only made when John is in away mode.
 		At-desk events are silently dropped — when John is at the terminal he's
 		reading the live conversation, not the phone status row, so the Firebase
 		write would be pure cost with no observer.
 
-		Requires a session_id to resolve conv_id + sender. If the session is
-		unbound or the conversation cannot be found, the write is dropped — agent
-		status outside an active conversation has nowhere to go."""
+		session_id is the sole routing key: it resolves conv_id + sender. If the
+		session is unbound or the conversation cannot be found, the write is
+		dropped — agent status outside an active conversation has nowhere to go."""
 		if not registry.global_away_mode:
 			return
 		# Truncate oversized detail rather than rejecting the write.

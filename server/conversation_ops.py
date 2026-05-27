@@ -21,15 +21,17 @@ _WSL_MOUNT_RE = re.compile(r"^/mnt/[a-z]/", re.IGNORECASE)
 
 
 def _disambiguate_sender(conv, desired: str) -> str:
-	"""If `desired` is already a key in conv.members_active, append -2, -3, ... until unique.
-	Returns the disambiguated sender string. Caller must update both the dict key
-	and member.sender to the returned value."""
+	"""If `desired` is already a key in conv.members_active, append a space and
+	a number (2, 3, ...) until unique — e.g. 'Claude Win' → 'Claude Win 2'.
+	Senders are display labels, so the space-separated form reads naturally on
+	the phone bubble attribution. Returns the disambiguated sender string;
+	caller must update both the dict key and member.sender to the returned value."""
 	if desired not in conv.members_active:
 		return desired
 	n = 2
-	while f"{desired}-{n}" in conv.members_active:
+	while f"{desired} {n}" in conv.members_active:
 		n += 1
-	return f"{desired}-{n}"
+	return f"{desired} {n}"
 
 
 def _infer_surface(cwd: str) -> str:
@@ -455,6 +457,26 @@ async def _perform_combine(
 			"timestamp": _now_iso(),
 		}
 		source.messages.append(source_msg)
+		# Migrate waiters from source.wait_queue. Members were updated in-place
+		# above; their wait_entries still hold valid refs. Entries for migrated
+		# members move to target.wait_queue (where _wake_one_from(target) below
+		# can deliver the merge marker via FIFO). Entries for members that
+		# stayed in source (session_lost_permanently) are drained with a
+		# sentinel since source is about to end and would otherwise strand
+		# their futures for 24h.
+		for entry in source.wait_queue:
+			member_ref = entry.get("member")
+			if (
+				member_ref is not None
+				and member_ref.sender in target.members_active
+				and target.members_active[member_ref.sender] is member_ref
+			):
+				target.wait_queue.append(entry)
+			else:
+				fut = entry.get("future")
+				if fut is not None and not fut.done():
+					fut.set_result("__CONVERSATION_ENDED__\n(merged into target)")
+		source.wait_queue.clear()
 		source.state = "ended"
 		source.ended_at = time.time()
 		open_cleared = False

@@ -15,11 +15,15 @@ _DEFAULT_CWD_PAYLOAD = json.dumps({"cwd": "c:/work/switchboard"})
 
 
 def _run(cli: str, stdin: str = _DEFAULT_CWD_PAYLOAD, url_env: str | None = None) -> subprocess.CompletedProcess:
+	"""url_env may be either a full away-mode URL (e.g. http://host:port/away-mode)
+	or a bare base URL. The hook reads SWITCHBOARD_BASE_URL and appends /away-mode,
+	so this helper strips a trailing /away-mode if present."""
 	env = None
 	if url_env is not None:
 		import os
 		env = os.environ.copy()
-		env["SWITCHBOARD_URL"] = url_env
+		base = url_env[:-len("/away-mode")] if url_env.endswith("/away-mode") else url_env
+		env["SWITCHBOARD_BASE_URL"] = base
 	return subprocess.run(
 		[sys.executable, str(SCRIPT), "--cli", cli],
 		input=stdin,
@@ -272,7 +276,10 @@ class _DualRouteFakeServer:
 def _run_dual(cli: str, away_url: str, partner_url: str, stdin: str = _DEFAULT_CWD_PAYLOAD) -> subprocess.CompletedProcess:
 	import os
 	env = os.environ.copy()
-	env["SWITCHBOARD_URL"] = away_url
+	# The hook reads SWITCHBOARD_BASE_URL and appends /away-mode itself; strip
+	# the trailing path so the base resolves correctly.
+	base = away_url[:-len("/away-mode")] if away_url.endswith("/away-mode") else away_url
+	env["SWITCHBOARD_BASE_URL"] = base
 	env["SWITCHBOARD_PARTNER_STATE_URL"] = partner_url
 	return subprocess.run(
 		[sys.executable, str(SCRIPT), "--cli", cli],

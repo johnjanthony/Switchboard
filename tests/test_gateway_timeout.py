@@ -31,6 +31,8 @@ def logger(cfg):
 async def test_ask_human_returns_sentinel_on_timeout(cfg, logger):
 	backend = RecordingBackend()
 	registry = Registry()
+	# Away mode ON so ask_human takes the blocking path (timeout exercises it).
+	registry.global_away_mode = True
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
 	result = await handlers.ask_human(
@@ -60,6 +62,8 @@ class BrokenBackend(RecordingBackend):
 async def test_ask_human_returns_error_sentinel_on_backend_failure(cfg, logger):
 	backend = BrokenBackend()
 	registry = Registry()
+	# Away mode ON so ask_human reaches the question-write path (BrokenBackend raises on "question").
+	registry.global_away_mode = True
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
 	result = await handlers.ask_human(

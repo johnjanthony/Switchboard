@@ -4,21 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-import secrets
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from server.canonicalization import canonicalize_cwd
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
-from server.messenger import ChannelLifecycle, InjectPort, MessageWriter, ConversationStore
+from server.messenger import ChannelLifecycle, MessageWriter, ConversationStore
 from server.registry import Registry
 
 _TASK_NAME = "SwitchboardSpawn"
 
 
-class _SpawnBackend(MessageWriter, InjectPort, ChannelLifecycle, ConversationStore):
+class _SpawnBackend(MessageWriter, ChannelLifecycle, ConversationStore):
 	"""Backend surface used by SpawnHandler."""
 
 
@@ -29,17 +26,9 @@ class SpawnHandler:
 		self._config = config
 		self._spawn_root = config.windows_spawn_root
 		self._pending_dir = Path(config.log_path).parent
-		self._sidecar_path = self._pending_dir / "collab-sessions.json"
 		self._backend = backend
 		self._logger = logger
 		self._registry = registry
-
-	def _pending_path_for(self, spawn_id: str) -> Path:
-		"""Return the per-spawn pending-config file path. Each spawn writes a
-		uniquely-named file so back-to-back spawns can't clobber each other; the
-		launcher script picks the oldest matching file and atomically renames it
-		to claim ownership."""
-		return self._pending_dir / f"spawn-pending-{spawn_id}.json"
 
 	async def _cancel_prior_pending(self, conversation_id: str) -> None:
 		"""Cancel any pending ask_human requests left over for this conversation before launching
@@ -80,21 +69,56 @@ class SpawnHandler:
 		except Exception as exc:
 			await self._logger.surface_error(f"spawn_invoke_launcher_failed: {exc}")
 
-	def _format_fresh_prompt(self, cmd: dict, conv_id: str, join_existing: bool) -> str:
-		"""Build the initial prompt for a fresh-spawn agent."""
+	def _format_fresh_prompt(self, cmd: dict, conv, join_existing: bool) -> str:
+		"""Build the initial prompt for a fresh-spawn agent.
+
+		conv: the Conversation the agent is joining (whether newly minted or
+		pre-existing). For the join-existing branch the prompt surfaces title,
+		roster, and a short recent-message window so the agent has context
+		before its first peer wakes it.
+		"""
 		base = (
 			"John is currently away. All communications MUST go through the switchboard MCP. "
 			"Tool calls auto-inject your cli_session_id; you don't need to provide it manually. "
-			"Pick your own sender name (kebab-case, e.g. 'claude-win-1') — agents in the same "
-			"conversation should pick distinct names. "
 		)
 		if join_existing:
+			roster_parts: list[str] = []
+			for m in conv.members_active.values():
+				status = "alive" if m.alive else "dormant"
+				roster_parts.append(f"{m.sender} ({status})")
+			roster = ", ".join(roster_parts) if roster_parts else "(none)"
+
+			# Recent context: last few non-system messages so the joining agent
+			# has grounding even if no alive peer is around to wake them via
+			# enter_conversation.
+			recent_msgs = [m for m in conv.messages if m.get("type") != "system"][-5:]
+			recent_block = ""
+			if recent_msgs:
+				lines: list[str] = []
+				for m in recent_msgs:
+					text = (m.get("text", "") or "").strip().replace("\n", " ")
+					if len(text) > 200:
+						text = text[:200] + "…"
+					lines.append(f"  [{m.get('sender', '?')}] {text}")
+				recent_block = "\n\nRecent messages:\n" + "\n".join(lines)
+
 			base += (
-				f"You're joining an existing conversation (id={conv_id}). "
-				"Call enter_conversation(sender='<your_name>') to receive the recent history; "
-				"reply via message_and_await_agent."
+				f"You're joining the conversation \"{conv.title}\". "
+				f"Current members: {roster}. "
+				"Pick a short human-readable sender name distinct from those — surface labels "
+				"(e.g. 'Claude Win', 'Claude WSL') or role labels (e.g. 'Reviewer', 'Implementer') "
+				"both work. If you pick a name already in use, the server appends a numeric suffix "
+				"(e.g. 'Claude Win 2'). "
+				"Call enter_conversation(sender='<your_name>') as your first switchboard action — "
+				"that queues you in the conversation's wait queue and delivers the recent log "
+				"when the next peer speaks. After you have that context, introduce yourself via "
+				"message_and_await_agent."
+				+ recent_block
 			)
 		else:
+			base += (
+				"Pick a short human-readable sender name (e.g. 'Claude Win', 'Implementer'). "
+			)
 			user_prompt = cmd.get("prompt")
 			if user_prompt:
 				base += f"\n\nINITIAL TASK:\n{user_prompt}"
@@ -240,7 +264,7 @@ class SpawnHandler:
 				)
 
 		# Build prompt
-		prompt = self._format_fresh_prompt(cmd, conv_id, join_existing=join_existing)
+		prompt = self._format_fresh_prompt(cmd, conv, join_existing=join_existing)
 
 		# Write spawn-pending file
 		spawn_id = uuid.uuid4().hex
@@ -343,9 +367,16 @@ class SpawnHandler:
 			label=f"fb_write_resume_msg:{new_id}",
 		)
 
-		# Pre-bind each resumable session, move member entry to new conv
+		# Pre-bind each resumable session, move member entry to new conv.
+		# Flip alive=True (and clear dormancy fields) so message_and_await_agent's
+		# alive-peer count includes these resumed members. Without this, a two-agent
+		# resume yields __CONVERSATION_EMPTY__ on the first speak attempt.
 		agents = []
 		for m in resumable:
+			m.alive = True
+			m.session_ended_at = None
+			m.session_end_reason = None
+			m.left_at = None
 			self._registry.bind_session(m.cli_session_id, new_id)
 			new_conv.members_active[m.sender] = m
 			del source.members_active[m.sender]

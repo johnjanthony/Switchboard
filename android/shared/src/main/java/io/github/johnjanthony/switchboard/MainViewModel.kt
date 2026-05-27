@@ -23,6 +23,7 @@ import io.github.johnjanthony.switchboard.network.BulkRespondSection
 import io.github.johnjanthony.switchboard.network.Channel
 import io.github.johnjanthony.switchboard.network.ChannelMessage
 import io.github.johnjanthony.switchboard.network.ConversationMember
+import io.github.johnjanthony.switchboard.network.ConversationRow
 import io.github.johnjanthony.switchboard.network.ConversationSummary
 import io.github.johnjanthony.switchboard.network.Pending
 import io.github.johnjanthony.switchboard.network.PendingExitToggle
@@ -48,9 +49,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		// the edited value rides on the away_mode_commands exit command as
 		// `default_text`, and the server applies it on `decision == "send_default"`.
 		private const val BULK_RESPOND_DEFAULT_TEXT = "I'll respond when I'm back at my desk."
+		// Synthetic "_admin" cwdKey used for the admin-notifications pseudo-channel.
+		// Lives outside the conversations model — admin notifications are system-wide
+		// broadcasts, not bound to any conversation.
+		private const val ADMIN_CWD_KEY = "_admin"
 	}
 
-	// Keyed by cwdKey (Firebase form, e.g. "c:__work__switchboard")
+	// Primary phone-side state: conversations keyed by conv_id with per-conversation
+	// runtime state (messages, pendings, answered set) folded in.
+	private val _conversationRows = MutableStateFlow<Map<String, ConversationRow>>(emptyMap())
+	val conversationRows: StateFlow<Map<String, ConversationRow>> = _conversationRows.asStateFlow()
+
+	// Wear-compat projection. Derived from _conversationRows whenever it changes,
+	// plus the synthetic _admin channel for admin notifications. TODO Dispatch C:
+	// retire once Wear migrates to the conversation model.
 	private val _channels = MutableStateFlow<Map<String, Channel>>(emptyMap())
 	val channels: StateFlow<Map<String, Channel>> = _channels.asStateFlow()
 
@@ -63,16 +75,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _pendingExitToggle = MutableStateFlow<PendingExitToggle?>(null)
 	val pendingExitToggle: StateFlow<PendingExitToggle?> = _pendingExitToggle.asStateFlow()
 
-	// Set when the user swipes a channel row to "At desk" AND the channel has no
-	// pending questions — without pendings the bulk-respond modal would not pop,
-	// so we surface a plain confirm dialog instead. Value is the cwdKey awaiting
-	// confirmation, or null when no swipe is pending.
-	private val _pendingSwipeAtDeskConfirm = MutableStateFlow<String?>(null)
-	val pendingSwipeAtDeskConfirm: StateFlow<String?> = _pendingSwipeAtDeskConfirm.asStateFlow()
-
 	private val _markdownViewerContent = MutableStateFlow<Pair<String, String>?>(null) // fileName to content
 	val markdownViewerContent: StateFlow<Pair<String, String>?> = _markdownViewerContent.asStateFlow()
 
+	private val _selectedConversationId = MutableStateFlow<String?>(null)
+	val selectedConversationId: StateFlow<String?> = _selectedConversationId.asStateFlow()
+
+	// Wear-compat: legacy state flow exposing the selected key in cwdKey form.
+	// Backed by the same `_selectedConversationId` value; the Wear app reads the cwdKey
+	// of the conversation's first alive member.
 	private val _selectedCwdKey = MutableStateFlow<String?>(null)
 	val selectedCwdKey: StateFlow<String?> = _selectedCwdKey.asStateFlow()
 
@@ -89,18 +100,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	val pendingDeepLinkMessageId: StateFlow<String?> = _pendingDeepLinkMessageId.asStateFlow()
 
 	// Maps requestId → convId so submitReply can write to the new
-	// /conversations/<convId>/answers/<requestId> path.
+	// /conversations/<convId>/answers/<requestId> path. Populated by routeConversationMessage
+	// as questions arrive; consumed by submitReply when answers go out.
 	private val requestIdToConvId = mutableMapOf<String, String>()
-
-	// Maps msgId → convId so markMessageOpened can write to the correct
-	// /conversations/<convId>/messages/<msgId>/opened path.
-	// Populated in routeConversationMessage as messages arrive.
-	private val msgIdToConvId = mutableMapOf<String, String>()
-
-	// Maps cwdKey → convId so selectChannel can write the unread_count clear
-	// to /conversations/<convId>/unread_count instead of the legacy channel path.
-	// Populated in startConversationListener as conversations arrive.
-	private val cwdKeyToConvId = mutableMapOf<String, String>()
 
 	private val database = FirebaseDatabase.getInstance()
 	private val channelsRef = database.getReference("channels")
@@ -110,7 +112,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val conversationsRef = database.getReference("conversations")
 	private val adminNotificationsRef = database.getReference("admin_notifications")
 
-	private val messageListeners = mutableMapOf<String, ChildEventListener>()
+	// Legacy /channels listener — retained ONLY to surface the synthetic _admin channel
+	// (admin_notifications listener feeds it). The phone Page A no longer reads from
+	// `_channels` for real conversations; Wear still does via the derived projection.
 	private val conversationMessageListeners = mutableMapOf<String, ChildEventListener>()
 	private var adminListener: ChildEventListener? = null
 
@@ -162,18 +166,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	// --- Firebase listeners ---
 
 	private fun setupChannelsListener() {
+		// Listener retained for the legacy channel data the Wear app reads. Phone Page A
+		// no longer drives off this — `_conversationRows` is the primary source, and the
+		// Wear-compat projection re-derives a fresh `_channels` map from it. The only data
+		// we still need from /channels/<key> on the Wear path is the cwd_canonical / title
+		// for routes the conversation projection synthesizes. Once Wear migrates, this
+		// listener disappears entirely (Dispatch C).
 		channelsRef.addChildEventListener(object : ChildEventListener {
 			override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
 				val cwdKey = snapshot.key ?: return
-				syncChannel(cwdKey, snapshot)
+				syncLegacyChannel(cwdKey, snapshot)
 			}
 			override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {
 				val cwdKey = snapshot.key ?: return
-				syncChannel(cwdKey, snapshot)
+				syncLegacyChannel(cwdKey, snapshot)
 			}
 			override fun onChildRemoved(snapshot: DataSnapshot) {
 				val cwdKey = snapshot.key ?: return
-				removeChannel(cwdKey)
+				removeLegacyChannel(cwdKey)
 			}
 			override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
 			override fun onCancelled(error: DatabaseError) {}
@@ -194,7 +204,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 				)
 				// Surface via existing channel infrastructure: synthesize a synthetic "_admin" channel.
 				ensureAdminChannelExists()
-				addMessage("_admin", msgId, msg)
+				appendAdminMessage(msgId, msg)
 			}
 			override fun onChildChanged(snapshot: DataSnapshot, prev: String?) {}
 			override fun onChildRemoved(snapshot: DataSnapshot) {}
@@ -207,16 +217,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		adminListener = listener
 	}
 
-	/** Ensure the synthetic _admin channel exists in _channels so addMessage can target it. */
+	/** Ensure the synthetic _admin channel exists in _channels (Wear-compat surface). */
 	private fun ensureAdminChannelExists() {
-		if (!_channels.value.containsKey("_admin")) {
+		if (!_channels.value.containsKey(ADMIN_CWD_KEY)) {
 			val newMap = _channels.value.toMutableMap()
-			newMap["_admin"] = Channel(cwd = "_admin", cwdKey = "_admin", title = "Admin")
+			newMap[ADMIN_CWD_KEY] = Channel(cwd = ADMIN_CWD_KEY, cwdKey = ADMIN_CWD_KEY, title = "Admin")
 			_channels.value = newMap
 		}
 	}
 
-	private fun syncChannel(cwdKey: String, snapshot: DataSnapshot) {
+	/** Append an admin message to the synthetic _admin channel (Wear-compat). */
+	private fun appendAdminMessage(msgId: String, msg: ChannelMessage) {
+		val channel = _channels.value[ADMIN_CWD_KEY] ?: return
+		val rawMessages = channel.messages.toMutableList()
+		val idx = rawMessages.indexOfFirst { it.first == msgId }
+		if (idx >= 0) rawMessages[idx] = msgId to msg else rawMessages.add(msgId to msg)
+		val sortedRaw = rawMessages.sortedBy { it.first }
+		val displayMessages = applySpliceOrder(sortedRaw)
+		val updated = channel.copy(messages = displayMessages)
+		val newMap = _channels.value.toMutableMap()
+		newMap[ADMIN_CWD_KEY] = updated
+		_channels.value = newMap
+	}
+
+	/**
+	 * Pull the per-cwd channel record into the Wear-compat `_channels` map. We extract
+	 * only the legacy fields Wear still needs (title, cwd_canonical, hidden, last_activity,
+	 * preview, unread_count, pending_responses); messages/pendings ride on conversationRows
+	 * and are merged in via [refreshChannelsProjection].
+	 */
+	private fun syncLegacyChannel(cwdKey: String, snapshot: DataSnapshot) {
 		val hidden = snapshot.child("hidden").getValue(Boolean::class.java) == true
 		val title = snapshot.child("title").getValue(String::class.java)
 		val cwdCanonical = snapshot.child("cwd_canonical").getValue(String::class.java) ?: ""
@@ -241,63 +271,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		val newMap = _channels.value.toMutableMap()
 		newMap[cwdKey] = updated
 		_channels.value = newMap
-
-		if (_selectedCwdKey.value == null && !hidden) {
-			_selectedCwdKey.value = cwdKey
-		}
-		if (hidden && _selectedCwdKey.value == cwdKey) {
-			_selectedCwdKey.value = _channels.value.entries.firstOrNull { !it.value.hidden }?.key
-		}
-
-		if (!messageListeners.containsKey(cwdKey)) {
-			val listener = object : ChildEventListener {
-				override fun onChildAdded(snap: DataSnapshot, prev: String?) {
-					val msgId = snap.key ?: return
-					try {
-						val msg = snap.getValue(ChannelMessage::class.java) ?: return
-						addMessage(cwdKey, msgId, msg)
-					} catch (e: Exception) {
-						android.util.Log.e("MainViewModel", "MALFORMED MESSAGE at channels/$cwdKey/messages/$msgId")
-						android.util.Log.e("MainViewModel", "Value Type: ${snap.value?.javaClass?.name}")
-						android.util.Log.e("MainViewModel", "Value Content: ${snap.value}")
-						android.util.Log.e("MainViewModel", "Error: ${e.message}")
-					}
-				}
-				override fun onChildChanged(snap: DataSnapshot, prev: String?) {
-					val msgId = snap.key ?: return
-					try {
-						val msg = snap.getValue(ChannelMessage::class.java) ?: return
-						addMessage(cwdKey, msgId, msg)
-					} catch (e: Exception) {
-						android.util.Log.e("MainViewModel", "MALFORMED MESSAGE (update) at channels/$cwdKey/messages/$msgId")
-						android.util.Log.e("MainViewModel", "Value Type: ${snap.value?.javaClass?.name}")
-						android.util.Log.e("MainViewModel", "Value Content: ${snap.value}")
-						android.util.Log.e("MainViewModel", "Error: ${e.message}")
-					}
-				}
-				override fun onChildRemoved(snap: DataSnapshot) {
-					val msgId = snap.key ?: return
-					removeMessage(cwdKey, msgId)
-				}
-				override fun onChildMoved(snap: DataSnapshot, prev: String?) {}
-				override fun onCancelled(error: DatabaseError) {}
-			}
-			messageListeners[cwdKey] = listener
-			snapshot.child("messages").ref.addChildEventListener(listener)
-		}
 	}
 
-	private fun removeChannel(cwdKey: String) {
-		val listener = messageListeners.remove(cwdKey)
-		if (listener != null) {
-			channelsRef.child(cwdKey).child("messages").removeEventListener(listener)
-		}
+	private fun removeLegacyChannel(cwdKey: String) {
 		val newMap = _channels.value.toMutableMap()
 		if (newMap.remove(cwdKey) != null) {
 			_channels.value = newMap
-			if (_selectedCwdKey.value == cwdKey) {
-				_selectedCwdKey.value = newMap.entries.firstOrNull { !it.value.hidden }?.key
-			}
 		}
 	}
 
@@ -305,14 +284,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		return type == "question" || type == "ask_human"
 	}
 
-	private fun addMessage(cwdKey: String, msgId: String, msg: ChannelMessage) {
-		val channel = _channels.value[cwdKey] ?: return
+	/**
+	 * Merge a freshly-arrived message into the per-conversation row's runtime state,
+	 * deriving displayMessages, answeredSet, and pendingQuestions. Replaces the
+	 * legacy addMessage(cwdKey, ...) routing.
+	 */
+	private fun addMessageToConversation(convId: String, msgId: String, msg: ChannelMessage) {
+		val row = _conversationRows.value[convId] ?: return
 
-		// Maintain the raw arrival-order list. The current channel.messages may already
-		// be spliced from a prior addMessage call, so we re-derive from a sorted-by-msgId
-		// snapshot. Firebase push keys are time-ordered, so sortedBy { it.first } gives
-		// us a deterministic arrival order regardless of in-list splice state.
-		val rawMessages = channel.messages.toMutableList()
+		// Maintain raw arrival-order list. Firebase push keys are time-ordered, so
+		// sortedBy { it.first } gives deterministic arrival order regardless of in-list
+		// splice state from prior calls.
+		val rawMessages = row.messages.toMutableList()
 		val idx = rawMessages.indexOfFirst { it.first == msgId }
 		if (idx >= 0) rawMessages[idx] = msgId to msg else rawMessages.add(msgId to msg)
 		val sortedRaw = rawMessages.sortedBy { it.first }
@@ -327,21 +310,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			.filter { targetId -> sortedRaw.any { it.first == targetId } }
 			.toSet()
 
-		// pendingQuestions / pendingResponses: a question is "no longer pending"
-		// when it's cancelled, rejected, OR has a reply attached.
-		var newPending = channel.pendingQuestions.toMutableMap()
-		var newPendingResponses = channel.pendingResponses
+		// pendingQuestions: a question is "no longer pending" when it's cancelled, rejected,
+		// OR has a reply attached.
+		var newPending = row.pendingQuestions.toMutableMap()
 		if (isQuestionType(msg.type) && msg.request_id != null) {
 			val isAnsweredViaSplice = msgId in answeredSet
 			if (msg.cancelled || msg.rejected || isAnsweredViaSplice) {
 				if (newPending.containsKey(msg.request_id)) {
 					newPending.remove(msg.request_id!!)
-					newPendingResponses = (newPendingResponses - 1).coerceAtLeast(0)
 				}
 			} else {
-				if (!newPending.containsKey(msg.request_id)) {
-					newPendingResponses += 1
-				}
 				newPending[msg.request_id!!] = Pending(
 					sender = msg.sender,
 					requestId = msg.request_id!!,
@@ -359,69 +337,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			val targetRequestId = targetQuestion?.request_id
 			if (targetRequestId != null && newPending.containsKey(targetRequestId)) {
 				newPending.remove(targetRequestId)
-				newPendingResponses = (newPendingResponses - 1).coerceAtLeast(0)
 			}
 		}
 
-		val updated = channel.copy(
+		val updated = row.copy(
 			messages = displayMessages,
 			pendingQuestions = newPending,
-			pendingResponses = newPendingResponses,
 			answeredQuestionMsgIds = answeredSet,
 		)
-		val newMap = _channels.value.toMutableMap()
-		newMap[cwdKey] = updated
-		_channels.value = newMap
+		val newMap = _conversationRows.value.toMutableMap()
+		newMap[convId] = updated
+		_conversationRows.value = newMap
 
-		if (_selectedCwdKey.value == cwdKey) {
-			// Clear unread badge on the conversation side (server increments
-			// /conversations/<convId>/unread_count; we write 0 back there).
-			val convId = cwdKeyToConvId[cwdKey]
-			if (convId != null) {
-				conversationsRef.child(convId).child("unread_count").setValue(0)
-			}
-		} else if (_selectedCwdKey.value == null && !channel.hidden) {
-			_selectedCwdKey.value = cwdKey
+		// Clear unread badge on the server-side counter when this is the open row.
+		if (_selectedConversationId.value == convId) {
+			conversationsRef.child(convId).child("unread_count").setValue(0)
+		} else if (_selectedConversationId.value == null && !row.hidden) {
+			_selectedConversationId.value = convId
+			refreshSelectedCwdKey()
 		}
+
+		refreshChannelsProjection()
 
 		if (msg.rejected) {
 			Handler(Looper.getMainLooper()).post {
 				Toast.makeText(getApplication(), msg.text, Toast.LENGTH_LONG).show()
 			}
 		}
-	}
-
-	private fun removeMessage(cwdKey: String, msgId: String) {
-		val channel = _channels.value[cwdKey] ?: return
-		val rawMessages = channel.messages.filterNot { it.first == msgId }
-		if (rawMessages.size == channel.messages.size) return
-		val removed = channel.messages.firstOrNull { it.first == msgId }?.second
-
-		// Re-derive both display order and answered set from the trimmed raw list.
-		val sortedRaw = rawMessages.sortedBy { it.first }
-		val displayMessages = applySpliceOrder(sortedRaw)
-		val answeredSet: Set<String> = sortedRaw
-			.mapNotNull { (_, m) -> m.attached_to_msg_id }
-			.filter { targetId -> sortedRaw.any { it.first == targetId } }
-			.toSet()
-
-		val newPending = channel.pendingQuestions.toMutableMap()
-		var newPendingResponses = channel.pendingResponses
-		if (removed != null && isQuestionType(removed.type) && removed.request_id != null) {
-			if (newPending.containsKey(removed.request_id)) {
-				newPending.remove(removed.request_id)
-				newPendingResponses = (newPendingResponses - 1).coerceAtLeast(0)
-			}
-		}
-		val updated = channel.copy(
-			messages = displayMessages,
-			pendingQuestions = newPending,
-			pendingResponses = newPendingResponses,
-			answeredQuestionMsgIds = answeredSet,
-		)
-		val newMap = _channels.value.toMutableMap()
-		newMap[cwdKey] = updated
-		_channels.value = newMap
 	}
 
 	private fun setupAwayModeListener() {
@@ -441,7 +383,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 				val newId = snapshot.getValue(String::class.java)
 				val changed = _openConversationId.value != newId
 				_openConversationId.value = newId
-				// Re-emit conversations so isOpenConversation flags are updated
 				if (changed) recomputeConversationOpenFlags()
 			}
 			override fun onCancelled(error: DatabaseError) {
@@ -467,9 +408,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		ref.addValueEventListener(object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
 				val openId = _openConversationId.value
-				// Rebuild cwdKeyToConvId from the current snapshot so selectChannel
-				// and addMessage can clear unread_count on the conversation path.
-				val newCwdKeyToConvId = mutableMapOf<String, String>()
 				val summaries = snapshot.children.mapNotNull { convNode ->
 					try {
 						val convId = convNode.key ?: return@mapNotNull null
@@ -484,14 +422,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 						val membersNode = convNode.child("members_active")
 						val members = membersNode.children.mapNotNull { memberNode ->
 							try {
-								val memberCwd = memberNode.child("cwd").getValue(String::class.java) ?: ""
-								if (memberCwd.isNotBlank()) {
-									newCwdKeyToConvId[toFirebaseKey(memberCwd)] = convId
-								}
 								ConversationMember(
 									cliSessionId = memberNode.child("cli_session_id").getValue(String::class.java) ?: return@mapNotNull null,
 									sender = memberNode.child("sender").getValue(String::class.java) ?: return@mapNotNull null,
-									cwd = memberCwd,
+									cwd = memberNode.child("cwd").getValue(String::class.java) ?: "",
 									surface = memberNode.child("surface").getValue(String::class.java) ?: "windows",
 									alive = memberNode.child("alive").getValue(Boolean::class.java) ?: true,
 									sessionLostPermanently = memberNode.child("session_lost_permanently").getValue(Boolean::class.java) ?: false,
@@ -516,6 +450,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 							}
 						}
 
+						val pendingResponses = convNode.child("pending_responses").getValue(Int::class.java) ?: 0
+						val preview = convNode.child("meta").child("preview").getValue(String::class.java)
+						val hidden = convNode.child("meta").child("hidden").getValue(Boolean::class.java) ?: false
+						val unreadCount = convNode.child("unread_count").getValue(Int::class.java) ?: 0
+
 						ConversationSummary(
 							id = convId,
 							title = title,
@@ -523,13 +462,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 							members = members,
 							lastActivityAt = lastActivityAt,
 							isOpenConversation = (convId == openId),
+							hidden = hidden,
+							unreadCount = unreadCount,
+							pendingResponses = pendingResponses,
+							preview = preview,
 							agentStatuses = agentStatuses,
 						)
 					} catch (e: Exception) { null }
 				}
-				cwdKeyToConvId.clear()
-				cwdKeyToConvId.putAll(newCwdKeyToConvId)
 				_activeConversations.value = summaries
+				mergeSummariesIntoRows(summaries)
+				refreshChannelsProjection()
 			}
 
 			override fun onCancelled(error: DatabaseError) {
@@ -539,9 +482,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	/**
+	 * Fold the latest list of active ConversationSummary objects into _conversationRows,
+	 * preserving any existing per-conv runtime state. Conversations missing from the new
+	 * summary list are dropped from _conversationRows.
+	 */
+	private fun mergeSummariesIntoRows(summaries: List<ConversationSummary>) {
+		val current = _conversationRows.value
+		val next = mutableMapOf<String, ConversationRow>()
+		val incomingIds = summaries.map { it.id }.toSet()
+		for (s in summaries) {
+			val existing = current[s.id]
+			if (existing == null) {
+				next[s.id] = ConversationRow(summary = s)
+			} else {
+				next[s.id] = existing.copy(summary = s)
+			}
+		}
+		// Drop rows for conversations no longer in the active set.
+		// (Anything in `current` whose key is NOT in incomingIds is implicitly excluded.)
+		_conversationRows.value = next
+
+		// If the previously-selected conv is gone, pick a fresh visible one for any UI that
+		// still cares about a default selection. We don't auto-select for phone UX
+		// (navigation drives selection), but Wear's selectedCwdKey flow needs a non-null
+		// fallback to avoid getting stuck.
+		val sel = _selectedConversationId.value
+		if (sel != null && sel !in incomingIds) {
+			_selectedConversationId.value = next.values.firstOrNull { !it.hidden }?.id
+			refreshSelectedCwdKey()
+		}
+	}
+
+	/**
 	 * Subscribe to /conversations/<id>/messages for each conversation as it appears/disappears.
-	 * Messages are routed into the existing addMessage pipeline by looking up the channel whose
-	 * cwd matches one of the conversation's active members.
+	 * Messages route directly into the per-conversation row via addMessageToConversation.
 	 */
 	private fun startConversationMessageSubscriptions() {
 		conversationsRef.addChildEventListener(object : ChildEventListener {
@@ -589,37 +563,84 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private fun routeConversationMessage(convId: String, msgId: String, snap: DataSnapshot) {
 		try {
 			val msg = snap.getValue(ChannelMessage::class.java) ?: return
-			// Track requestId → convId so submitReply can write to the conversation-scoped answer path.
+			// Track requestId → convId so submitReply can write to the conversation-scoped
+			// answer path even after the row's pendingQuestions entry is gone.
 			if ((msg.type == "question" || msg.type == "ask_human") && msg.request_id != null) {
 				requestIdToConvId[msg.request_id!!] = convId
 			}
-			// Track msgId → convId so markMessageOpened writes to the correct conversation path.
-			msgIdToConvId[msgId] = convId
-			// Route to the channel whose cwd matches a conversation member, or fall back
-			// to the first channel that shares a cwd_key matching the legacy conv_id form.
-			val cwdKey = findCwdKeyForConversation(convId) ?: return
-			addMessage(cwdKey, msgId, msg)
+			addMessageToConversation(convId, msgId, msg)
 		} catch (e: Exception) {
 			android.util.Log.e("MainViewModel", "MALFORMED MESSAGE at conversations/$convId/messages/$msgId: ${e.message}")
 		}
 	}
 
 	/**
-	 * Find the cwdKey of the channel that corresponds to the given conversation.
-	 * We look at each conversation summary's members and match against the channels map by cwd.
+	 * Rebuild the Wear-compat `_channels` map from the current `_conversationRows`.
+	 * Each conversation maps to one synthetic Channel keyed by the first alive member's
+	 * cwdKey, populated with the row's preview/title/unread/pending counts and message list.
+	 *
+	 * The `_admin` channel and any legacy /channels entries already populated by
+	 * syncLegacyChannel survive: we only touch entries that resolve to a real conv.
 	 */
-	private fun findCwdKeyForConversation(convId: String): String? {
-		val conv = _activeConversations.value.firstOrNull { it.id == convId } ?: return null
-		val channels = _channels.value
-		for (member in conv.members) {
-			val memberCwdKey = toFirebaseKey(member.cwd)
-			if (channels.containsKey(memberCwdKey)) return memberCwdKey
+	private fun refreshChannelsProjection() {
+		val rows = _conversationRows.value
+		val current = _channels.value.toMutableMap()
+
+		// Track cwdKeys derived from current conversations so we can prune stale projections.
+		val cwdKeysFromConvs = mutableSetOf<String>()
+
+		for (row in rows.values) {
+			// Pick the first alive member's cwd as the legacy display anchor.
+			val firstAlive = row.members.firstOrNull { it.alive && it.cwd.isNotBlank() }
+				?: row.members.firstOrNull { it.cwd.isNotBlank() }
+				?: continue
+			val memberCwd = firstAlive.cwd
+			val cwdKey = toFirebaseKey(memberCwd)
+			cwdKeysFromConvs += cwdKey
+
+			val existing = current[cwdKey]
+			val projected = (existing ?: Channel(cwd = memberCwd, cwdKey = cwdKey)).copy(
+				cwd = memberCwd,
+				cwdKey = cwdKey,
+				title = row.title.takeIf { it.isNotBlank() } ?: existing?.title,
+				cwdCanonical = if (existing?.cwdCanonical.isNullOrBlank()) memberCwd else existing!!.cwdCanonical,
+				hidden = row.hidden,
+				lastActivityAt = row.lastActivityAt.takeIf { it.isNotBlank() } ?: existing?.lastActivityAt,
+				preview = row.preview ?: existing?.preview,
+				unreadCount = row.summary.unreadCount,
+				pendingResponses = row.summary.pendingResponses,
+				pendingQuestions = row.pendingQuestions,
+				messages = row.messages,
+				answeredQuestionMsgIds = row.answeredQuestionMsgIds,
+				agentStatus = row.agentStatus,
+			)
+			current[cwdKey] = projected
 		}
-		return null
+
+		_channels.value = current
 	}
 
-	/** Convert a canonical cwd path to its Firebase-safe key form (inverse of fromFirebaseKey). */
-	fun toFirebaseKeyPublic(cwd: String): String = toFirebaseKey(cwd)
+	/** Re-emit the current conversations list with refreshed isOpenConversation flags. */
+	private fun recomputeConversationOpenFlags() {
+		val openId = _openConversationId.value
+		val updated = _activeConversations.value.map { it.copy(isOpenConversation = (it.id == openId)) }
+		_activeConversations.value = updated
+		mergeSummariesIntoRows(updated)
+		refreshChannelsProjection()
+	}
+
+	/** Sync selectedCwdKey from the currently-selected conv (Wear-compat flow). */
+	private fun refreshSelectedCwdKey() {
+		val convId = _selectedConversationId.value
+		if (convId == null) {
+			_selectedCwdKey.value = null
+			return
+		}
+		val row = _conversationRows.value[convId]
+		val firstAliveCwd = row?.members?.firstOrNull { it.alive && it.cwd.isNotBlank() }?.cwd
+			?: row?.members?.firstOrNull { it.cwd.isNotBlank() }?.cwd
+		_selectedCwdKey.value = firstAliveCwd?.let { toFirebaseKey(it) }
+	}
 
 	private fun toFirebaseKey(cwd: String): String {
 		val sb = StringBuilder()
@@ -633,25 +654,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		return sb.toString()
 	}
 
-	/** Re-emit the current conversations list with refreshed isOpenConversation flags. */
-	private fun recomputeConversationOpenFlags() {
-		val openId = _openConversationId.value
-		_activeConversations.value = _activeConversations.value.map { it.copy(isOpenConversation = (it.id == openId)) }
-	}
-
 	// --- Public actions ---
 
+	/** Phone-side: select a conversation by convId. */
+	fun selectConversation(convId: String) {
+		_selectedConversationId.value = convId
+		refreshSelectedCwdKey()
+		// Clear the server-maintained unread badge so the indicator drops on every device.
+		conversationsRef.child(convId).child("unread_count").setValue(0)
+	}
+
+	/**
+	 * Wear-compat: select by cwdKey. Maps to the conversation whose first alive member's
+	 * cwdKey matches. Falls back to no-op when the key is the synthetic `_admin` or has no
+	 * corresponding conversation yet (cold-start race).
+	 */
 	fun selectChannel(cwdKey: String) {
-		_selectedCwdKey.value = cwdKey
-		// Clear the server-maintained unread badge for this conversation so the
-		// indicator drops on every device subscribed to this Firebase node.
-		val convId = cwdKeyToConvId[cwdKey]
+		val convId = findConvIdForCwdKey(cwdKey)
 		if (convId != null) {
-			conversationsRef.child(convId).child("unread_count").setValue(0)
+			selectConversation(convId)
+		} else {
+			// Could be the _admin synthetic channel; just track the cwdKey for Wear.
+			_selectedCwdKey.value = cwdKey
 		}
 	}
 
 	fun clearSelectedChannel() {
+		_selectedConversationId.value = null
 		_selectedCwdKey.value = null
 	}
 
@@ -667,34 +696,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		_markdownViewerContent.value = null
 	}
 
-	fun hasAnyPendingQuestions(): Boolean {
-		return _channels.value.values.any { it.pendingQuestions.isNotEmpty() }
+	/** Phone-side: mark a message opened given the convId (no bridge lookup needed). */
+	fun markMessageOpened(convId: String, msgId: String) {
+		conversationsRef.child(convId).child("messages").child(msgId).child("opened").setValue(true)
 	}
 
-	fun markMessageOpened(cwdKey: String, msgId: String) {
-		// Look up convId from the msgIdToConvId map populated in routeConversationMessage.
-		// This writes to the canonical /conversations/<convId>/messages/<msgId>/opened path.
-		val convId = msgIdToConvId[msgId]
-		if (convId != null) {
-			conversationsRef.child(convId).child("messages").child(msgId).child("opened").setValue(true)
-		}
-		// If convId is unknown (message arrived before this session, or pre-migration data),
-		// we skip the write rather than creating phantom nodes on the wrong path.
+	/**
+	 * Phone-side: submit a reply for a specific conversation. `requestId` must be non-null —
+	 * the phone UI's ReplyInputBar only opens when an active pending question is selected,
+	 * which always carries a request_id. A null requestId here would fall through to a
+	 * /responses slot the server can't recover (slot parser expects `cwd_key`, not the
+	 * conversation_id we'd write); we don't enter that path at all.
+	 */
+	fun submitReplyForConversation(convId: String, sender: String, text: String, requestId: String) {
+		database.getReference("conversations/$convId/answers/$requestId").setValue(mapOf(
+			"text" to text,
+			"sender" to sender,
+			"request_id" to requestId,
+			"written_at" to nowIso(),
+		))
+		// Optimistically remove from pending so the row indicator clears immediately.
+		val row = _conversationRows.value[convId] ?: return
+		val newPending = row.pendingQuestions.filterKeys { it != requestId }
+		val newMap = _conversationRows.value.toMutableMap()
+		newMap[convId] = row.copy(pendingQuestions = newPending)
+		_conversationRows.value = newMap
+		requestIdToConvId.remove(requestId)
+		refreshChannelsProjection()
 	}
 
+	/**
+	 * Wear-compat: submit reply by cwdKey. Resolves the convId from the rows projection,
+	 * falling back to the legacy /responses path when no conv is found (e.g. requests
+	 * pre-dating this session, or _admin pseudo-channel).
+	 */
 	fun submitReply(cwdKey: String, sender: String, text: String, requestId: String?) {
-		// Write to the conversation-scoped answer path when we know the convId.
-		// Fall back to the legacy /responses path for requests not tracked in requestIdToConvId
-		// (e.g. questions that arrived before this session started).
-		val convId = if (requestId != null) requestIdToConvId[requestId] else null
-		if (requestId != null && convId != null) {
-			database.getReference("conversations/$convId/answers/$requestId").setValue(mapOf(
-				"text" to text,
-				"sender" to sender,
-				"request_id" to requestId,
-				"written_at" to nowIso(),
-			))
+		val viaRequest = if (requestId != null) requestIdToConvId[requestId] else null
+		val convId = viaRequest ?: findConvIdForCwdKey(cwdKey)
+		if (convId != null && requestId != null) {
+			submitReplyForConversation(convId, sender, text, requestId)
 		} else {
+			// Pre-migration / admin / null-requestId fallback: write to legacy /responses path
+			// with cwd_key so the server's slot parser can still route the answer.
 			val key = requestId ?: "${cwdKey}__$sender"
 			responsesRef.child(key).setValue(mapOf(
 				"text" to text,
@@ -704,48 +747,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 				"written_at" to nowIso(),
 			))
 		}
-		// Remove from pending optimistically. Decrement pendingResponses by the
-		// number of pending entries we're dropping for this sender so the row-
-		// level pending dot clears immediately rather than after the Firebase
-		// echo round-trip. Server's atomic decrement on resolve produces the
-		// same final value.
-		val channel = _channels.value[cwdKey] ?: return
-		val droppedCount = if (requestId != null) {
-			if (channel.pendingQuestions.containsKey(requestId)) 1 else 0
-		} else {
-			channel.pendingQuestions.values.count { it.sender == sender }
+	}
+
+	/** Return the convId whose first alive member's cwdKey matches, else null. */
+	private fun findConvIdForCwdKey(cwdKey: String): String? {
+		val rows = _conversationRows.value
+		for ((convId, row) in rows) {
+			val firstAlive = row.members.firstOrNull { it.alive && it.cwd.isNotBlank() }
+				?: row.members.firstOrNull { it.cwd.isNotBlank() }
+				?: continue
+			if (toFirebaseKey(firstAlive.cwd) == cwdKey) return convId
 		}
-		val newPending = if (requestId != null) {
-			channel.pendingQuestions.filterKeys { it != requestId }
-		} else {
-			channel.pendingQuestions.filterValues { it.sender != sender }
-		}
-		val newPendingResponses = (channel.pendingResponses - droppedCount).coerceAtLeast(0)
-		_channels.value = _channels.value.toMutableMap().also {
-			it[cwdKey] = channel.copy(pendingQuestions = newPending, pendingResponses = newPendingResponses)
-		}
-		// Clean up the requestId→convId tracking entry once the reply is submitted.
-		if (requestId != null) requestIdToConvId.remove(requestId)
+		return null
 	}
 
 	fun requestAwayModeToggle(cwdKey: String?, desired: Boolean) {
-		// Per-cwd away mode was retired. Both global and per-channel toggles now operate
+		// Per-cwd away mode was retired. Both global and per-channel toggles operate
 		// on the global flag only. cwdKey parameter is retained for call-site compatibility
 		// but is not used for routing.
-		// "On" direction: fire the global command immediately.
 		if (desired) {
 			enterGlobalAway()
 			return
 		}
-
-		// "Off" direction: build bulk-respond sections across all channels and show
-		// the modal if there are pending questions; otherwise fire global exit straight through.
 		val sections = buildBulkRespondSectionsForGlobal()
 		if (sections.isEmpty()) {
 			exitGlobalAway()
 		} else {
 			_pendingExitToggle.value = PendingExitToggle(
-				scopeCwdKey = null,
 				payload = BulkRespondPayload(
 					sections = sections,
 					defaultText = BULK_RESPOND_DEFAULT_TEXT,
@@ -754,79 +782,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		}
 	}
 
-	fun requestSwipeAtDesk(cwdKey: String) {
-		// Channel-row swipe-to-At-desk needs a confirmation gate. If the channel
-		// has pending questions, requestAwayModeToggle will surface the bulk-
-		// respond modal — that modal is itself the confirmation, so we just
-		// invoke the standard path. With no pendings the standard path commits
-		// immediately, which is too aggressive for a single accidental swipe;
-		// we route through a plain confirm dialog instead.
-		val channel = _channels.value[cwdKey] ?: return
-		val hasPendings = channel.pendingQuestions.values.any { !it.cancelled }
-		if (hasPendings) {
-			requestAwayModeToggle(cwdKey, false)
-		} else {
-			_pendingSwipeAtDeskConfirm.value = cwdKey
-		}
-	}
-
-	fun confirmSwipeAtDesk() {
-		val cwdKey = _pendingSwipeAtDeskConfirm.value ?: return
-		_pendingSwipeAtDeskConfirm.value = null
-		requestAwayModeToggle(cwdKey, false)
-	}
-
-	fun cancelSwipeAtDesk() {
-		_pendingSwipeAtDeskConfirm.value = null
-	}
-
-	private fun buildBulkRespondSectionForChannel(channel: Channel): BulkRespondSection? {
-		// Source pending questions from the channel's locally-tracked
-		// pendingQuestions map (populated as messages stream in via addMessage).
-		// We bypass channel.pendingResponses here and trust the per-question
-		// records — the count and the records can briefly drift mid-flight but
-		// the records are the structurally-richer source for the modal's list.
-		val entries = channel.pendingQuestions.values
+	private fun buildBulkRespondSectionForRow(row: ConversationRow): BulkRespondSection? {
+		// Use the conversation row's pendingQuestions map (populated by addMessageToConversation
+		// as messages stream in). cwd label is the first alive member's cwd, falling back to
+		// the row's title for display when no cwd is set.
+		val entries = row.pendingQuestions.values
 			.filter { !it.cancelled }
 			.map { BulkRespondEntry(it.requestId, it.sender, it.questionText) }
 		if (entries.isEmpty()) return null
-		return BulkRespondSection(cwd = channel.cwd, entries = entries)
+		val cwdLabel = row.members.firstOrNull { it.alive && it.cwd.isNotBlank() }?.cwd
+			?: row.members.firstOrNull { it.cwd.isNotBlank() }?.cwd
+			?: row.title
+		return BulkRespondSection(cwd = cwdLabel, entries = entries)
 	}
 
 	private fun buildBulkRespondSectionsForGlobal(): List<BulkRespondSection> {
-		// Aggregate sections across every channel that holds pending questions.
-		// We do NOT filter by awayMode here: the server clears all per-channel
-		// overrides on a successful global flip, so every pending IS in scope of
-		// the transition. The server's _apply_bulk_respond_decision uses
-		// registry.all_pending() with no filter; the phone matches that.
-		return _channels.value.values
-			.mapNotNull { buildBulkRespondSectionForChannel(it) }
+		// Aggregate sections across every conversation row that holds pending questions.
+		// We do NOT filter by awayMode here: the server clears all per-channel overrides
+		// on a successful global flip, so every pending IS in scope of the transition.
+		return _conversationRows.value.values
+			.mapNotNull { buildBulkRespondSectionForRow(it) }
 	}
 
-	fun hideChannel(cwdKey: String) {
-		// Write to conversation path; also write the legacy channel path so the
-		// channel-driven hidden state stays consistent while Channel.hidden is still
-		// the primary UI driver. TODO: retire the channels write once ConversationSummary.hidden feeds the UI.
-		val convId = cwdKeyToConvId[cwdKey]
-		if (convId != null) {
-			conversationsRef.child(convId).child("meta").child("hidden").setValue(true)
+	/** Phone-side hide by convId. Dual-writes the legacy channels path for Wear-compat. */
+	fun hideConversation(convId: String) {
+		conversationsRef.child(convId).child("meta").child("hidden").setValue(true)
+		// Wear-compat: legacy /channels/<key>/hidden also needs to flip so the Wear UI's
+		// channels-list filter reflects the change. TODO Dispatch C: remove once Wear migrates.
+		legacyCwdKeyForConv(convId)?.let { cwdKey ->
+			channelsRef.child(cwdKey).child("hidden").setValue(true)
 		}
-		channelsRef.child(cwdKey).child("hidden").setValue(true)
 	}
 
-	fun unhideChannel(cwdKey: String) {
-		val convId = cwdKeyToConvId[cwdKey]
-		if (convId != null) {
-			conversationsRef.child(convId).child("meta").child("hidden").setValue(false)
+	/** Phone-side unhide by convId. */
+	fun unhideConversation(convId: String) {
+		conversationsRef.child(convId).child("meta").child("hidden").setValue(false)
+		legacyCwdKeyForConv(convId)?.let { cwdKey ->
+			channelsRef.child(cwdKey).child("hidden").setValue(false)
 		}
-		channelsRef.child(cwdKey).child("hidden").setValue(false)
-		_selectedCwdKey.value = cwdKey
+		_selectedConversationId.value = convId
+		refreshSelectedCwdKey()
+	}
+
+	/** First alive member's cwdKey for a conv, or null if none resolvable (Wear-compat dual-write). */
+	private fun legacyCwdKeyForConv(convId: String): String? {
+		val row = _conversationRows.value[convId] ?: return null
+		val firstAlive = row.members.firstOrNull { it.alive && it.cwd.isNotBlank() }
+			?: row.members.firstOrNull { it.cwd.isNotBlank() }
+			?: return null
+		return toFirebaseKey(firstAlive.cwd)
 	}
 
 	fun submitExitToggleDecision(decision: String, defaultText: String?) {
 		val pending = _pendingExitToggle.value ?: return
 		_pendingExitToggle.value = null
-		// Per-cwd away mode retired — all exits are global.
 		exitGlobalAway(decision = decision, defaultText = defaultText)
 	}
 
@@ -848,7 +857,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		updateProjectMru(project)
 		val wasAwayOff = !_globalAway.value
 		if (wasAwayOff) {
-			// Task 38: auto-enable away mode on spawn
 			enterGlobalAway()
 		}
 		val record = mutableMapOf<String, Any>(

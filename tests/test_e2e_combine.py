@@ -272,6 +272,177 @@ async def test_e2e_combine_then_speak(tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_combine_migrates_source_waiter_to_target(tmp_path):
+	"""Conv-A (source) has a member blocked in wait_queue. Combine A into B.
+	The blocked source-side waiter must NOT be stranded — its wait_entry should
+	either be migrated to target.wait_queue or already woken by the post-combine
+	_wake_one_from(target). Verify that a subsequent message in target delivers
+	to the previously-blocked agent (no 24h strand)."""
+	cfg = _cfg(tmp_path)
+	backend = RecordingBackend()
+	registry = Registry()
+	logger = JsonlLogger(cfg.log_path)
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	# Conv-A (source): two alive members — Alice will be the blocked waiter, Bob is also in source
+	conv_a = Conversation(id="conv-a5", title="Source A5")
+	m_alice = _make_member("s-alice", "claude-alice", alive=True)
+	m_bob = _make_member("s-bob", "claude-bob", alive=True)
+	conv_a.members_active["claude-alice"] = m_alice
+	conv_a.members_active["claude-bob"] = m_bob
+	registry.conversations["conv-a5"] = conv_a
+	registry.bind_session("s-alice", "conv-a5")
+	registry.bind_session("s-bob", "conv-a5")
+	registry.set_session_home("s-alice", "conv-a5")
+	registry.set_session_home("s-bob", "conv-a5")
+
+	# Conv-B (target): one alive member, the combiner
+	conv_b = Conversation(id="conv-b5", title="Target B5")
+	m_combiner = _make_member("s-combiner5", "claude-combiner5", alive=True)
+	conv_b.members_active["claude-combiner5"] = m_combiner
+	registry.conversations["conv-b5"] = conv_b
+	registry.bind_session("s-combiner5", "conv-b5")
+	registry.set_session_home("s-combiner5", "conv-b5")
+
+	# Alice blocks in source's wait_queue
+	task_alice = asyncio.create_task(
+		handlers.message_and_await_agent(
+			"claude-alice",
+			message="Alice waiting in source",
+			cli_session_id="s-alice",
+			cwd="C:/Work/A5",
+		)
+	)
+	await asyncio.sleep(0.05)
+
+	# Confirm Alice is enqueued in source's wait_queue
+	assert len(conv_a.wait_queue) == 1, \
+		f"Expected 1 waiter in source; got {len(conv_a.wait_queue)}"
+
+	# Combiner combines source into target
+	result = await handlers.combine_conversations(
+		"conv-a5",
+		"conv-b5",
+		cli_session_id="s-combiner5",
+		cwd="C:/Work/B5",
+	)
+	assert result.startswith("ok"), f"Unexpected result: {result}"
+
+	# Source.wait_queue must be empty post-combine (migrated or drained)
+	assert len(conv_a.wait_queue) == 0, \
+		f"source.wait_queue must be empty after combine; still has {len(conv_a.wait_queue)} entries"
+
+	# Alice was migrated to target
+	assert "claude-alice" in conv_b.members_active
+	assert registry.session_to_conversation_id["s-alice"] == "conv-b5"
+
+	# At this point Alice's wait_entry is either:
+	#   (a) already resolved by _wake_one_from(target) at line 488, or
+	#   (b) sitting in target.wait_queue awaiting the next speaker.
+	# Either way, Alice must NOT remain blocked indefinitely.
+	if not task_alice.done():
+		# Bob (now also in target) speaks; this must wake Alice via target's wait_queue
+		assert "claude-bob" in conv_b.members_active
+		task_bob = asyncio.create_task(
+			handlers.message_and_await_agent(
+				"claude-bob",
+				message="Bob speaking in merged conv",
+				cli_session_id="s-bob",
+				cwd="C:/Work/A5",
+			)
+		)
+		try:
+			alice_result = await asyncio.wait_for(task_alice, timeout=2.0)
+		finally:
+			task_bob.cancel()
+			try:
+				await task_bob
+			except asyncio.CancelledError:
+				pass
+		assert alice_result, "Alice's future must resolve with a payload, not stay pending"
+		# Payload should reflect either the merge marker or Bob's message
+		assert ("Merged" in alice_result
+				or "joined via combine" in alice_result
+				or "Bob speaking" in alice_result), \
+			f"Alice's wake payload should reflect merge or Bob's message; got: {alice_result!r}"
+	else:
+		# Already woken by _wake_one_from(target) — verify a sensible payload
+		alice_result = await task_alice
+		assert alice_result, "Alice's resolved payload must be non-empty"
+		assert "__TIMEOUT__" not in alice_result, \
+			f"Alice must not have timed out; got: {alice_result!r}"
+
+
+@pytest.mark.asyncio
+async def test_combine_drains_waiter_of_permanently_lost_member_in_source(tmp_path):
+	"""A wait_entry for a permanently_lost member (who stays in source per the
+	combine logic) must have its future resolved with the merge sentinel rather
+	than being stranded when source ends."""
+	cfg = _cfg(tmp_path)
+	backend = RecordingBackend()
+	registry = Registry()
+	logger = JsonlLogger(cfg.log_path)
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	# Conv-A (source): one alive member + one permanently_lost member
+	conv_a = Conversation(id="conv-a6", title="Source A6")
+	m_alice = _make_member("s-alice6", "claude-alice6", alive=True)
+	m_carol = _make_member(
+		"s-carol6", "claude-carol6",
+		alive=False, session_lost_permanently=True,
+	)
+	conv_a.members_active["claude-alice6"] = m_alice
+	conv_a.members_active["claude-carol6"] = m_carol
+	registry.conversations["conv-a6"] = conv_a
+	registry.bind_session("s-alice6", "conv-a6")
+	# Don't bind Carol's session — she's permanently lost
+	registry.set_session_home("s-alice6", "conv-a6")
+
+	# Conv-B (target): the combiner
+	conv_b = Conversation(id="conv-b6", title="Target B6")
+	m_combiner = _make_member("s-combiner6", "claude-combiner6", alive=True)
+	conv_b.members_active["claude-combiner6"] = m_combiner
+	registry.conversations["conv-b6"] = conv_b
+	registry.bind_session("s-combiner6", "conv-b6")
+	registry.set_session_home("s-combiner6", "conv-b6")
+
+	# Manually construct a stranded wait_entry for Carol (in practice
+	# cli_session_end already cancels these, but we test the defensive drain path).
+	loop = asyncio.get_event_loop()
+	carol_future = loop.create_future()
+	carol_entry = {
+		"member": m_carol,
+		"future": carol_future,
+		"waiting_kind": "msg_and_await",
+		"block_position": time.monotonic(),
+	}
+	conv_a.wait_queue.append(carol_entry)
+
+	# Combine source into target
+	result = await handlers.combine_conversations(
+		"conv-a6",
+		"conv-b6",
+		cli_session_id="s-combiner6",
+		cwd="C:/Work/B6",
+	)
+	assert result.startswith("ok"), f"Unexpected result: {result}"
+
+	# Carol stayed in source (permanently_lost path)
+	assert "claude-carol6" in conv_a.members_active
+	# Alice was migrated to target
+	assert "claude-alice6" in conv_b.members_active
+
+	# source.wait_queue must be empty
+	assert len(conv_a.wait_queue) == 0
+
+	# Carol's future must be resolved with the merge sentinel
+	assert carol_future.done(), "Carol's future must be resolved, not stranded"
+	payload = carol_future.result()
+	assert "__CONVERSATION_ENDED__" in payload, \
+		f"Carol's drained payload should contain merge sentinel; got: {payload!r}"
+
+
+@pytest.mark.asyncio
 async def test_e2e_combine_clears_open_when_source_was_open(tmp_path):
 	"""If the source conv was the openConversationId, after combine the pointer is cleared."""
 	cfg = _cfg(tmp_path)

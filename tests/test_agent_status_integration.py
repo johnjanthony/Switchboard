@@ -73,7 +73,7 @@ def test_post_agent_status_returns_200_on_missing_fields(cfg, logger, tmp_path):
 
 	with TestClient(app) as client:
 		# Missing 'state'
-		resp = client.post("/agent_status", json={"cwd": str(tmp_path)})
+		resp = client.post("/agent_status", json={"session_id": "s-1"})
 		assert resp.status_code == 200
 	assert backend.agent_status_writes == []
 
@@ -87,7 +87,6 @@ def test_handle_agent_status_writes_to_conversations_path(cfg, logger):
 
 	with TestClient(app) as client:
 		resp = client.post("/agent_status", json={
-			"cwd": "C:/Work/X",
 			"state": "thinking",
 			"detail": None,
 			"session_id": "s-1",
@@ -106,7 +105,6 @@ def test_handle_agent_status_clear_writes_conv_path(cfg, logger):
 
 	with TestClient(app) as client:
 		resp = client.post("/agent_status", json={
-			"cwd": "C:/Work/X",
 			"state": "clear",
 			"detail": None,
 			"session_id": "s-1",
@@ -125,7 +123,6 @@ def test_handle_agent_status_drops_write_when_no_session_id(cfg, logger):
 
 	with TestClient(app) as client:
 		resp = client.post("/agent_status", json={
-			"cwd": "C:/Work/X",
 			"state": "thinking",
 			"detail": None,
 			# no session_id
@@ -146,7 +143,6 @@ def test_handle_agent_status_drops_write_when_session_unbound(cfg, logger):
 
 	with TestClient(app) as client:
 		resp = client.post("/agent_status", json={
-			"cwd": "C:/Work/X",
 			"state": "thinking",
 			"detail": None,
 			"session_id": "s-orphan",
@@ -166,7 +162,6 @@ def test_handle_agent_status_drops_write_when_away_mode_off(cfg, logger):
 
 	with TestClient(app) as client:
 		resp = client.post("/agent_status", json={
-			"cwd": "C:/Work/X",
 			"state": "thinking",
 			"detail": None,
 			"session_id": "s-1",

@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-19
 **Branch context:** `develop` (post-canonicalize-cwd-POSIX commit b889472)
-**Status:** design approved, ready for implementation plan
+**Status:** implemented in commit `c44b632` on 2026-05-26 (branch `session_id-as-key`); paired with the T-027 spawn redesign. Divergences from this design are listed in the **Implementation deltas** section near the end of this document.
 
 ## Problem
 
@@ -98,7 +98,7 @@ Unified "join + listen for intro" tool. Blocking.
   - **Caller's `cli_session_id` is bound to a conversation X** (typical post-combine / spawn-into-existing case): caller is already in X. The `sender` parameter may update the member's display name. Tool queues caller in X's wait queue without writing a speak event; blocks until next peer speak. Used by newly-arrived members to receive an intro.
   - **Caller's `cli_session_id` is NOT bound to any conversation** AND `openConversationId` exists: caller is added to the openConversation as a new member with the supplied `sender`; queued in its wait queue; blocks for intro.
   - **Caller's `cli_session_id` is bound to conversation X AND X ≠ openConversationId AND openConversationId exists**: caller migrates from X to the openConversation (removed from X per the session-fallback rule's removal path, but re-bound to openConversation rather than home); caller added to openConversation with the supplied `sender`; queued in its wait queue; blocks for intro.
-  - **`openConversationId` is null AND caller is not already in a conversation**: error `"no open conversation; ask John to open one or have an agent call open_conversation"`.
+  - **`openConversationId` is null AND caller is not already in a conversation**: error `"ERROR: no open conversation. Ask John to open one on the phone, or have an agent already in a conversation call open_conversation."`.
   - **`openConversationId` is null AND caller IS in a conversation**: just queue in that conversation's wait queue; no migration.
 - When the FIFO promotes the caller, returns the **delta of conversation log since caller's `last_seen_seq`** (or **full history** for the new-member-join branches).
 
@@ -136,7 +136,7 @@ Non-blocking.
 
 #### Modified: `message_and_await_agent(sender, message, ..., cli_session_id, cwd, title?)`
 
-- `message` is required and non-empty (rejected with `"ERROR: message is required"` if missing/empty). The "listen without speaking" use case is served by `enter_conversation()` instead.
+- `message` is required and non-empty (rejected with `"ERROR: message is required. The 'listen without speaking' use case is enter_conversation()."` if missing/empty). The "listen without speaking" use case is served by `enter_conversation()` instead.
 - If caller's `cli_session_id` is not in any conversation → returns immediately with `"ERROR: not in any conversation. End your turn."`
 - If caller is the **only active member** of their conversation → returns immediately with `"__CONVERSATION_EMPTY__\n<parting messages from members who left since caller last spoke, chronological>"`. Caller is removed per the session-fallback rule; conversation transitions to Ended.
 - Otherwise: caller's `message` is appended to the log as a `type="agent_msg"` speak event; caller is appended to the FIFO wait queue; the FIFO-oldest blocked agent wakes with their appropriate payload.
@@ -260,6 +260,9 @@ T-026's remaining sub-cases (cross-clone WSL, cross-host) are no longer routing 
 
 Assumes: A spawned solo first (lands in their own Active conversation X with home_conversation_id = X). B and C are subsequently spawned solo (each in their own home). John tells A to open for collab, then tells B and C to join.
 
+<!-- markdownlint-disable MD060 -->
+<!-- Walkthrough table cells are intentionally long-form prose; aligned pipes
+     would force unreadable column widths. Accepted as-is. -->
 | t | Event | Wait queue (FIFO) | Stick |
 |---|---|---|---|
 | 1 | A `open_conversation(sender="Claude-A", title="bug investigation")` — A's conversation X becomes openConversationId; A is sole member; non-blocking | `[]` | A |
@@ -270,6 +273,7 @@ Assumes: A spawned solo first (lands in their own Active conversation X with hom
 | 6 | A `message_and_await_agent(msg3)` — wakes B (payload: `[msg3]`); A blocks | `[C:enter, A:msg]` | B |
 | 7 | B `message_and_await_agent(msg4)` — wakes C (payload: full history `[msg1..msg4]`, since C is newly added); B blocks | `[A:msg, B:msg]` | C |
 | 8 | C `message_and_await_agent(msg5)` — wakes A (payload: `[msg4, msg5]` — delta since A's `last_seen_seq=3`, no own-emissions to filter); C blocks | `[B:msg, C:msg]` | A |
+<!-- markdownlint-enable MD060 -->
 
 #### Edge cases
 
@@ -277,7 +281,7 @@ Assumes: A spawned solo first (lands in their own Active conversation X with hom
 - **Force-end** (John triggers via phone): all `QueueEntry.future`s resolve with `__CONVERSATION_ENDED__\n<final notice>`; `members_active` clears (every member, alive or dormant, falls back per the session-fallback rule — alive sessions re-bind to home/unbound; dormant sessions are released from the conversation but their CLI sessions, where they exist, can still be re-spawned via the normal flow). Conversation transitions to Ended. The dispatch loop handling `force_end_conversation_commands/` is idempotent — a command targeting an already-Ended conversation is a no-op.
 - **SessionEnd (orderly process exit)**: cli-session-end-hook fires; server marks the member dormant (`alive = False`, `session_ended_at = now()`, `session_end_reason` set). Conversation stays Active (members aren't removed for dormancy). If the SessionEnd reason was `clear` or `compact`, the member is additionally marked `session_lost_permanently = True` and the underlying CLI session can never be revived.
 - **Member crash / process death (SIGKILL, BSOD, network loss)**: no SessionEnd hook fires. The member's `alive` flag stays True from the server's view (stale-alive). Their tool call times out at the MCP 24h timeout; the conversation stays "stuck" with a stale-alive member until either (a) the surviving members force-end, or (b) the server restarts. T-003 (collab session GC) addresses this with a stale-alive sweeper.
-- **`enter_conversation()` with no openConversation AND caller unbound**: returns `"ERROR: no open conversation; ask John to open one or have an agent call open_conversation"`. Caller's session remains unbound.
+- **`enter_conversation()` with no openConversation AND caller unbound**: returns `"ERROR: no open conversation. Ask John to open one on the phone, or have an agent already in a conversation call open_conversation."`. Caller's session remains unbound.
 
 ### Away mode (simplified, global only)
 
@@ -296,6 +300,8 @@ Assumes: A spawned solo first (lands in their own Active conversation X with hom
 
 Hard cutover: `channels/<cwd_key>/...` deleted; `conversations/<id>/...` replaces it. Field-by-field mapping below preserves every existing `ChannelMessage` field; nothing visible on the phone is dropped.
 
+<!-- Firebase RTDB schema tree is illustrative ASCII-art, not a real language. -->
+<!-- markdownlint-disable-next-line MD040 -->
 ```
 conversations/<conversation_id>/
   title                       (str)
@@ -332,7 +338,7 @@ conversations/<conversation_id>/
 
   messages/<msg_id>/          # every existing ChannelMessage field, verbatim
     sender                    (str)
-    type                      "agent_msg" | "ask" | "response" | "notify" | "doc" | "parting" | "system" | ...
+    type                      "agent_msg" | "question" | "response" | "notify" | "document" | "parting" | "system"
     text                      (str)
     url                       (str | null)
     filename                  (str | null)
@@ -390,19 +396,21 @@ spawn_commands/<push_id>/     # see T-027 for full schema
   target_conversation_id      (str | null)
   source_conversation_id      (str — resume only)
   issued_at
-
-inject_queue/<conversation_id>/...            # was keyed by cwd_key; now keyed by conversation_id
 ```
+
+(The earlier draft of this schema included an `inject_queue/<conversation_id>/...` node; the inject-queue mechanism was retired during implementation. See the **Implementation deltas** section.)
 
 **Message type values** (`messages/<msg_id>/type`):
 
 - `agent_msg` — `message_and_await_agent` speak event
-- `ask` — `ask_human` question (whether blocked or at-desk-redirected)
-- `response` — John's reply to an `ask`
-- `notify` — `notify_human` emission (whether delivered or at-desk-redirected)
-- `doc` — `send_document_human` delivery
+- `question` — `ask_human` question. The at-desk-redirect path writes the same content with `type="notify"` instead (no `request_id`, no `suggestions`) so the phone surfaces it as a passive notification.
+- `response` — John's reply to a `question`
+- `notify` — `notify_human` emission, or an at-desk-redirected `ask_human`
+- `document` — `send_document_human` delivery
 - `parting` — `leave_conversation` message
 - `system` — server-written message (combine "Merged with…", "Merged into…", spawn ack, resume opening, dormancy notification, etc.)
+
+(Earlier drafts of this design used `ask` / `doc` for the question / document types; the implemented names are `question` / `document`. See the **Implementation deltas** section.)
 
 **Removed Firebase nodes**:
 
@@ -514,7 +522,7 @@ Exhaustive walk through the existing implementation to confirm what survives, wh
 - **Stale reply handling** — phone replies arriving for an unknown correlation tuple still log + emit a "stale reply" notice on the conversation and delete the `responses/` slot. `dispatch_responses` adapts to look up by `(conversation_id, sender)` instead of `(cwd, sender)`.
 - **Listener supervision + `/healthz`** (per `2026-05-01-listener-supervision-and-healthz-design.md`) — `SupervisedListener` + `LoopSupervisor` patterns continue to wrap every Firebase listener; listener paths move from `channels/<key>/...` to `conversations/<id>/...` and `force_end_conversation_commands/`. `/healthz` adds new per-loop entries for the conversation-route listeners + the new force-end dispatch loop.
 - **Title behavior on every messaging tool** — `title` remains optional on every tool. First call sets, subsequent calls update on material scope shift. The "noun phrase / verb-ing form, ≤80 chars, no trailing punctuation" convention stays in SKILL.md.
-- **Partner-title-change relay** (`title_tracker.maybe_prepend`) — when a peer's session title changes between speak events, their next message is prefixed with `[<peer>'s current session title: "<title>"]\n\n<message>` for context. This carries through to conversations; the prepend fires on partner-title-change for each receiving member.
+- **Partner-title-change relay** (`title_tracker.maybe_prepend`) — **NOT preserved.** The `TitleTracker` was deleted during implementation; its `maybe_prepend` mechanism turned out to have been dead code (instantiated but never invoked) even before this redesign. Title shifts are now conveyed through `Conversation.title` (Page A header) and the per-message `title` field, plus the agent's own message text. See the **Implementation deltas** section.
 - **`ask_human` supersede semantics** — if a new `ask_human` arrives for `(conversation_id, sender)` while one is pending, the prior future is cancelled and the prior question's Firebase entry is marked `cancelled=true`. Today this is keyed by `(cwd, sender)` — same logic, new key.
 - **MCP stateful HTTP transport** + **cancellation propagation** — `stateless_http=False` preserved; `notifications/cancelled` from Claude Code continues to mark in-flight `ask_human` and `message_and_await_agent` questions `cancelled=true`. The Gemini CLI's lack of cancel propagation is a known limitation that doesn't worsen here.
 - **24-hour MCP timeout** — unchanged.
@@ -522,7 +530,7 @@ Exhaustive walk through the existing implementation to confirm what survives, wh
 - **At-desk message-still-creates-channel-and-logs** behavior for `ask_human` redirect (T-023) — extends to `notify_human` in this design (both gated), `send_document_human` continues to deliver regardless of away-mode state.
 - **Rate limiter** for `notify_human` + `send_document_human` — `RateLimiter`'s shape is unchanged; the key changes from `canonical_cwd` to `conversation_id` so the bucket is scoped to "this conversation" rather than "this channel." If we want per-sender granularity later, the key generalizes naturally (`f"{conversation_id}:{sender}"`); not done in v1 since the channel-level bucket suffices.
 - **Bulk-respond modal** — global-scope variant survives (the dialog the phone shows when flipping global away → at-desk while pending questions exist). Logic in `_apply_bulk_respond_decision` keeps its `send_default` / `skip` / `cancel` decision shape; `scope_cwd` parameter retires (always None / global).
-- **Inject queue** — `dispatch_inject_queue` continues to feed human-injected messages from the phone compose box into active conversations. Keyed by `conversation_id` instead of `cwd`. Phone composes by writing to `inject_queue/<conversation_id>/<inject_id>/{text, issued_at}`.
+- **Inject queue** — **NOT preserved.** `dispatch_inject_queue`, the `InjectPort` protocol, `start_inject_listener`, `poll_inject_messages`, and the `channels/{session_id}/inject_queue` Firebase node were all retired during implementation. The legacy CollabSession BYO flow that consumed these no longer exists, and no phone-side producer was emitting to the queue. Human-injected messages from the phone compose box now travel via the standard `/responses/...` and `/conversations/<id>/answers/...` paths (the latter for the new conversation-id-keyed answer route). See the **Implementation deltas** section.
 - **Agent-status hook + pulsing channel-list dot + inline status row** (T-139) — preserved at the conversation level. Hook writes filter to the stick-holder only; phone shows one status indicator per conversation.
 - **`logs/sessions/<channel_key>.log`** per-channel session log — repurposed to `logs/sessions/<conversation_id>.log`; `_append_session_log` helper retargets accordingly.
 - **`canonicalize_cwd`** logic (post-b889472) — unchanged. Two-cwd collab works because cwd is now just member identity; the conversation ID is the routing key.
@@ -578,6 +586,37 @@ Exhaustive walk through the existing implementation to confirm what survives, wh
 - **Visual indicator for `openConversationId` on Page A** — which row is currently the open one? Some visual treatment (badge, accent border) is probably needed for the prompt mechanic to be discoverable. v1 sketches the data model; UX treatment is left to plan-stage refinement.
 - **`close_conversation` tool** — explicit "this conversation no longer wants new joiners" tool that clears `openConversationId`. v1 relies on the implicit-clear behaviors. Add if friction surfaces.
 - **Agent-driven cross-conversation move to non-open target** — v1 has `enter_conversation()` (move to the open one) but no general "move to arbitrary conversation" affordance for agents. Server can do this via spawn-into-existing for a new agent, but agent-driven self-migration to a non-open target isn't a tool. Defer.
+
+## Implementation deltas
+
+**Recorded 2026-05-26** after the branch-review audit that followed commit `c44b632`. The design above is the authoritative target; this section captures where reality landed differently. Inline forward-pointers above link back here.
+
+### Schema and tool surface
+
+- **Message `type` values** — implemented as `question` / `notify` / `document` / `agent_msg` / `system` / `parting` / `response` rather than the spec's earlier `ask` / `notify` / `doc` / `agent_msg` / `system` / `parting` / `response`. Renames were considered and rejected during implementation: the cost of churning Firebase listeners, Android consumers, and FCM payload code wasn't justified by the naming cleanup. The spec above has been updated to match.
+- **Error string wording** — `enter_conversation`'s "no open conversation" error and `message_and_await_agent`'s "message is required" error are slightly longer in the implementation than the spec quoted. The spec above has been updated; agents pattern-match on the `"ERROR:"` prefix in practice, so historical literal matches still work.
+- **`bulk_respond.py` `scope_cwd` parameter** — spec says retired; reality is the parameter is **dead code** (caller at `dispatch.py` hardcodes `scope_cwd=None`; the non-None branch in `_apply_bulk_respond_decision` is unreachable). A trivial follow-up can delete the parameter and the unreachable branch.
+- **`pending_questions/<request_id>/` and `answered_question_msg_ids/<msg_id>/`** — these subtrees were specced (lines 349-356 of this design) but initially never written. Added under Fix Pack 2 on 2026-05-26: `MessageWriter.add_pending_question_record` / `remove_pending_question_record` / `mark_question_answered` are now wired into `ask_human`'s lifecycle. Not rehydrated on restart by design — stale entries naturally clear when the listeners reattach and replay the answers.
+- **`members_history` Firebase persistence** — `ConversationMember` is appended in-memory at `leave_conversation` and `open_conversation` rename branches; the matching Firebase write at `/conversations/<id>/members_history/<sender>` was added under Fix Pack 2 (new abstract `MessageWriter.write_conversation_member_history` method + `FirebaseBackend` implementation + hydration restore). Before that fix, the in-memory append was lost across restart.
+
+### Retired features that didn't make it back
+
+- **`title_tracker.maybe_prepend`** — retired. The TitleTracker class was deleted as dead code (instantiated, never invoked) during implementation. Title shifts now ride on `Conversation.title` (Page A header), the per-message `title` field, and the agent's own message body.
+- **`inject_queue`** — retired in full. The `InjectPort` protocol, `start_inject_listener`, `poll_inject_messages`, `dispatch_inject_queue`, and the `channels/{session_id}/inject_queue` Firebase node were all removed in Fix Pack 3. The legacy CollabSession BYO consumer no longer exists, and no Android producer was ever wired to write there in the conversation-keyed model.
+- **Spec line 31 caveat** — the "spawn is removed from the Android client in this work; server-side spawn code preserved minimally" stance from this design's earlier draft is **fully retired**: T-027 shipped paired with this design (commit `c44b632`) and brings the spawn UI back as the primary entry point for conversation composition.
+
+### Agent-status hook
+
+- **Hook script still keys on `cwd`** ([`scripts/agent-status-hook.py:84-86`](../../../scripts/agent-status-hook.py)) — the hook reads the agent's working directory from its hook-event input and includes it in the POST body. The server-side handler resolves the `(cli_session_id, cwd)` pair to a conversation_id before writing. Spec text (line 526 above, "preserved at the conversation level") is accurate at the end-state level — one indicator per conversation — but the hook's transport key is still cwd; a follow-up could simplify to send `cli_session_id` only.
+
+### Known unresolved bugs in the implemented mechanism
+
+- **Combine wait-queue leak.** When an alive member is blocked in `message_and_await_agent` in source and `combine_conversations` migrates them to target, their `wait_entry` is left in `source.wait_queue` while the member object moves to `target.members_active`. Source then ends; nothing resolves the future. The blocked agent times out at the 24h MCP timeout. Discovered in the branch review; fix is to drain or relocate the moved member's wait_entries during the combine pass.
+- **Stale-alive members** — per spec line 279 (process death without SessionEnd). Still unresolved; tracked under T-003 (collab session GC).
+
+### What the spec got right and shipped cleanly
+
+To balance the deltas: routing-by-`cli_session_id`, the `Conversation` model, lifecycle states, member-state transitions, `apply_fallback` session-fallback rule (now correctly applied on `__CONVERSATION_EMPTY__` AND on force-end of dormant members AND on `cli_session_end` of blocked peers), the `open_conversation` → `enter_conversation` handshake, the 5-branch `enter_conversation` table, combine with auto-resume of dormant members via spawn-pending files, the talking-stick FIFO via `wait_queue` + `_wake_one_from`, the wake-payload semantics, the hook injector contract, `cli-session-end-hook.py` → dormant marker pipeline, hydration of conversations / members / routing maps / `cli_sessions/<id>/home_conversation_id` / `global_settings/open_conversation_id` — all shipped per the design.
 
 ## Supersedes / relates to
 

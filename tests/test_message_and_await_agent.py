@@ -1,4 +1,4 @@
-﻿"""Tests for the new message_and_await_agent talking-stick FIFO behavior."""
+"""Tests for the new message_and_await_agent talking-stick FIFO behavior."""
 
 from __future__ import annotations
 
@@ -152,9 +152,13 @@ async def test_message_and_await_rejects_missing_cli_session_id(cfg, logger):
 
 @pytest.mark.asyncio
 async def test_message_and_await_sole_alive_member_returns_empty_sentinel(cfg, logger):
-	"""Single-member conversation — calling message_and_await returns __CONVERSATION_EMPTY__ immediately."""
+	"""Single-member conversation — calling message_and_await returns __CONVERSATION_EMPTY__ immediately.
+	Per Fix Pack 1 / Bug #6 the sentinel return is now matched by actual member
+	removal: the caller is dropped from members_active, the conv transitions to
+	"ended" (no remaining members), and session-fallback rebinds/unbinds the
+	caller so the agent's "I was removed" belief matches reality."""
 	backend = RecordingBackend()
-	r, _ = _make_registry_with_one_alive_member()
+	r, conv_id = _make_registry_with_one_alive_member()
 	handlers = build_tool_handlers(cfg, r, backend, logger)
 
 	result = await handlers.message_and_await_agent(
@@ -165,6 +169,15 @@ async def test_message_and_await_sole_alive_member_returns_empty_sentinel(cfg, l
 	)
 
 	assert result == "__CONVERSATION_EMPTY__"
+	# Caller removed from members_active and recorded in history.
+	conv = r.conversations[conv_id]
+	assert "Claude-Solo" not in conv.members_active
+	assert any(m.cli_session_id == "s-solo" for m in conv.members_history)
+	# No remaining members → conversation Ended.
+	assert conv.state == "ended"
+	assert conv.ended_at is not None
+	# Session-fallback applied: global_away_mode default False → unbind.
+	assert "s-solo" not in r.session_to_conversation_id
 
 
 @pytest.mark.asyncio

@@ -48,7 +48,13 @@ The plugin install wires the skill and the Claude turn-end + agent-status hooks.
 
 	WSL must be running in bridge networking mode (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` and a firewall inbound rule for TCP 9876 from the WSL subnet.
 
-	For WSL agents, also set `SWITCHBOARD_BASE_URL=http://<windows-host-ip>:9876` in the WSL environment (e.g., in `~/.bashrc`). The hook scripts (`cli-session-end-hook.py`, `agent-status-hook.py`) read this env var to construct the correct server URL; without it they fall back to `http://127.0.0.1:9876` which is unreachable from WSL.
+	For WSL agents, also point the hook scripts at the Windows host so their HTTP callbacks don't fall back to `127.0.0.1` (unreachable from WSL). Each script reads a different env var — set all three in the WSL environment (e.g., in `~/.bashrc`):
+
+	- `SWITCHBOARD_BASE_URL=http://<windows-host-ip>:9876` — read by `cli-session-end-hook.py`.
+	- `SWITCHBOARD_AGENT_STATUS_URL=http://<windows-host-ip>:9876/agent_status` — read by `agent-status-hook.py`.
+	- `SWITCHBOARD_URL=http://<windows-host-ip>:9876/away-mode` — read by `turn-end-hook-away-mode.py`.
+
+	The fragmented var names are a known wart (the cross-cutting branch review flagged this); unifying them under `SWITCHBOARD_BASE_URL` is a hook-script cleanup that hasn't shipped yet.
 
 2. **The Python server (NSSM Windows service).** Install with `scripts/install-service.ps1`. The plugin's MCP connection is useless until this is running.
 

@@ -679,3 +679,177 @@ async def test_dispatch_loop_skips_slot_delete_when_slot_unknown(cfg, logger):
 
 	assert backend.stale_notices == [(_CWD, _SENDER)]
 	assert backend.deleted_slots == []
+
+
+# ---------------------------------------------------------------------------
+# At-desk redirect (Fix Pack 1 / Bug #1)
+# ---------------------------------------------------------------------------
+
+_AT_DESK_SENTINEL = "ERROR: John is at his desk. Ask this question via the terminal."
+
+
+@pytest.mark.asyncio
+async def test_ask_human_returns_at_desk_sentinel_when_away_mode_off(cfg, logger):
+	"""When global away mode is OFF, ask_human must NOT block. It writes the
+	question to Firebase as a one-way notify and returns the documented sentinel."""
+	backend = RecordingBackend()
+	registry = make_registry_with_loopback()
+	registry.global_away_mode = False  # John is at his desk
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	_SID = "s-at-desk-001"
+	result = await handlers.ask_human(
+		"Proceed with deletion?",
+		_SENDER,
+		cli_session_id=_SID,
+		cwd=_CWD,
+	)
+
+	assert result == _AT_DESK_SENTINEL
+	# No pending registry entry was created — we did NOT block.
+	assert registry.pending_count == 0
+	# The question landed on Firebase as a notify (not a question).
+	assert len(backend.sent_notifications) == 1
+	sender, content = backend.sent_notifications[0]
+	assert sender == _SENDER
+	assert content == "Proceed with deletion?"
+	# No "question" type write was issued.
+	assert backend.sent_questions == []
+
+
+@pytest.mark.asyncio
+async def test_ask_human_blocks_when_away_mode_on(cfg, logger):
+	"""When global away mode is ON, ask_human still blocks on the future
+	(the existing happy-path behaviour). This guards against accidentally
+	flipping the at-desk redirect from a gate into a hard short-circuit."""
+	backend = RecordingBackend()
+	registry = make_registry_with_loopback()  # global_away_mode=True by default
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	_SID = "s-away-on-001"
+	task = asyncio.create_task(
+		handlers.ask_human("Proceed?", _SENDER, cli_session_id=_SID, cwd=_CWD)
+	)
+	# Let the handler reach wait_for and register the pending entry.
+	await asyncio.sleep(0)
+	await asyncio.sleep(0)
+	assert registry.pending_count == 1
+
+	# Resolve and confirm the await completes with the resolution text.
+	conv_id = registry.session_to_conversation_id.get(_SID)
+	registry.resolve(conversation_id=conv_id, sender=_SENDER, text="yes")
+	result = await asyncio.wait_for(task, timeout=1.0)
+	assert result == "yes"
+
+
+class PendingQuestionTrackingBackend(RecordingBackend):
+	"""Records pending_questions and answered_question_msg_ids writes so we can
+	assert the 2026-05-19 spec subtrees are maintained across the ask_human
+	lifecycle."""
+
+	def __init__(self) -> None:
+		super().__init__()
+		self.pending_added: list[dict] = []
+		self.pending_removed: list[tuple[str, str]] = []
+		self.answered_marked: list[tuple[str, str]] = []
+
+	async def add_pending_question_record(
+		self,
+		conversation_id: str,
+		request_id: str,
+		*,
+		sender: str,
+		msg_id,
+		question_text: str,
+		suggestions=None,
+	) -> None:
+		self.pending_added.append({
+			"conversation_id": conversation_id,
+			"request_id": request_id,
+			"sender": sender,
+			"msg_id": msg_id,
+			"question_text": question_text,
+			"suggestions": suggestions,
+		})
+
+	async def remove_pending_question_record(
+		self,
+		conversation_id: str,
+		request_id: str,
+	) -> None:
+		self.pending_removed.append((conversation_id, request_id))
+
+	async def mark_question_answered(
+		self,
+		conversation_id: str,
+		msg_id: str,
+	) -> None:
+		self.answered_marked.append((conversation_id, msg_id))
+
+
+@pytest.mark.asyncio
+async def test_ask_human_writes_pending_questions_and_clears_on_reply(cfg, logger):
+	"""ask_human must write /conversations/<id>/pending_questions/<request_id> when
+	the question goes out, and delete it + mark answered_question_msg_ids/<msg_id>
+	when the reply lands. Persisting these subtrees is required by the 2026-05-19
+	spec; the phone-side UI uses them to render question-state indicators."""
+	backend = PendingQuestionTrackingBackend()
+	registry = make_registry_with_loopback()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	_SID = "s-pending-001"
+	task = asyncio.create_task(
+		handlers.ask_human("Proceed?", _SENDER, cli_session_id=_SID, cwd=_CWD)
+	)
+	# Give the handler a couple ticks to reach wait_for and queue the bg write.
+	for _ in range(6):
+		await asyncio.sleep(0)
+	assert registry.pending_count == 1
+	# pending_questions record written
+	assert len(backend.pending_added) == 1
+	added = backend.pending_added[0]
+	assert added["sender"] == _SENDER
+	assert added["question_text"] == "Proceed?"
+	# Capture the msg_id the handler stored for cross-check with answered set.
+	question_msg_id = added["msg_id"]
+	assert question_msg_id is not None
+
+	conv_id = registry.session_to_conversation_id.get(_SID)
+	registry.resolve(conversation_id=conv_id, sender=_SENDER, text="yes")
+	result = await asyncio.wait_for(task, timeout=1.0)
+	# Let bg writes complete.
+	for _ in range(6):
+		await asyncio.sleep(0)
+	assert result == "yes"
+	# pending_questions cleared on successful resolution
+	assert (conv_id, added["request_id"]) in backend.pending_removed
+	# msg_id marked answered
+	assert (conv_id, question_msg_id) in backend.answered_marked
+
+
+@pytest.mark.asyncio
+async def test_ask_human_removes_pending_questions_on_timeout(cfg, logger):
+	"""On TimeoutError, the pending_questions record must be cleaned up."""
+	backend = PendingQuestionTrackingBackend()
+	registry = make_registry_with_loopback()
+	# Force a tiny timeout
+	tiny_cfg = Config(
+		host=cfg.host, port=cfg.port,
+		timeout_seconds=0,
+		log_path=cfg.log_path,
+	)
+	handlers = build_tool_handlers(tiny_cfg, registry, backend, logger)
+
+	_SID = "s-pending-timeout-001"
+	result = await handlers.ask_human("Hello?", _SENDER, cli_session_id=_SID, cwd=_CWD)
+	# Allow bg writes to finish
+	for _ in range(6):
+		await asyncio.sleep(0)
+	# The TIMEOUT_SENTINEL is whatever the handler returns; whatever the value,
+	# the cleanup write must have been queued for the request that timed out.
+	assert backend.pending_added, "pending_questions record was never written"
+	req_id = backend.pending_added[0]["request_id"]
+	conv_id = registry.session_to_conversation_id.get(_SID)
+	assert (conv_id, req_id) in backend.pending_removed
+	# answered should NOT have been marked — the question wasn't answered.
+	assert backend.answered_marked == []

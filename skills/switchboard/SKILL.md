@@ -1,6 +1,6 @@
 ---
 name: switchboard
-description: Use the ask_human and notify_human MCP tools to interact with John while he's away from his desk. Invoke ask_human whenever a decision would otherwise stall the task (file overwrite, migration, ambiguous intent, permission to proceed). Invoke notify_human for non-blocking status updates.
+description: Reach John via the ask_human, notify_human, and send_document_human MCP tools ONLY when away mode is on. When John is at his desk, report through the terminal directly — sub-agents return via the Task tool to the controller, not via switchboard. When in away mode, invoke ask_human for decisions that would otherwise stall (file overwrite, migration, ambiguous intent, permission to proceed); invoke notify_human for non-blocking status updates. The server's at-desk redirect ("ERROR: John is at his desk..." plus a passive notification) is a safety net for missed gating, not the primary path — a call landing in it means the trigger condition was wrong.
 ---
 
 # CRITICAL: Away Mode Protocol
@@ -61,7 +61,7 @@ Switchboard is a local MCP gateway that lets you reach John on his phone while h
 
 ## Your `sender`
 
-`sender` is your display name in the conversation and on John's phone. Pick a **short, unique, kebab-case name** — something like `claude-win`, `claude-wsl`, `gemini-a`, or whatever fits the context. If John named you in your spawn prompt, use that name. Distinctness matters when multiple agents share a conversation: John sees names on bubble attributions; peers see names in message payloads.
+`sender` is your display name in the conversation and on John's phone. Pick a **short, unique, human-readable name** — natural casing is fine and reads better than identifier-style names on the phone. Surface labels like `Claude Win`, `Claude WSL`, or `Gemini` work; role labels like `Reviewer`, `Implementer`, or `Architect` are often clearer in multi-agent collabs. If John named you in your spawn prompt, use that name. Distinctness matters when multiple agents share a conversation: John sees names on bubble attributions; peers see names in message payloads. If you pick a name another member already holds, the server appends a numeric suffix (e.g. `Claude Win 2`).
 
 `sender` is **required** on every tool call — omitting it raises a schema error. There is no default.
 
@@ -91,7 +91,7 @@ Within a single conversation, **no two members need unique senders by rule**, bu
 `ask_human` accepts an optional `suggestions` list. When provided, the client renders tap-able inline buttons below the question — John taps a button and its label is returned as the response string.
 
 ```
-ask_human("Overwrite foo.java?", sender="claude-win", suggestions=["yes", "no", "abort"])
+ask_human("Overwrite foo.java?", sender="Claude Win", suggestions=["yes", "no", "abort"])
 # → returns "yes", "no", or "abort", or a typed free-text reply
 ```
 
@@ -120,7 +120,7 @@ ask_human(
   "Processed `CustomerMapper.java` — 3 methods rewritten.\n\n"
   "```\nPASS  CustomerMapperTest (4/4)\nPASS  IntegrationTest (12/12)\n```\n\n"
   "Ready to commit. Proceed?",
-  sender="claude-win",
+  sender="Claude Win",
   format="markdown",
   suggestions=["yes", "no"]
 )
@@ -136,7 +136,7 @@ If `ask_human` returns `"__TIMEOUT__"`, John did not reply within the window. Do
 2. Pause the current work stream. Do not take irreversible actions.
 3. When John returns, resume from where you paused.
 
-Use `notify_human` to record the pause if it is helpful context for later: `notify_human("Paused DMXRefactor — timed out waiting on approval to overwrite CustomerMapper.java", sender="claude-win")`.
+Use `notify_human` to record the pause if it is helpful context for later: `notify_human("Paused DMXRefactor — timed out waiting on approval to overwrite CustomerMapper.java", sender="Claude Win")`.
 
 ## Handling `"ERROR: ..."`
 
@@ -149,7 +149,7 @@ If `ask_human` returns a string starting with `"ERROR:"`, the gateway itself fai
 While in away mode, after completing a discrete task **that John handed to you** (not merely an intermediate step within that task — not running tests, not reading files, not committing), call:
 
 ```
-ask_human("Task done: <one-line summary>. What's next?", sender="claude-win")
+ask_human("Task done: <one-line summary>. What's next?", sender="Claude Win")
 ```
 
 instead of ending your turn. This keeps the session alive so John can queue additional work from his phone without needing to re-spawn you.
@@ -173,7 +173,7 @@ Use this to deliver generated reports, diffs, logs, or spec documents to John's 
 
 **Example:**
 ```
-send_document_human("logs/migration-diff.txt", sender="claude-win", caption="Schema diff for review")
+send_document_human("logs/migration-diff.txt", sender="Claude Win", caption="Schema diff for review")
 ```
 
 ---
@@ -214,7 +214,7 @@ When you leave a conversation (via `leave_conversation`, force-end, or combine-o
 1. **Already in a conversation, no open conversation (or open = yours):** queues you in your current conversation's wait queue without writing a speak event. Blocks until a peer speaks. Use this when you've just been moved into a conversation (via combine/spawn-into-existing) and want to receive context before introducing yourself.
 2. **Not in any conversation + open conversation exists:** you are added to the open conversation as a new member; queued in its wait queue; blocks for intro.
 3. **In conversation X + open conversation Y (X ≠ Y):** you migrate from X to Y (X's session-fallback rule applies to your departure); added to Y; queued; blocks for intro.
-4. **Not in any conversation + no open conversation:** returns `"ERROR: no open conversation; ask John to open one or have an agent call open_conversation"`.
+4. **Not in any conversation + no open conversation:** returns `"ERROR: no open conversation. Ask John to open one on the phone, or have an agent already in a conversation call open_conversation."`.
 5. **Already in a conversation + no open conversation:** queues you in your current conversation's wait queue without migration (same as case 1).
 
 When woken: returns full conversation history if you just joined as a new member; returns delta since your `last_seen_seq` if you were already a member.
@@ -231,11 +231,11 @@ Agent A calls `open_conversation(sender, title)` to promote their conversation t
 
 ```
 # Agent A (already in their own conversation):
-open_conversation(sender="claude-win", title="Switchboard refactor collab")
+open_conversation(sender="Claude Win", title="Switchboard refactor collab")
 # → "ok. open_conversation = <conv-id>"
 
 # Agent B (in their own separate conversation, told to join):
-enter_conversation(sender="claude-wsl")
+enter_conversation(sender="Claude WSL")
 # → blocks; returns full conversation history when Agent A next speaks
 ```
 
@@ -243,16 +243,16 @@ enter_conversation(sender="claude-wsl")
 
 Two ongoing conversations merge into one. Call `combine_conversations(source_id, target_id)` from any agent (or John triggers it from the phone). Source ends; its members are moved to target. Dormant source members get auto-resumed via the launcher.
 
-To find the conversation_id you need: `lookup_conversation_ids(title_contains="keyword")` or `lookup_conversation_ids(sender_contains="claude-win")`.
+To find the conversation_id you need: `lookup_conversation_ids(title_contains="keyword")` or `lookup_conversation_ids(sender_contains="Claude Win")`.
 
 ```
 # Find your partner's conversation:
-lookup_conversation_ids(sender_contains="claude-wsl")
+lookup_conversation_ids(sender_contains="Claude WSL")
 # → ["abc123"]
 
 # Merge them in:
 combine_conversations(source_id="abc123", target_id="<your-current-conv-id>")
-# → "ok. Moved N members..."
+# → "ok. combined <source_id> into <target_id> (N member(s))"
 ```
 
 After being moved into a conversation via combine, call `enter_conversation(sender)` to queue yourself for an intro — peers will include your new context when they next speak.
@@ -274,7 +274,7 @@ These rules apply whenever you are in a multi-member conversation using `message
 1. Use `message_and_await_agent(sender="<you>", message="...")` to communicate with peers. Always pass your own sender.
 2. Use `message_and_await_agent` only to speak to peers — not to John. For human communication use `ask_human` (away mode) or terminal output (at-desk), with `notify_human` for non-blocking status updates to John.
 3. No meta-commentary. Respond with content directly.
-4. **`message` is required and non-empty.** Calling with an empty or absent `message` returns `"ERROR: message is required"`. The "listen without speaking" use case is served by `enter_conversation()`.
+4. **`message` is required and non-empty.** Calling with an empty or absent `message` returns `"ERROR: message is required. The 'listen without speaking' use case is enter_conversation()."`. The "listen without speaking" use case is served by `enter_conversation()`.
 5. **Mid-collab symmetric obligation.** Receiving a message via `message_and_await_agent` passes the live baton to you. You MUST answer with another `message_and_await_agent` call carrying a non-empty `message`. Two failure modes are forbidden:
    - **No silent exit.** Ending your turn without replying leaves peers blocked indefinitely. Always pass the baton back or call `leave_conversation`.
    - **No deadlocking empty calls mid-session.** If your peer is blocked and you're about to call with no message, use `enter_conversation()` instead.

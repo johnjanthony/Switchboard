@@ -1,4 +1,8 @@
-"""Token-bucket rate limiter for per-channel outbound message throttling."""
+"""Token-bucket rate limiter for outbound message throttling.
+
+Keyed on whatever string the caller passes — today that's `conversation_id`;
+historically it was `channel_id`. The limiter is key-agnostic.
+"""
 
 from __future__ import annotations
 
@@ -13,9 +17,9 @@ _BUCKET_SWEEP_INTERVAL_SECONDS = 300.0
 
 
 class RateLimiter:
-	"""Per-channel token-bucket rate limiter.
+	"""Per-key token-bucket rate limiter.
 
-	Each channel starts with a full bucket (burst = rate_per_minute tokens).
+	Each key starts with a full bucket (burst = rate_per_minute tokens).
 	Tokens refill continuously at rate/60 per second. When the bucket is empty,
 	consume() returns False; callers should return an error to the agent.
 
@@ -25,7 +29,7 @@ class RateLimiter:
 
 	def __init__(self, rate_per_minute: int) -> None:
 		self._rate = rate_per_minute
-		# channel_id -> (tokens, last_refill_monotonic)
+		# key -> (tokens, last_refill_monotonic)
 		self._buckets: dict[str, tuple[float, float]] = {}
 		self._last_sweep: float = 0.0
 
@@ -47,14 +51,14 @@ class RateLimiter:
 		self._last_sweep = now
 		cap = float(self._rate)
 		stale = [
-			cid for cid, (tokens, last_refill) in self._buckets.items()
+			k for k, (tokens, last_refill) in self._buckets.items()
 			if tokens >= cap and (now - last_refill) >= _BUCKET_IDLE_TTL_SECONDS
 		]
-		for cid in stale:
-			self._buckets.pop(cid, None)
+		for k in stale:
+			self._buckets.pop(k, None)
 
-	def consume(self, channel_id: str) -> bool:
-		"""Attempt to consume one token for channel_id.
+	def consume(self, key: str) -> bool:
+		"""Attempt to consume one token for key.
 
 		Returns True if the call is allowed, False if rate-limited.
 		On rejection, the refill clock is updated to the current time so that
@@ -66,14 +70,14 @@ class RateLimiter:
 
 		now = time.monotonic()
 		self._sweep_idle(now)
-		tokens, last_refill = self._buckets.get(channel_id, (float(self._rate), now))
+		tokens, last_refill = self._buckets.get(key, (float(self._rate), now))
 
 		elapsed = now - last_refill
 		tokens = min(float(self._rate), tokens + elapsed * (self._rate / 60.0))
 
 		if tokens >= 1.0:
-			self._buckets[channel_id] = (tokens - 1.0, now)
+			self._buckets[key] = (tokens - 1.0, now)
 			return True
 
-		self._buckets[channel_id] = (tokens, now)
+		self._buckets[key] = (tokens, now)
 		return False

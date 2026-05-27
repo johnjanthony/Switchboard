@@ -279,33 +279,3 @@ async def test_mark_question_cancelled_noop_when_not_found():
 	assert backend._cancelled_msg_ids == []
 
 
-class _MirrorFakeBackend(FirebaseBackend):
-	def __init__(self) -> None:
-		self._mirror_writes: list[tuple[str | None, bool]] = []
-		self._loop = asyncio.get_running_loop()
-		self._logger = None
-		self._storage_bucket = None
-
-	async def write_away_mode_mirror(self, cwd: str | None, active: bool) -> None:
-		self._mirror_writes.append((cwd, active))
-
-
-@pytest.mark.asyncio
-async def test_write_away_mode_mirror_global():
-	backend = _MirrorFakeBackend()
-	await backend.write_away_mode_mirror(None, True)
-	assert backend._mirror_writes == [(None, True)]
-
-
-@pytest.mark.asyncio
-async def test_write_away_mode_mirror_per_cwd():
-	backend = _MirrorFakeBackend()
-	await backend.write_away_mode_mirror("c:/work/proj", False)
-	assert backend._mirror_writes == [("c:/work/proj", False)]
-
-
-@pytest.mark.asyncio
-async def test_write_away_mode_mirror_accepts_false_global():
-	backend = _MirrorFakeBackend()
-	await backend.write_away_mode_mirror(None, False)
-	assert backend._mirror_writes[0] == (None, False)

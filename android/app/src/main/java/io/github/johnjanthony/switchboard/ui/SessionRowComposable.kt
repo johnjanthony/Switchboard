@@ -53,19 +53,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import io.github.johnjanthony.switchboard.network.Channel
-import io.github.johnjanthony.switchboard.network.ConversationSummary
+import io.github.johnjanthony.switchboard.network.ConversationRow
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun SessionRow(
-	channel: Channel,
+	row: ConversationRow,
 	awayActive: Boolean,
 	onClick: () -> Unit,
 	onHide: () -> Unit,
 	onUnhide: () -> Unit,
-	onExitAway: () -> Unit,
-	// New T-027 callbacks — default no-ops preserve backward compat with existing callers
-	conversationSummary: ConversationSummary? = null,
 	onResumeClick: (conversationId: String) -> Unit = {},
 	onCombineClick: (conversationId: String) -> Unit = {},
 	onEndClick: (conversationId: String) -> Unit = {},
@@ -74,29 +71,19 @@ fun SessionRow(
 	var showHideConfirm by remember { mutableStateOf(false) }
 	var showEndConfirm by remember { mutableStateOf(false) }
 
-	val isOpenConversation = conversationSummary?.isOpenConversation == true
-	val isResumable = conversationSummary?.isResumable == true
-	val isActive = conversationSummary?.state == "active" || conversationSummary == null
-	val staleWarning = conversationSummary?.staleSessionWarning == true
+	val isOpenConversation = row.isOpenConversation
+	val isResumable = row.isResumable
+	val isActive = row.state == "active"
+	val staleWarning = row.staleSessionWarning
+	val agentStatus = row.agentStatus
+	val displayTitle = row.title
+	val roster = row.memberRoster
 
-	// Resolve agent status from the conversation path (new) or fall back to the legacy
-	// channel path when no conversationSummary is available.
-	val agentStatus: io.github.johnjanthony.switchboard.network.AgentStatus? = if (conversationSummary != null) {
-		val memberSender = conversationSummary.members
-			.firstOrNull { it.cwd.equals(channel.cwdCanonical, ignoreCase = true) }
-			?.sender
-		memberSender?.let { conversationSummary.agentStatuses[it] }
-	} else {
-		channel.agentStatus
-	}
-
-	// Hide confirmation dialog
 	if (showHideConfirm) {
-		val label = channel.title ?: leafName(channel.cwdCanonical)
 		AlertDialog(
 			onDismissRequest = { showHideConfirm = false },
 			title = { Text("Hide conversation?") },
-			text = { Text("Hide '$label'? You can unhide it later from the menu.") },
+			text = { Text("Hide '$displayTitle'? You can unhide it later from the menu.") },
 			confirmButton = {
 				TextButton(onClick = { onHide(); showHideConfirm = false }) { Text("Hide") }
 			},
@@ -106,21 +93,18 @@ fun SessionRow(
 		)
 	}
 
-	// End conversation confirmation dialog — Task 37 wording
 	if (showEndConfirm) {
-		val label = channel.title ?: leafName(channel.cwdCanonical)
-		val convId = conversationSummary?.id ?: ""
 		AlertDialog(
 			onDismissRequest = { showEndConfirm = false },
 			title = { Text("End conversation?") },
 			text = {
 				Text(
-					"End conversation '$label'? Members will fall back to their home conversation " +
+					"End conversation '$displayTitle'? Members will fall back to their home conversation " +
 					"(if away mode is on) or to terminal output (if off).",
 				)
 			},
 			confirmButton = {
-				TextButton(onClick = { onEndClick(convId); showEndConfirm = false }) { Text("End") }
+				TextButton(onClick = { onEndClick(row.id); showEndConfirm = false }) { Text("End") }
 			},
 			dismissButton = {
 				TextButton(onClick = { showEndConfirm = false }) { Text("Cancel") }
@@ -132,22 +116,19 @@ fun SessionRow(
 		confirmValueChange = { value ->
 			when (value) {
 				SwipeToDismissBoxValue.StartToEnd -> {
-					// Swipe-right → end conversation (Task 40)
 					showEndConfirm = true
-					false // Snap back
+					false
 				}
 				SwipeToDismissBoxValue.EndToStart -> {
-					// Swipe-left → hide with confirmation (Task 40)
 					showHideConfirm = true
-					false // Snap back
+					false
 				}
 				else -> false
 			}
 		}
 	)
 
-	// K6: Reset swipe state if hidden status changes (e.g. user toggles "Show Hidden")
-	LaunchedEffect(channel.hidden) {
+	LaunchedEffect(row.hidden) {
 		if (swipeState.currentValue != SwipeToDismissBoxValue.Settled) {
 			swipeState.reset()
 		}
@@ -158,8 +139,8 @@ fun SessionRow(
 		backgroundContent = {
 			val direction = swipeState.dismissDirection
 			val color = when (direction) {
-				SwipeToDismissBoxValue.StartToEnd -> Color(0xFFF44336) // Red for End
-				SwipeToDismissBoxValue.EndToStart -> Color(0xFF9E9E9E) // Grey for Hide
+				SwipeToDismissBoxValue.StartToEnd -> Color(0xFFF44336)
+				SwipeToDismissBoxValue.EndToStart -> Color(0xFF9E9E9E)
 				else -> Color.Transparent
 			}
 			val alignment = when (direction) {
@@ -181,16 +162,11 @@ fun SessionRow(
 				contentAlignment = alignment
 			) {
 				if (icon != null) {
-					Icon(
-						imageVector = icon,
-						contentDescription = null,
-						tint = Color.White
-					)
+					Icon(imageVector = icon, contentDescription = null, tint = Color.White)
 				}
 			}
 		}
 	) {
-		// Task 39: openConversation accent border
 		val rowModifier = if (isOpenConversation) {
 			Modifier
 				.background(MaterialTheme.colorScheme.surface)
@@ -204,11 +180,10 @@ fun SessionRow(
 				modifier = Modifier
 					.fillMaxWidth()
 					.combinedClickable(onClick = onClick, onLongClick = { contextMenuOpen = true })
-					.alpha(if (channel.hidden) 0.5f else 1f)
+					.alpha(if (row.hidden) 0.5f else 1f)
 					.padding(horizontal = 16.dp, vertical = 12.dp),
 				verticalAlignment = Alignment.CenterVertically,
 			) {
-				// Task 39: "open" badge on leading edge when this is the open conversation
 				if (isOpenConversation) {
 					Text(
 						"open",
@@ -256,23 +231,23 @@ fun SessionRow(
 					Text(
 						text = buildAnnotatedString {
 							withStyle(style = MaterialTheme.typography.titleMedium.toSpanStyle()) {
-								append(channel.title ?: leafName(channel.cwdCanonical))
+								append(displayTitle)
 							}
-							if (channel.cwdCanonical.isNotEmpty()) {
+							if (roster.isNotEmpty()) {
 								withStyle(
 									style = MaterialTheme.typography.bodySmall.toSpanStyle().copy(
 										color = MaterialTheme.colorScheme.onSurfaceVariant,
-										fontStyle = if (channel.hidden) FontStyle.Italic else FontStyle.Normal,
+										fontStyle = if (row.hidden) FontStyle.Italic else FontStyle.Normal,
 									)
 								) {
-									append(" (${leafName(channel.cwdCanonical)})")
+									append(" ($roster)")
 								}
 							}
 						},
 						maxLines = 1,
 						overflow = TextOverflow.Ellipsis,
 					)
-					val preview = channel.preview
+					val preview = row.preview
 					if (!preview.isNullOrBlank()) {
 						Text(
 							text = preview,
@@ -285,7 +260,6 @@ fun SessionRow(
 				}
 				Column(horizontalAlignment = Alignment.End) {
 					Row(verticalAlignment = Alignment.CenterVertically) {
-						// Task 39: stale session warning indicator
 						if (staleWarning) {
 							Text(
 								"⚠",
@@ -295,7 +269,7 @@ fun SessionRow(
 							Spacer(Modifier.width(4.dp))
 						}
 						Text(
-							text = formatRelativeTime(channel.lastActivityAt),
+							text = formatRelativeTime(row.lastActivityAt),
 							style = MaterialTheme.typography.labelSmall,
 							color = MaterialTheme.colorScheme.onSurfaceVariant,
 						)
@@ -308,37 +282,32 @@ fun SessionRow(
 							)
 							Spacer(Modifier.width(6.dp))
 						}
-						if (channel.hidden) {
+						if (row.hidden) {
 							Text(
 								"hidden", style = MaterialTheme.typography.labelSmall,
 								color = MaterialTheme.colorScheme.outline
 							)
 							Spacer(Modifier.width(6.dp))
 						}
-						if (channel.displayCount > 0) {
-							Badge { Text(channel.displayCount.toString()) }
+						if (row.displayCount > 0) {
+							Badge { Text(row.displayCount.toString()) }
 						}
 					}
 				}
 			}
 			DropdownMenu(expanded = contextMenuOpen, onDismissRequest = { contextMenuOpen = false }) {
-				// Task 35: Resume menu item
-				if (conversationSummary != null) {
-					DropdownMenuItem(
-						text = { Text("Resume") },
-						enabled = isResumable,
-						onClick = { onResumeClick(conversationSummary.id); contextMenuOpen = false },
-					)
-				}
-				// Task 35: Combine into… menu item
-				if (conversationSummary != null && isActive) {
+				DropdownMenuItem(
+					text = { Text("Resume") },
+					enabled = isResumable,
+					onClick = { onResumeClick(row.id); contextMenuOpen = false },
+				)
+				if (isActive) {
 					DropdownMenuItem(
 						text = { Text("Combine into…") },
-						onClick = { onCombineClick(conversationSummary.id); contextMenuOpen = false },
+						onClick = { onCombineClick(row.id); contextMenuOpen = false },
 					)
 				}
-				// Hide / Unhide
-				if (channel.hidden) {
+				if (row.hidden) {
 					DropdownMenuItem(
 						text = { Text("Unhide channel") },
 						onClick = { onUnhide(); contextMenuOpen = false },
@@ -349,8 +318,7 @@ fun SessionRow(
 						onClick = { showHideConfirm = true; contextMenuOpen = false },
 					)
 				}
-				// Task 37: End conversation — Active conversations only
-				if (conversationSummary != null && isActive) {
+				if (isActive) {
 					DropdownMenuItem(
 						text = { Text("End conversation") },
 						onClick = { showEndConfirm = true; contextMenuOpen = false },
@@ -358,6 +326,59 @@ fun SessionRow(
 				}
 			}
 		}
+	}
+}
+
+/**
+ * Static row for the synthetic `_admin` pseudo-conversation (admin_notifications surface).
+ * Lives outside the conversation model and renders as a passive notification banner —
+ * no swipe-to-hide, no resume/combine/end menu. Clicking opens the legacy session screen
+ * (admin route) to view notifications.
+ */
+@Composable
+fun AdminRow(
+	channel: Channel,
+	onClick: () -> Unit,
+) {
+	Box(
+		modifier = Modifier
+			.fillMaxWidth()
+			.background(MaterialTheme.colorScheme.surface)
+	) {
+		Row(
+			modifier = Modifier
+				.fillMaxWidth()
+				.padding(horizontal = 16.dp, vertical = 12.dp),
+			verticalAlignment = Alignment.CenterVertically,
+		) {
+			Column(modifier = Modifier.weight(1f)) {
+				Text(
+					text = channel.title ?: "Admin",
+					style = MaterialTheme.typography.titleMedium,
+					maxLines = 1,
+					overflow = TextOverflow.Ellipsis,
+				)
+				val preview = channel.preview
+				if (!preview.isNullOrBlank()) {
+					Text(
+						text = preview,
+						style = MaterialTheme.typography.bodySmall,
+						color = MaterialTheme.colorScheme.onSurfaceVariant,
+						maxLines = 1,
+						overflow = TextOverflow.Ellipsis,
+					)
+				}
+			}
+			if (channel.unreadCount > 0) {
+				Badge { Text(channel.unreadCount.toString()) }
+			}
+		}
+		// Click target overlay so the row still feels clickable when tapped.
+		Box(
+			modifier = Modifier
+				.fillMaxSize()
+				.combinedClickable(onClick = onClick, onLongClick = onClick)
+		)
 	}
 }
 

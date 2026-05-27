@@ -346,3 +346,61 @@ async def test_handle_resume_keeps_source_active_with_remaining_alive(tmp_path):
 	assert "alive-agent" in source.members_active
 	# Dormant member moved to new conv
 	assert "dormant-agent" not in source.members_active
+
+
+@pytest.mark.asyncio
+async def test_handle_resume_flips_members_to_alive(tmp_path):
+	"""Resumed members must have alive=True so message_and_await_agent's
+	alive-peer count includes them. Without this, a two-agent resume yields
+	__CONVERSATION_EMPTY__ for both agents on their first speak attempt."""
+	from server.spawn import SpawnHandler
+	from server.registry import Conversation, ConversationMember
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	registry = Registry()
+
+	source = Conversation(id="conv-src", title="Source")
+	m1 = ConversationMember(
+		cli_session_id="sess-1", sender="claude-1", cwd="C:/Work/X",
+		surface="windows", joined_at=0.0, alive=False,
+		session_ended_at=123.0, session_end_reason="hook",
+	)
+	m2 = ConversationMember(
+		cli_session_id="sess-2", sender="claude-2", cwd="C:/Work/X",
+		surface="windows", joined_at=0.0, alive=False,
+		session_ended_at=124.0, session_end_reason="hook",
+	)
+	source.members_active["claude-1"] = m1
+	source.members_active["claude-2"] = m2
+	registry.conversations["conv-src"] = source
+
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle_resume({
+			"type": "resume",
+			"source_conversation_id": "conv-src",
+			"prompt": None,
+			"issued_at": "2026-05-25T00:00:00Z",
+		})
+
+	new_convs = [c for cid, c in registry.conversations.items() if cid != "conv-src"]
+	assert len(new_convs) == 1
+	new_conv = new_convs[0]
+	# Both resumed members must be alive=True with dormancy fields cleared
+	for sender in ("claude-1", "claude-2"):
+		m = new_conv.members_active[sender]
+		assert m.alive is True, f"{sender} should be alive after resume"
+		assert m.session_ended_at is None, f"{sender} dormancy ts should be cleared"
+		assert m.session_end_reason is None, f"{sender} dormancy reason should be cleared"
+		assert m.left_at is None, f"{sender} left_at should be cleared"
+
+	# Regression check: alive-peer count from claude-2's perspective should
+	# see claude-1 (the bug we're guarding against).
+	alive_peers = [
+		m for m in new_conv.members_active.values()
+		if m.alive and m.cli_session_id != "sess-2"
+	]
+	assert len(alive_peers) == 1
+	assert alive_peers[0].sender == "claude-1"

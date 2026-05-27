@@ -67,5 +67,22 @@ async def handle_session_end(
 			backend.write_conversation_message(conversation_id, dormancy_msg),
 			label=f"fb_write_dormancy_msg:{conversation_id}:{target.sender}",
 		)
-	# Future: wake FIFO-oldest blocked peer + cancel pending ask_human futures for this session.
-	# These hooks depend on helpers that don't exist yet; later tasks add them.
+	# Wake every waiter blocked in message_and_await_agent on this conv.
+	# Resolve their futures with the dormancy_msg text so the peer surfaces
+	# from its wait_for and can decide what to do next on its own turn.
+	# Don't hold the conv.lock when resolving futures: future callbacks may
+	# schedule async work, and we're not inside the lock here (the route
+	# handler in main.py doesn't take it). Snapshot then clear, then resolve.
+	to_wake = list(conv.wait_queue)
+	conv.wait_queue.clear()
+	for entry in to_wake:
+		fut = entry.get("future")
+		if fut is not None and not fut.done():
+			fut.set_result(dormancy_msg["text"])
+	# Cancel any pending ask_human futures owned by this departed member —
+	# their answer can never arrive (the agent's session is gone), so freeing
+	# the future immediately avoids a 24h _TIMEOUT wait if the agent ever
+	# reconnects mid-block.
+	for pending in registry.pending_for_conversation(conversation_id):
+		if pending.sender == target.sender:
+			registry.remove(conversation_id, pending.sender)

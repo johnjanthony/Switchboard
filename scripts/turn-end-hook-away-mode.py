@@ -27,7 +27,8 @@ import sys
 import urllib.error
 import urllib.request
 
-DEFAULT_AWAY_MODE_URL = "http://127.0.0.1:9876/away-mode"
+DEFAULT_BASE_URL = "http://127.0.0.1:9876"
+AWAY_MODE_PATH = "/away-mode"
 TIMEOUT_SECONDS = 0.5
 
 REDIRECT_REASON_AWAY_MODE = (
@@ -91,7 +92,8 @@ def main() -> int:
 	if not cwd:
 		return 0  # fail-open without cwd
 
-	away_url = os.environ.get("SWITCHBOARD_URL", DEFAULT_AWAY_MODE_URL)
+	base_url = os.environ.get("SWITCHBOARD_BASE_URL", DEFAULT_BASE_URL)
+	away_url = base_url + AWAY_MODE_PATH
 	if not _fetch_active(away_url, cwd):
 		return 0  # away-mode inactive — don't block
 

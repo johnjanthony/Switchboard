@@ -51,77 +51,109 @@ import io.github.johnjanthony.switchboard.network.Channel
 import androidx.wear.input.RemoteInputIntentHelper
 
 class MainActivity : ComponentActivity() {
-    private val viewModel: MainViewModel by viewModels()
+	private val viewModel: MainViewModel by viewModels()
+	// Holds the conv_id (post-Page-A FCM payload) or legacy cwdKey from a deep
+	// link until WearApp's LaunchedEffect can resolve it against activeConversations
+	// and project to a cwdKey for the legacy ChannelListScreen / MessageListScreen.
+	private val pendingDeepLinkConvId = mutableStateOf<String?>(null)
 
-    private val requestPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { /* ignored */ }
+	private val requestPermissionLauncher = registerForActivityResult(
+		ActivityResultContracts.RequestPermission()
+	) { /* ignored */ }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        requestNotificationPermission()
-        handleNotificationIntent(intent)
-        setContent {
-            WearApp(viewModel)
-        }
-    }
+	override fun onCreate(savedInstanceState: Bundle?) {
+		super.onCreate(savedInstanceState)
+		requestNotificationPermission()
+		handleNotificationIntent(intent)
+		setContent {
+			WearApp(viewModel, pendingDeepLinkConvId)
+		}
+	}
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        handleNotificationIntent(intent)
-    }
+	override fun onNewIntent(intent: Intent) {
+		super.onNewIntent(intent)
+		setIntent(intent)
+		handleNotificationIntent(intent)
+	}
 
-    private fun requestNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }
-    }
+	private fun requestNotificationPermission() {
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+			if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+				!= PackageManager.PERMISSION_GRANTED
+			) {
+				requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+			}
+		}
+	}
 
-    private fun handleNotificationIntent(intent: Intent?) {
-        intent?.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_AGENT_ID)?.let { cwdKey ->
-            viewModel.selectChannel(cwdKey)
-        }
-        intent?.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_MESSAGE_ID)?.let { messageId ->
-            viewModel.setPendingDeepLinkMessageId(messageId)
-        }
-    }
+	private fun handleNotificationIntent(intent: Intent?) {
+		intent?.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_AGENT_ID)?.let { value ->
+			pendingDeepLinkConvId.value = value
+		}
+		intent?.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_MESSAGE_ID)?.let { messageId ->
+			viewModel.setPendingDeepLinkMessageId(messageId)
+		}
+	}
 }
 
 @Composable
-fun WearApp(viewModel: MainViewModel) {
-    val context = LocalContext.current
-    val navController = rememberSwipeDismissableNavController()
-    val selectedCwdKey by viewModel.selectedCwdKey.collectAsState()
-    val pendingExitToggle by viewModel.pendingExitToggle.collectAsState()
+fun WearApp(viewModel: MainViewModel, pendingDeepLinkConvId: MutableState<String?>) {
+	val context = LocalContext.current
+	val navController = rememberSwipeDismissableNavController()
+	val selectedCwdKey by viewModel.selectedCwdKey.collectAsState()
+	val pendingExitToggle by viewModel.pendingExitToggle.collectAsState()
+	val activeConversations by viewModel.activeConversations.collectAsState()
+	val channels by viewModel.channels.collectAsState()
 
-    // Automatic Google Sign-In on first start
-    LaunchedEffect(Unit) {
-        if (FirebaseAuth.getInstance().currentUser == null) {
-            GoogleAuthHelper.signInWithGoogle(context)
-        }
-    }
+	// Automatic Google Sign-In on first start
+	LaunchedEffect(Unit) {
+		if (FirebaseAuth.getInstance().currentUser == null) {
+			GoogleAuthHelper.signInWithGoogle(context)
+		}
+	}
 
-    LaunchedEffect(selectedCwdKey) {
-        val key = selectedCwdKey
-        if (key != null) {
-            val currentRoute = navController.currentBackStackEntry?.destination?.route
-            if (currentRoute != "message_list/$key") {
-                navController.navigate("message_list/$key") {
-                    // Pop up to the start destination to avoid building a deep stack
-                    popUpTo("channel_list") {
-                        saveState = true
-                    }
-                    launchSingleTop = true
-                    restoreState = true
-                }
-            }
-            viewModel.clearSelectedChannel()
-        }
-    }
+	// FCM deep-link resolution. Post-Page-A migration the FCM payload's
+	// EXTRA_AGENT_ID is a conv_id (e.g. "conv-..."); the Wear app's legacy
+	// _channels map is still cwdKey-keyed (see backlog T-031). Project the
+	// conv_id to a cwdKey by looking up the conversation's first member with
+	// a known cwd that already has a channel entry. Legacy callers (any
+	// pre-Page-A code path still emitting a cwdKey) pass through unchanged.
+	val pendingDeepConvId by pendingDeepLinkConvId
+	LaunchedEffect(pendingDeepConvId, activeConversations, channels) {
+		val value = pendingDeepConvId ?: return@LaunchedEffect
+		if (value.startsWith("conv-")) {
+			val summary = activeConversations.firstOrNull { it.id == value } ?: return@LaunchedEffect
+			val cwdKey = summary.members
+				.asSequence()
+				.map { toFirebaseKey(it.cwd) }
+				.firstOrNull { it.isNotEmpty() && channels.containsKey(it) }
+				?: return@LaunchedEffect
+			viewModel.selectChannel(cwdKey)
+			pendingDeepLinkConvId.value = null
+		} else {
+			// Legacy: treat as a literal cwdKey (the pre-migration FCM payload shape).
+			viewModel.selectChannel(value)
+			pendingDeepLinkConvId.value = null
+		}
+	}
+
+	LaunchedEffect(selectedCwdKey) {
+		val key = selectedCwdKey
+		if (key != null) {
+			val currentRoute = navController.currentBackStackEntry?.destination?.route
+			if (currentRoute != "message_list/$key") {
+				navController.navigate("message_list/$key") {
+					// Pop up to the start destination to avoid building a deep stack
+					popUpTo("channel_list") {
+						saveState = true
+					}
+					launchSingleTop = true
+					restoreState = true
+				}
+			}
+			viewModel.clearSelectedChannel()
+		}
+	}
     
     MaterialTheme {
         AppScaffold {
@@ -498,5 +530,25 @@ fun MarkdownText(content: String, format: String, color: androidx.compose.ui.gra
 
 private fun leafName(cwdCanonical: String): String {
     return cwdCanonical.trimEnd('/').substringAfterLast('/')
+}
+
+/**
+ * Convert a canonical cwd path into the cwdKey form used by the legacy
+ * channels-keyed RTDB schema. Matches the encoding used inside
+ * MainViewModel (`toFirebaseKey`): '/' becomes '__', '_' becomes '____',
+ * everything else verbatim. Kept here so the FCM deep-link resolver (which
+ * maps a conv_id's member.cwd back to the legacy key) doesn't reach into
+ * the ViewModel's private helper.
+ */
+private fun toFirebaseKey(cwd: String): String {
+	val sb = StringBuilder()
+	for (ch in cwd) {
+		when (ch) {
+			'/' -> sb.append("__")
+			'_' -> sb.append("____")
+			else -> sb.append(ch)
+		}
+	}
+	return sb.toString()
 }
 

@@ -39,6 +39,32 @@ def apply_fallback(registry, session_id: str, backend=None) -> None:
 	import time
 	from server.registry import Conversation
 	from server.gateway.bg_tasks import _spawn_bg
+
+	# Dormant-session short-circuit: a session that is not in
+	# session_to_conversation_id has already had its binding cleared (by
+	# cli_session_end when its CLI process died). It will never make another
+	# MCP call, so creating a new conversation for it would just spawn an
+	# orphan. Instead, do cleanup-only: if the session's home pointer points
+	# at a conversation that no longer exists or is Ended, clear it; if it
+	# points at a still-active conversation, leave it alone (it's a valid
+	# resume target). Never call unbind_session here (already unbound) and
+	# never mint a new conversation for a dead session.
+	is_dormant = session_id not in registry.session_to_conversation_id
+	if is_dormant:
+		home_id = registry.session_home_conversation_id.get(session_id)
+		if home_id is None:
+			return
+		home_conv = registry.conversations.get(home_id)
+		home_missing_or_ended = home_conv is None or home_conv.state == "ended"
+		if home_missing_or_ended:
+			registry.session_home_conversation_id.pop(session_id, None)
+			if backend is not None:
+				_spawn_bg(
+					backend.set_session_home(session_id, None),
+					label=f"fb_clear_session_home:{session_id}",
+				)
+		return
+
 	home_id = registry.session_home_conversation_id.get(session_id)
 	home_state = None
 	if home_id and home_id in registry.conversations:

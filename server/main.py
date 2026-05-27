@@ -37,15 +37,11 @@ from server.firebase_supervisor import LoopSupervisor
 
 
 def _build_away_mode_route(registry: Registry):
-	from server.canonicalization import canonicalize_cwd, CanonicalizationError
+	"""GET /away-mode — returns the global away-mode flag.
+	The route accepts but ignores a `?cwd=...` query param sent by older
+	turn-end-hook deployments; the response is invariant of cwd post-conversations
+	redesign. Hook-side fail-open on missing cwd is unchanged."""
 	async def away_mode(request: Request):
-		cwd_raw = request.query_params.get("cwd", "")
-		if not cwd_raw:
-			return JSONResponse({"active": False})
-		try:
-			canonical = canonicalize_cwd(cwd_raw)
-		except CanonicalizationError:
-			return JSONResponse({"active": False})
 		return JSONResponse({"active": bool(registry.global_away_mode)})
 	return away_mode
 
@@ -92,13 +88,12 @@ def _build_agent_status_route(handlers):
 			body = await request.json()
 		except Exception:
 			return JSONResponse({}, status_code=200)
-		cwd = body.get("cwd")
+		session_id = body.get("session_id")
 		state = body.get("state")
 		detail = body.get("detail")
-		session_id = body.get("session_id")
-		if not isinstance(cwd, str) or not cwd or not isinstance(state, str) or not state:
+		if not isinstance(session_id, str) or not session_id or not isinstance(state, str) or not state:
 			return JSONResponse({}, status_code=200)
-		await handlers.handle_agent_status(cwd, state, detail, session_id=session_id if isinstance(session_id, str) else None)
+		await handlers.handle_agent_status(session_id, state, detail)
 		return JSONResponse({}, status_code=200)
 	return agent_status
 

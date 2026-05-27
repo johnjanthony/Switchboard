@@ -61,4 +61,4 @@ Write-Host "Starting $ServiceName..."
 nssm start $ServiceName
 Start-Sleep -Seconds 3
 nssm status $ServiceName
-Write-Host "Done. MCP endpoint: http://localhost:9876/sse"
+Write-Host "Done. MCP endpoint: http://localhost:9876/mcp"

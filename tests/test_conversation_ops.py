@@ -92,7 +92,7 @@ def test_create_active_conversation_for_same_session_race():
 
 def test_add_member_sender_collision_disambiguates():
 	"""When two sessions join the same conversation with the same sender name,
-	the second gets an auto-numbered suffix (e.g. Claude-2)."""
+	the second gets an auto-numbered space-suffix (e.g. 'Claude 2')."""
 	from server.conversation_ops import _add_member
 
 	async def run():
@@ -109,7 +109,7 @@ def test_add_member_sender_collision_disambiguates():
 
 		# Both members exist, both alive, distinct session ids
 		assert "Claude" in conv.members_active
-		assert "Claude-2" in conv.members_active
+		assert "Claude 2" in conv.members_active
 		assert conv.members_active["Claude"].cli_session_id == "s-a"
-		assert conv.members_active["Claude-2"].cli_session_id == "s-b"
+		assert conv.members_active["Claude 2"].cli_session_id == "s-b"
 	asyncio.run(run())

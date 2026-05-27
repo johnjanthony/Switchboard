@@ -1,7 +1,7 @@
 {
 	"name": "switchboard",
 	"description": "Local MCP gateway for human-in-the-loop away-mode interaction with John's phone",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"author": {
 		"name": "John Anthony"
 	}

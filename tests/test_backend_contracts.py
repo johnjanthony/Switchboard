@@ -1,5 +1,5 @@
 """Contract tests for the trait surfaces (Backend, MessageWriter, ResponsePoller,
-AwayModeMirror, ChannelLifecycle, InjectPort).
+AwayModeMirror, ChannelLifecycle).
 """
 
 import asyncio
@@ -13,7 +13,6 @@ from server.messenger import (
 	ResponsePoller,
 	AwayModeMirror,
 	ChannelLifecycle,
-	InjectPort,
 	IncomingResponse,
 )
 
@@ -24,7 +23,7 @@ def test_incoming_response_is_simple_dataclass():
 	assert r.text == "yes"
 
 
-class _StubBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle, InjectPort, Backend):
+class _StubBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle, Backend):
 	"""Minimal concrete subclass implementing only the abstract methods."""
 
 	async def send_timeout_followup(self, *a, **k):
@@ -34,10 +33,6 @@ class _StubBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecyc
 		return None
 
 	async def poll_responses(self):
-		if False:
-			yield None
-
-	async def poll_commands(self):
 		if False:
 			yield None
 
@@ -116,11 +111,11 @@ class TestMessageWriterContract:
 
 
 class TestResponsePollerContract:
-	"""Contract tests for ResponsePoller (poll_responses, poll_commands,
+	"""Contract tests for ResponsePoller (poll_responses,
 	poll_away_mode_commands, delete_response_slot, reset_all_pending_responses)."""
 
 	def test_required_abstracts_declared(self):
-		expected = {"poll_responses", "poll_commands"}
+		expected = {"poll_responses"}
 		declared = {
 			name
 			for name, member in inspect.getmembers(ResponsePoller)
@@ -138,14 +133,14 @@ class TestResponsePollerContract:
 
 
 class TestAwayModeMirrorContract:
-	"""Contract tests for AwayModeMirror (write_away_mode_mirror,
-	load_away_mode_snapshot, start_away_mode_listeners, reset_all_away_mode,
-	delete_legacy_away_mode_node)."""
+	"""Contract tests for AwayModeMirror (load_away_mode_snapshot,
+	start_away_mode_listeners, reset_all_away_mode, delete_legacy_away_mode_node).
+	The legacy per-cwd mirror was retired in the conversations redesign — the
+	global flag is the only away-mode signal."""
 
 	def test_methods_exist(self):
 		# AwayModeMirror has no @abstractmethod; all are no-op defaults.
 		for method_name in (
-			"write_away_mode_mirror",
 			"load_away_mode_snapshot",
 			"start_away_mode_listeners",
 			"reset_all_away_mode",
@@ -153,33 +148,17 @@ class TestAwayModeMirrorContract:
 		):
 			assert hasattr(AwayModeMirror, method_name), f"Missing: {method_name}"
 
-	def test_write_away_mode_mirror_signature(self):
-		sig = inspect.signature(AwayModeMirror.write_away_mode_mirror)
-		assert list(sig.parameters) == ["self", "cwd", "active"]
-
-	@pytest.mark.asyncio
-	async def test_write_away_mode_mirror_default_is_noop(self):
-		backend = _StubBackend()
-		await backend.write_away_mode_mirror(None, True)
-		await backend.write_away_mode_mirror("c:/work/proj", False)
-		await backend.write_away_mode_mirror(None, False)
-
 
 class TestChannelLifecycleContract:
-	"""Contract tests for ChannelLifecycle (read_channel_meta, set_conversation_hidden)."""
+	"""Contract tests for ChannelLifecycle (set_conversation_hidden).
+	The legacy cwd-keyed channel meta read was retired — Page A now reads
+	/conversations/<id>/meta directly."""
 
 	def test_methods_exist(self):
-		# No @abstractmethod; mix of no-ops, returns-default, raises NotImplementedError.
+		# No @abstractmethod; the surviving method is a no-op default.
 		for method_name in (
-			"read_channel_meta",
 			"set_conversation_hidden",
 		):
 			assert hasattr(ChannelLifecycle, method_name), f"Missing: {method_name}"
 
 
-class TestInjectPortContract:
-	"""Contract tests for InjectPort (start_inject_listener, poll_inject_messages)."""
-
-	def test_methods_exist(self):
-		for method_name in ("start_inject_listener", "poll_inject_messages"):
-			assert hasattr(InjectPort, method_name), f"Missing: {method_name}"

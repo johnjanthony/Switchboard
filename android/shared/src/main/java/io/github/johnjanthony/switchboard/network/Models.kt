@@ -77,14 +77,14 @@ data class BulkRespondPayload(
 )
 
 data class PendingExitToggle(
-	val scopeCwdKey: String?,    // null = global; otherwise per-channel cwdKey
 	val payload: BulkRespondPayload,
 )
 
-// --- Conversation model (T-027 spawn-conversation-aware redesign) ---
-// TODO: wire Firebase sync to /conversations/<id>/... once server migration ships;
-// currently the existing /channels/<cwd>/... sync feeds Channel objects above.
-// ConversationSummary is the new data model; Channel is deprecated.
+// --- Conversation model (post T-027 / 2026-05-19 conversations redesign) ---
+// ConversationSummary / ConversationRow are the primary data model on the phone;
+// Channel survives only for (a) the synthetic _admin row and (b) the Wear app's
+// derived projection until T-031 retires it. Real conversations are read from
+// /conversations/<id>/...; /channels/<cwd>/ is the legacy compat surface.
 
 data class ConversationMember(
 	val cliSessionId: String = "",
@@ -109,6 +109,8 @@ data class ConversationSummary(
 	val isOpenConversation: Boolean = false,
 	val hidden: Boolean = false,
 	val unreadCount: Int = 0,
+	val pendingResponses: Int = 0,
+	val preview: String? = null,
 	val agentStatuses: Map<String, AgentStatus> = emptyMap(),  // keyed by sender
 ) {
 	/** True if at least one member can be resumed (dormant, not permanently lost, has a session ID). */
@@ -134,4 +136,36 @@ data class ConversationSummary(
 	/** Comma-separated list of member sender names for display. */
 	val memberRoster: String
 		get() = members.joinToString(", ") { it.sender }
+}
+
+/**
+ * View-model composite for Page A rows on the phone. Wraps a [ConversationSummary]
+ * (Firebase-mirrored conversation state) with the per-conversation runtime state that
+ * was previously held by [Channel] (messages, pending questions, answered set).
+ *
+ * Wear continues to operate on [Channel] via a derived projection from `_conversationRows`.
+ */
+data class ConversationRow(
+	val summary: ConversationSummary,
+	val messages: List<Pair<String, ChannelMessage>> = emptyList(),
+	val pendingQuestions: Map<String, Pending> = emptyMap(),
+	val answeredQuestionMsgIds: Set<String> = emptySet(),
+) {
+	val id: String get() = summary.id
+	val title: String get() = summary.title
+	val displayCount: Int get() = kotlin.math.max(summary.unreadCount, summary.pendingResponses)
+	val isOpenConversation: Boolean get() = summary.isOpenConversation
+	val hidden: Boolean get() = summary.hidden
+	val preview: String? get() = summary.preview
+	val lastActivityAt: String get() = summary.lastActivityAt
+	/** Freshest live agent status across all members, or null if none qualify. */
+	val agentStatus: AgentStatus?
+		get() = summary.agentStatuses.values
+			.filter { it.isFresh() }
+			.maxByOrNull { it.updatedAt }
+	val isResumable: Boolean get() = summary.isResumable
+	val staleSessionWarning: Boolean get() = summary.staleSessionWarning
+	val memberRoster: String get() = summary.memberRoster
+	val state: String get() = summary.state
+	val members: List<ConversationMember> get() = summary.members
 }

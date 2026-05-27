@@ -34,9 +34,10 @@ def _make_store_backend():
 	backend.send_resolution_confirmation = AsyncMock()
 	backend.mark_question_cancelled = AsyncMock()
 	backend.write_agent_status = AsyncMock()
-	backend.start_inject_listener = AsyncMock()
-	backend.poll_inject_messages = AsyncMock()
-	backend.read_channel_meta = AsyncMock(return_value={"title": None, "last_activity_at": None, "hidden": False})
+	backend.write_conversation_member_history = AsyncMock()
+	backend.add_pending_question_record = AsyncMock()
+	backend.remove_pending_question_record = AsyncMock()
+	backend.mark_question_answered = AsyncMock()
 	return backend
 
 
@@ -249,13 +250,18 @@ async def test_apply_fallback_create_new_writes_conversation_meta():
 	backend = _make_store_backend()
 	registry = Registry()
 	registry.global_away_mode = True
-	# No home conversation → compute_fallback returns create_new
+	# Realistic create_new scenario: session is still alive/bound (e.g. peer
+	# just force-ended the shared conv from under it). No home pointer set, so
+	# compute_fallback returns create_new. The session being bound is what
+	# distinguishes this from the dormant short-circuit added in Fix Pack 4.
+	registry.bind_session("s-orphan", "conv-already-gone")
 
 	apply_fallback(registry, "s-orphan", backend=backend)
 	await _drain_bg()
 
 	new_conv_id = registry.session_to_conversation_id.get("s-orphan")
 	assert new_conv_id is not None
+	assert new_conv_id != "conv-already-gone"
 	backend.write_conversation_meta.assert_awaited_once()
 	call_kwargs = backend.write_conversation_meta.call_args
 	assert call_kwargs[0][0] == new_conv_id

@@ -1,109 +1,86 @@
-# Next Session Pickup — Page A → Conversation-Keyed Migration
+# Next Session Pickup — Pre-merge validation
 
 **Branch:** session_id-as-key
 
-**Status:** Plan tasks 1-49 + deferred items 1-7 + T-001 hydration + Phase 1-5 post-review remediation + multi-pass namespace cleanup (`agent_status`, `_admin`, TitleTracker retirement, audit B1/B2/B3, `away_mode` toggle restore) — all landed in the working tree, uncommitted.
+**Status:** Plan tasks 1-49 + Page A conversation-keyed migration (Dispatches A/B/C) + post-migration bug fixes (Fix Packs 1/2/3) + force-end dormant-member fallback (Fix Pack 4) + combine source.wait_queue migration (Fix Pack 5) + agent-status hook cwd retirement + bulk_respond dead-param cleanup (Fix Pack 6) + dead per-conversation at-desk chain cleanup (Fix Pack 7) + SKILL.md frontmatter gate on away-mode, T-023 closed (Fix Pack 8) — all 2026-05-26, all landed in the working tree, uncommitted.
 
-**Test suite:** 418 passed, 0 skipped, 0 failures.
-**Android build:** clean (`./gradlew :app:assembleDebug` SUCCESSFUL).
+**Test suite:** 423 passed, 0 skipped, 0 failures.
+**Android builds:** `:app:assembleDebug` + `:wear:assembleDebug` both BUILD SUCCESSFUL.
 **Server boot import:** `from server.main import _run; print('boot OK')` → OK.
 
-## Read these in order
+## What landed since the last context compact
 
-1. **This document** — current state + next session's work.
-2. **Memory** — `C:\Users\JohnAnthony\.claude\projects\c--Work-Switchboard\memory\MEMORY.md` and the linked feedback memories (cwd-is-display-only, producer-consumer-audit-pattern, away-mode-control).
-3. **Parent design** — [`docs/superpowers/specs/2026-05-19-conversations-collab-redesign-design.md`](superpowers/specs/2026-05-19-conversations-collab-redesign-design.md) — current authoritative state model + tool surface.
-4. **T-027 design** — [`docs/superpowers/specs/2026-05-20-spawn-conversation-aware-redesign-design.md`](superpowers/specs/2026-05-20-spawn-conversation-aware-redesign-design.md) — spawn / resume / combine UX.
-5. **Tracking** — [`docs/tracking/backlog.md`](tracking/backlog.md) for open items (T-001 partial, T-003, T-029, T-030).
+### Page A → conversation-keyed migration (Dispatches A/B/C)
 
-## Next session's primary work: Page A → conversation-keyed migration
+- **A** — Server `pending_responses` counter rerouted to `/conversations/<conv_id>/pending_responses`. ConversationSummary on Android gained `pendingResponses`, `preview`, `hidden`, `unreadCount` fields actually populated.
+- **B** — Phone Page A now driven by `_conversationRows` (keyed by `conv_id`). Bridge maps `cwdKeyToConvId` + `msgIdToConvId` deleted; `requestIdToConvId` reduced to the Wear-compat legacy `/responses` fallback. Route is `session/{convId}`. Wear keeps building via a derived `_channels` projection. `_admin` rendered as dedicated `AdminRow`.
+- **C** — Deleted orphan server methods `write_away_mode_mirror` and `read_channel_meta` (and 9 dependent tests); simplified `reset_all_away_mode` to a single global-flag write.
 
-### Problem
+### Post-migration bug fixes (Fix Packs 1/2/3 — 10 verified bugs)
 
-Android's Page A is still **channel-keyed** (one row per `cwdKey`). The conversations redesign moved the server's primary routing key to `conversation_id`, but the client UI never followed. The mismatch creates:
+**Fix Pack 1 (collab protocol):**
+1. **`ask_human` at-desk redirect implemented** ([handlers.py:147-234](server/gateway/handlers.py)). When `global_away_mode` is False, the question is written as a `notify` (not `question`) and the handler returns the exact SKILL-documented sentinel `"ERROR: John is at his desk. Ask this question via the terminal."` — no 24h block.
+2. **`__CONVERSATION_EMPTY__` now applies session-fallback** in `message_and_await_agent`. Mirrors `leave_conversation`'s removal + end + fallback pattern.
+3. **`cli_session_end` wakes blocked peers** AND cancels their pending `ask_human` futures. Blocked peers resolve with the dormancy_msg text rather than blocking 24h.
+4. **Hook env-var unified to `SWITCHBOARD_BASE_URL`** across all three hooks (`cli-session-end`, `agent-status`, `turn-end-away-mode`). Per-host chezmoi templating only needs the one variable.
 
-- **UX wart**: a multi-member conversation across N cwds shows as N separate Page A rows, all carrying the same `ConversationSummary`. They're really one conversation.
-- **Bridge maps**: `cwdKeyToConvId`, `msgIdToConvId`, `requestIdToConvId` exist solely to translate Android-UI keys into `conversation_id` for Firebase writes under `/conversations/<conv_id>/...`. Friction at every write site.
-- **Legacy channels listener**: still feeds `_channels: Map<String, Channel>` keyed by cwdKey. Reading per-conversation state (hidden, unread, agent_status) requires bridging through the channel structure.
+**Fix Pack 2 (persistence/restart-survival):**
 
-The goal: **make Page A's primary list source `_activeConversations` (keyed by `conv_id`)**, not `_channels`. Each Page A row = one conversation, regardless of how many member cwds.
+5. **`set_conversation_state` now writes `conversations/<id>/meta/state`** (was the orphan top-level `state` path). Ended conversations stay Ended across restart.
+6. **Resume sets `m.alive = True`** and clears `session_ended_at` / `session_end_reason` / `left_at` on resumed members. Multi-member resume no longer immediately fires `__CONVERSATION_EMPTY__`.
+7. **`members_history` persisted to Firebase** at `/conversations/<conv_id>/members_history/<sender>`. New backend method + abstract trait + hydration restores the array on startup.
+8. **Spec-required subtrees written:** `/conversations/<id>/pending_questions/<request_id>/` populated on `ask_human` + drained on resolve/cancel/timeout; `/conversations/<id>/answered_question_msg_ids/<msg_id>/` written when a reply lands. (PendingRequest map itself is intentionally in-memory; restart-orphan cleanup flagged for future work in hydration docstring.)
 
-### Scope
+**Fix Pack 3 (hygiene):**
 
-In rough order of risk:
+9. **Wear FCM deep-link resolves conv_id → cwdKey via projection** before navigating. Same `LaunchedEffect` pattern as phone. Notification taps now land in the right conversation through Wear's legacy screens.
+10. **Dead Firebase paths deleted** (~135 lines): `db.reference('commands')` + `_on_command` + `poll_commands`; `db.reference('sessions')`; `start_inject_listener` + `_on_inject` + `_inject_queue_internal` + `poll_inject_messages`. The `InjectPort` trait and `poll_commands` abstract method retired alongside.
 
-1. **Page A row identity → `conv_id`.** [`SessionListScreen.kt`](android/app/src/main/java/io/github/johnjanthony/switchboard/ui/SessionListScreen.kt) currently iterates `_channels`; switch to iterate `_activeConversations`. Each row's identity is `conversation.id`, not `cwdKey`. The row displays a member roster instead of a single cwd.
+**Fix Pack 4 (force-end fallback gap):**
 
-2. **Page B navigation → keyed by `conv_id`.** [`SessionViewScreen.kt`](android/app/src/main/java/io/github/johnjanthony/switchboard/ui/SessionViewScreen.kt) currently takes a `Channel`; change to take a `ConversationSummary` (and look up its messages by conv_id). Deep links via FCM should resolve to `conv_id` directly.
+11. **`handle_force_end` now applies session-fallback for every member, not just alive members.** Dropped the `if m.alive` filter in [dispatch.py](server/gateway/dispatch.py). `apply_fallback` in [session_fallback.py](server/session_fallback.py) now detects dormant sessions (`session_id not in registry.session_to_conversation_id`) and short-circuits to home-pointer cleanup — clears `session_home_conversation_id[session_id]` if the home conv is gone or Ended, without going through `compute_fallback`'s create-new branch. Prevents both stale-home leaks AND orphan-conv creation for dead sessions. Backend method `set_session_home` extended to accept `None` (deletes the Firebase node). Hydration adds a defensive skip: home pointers referencing a non-hydrated conv are dropped instead of seeded. 5 new tests cover the alive/dormant/no-home/active-home matrix.
 
-3. **Per-conversation state migration**:
-   - `unread_count` — already migrated to `/conversations/<convId>/unread_count` server-side; Android needs to read from there (currently reads `Channel.unreadCount`).
-   - `hidden` — already migrated to `/conversations/<convId>/meta/hidden` server-side; Android reads via `ConversationSummary.hidden` (added in audit-fix pass).
-   - `pending_responses` — server still writes to `/channels/<key>/pending_responses` (audit confirmed). Migrate the increment/decrement target to `/conversations/<convId>/pending_responses` AND switch Android to read from there.
-   - `agent_status` — already migrated to `/conversations/<convId>/agent_status/<sender>`; `ConversationSummary.agentStatuses` already populated.
-   - `last_activity_at`, `title`, `preview` — already on `ConversationSummary` via `/conversations/<convId>/meta`.
+**Fix Pack 5 (combine wait_queue migration):**
 
-4. **Per-cwd legacy channels listener — retire.** Once Page A no longer reads `_channels`, the `setupChannelsListener` and `syncChannel` can either:
-   - (a) Stay alive for back-compat / agent_status fallback (the `Channel.agentStatus` fallback in `SessionRowComposable` exists as transitional).
-   - (b) Be deleted entirely once `_activeConversations` is the sole source of truth.
+12. **`_perform_combine` migrates `source.wait_queue` entries to `target.wait_queue`** before ending source ([conversation_ops.py:397-489](server/conversation_ops.py#L397-L489)). For each entry whose member moved to target, the wait_entry is appended to `target.wait_queue` (same member ref, valid future). For entries whose member stayed in source (permanently_lost), the future is drained with sentinel `"__CONVERSATION_ENDED__\n(merged into target)"`. Without this, agents blocked in `message_and_await_agent` on source at combine time would have their futures stranded for the full 24h `_TIMEOUT`. 2 new tests in [test_e2e_combine.py](tests/test_e2e_combine.py) cover the source-waiter-migration and permanently_lost-drain cases. The existing `_wake_one_from(target)` at line 488 stays — migrated entries with older `block_position` get woken first if FIFO ordering applies.
 
-   Lean (b) for cleanliness. Decide based on whether any UI surface still needs cwd-keyed data.
+**Fix Pack 6 (hook + dead-param hygiene):**
 
-5. **Eliminate the bridge maps**:
-   - `cwdKeyToConvId` — gone (every call site that used it now has a `conv_id` in hand because rows are conv-keyed).
-   - `msgIdToConvId` — gone (the per-conversation message listener already knows its conv_id at routing time; `markMessageOpened` can take `convId` directly).
-   - `requestIdToConvId` — possibly still needed for the `/responses/<request_id>` fallback path; or delete if that fallback also retires.
+13. **Agent-status hook no longer transports `cwd`.** [scripts/agent-status-hook.py](scripts/agent-status-hook.py) now gates on `session_id` (not `cwd`) and posts `{session_id, state, detail?}`. [server/main.py](server/main.py)'s `_build_agent_status_route` validates `session_id` instead of `cwd`. [handlers.py:774](server/gateway/handlers.py#L774) `handle_agent_status` signature is now `(session_id, state, detail)` — `cwd` parameter removed entirely. Internal resolution was already session-id-driven; the cwd parameter was pure baggage. Last per-cwd transport key on the hook surface is gone. Existing tests in `test_agent_status_hook.py` + `test_agent_status_integration.py` updated to send `session_id`.
+14. **`scope_cwd` dead parameter removed from `_apply_bulk_respond_decision`** ([bulk_respond.py](server/gateway/bulk_respond.py)). The unreachable `else registry.pending_for_conversation(scope_cwd)` branch (caller always passed `None`) is gone — function unconditionally walks `registry.all_pending()`. Docstring + two error-message interpolations updated. Single call site at [dispatch.py:291-298](server/gateway/dispatch.py#L291-L298) updated.
 
-6. **Writers (`hideChannel` / `unhideChannel` / `submitReply` / `selectChannel` / `markMessageOpened` / `clearUnread`)**: all take `conv_id` (or a `ConversationSummary`) instead of `Channel` / `cwdKey`. Each write to `/conversations/<conv_id>/...` directly.
+**Fix Pack 7 (dead per-conversation at-desk chain):**
 
-7. **Spawn dialog's "Add to existing" picker**: already reads `_activeConversations` (per Phase 1 fix). No change needed there.
+15. **Retired the entire `onExitAway` / `requestSwipeAtDeskForConversation` chain.** Vestige from the retired per-cwd away mode (away is global-only now). The chain had no triggering UI gesture — `SessionRowComposable` declared `onExitAway: () -> Unit` but never called it inside the function body. ~40 lines removed across [MainActivity.kt](android/app/src/main/java/io/github/johnjanthony/switchboard/MainActivity.kt) (collectAsState wire-up, onAwayToggle argument, the "Set channel to At desk?" `AlertDialog` block, two newly-unused imports), [SessionListScreen.kt](android/app/src/main/java/io/github/johnjanthony/switchboard/ui/SessionListScreen.kt) (`onAwayToggle` parameter + its row argument), [SessionRowComposable.kt](android/app/src/main/java/io/github/johnjanthony/switchboard/ui/SessionRowComposable.kt) (`onExitAway` parameter), [MainViewModel.kt](android/shared/src/main/java/io/github/johnjanthony/switchboard/MainViewModel.kt) (`_pendingSwipeAtDeskConfirm` + `pendingSwipeAtDeskConfirm` flows, plus `requestSwipeAtDeskForConversation` / `confirmSwipeAtDesk` / `cancelSwipeAtDesk` methods). Tests unchanged (none exercised the dead chain). Historical record preserved in [`PROJECT-JOURNAL.md`](../PROJECT-JOURNAL.md).
 
-8. **FCM deep-link**: server already emits `conv_id` (per Phase 1 fix #9). The Android handler resolves `conv_id` → navigate to Page B. After migration, this is the natural path; the resolution-through-cwdKey intermediate step can be removed.
+**Fix Pack 8 (skill frontmatter gate — closes T-023):**
 
-### Tests + verification
-
-- Existing tests don't touch Android (no Android unit tests in the repo). Server-side tests should remain green since the server contract is unchanged for this work — it's all Android refactor.
-- `./gradlew :app:assembleDebug` must succeed.
-- Manual smoke (deferred to actual phone validation): a multi-member conversation across cwds shows as a single row on Page A with member roster; tapping enters Page B; messages from all members appear; replying writes to the right `/conversations/<convId>/answers/<requestId>` path.
-
-### Non-obvious decisions to remember
-
-- **The Channel data class might be retained as an internal projection** — e.g., to bridge per-cwd state (admin notifications, the synthetic `_admin` channel) that's intrinsically not tied to a conversation. Don't blanket-delete `Channel` until you've audited every consumer. The `_admin` synthetic channel (populated by the admin-notifications listener) lives outside the conversations model and may continue to use a cwd-key-shaped identifier.
-- **`_admin` is the one path that legitimately stays cwd-keyed** because it's a system-broadcast pseudo-conversation, not a real conversation. Verify it still works after the Page A migration.
-- **Don't break the producer/consumer pairs** — the recurring failure mode in this branch. Grep both Android and server simultaneously before deleting any Firebase reader/writer.
-
-### Estimated effort
-
-Half-day to a full day of work in one or two focused dispatches:
-
-- Dispatch A: Page A list source migration + writer migration + bridge-map elimination
-- Dispatch B (if needed): per-conversation state migration finish + channels listener retirement
-- Decision points to keep open: whether `Channel` data class stays as `_admin` projection.
+16. **SKILL.md frontmatter description rewritten to gate `ask_human` / `notify_human` / `send_document_human` on away mode.** The old description's "Invoke ask_human whenever a decision would otherwise stall the task…" sentence read as unconditional invocation guidance, which T-023 documented as the root cause of unwanted sub-agent escalations during active in-channel conversations. New frontmatter bakes the away-mode gate into every trigger sentence, carves out sub-agents explicitly ("Task-tool return to the controller, not via switchboard"), and frames the server's at-desk redirect as a safety net rather than the primary path. T-023 marked `status: closed` in backlog.md with closure note. Body of SKILL.md (the "CRITICAL: Away Mode Protocol" section) was already correctly gated; no body changes needed.
 
 ## Pre-merge validation (your hands required)
 
-Still pending:
+The implementation is in the working tree, NOT committed. Bulk commit gated on this:
 
-1. **Re-run verification scripts** at [`scripts/verify/`](../scripts/verify/) — `test1-session-id.ps1`, `test2-resume.ps1`, `test3-hook-injection/run-test.ps1`. All previously PASSED 2026-05-20. Re-run against current working tree.
-2. **Phone-side smoke test**: install APK, exercise spawn (Win + WSL surfaces, create-new + add-to-existing), resume from long-press, combine, force-end, openConversation indicator, ⚠ stale-session warning, reply to ask_human, restart server (verify hydration restores state).
-3. **Agent-status sender resolution**: verify that hook events from a running agent show the correct sender name (not "Claude") in Firebase under `/conversations/<convId>/agent_status/<sender>`.
-4. **Phone-side away-mode toggle round-trip**: verify pressing the global away pill actually flips the flag (the dispatcher was deleted then restored in this branch; producer/consumer audit confirmed wiring).
+1. **Re-run verification scripts** in [`scripts/verify/`](../scripts/verify/) — `test1-session-id.ps1`, `test2-resume.ps1`, `test3-hook-injection/run-test.ps1`.
+2. **Phone-side smoke**: install APK; exercise Page A (one row per conversation, member roster, conv-id route), spawn (Win + WSL surfaces, create-new + add-to-existing), resume from long-press, combine, force-end, openConversation indicator, ⚠ stale-session warning, reply to ask_human, restart server (verify Ended conversations stay Ended, members_history restored, resume works for multi-member dormant convs).
+3. **Wear-side smoke**: ChannelListScreen still works via derived projection. FCM notification tap navigates to the correct conversation.
+4. **Away-mode round-trip**: phone toggle works. `ask_human` returns the at-desk sentinel when off; blocks normally when on.
+5. **Agent-collab smoke**: two agents in one conv, one's session ends — peer wakes immediately (not after 24h). EMPTY return: caller is actually removed, conv transitions to Ended in Firebase.
+6. **Force-end + dormant smoke**: a conv with one alive member + one dormant member (whose home was this conv). Force-end via phone. Verify after restart that the dormant member's session_home_conversation_id is cleared in Firebase under `cli_sessions/<sid>/home_conversation_id` (no stale pointer to the Ended conv), and that no orphan Active conversation was created for the dead session.
+7. **Combine-with-source-waiter smoke**: Alice and Bob in source conv (Alice waiting in `message_and_await_agent`); Charlie in target conv. Combine source → target via phone. Verify Alice unblocks immediately (within seconds, not 24h) — either resolved by the post-combine `_wake_one_from(target)` or pending in target's queue and resolved on Charlie's first `message_and_await_agent` call.
 
-After Page A migration, re-validate the above + the new conversation-keyed UI (multi-member rows show correctly).
+## Open backlog
 
-## Open backlog items (still pending)
+- **T-031**: Wear app full conversation-keyed migration (the FCM patch in Fix Pack 3 is a band-aid; full Wear migration retires `setupChannelsListener`, the projection, `selectedCwdKey` and the cwdKey-flavored Wear-compat shims).
+- **T-001** (partial): pending-request write-behind + "we restarted; resume" broadcast. Note: Fix Pack 2 added `pending_questions` Firebase write; the restart-orphan cleanup sweep is the remaining piece.
+- **T-029**: remove `reset_all_away_mode()` after Stop hook learns MCP-unavailable detection.
+- **T-030**: re-evaluate per-conversation rate-limit parameters.
+- **T-003**: stale-alive member GC.
+- **Phase 4**: test gaps + remaining dead code sweep.
 
-- **T-001** (partial): server hydration of conversations + members + routing maps landed. Residual work: pending-request rehydration + "we restarted; resume" broadcast.
-- **T-029**: remove `reset_all_away_mode()` after the Stop hook learns to detect MCP unavailability gracefully. Away mode currently resets on every server restart; conversations don't. Asymmetry.
-- **T-030**: re-evaluate per-conversation rate-limit parameters. Legacy 60s spawn rate-limit retired in conversations redesign.
-- **T-003**: stale-alive member GC (member whose SessionEnd hit a dead server stays alive=True forever).
-- **Phase 4 cleanup (test gaps + dead code)** — deferred. Specific items in earlier project_next_session iterations; main remaining cleanups: `bulk_respond.py` (CONFIRMED alive after dispatch restore), `_session_ref` initialized but unused, `/commands` listener infrastructure with no producer, `delete_legacy_away_mode_node` cleanup whose justification expires once Firebase data is uniformly v2.
+## Notes for next agent
 
-## Notes for the next agent
-
-- The implementation is in the working tree, NOT committed. Bulk commit gated on manual validation passing.
-- Test suite (418/0/0) covers unit + integration paths but does NOT validate the live MCP transport, Firebase path-string consistency across server/Android, or end-to-end semantic round-trip. Manual smoke is required.
-- Hydration is wired into `server/main.py:_run`. Conversations survive restart; pending `ask_human` futures don't.
-- Away mode resets on startup intentionally (Anthropic #27142 workaround); see T-029.
-- Per the producer/consumer audit (2026-05-26): `/channels/<key>/agent_status` MIGRATED to `/conversations/<conv_id>/agent_status/<sender>`. `/channels/_admin/messages` MIGRATED to `/admin_notifications/<push>`. `/channels/<key>/unread_count` MIGRATED to `/conversations/<convId>/unread_count`. `/channels/<key>/hidden` writes are dual-target (legacy + new); reads prefer new. Remaining `/channels/...` writes: `pending_responses` (next migration target), `set_channel_hidden` (renamed to `set_conversation_hidden`, dual-writes during Android migration).
-- TitleTracker was retired (was dead code; SKILL.md no longer documents the title-prepend behavior).
+- The implementation is in the working tree, NOT committed. Read `git status` for the full file list.
+- Page A is conversation-keyed on phone; Wear still reads `/channels/<key>/*` via the projection.
+- The 10-bug review revealed a recurring failure mode: **specced features that were never written**. Fix Pack 2's pending_questions subtree is one example; the design spec called for it, but no implementation existed. See [[feedback_spec_vs_implementation]] for the audit pattern.
+- The pre-existing BOM in `tests/test_message_and_await_agent.py` was left intact — out of scope cleanup.

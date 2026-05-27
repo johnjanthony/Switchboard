@@ -18,20 +18,18 @@ from server.messenger import (
 	ResponsePoller,
 	AwayModeMirror,
 	ChannelLifecycle,
-	InjectPort,
 	ConversationStore,
 )
 from server.rate_limiter import RateLimiter
 from server.registry import Registry
 
 
-class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle, InjectPort, ConversationStore, Backend):
+class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle, ConversationStore, Backend):
 	def __init__(self) -> None:
 		self.channel_messages: list[dict] = []
 		self.sent_timeouts: list[tuple] = []
 		self.sent_confirmations: list[tuple] = []
 		self.agent_status_writes: list[tuple] = []
-		self.inject_listeners: list[str] = []
 		self._next_correlation = 1000
 
 	async def write_conversation_message(
@@ -110,16 +108,8 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLif
 			yield
 		return
 
-	async def poll_commands(self) -> AsyncIterator[str]:
-		if False:
-			yield
-		return
-
 	async def aclose(self) -> None:
 		pass
-
-	async def start_inject_listener(self, channel_id: str) -> None:
-		self.inject_listeners.append(channel_id)
 
 	async def write_agent_status(self, conv_id, sender, state, detail):
 		self.agent_status_writes.append((conv_id, sender, state, detail))

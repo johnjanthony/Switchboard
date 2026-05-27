@@ -9,32 +9,28 @@ async def _apply_bulk_respond_decision(
 	registry: Registry,
 	backend: MessageWriter,
 	logger: JsonlLogger,
-	scope_cwd: str | None,
 	decision: str | None,
 	default_text: str,
 ) -> bool:
 	"""Apply a bulk-respond decision (sent from the phone via the exit command)
 	and return True if the away-mode flip should be committed.
 
-	scope_cwd=None means global scope; otherwise per-cwd. Decision values:
-	- "send_default": resolve all pending in scope with `default_text`, commit flip
+	Operates on the global pending set only. Decision values:
+	- "send_default": resolve all pendings with `default_text`, commit flip
 	- "skip": leave pendings in place, commit flip
 	- "cancel": leave pendings in place, do NOT commit flip
 	- None: if no pendings, commit; otherwise treat as cancel and surface an error
 	"""
 	from server.gateway.handlers import _append_session_log
-	
-	pendings = (
-		registry.all_pending() if scope_cwd is None
-		else registry.pending_for_conversation(scope_cwd)
-	)
+
+	pendings = registry.all_pending()
 
 	if decision is None:
 		if not pendings:
 			return True
 		await logger.surface_error(
 			f"away_mode_commands: bulk_respond_decision_missing "
-			f"(scope={scope_cwd!r}, pending={len(pendings)}); treating as cancel"
+			f"(pending={len(pendings)}); treating as cancel"
 		)
 		return False
 
@@ -68,8 +64,7 @@ async def _apply_bulk_respond_decision(
 				await asyncio.gather(*[_resolve_one(p) for p in pendings])
 			except Exception as exc:
 				await logger.surface_error(
-					f"away_mode_commands: bulk_respond_send_default error "
-					f"(scope={scope_cwd!r}): {exc}"
+					f"away_mode_commands: bulk_respond_send_default error: {exc}"
 				)
 		return True
 

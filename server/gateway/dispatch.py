@@ -6,7 +6,6 @@ from server.logging_jsonl import JsonlLogger
 from server.messenger import (
 	MessageWriter,
 	ResponsePoller,
-	InjectPort,
 	ConversationStore,
 )
 from server.gateway.bg_tasks import _spawn_bg
@@ -117,11 +116,14 @@ async def handle_force_end(registry, conversation_id: str, backend=None) -> None
 			if not future.done():
 				future.set_result("__CONVERSATION_ENDED__\n(force-ended)")
 
-		# Collect session_ids for fallback (before clearing members)
-		session_ids = [m.cli_session_id for m in conv.members_active.values() if m.alive]
-		# Note: dormant members (alive=False) don't need fallback — they have no
-		# active session to redirect. Their bindings will be cleaned up by
-		# whatever flow re-attaches them (resume/combine).
+		# Collect session_ids for fallback (before clearing members).
+		# Both alive and dormant member sessions go through apply_fallback so
+		# their home-pointer state stays consistent with the conv's lifecycle.
+		# apply_fallback detects dormant sessions internally (binding already
+		# cleared by cli_session_end) and performs cleanup-only: it clears the
+		# home pointer if it referenced this (now-Ended) conversation, without
+		# creating a new conversation or trying to unbind again.
+		session_ids = [m.cli_session_id for m in conv.members_active.values()]
 
 		# Collect member senders for Firebase removal
 		member_senders = list(conv.members_active.keys())
@@ -166,9 +168,10 @@ async def handle_force_end(registry, conversation_id: str, backend=None) -> None
 				label=f"fb_write_force_end_msg:{conversation_id}",
 			)
 
-	# Apply session-fallback for each alive member's session
+	# Apply session-fallback for each member's session (alive AND dormant).
+	# apply_fallback dispatches internally based on binding state.
 	for sid in session_ids:
-		apply_fallback(registry, sid)
+		apply_fallback(registry, sid, backend=backend)
 
 
 async def dispatch_combine_commands(registry, backend, logger, supervisor):
@@ -287,7 +290,6 @@ async def dispatch_away_mode_commands(registry, backend, logger, supervisor):
 							try:
 								await _apply_bulk_respond_decision(
 									registry, backend, logger,
-									scope_cwd=None,
 									decision="send_default",
 									default_text=default_text,
 								)
@@ -312,6 +314,6 @@ async def dispatch_away_mode_commands(registry, backend, logger, supervisor):
 
 # dispatch_inject_queue was retired when Android dropped inject_queue writes.
 # The legacy CollabSession BYO flow that consumed these no longer exists.
-# registry.get_session() was deleted with that cleanup. The function is gone.
-# InjectPort protocol and FirebaseBackend.poll_inject_messages are kept for
-# backward compat with existing backend contract tests; they are not called.
+# registry.get_session() was deleted with that cleanup. The inject-listener
+# trait, its firebase implementation, and the associated backend-contract
+# surface were all removed in Fix Pack 3.

@@ -1,4 +1,4 @@
-﻿package io.github.johnjanthony.switchboard.ui
+package io.github.johnjanthony.switchboard.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,31 +30,27 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import io.github.johnjanthony.switchboard.AwayModePillChip
 import io.github.johnjanthony.switchboard.network.Channel
-import io.github.johnjanthony.switchboard.network.ConversationSummary
+import io.github.johnjanthony.switchboard.network.ConversationRow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionListScreen(
-	channels: List<Channel>,
-	hiddenChannels: List<Channel>,
+	rows: List<ConversationRow>,
+	hiddenRows: List<ConversationRow>,
+	adminChannel: Channel?,
 	showHidden: Boolean,
 	globalAway: Boolean,
-	onSessionClick: (Channel) -> Unit,
+	onSessionClick: (ConversationRow) -> Unit,
+	onAdminClick: (Channel) -> Unit,
 	onToggleShowHidden: () -> Unit,
 	onEnterGlobalAway: () -> Unit,
 	onExitGlobalAway: () -> Unit,
-	onHideChannel: (Channel) -> Unit,
-	onUnhideChannel: (Channel) -> Unit,
-	onAwayToggle: (Channel) -> Unit,
+	onHideConversation: (ConversationRow) -> Unit,
+	onUnhideConversation: (ConversationRow) -> Unit,
 	onSpawnClick: () -> Unit,
-	// T-027 callbacks — default no-ops preserve backward compat
 	onResumeClick: (conversationId: String) -> Unit = {},
 	onCombineClick: (conversationId: String) -> Unit = {},
 	onEndClick: (conversationId: String) -> Unit = {},
-	// Active conversations used to match each channel row to its ConversationSummary.
-	// Menu items (Resume, Combine, End), the open-conversation accent, and the stale
-	// session warning are all gated on conversationSummary != null in SessionRow.
-	activeConversations: List<ConversationSummary> = emptyList(),
 ) {
 	var menuExpanded by remember { mutableStateOf(false) }
 
@@ -75,7 +71,7 @@ fun SessionListScreen(
 					}
 					DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
 						HiddenChannelsToggleMenuItem(
-							hiddenCount = hiddenChannels.size,
+							hiddenCount = hiddenRows.size,
 							showHidden = showHidden,
 							onToggle = { onToggleShowHidden(); menuExpanded = false },
 						)
@@ -84,8 +80,9 @@ fun SessionListScreen(
 			)
 		},
 	) { padding ->
-		val displayed = if (showHidden) (channels + hiddenChannels) else channels
-		if (displayed.isEmpty()) {
+		val displayed = if (showHidden) (rows + hiddenRows) else rows
+		val nothingToShow = displayed.isEmpty() && adminChannel == null
+		if (nothingToShow) {
 			Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
 				Column(
 					horizontalAlignment = Alignment.CenterHorizontally,
@@ -99,22 +96,25 @@ fun SessionListScreen(
 			}
 		} else {
 			LazyColumn(modifier = Modifier.fillMaxSize().padding(padding)) {
-				items(displayed, key = { it.cwdKey }) { channel ->
-					val awayActive = globalAway
-					// Match this channel to its ConversationSummary by comparing
-					// the channel's cwdCanonical against each member's cwd in the
-					// active conversations list.
-					val conversationSummary = activeConversations.firstOrNull { conv ->
-						conv.members.any { it.cwd.equals(channel.cwdCanonical, ignoreCase = true) }
+				// Admin row stays at the top: it's a system-broadcast pseudo-conversation that
+				// doesn't fit the conversation model. Rendered via the legacy SessionRow signature
+				// (taking a Channel) since admin has no ConversationSummary to back a Row.
+				if (adminChannel != null) {
+					item(key = "_admin_row") {
+						AdminRow(
+							channel = adminChannel,
+							onClick = { onAdminClick(adminChannel) },
+						)
+						Divider()
 					}
+				}
+				items(displayed, key = { it.id }) { row ->
 					SessionRow(
-						channel = channel,
-						awayActive = awayActive,
-						conversationSummary = conversationSummary,
-						onClick = { onSessionClick(channel) },
-						onHide = { onHideChannel(channel) },
-						onUnhide = { onUnhideChannel(channel) },
-						onExitAway = { onAwayToggle(channel) },
+						row = row,
+						awayActive = globalAway,
+						onClick = { onSessionClick(row) },
+						onHide = { onHideConversation(row) },
+						onUnhide = { onUnhideConversation(row) },
 						onResumeClick = onResumeClick,
 						onCombineClick = onCombineClick,
 						onEndClick = onEndClick,

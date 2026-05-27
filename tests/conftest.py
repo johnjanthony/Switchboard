@@ -27,11 +27,15 @@ def make_registry_with_loopback() -> Registry:
 	"""Build a Registry for use in tests.
 
 	The per-cwd override loopback (set_away_mode_callback / update_cwd_override_cache)
-	was removed in the conversations redesign (Task 4). This now returns a plain
-	Registry. Tests that relied on set_cwd_override / cwd_overrides / is_away_mode_active
-	are marked @pytest.mark.skip(reason="legacy; retired by conversations redesign")."""
+	was removed in the conversations redesign (Task 4). Returns a Registry with
+	global_away_mode=True so tests that exercise the blocking ask_human path
+	don't trip the at-desk redirect (which short-circuits ask_human into a
+	notify when John is at his desk). Tests that need at-desk behavior should
+	construct ``Registry()`` directly or set ``r.global_away_mode = False``."""
 	# TODO: Task 22 will route cwd-level away mode through global_away_mode
-	return Registry()
+	r = Registry()
+	r.global_away_mode = True
+	return r
 
 
 def make_active_conversation(

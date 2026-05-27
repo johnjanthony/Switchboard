@@ -1,4 +1,4 @@
-﻿package io.github.johnjanthony.switchboard
+package io.github.johnjanthony.switchboard
 
 import android.Manifest
 import android.content.Intent
@@ -16,10 +16,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -58,7 +56,8 @@ import io.github.johnjanthony.switchboard.ui.theme.SwitchboardTheme
 
 class MainActivity : ComponentActivity() {
 	private val viewModel: MainViewModel by viewModels()
-	private val pendingDeepLinkCwdKey = mutableStateOf<String?>(null)
+	// Holds the conv_id from an FCM deep link until the UI can resolve and navigate.
+	private val pendingDeepLinkConvId = mutableStateOf<String?>(null)
 	private val pendingDeepLinkMessageId = mutableStateOf<String?>(null)
 
 	private val requestPermissionLauncher = registerForActivityResult(
@@ -68,11 +67,11 @@ class MainActivity : ComponentActivity() {
 	override fun onCreate(savedInstanceState: Bundle?) {
 		super.onCreate(savedInstanceState)
 		requestNotificationPermission()
-		pendingDeepLinkCwdKey.value = intent.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_AGENT_ID)
+		pendingDeepLinkConvId.value = intent.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_AGENT_ID)
 		pendingDeepLinkMessageId.value = intent.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_MESSAGE_ID)
 		setContent {
 			SwitchboardTheme {
-				SwitchboardNavHost(viewModel, pendingDeepLinkCwdKey, pendingDeepLinkMessageId)
+				SwitchboardNavHost(viewModel, pendingDeepLinkConvId, pendingDeepLinkMessageId)
 			}
 		}
 	}
@@ -80,9 +79,9 @@ class MainActivity : ComponentActivity() {
 	override fun onNewIntent(intent: Intent) {
 		super.onNewIntent(intent)
 		setIntent(intent)
-		val cwdKey = intent.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_AGENT_ID)
+		val convId = intent.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_AGENT_ID)
 		val messageId = intent.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_MESSAGE_ID)
-		if (cwdKey != null) pendingDeepLinkCwdKey.value = cwdKey
+		if (convId != null) pendingDeepLinkConvId.value = convId
 		if (messageId != null) pendingDeepLinkMessageId.value = messageId
 	}
 
@@ -100,15 +99,15 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun SwitchboardNavHost(
 	viewModel: MainViewModel,
-	deepLinkCwdKey: MutableState<String?>,
+	deepLinkConvId: MutableState<String?>,
 	deepLinkMessageId: MutableState<String?>,
 ) {
 	val context = androidx.compose.ui.platform.LocalContext.current
 	val navController = rememberNavController()
+	val conversationRows by viewModel.conversationRows.collectAsState()
 	val channels by viewModel.channels.collectAsState()
 	val globalAway by viewModel.globalAway.collectAsState()
 	val pendingExitToggle by viewModel.pendingExitToggle.collectAsState()
-	val pendingSwipeAtDeskConfirm by viewModel.pendingSwipeAtDeskConfirm.collectAsState()
 	val markdownViewerContent by viewModel.markdownViewerContent.collectAsState()
 	val projectMru by viewModel.projectMru.collectAsState()
 	val activeConversations by viewModel.activeConversations.collectAsState()
@@ -126,32 +125,19 @@ private fun SwitchboardNavHost(
 		}
 	}
 
-	// K5: deep-link navigation from FCM tap.
-	// deepLinkCwdKey now holds a conv_id (server standardized on this in Fix 9).
-	// Resolve the conv_id to a cwdKey by finding a matching channel via activeConversations.
-	val deepConvId by deepLinkCwdKey
-	LaunchedEffect(deepConvId, activeConversations, channels) {
+	// FCM deep-link: server emits conv_id (Fix #9). Navigate directly to session/<convId>
+	// once that conversation appears in conversationRows.
+	val deepConvId by deepLinkConvId
+	LaunchedEffect(deepConvId, conversationRows) {
 		val convId = deepConvId ?: return@LaunchedEffect
-		// Find a cwdKey whose channel cwd matches a member of this conversation.
-		val conv = activeConversations.firstOrNull { it.id == convId }
-		val resolvedCwdKey = if (conv != null) {
-			conv.members.mapNotNull { member ->
-				val memberCwdKey = viewModel.toFirebaseKeyPublic(member.cwd)
-				if (channels.containsKey(memberCwdKey)) memberCwdKey else null
-			}.firstOrNull()
-		} else {
-			// Conversation not yet in activeConversations (race on cold-start): wait for next recomposition.
-			null
+		if (conversationRows.containsKey(convId)) {
+			navController.navigate("session/$convId") { launchSingleTop = true }
+			deepLinkConvId.value = null
 		}
-		if (resolvedCwdKey != null) {
-			navController.navigate("session/$resolvedCwdKey") { launchSingleTop = true }
-			deepLinkCwdKey.value = null
-		}
-		// If resolvedCwdKey is null, we don't clear deepLinkCwdKey — let the next
-		// recomposition retry once activeConversations or channels populate.
+		// If the conversation is not yet hydrated (cold-start race), leave deepLinkConvId in
+		// place so the next recomposition retries when conversationRows populates.
 	}
 
-	// Navigation to markdown viewer when content is loaded
 	LaunchedEffect(markdownViewerContent) {
 		if (markdownViewerContent != null) {
 			navController.navigate("markdown_viewer") { launchSingleTop = true }
@@ -160,46 +146,43 @@ private fun SwitchboardNavHost(
 
 	NavHost(navController = navController, startDestination = "list") {
 		composable("list") {
-			val visibleChannels = channels.values
+			val visibleRows = conversationRows.values
 				.filter { !it.hidden }
-				.sortedByDescending { it.lastActivityAt ?: "" }
-			val hiddenChannels = channels.values
+				.sortedByDescending { it.lastActivityAt }
+			val hiddenRows = conversationRows.values
 				.filter { it.hidden }
-				.sortedByDescending { it.lastActivityAt ?: "" }
+				.sortedByDescending { it.lastActivityAt }
+			val adminChannel = channels["_admin"]
 
 			SessionListScreen(
-				channels = visibleChannels,
-				hiddenChannels = hiddenChannels,
+				rows = visibleRows,
+				hiddenRows = hiddenRows,
+				adminChannel = adminChannel,
 				showHidden = showHidden,
 				globalAway = globalAway,
-				onSessionClick = { ch -> navController.navigate("session/${ch.cwdKey}") },
+				onSessionClick = { row -> navController.navigate("session/${row.id}") },
+				onAdminClick = { _ ->
+					// Admin row is currently a passive surface — clicking it doesn't navigate
+					// anywhere meaningful in this dispatch. Backlog: dedicated admin notifications screen.
+				},
 				onToggleShowHidden = { showHidden = !showHidden },
 				onEnterGlobalAway = { viewModel.requestAwayModeToggle(null, true) },
 				onExitGlobalAway = { viewModel.requestAwayModeToggle(null, false) },
-				onHideChannel = { viewModel.hideChannel(it.cwdKey) },
-				onUnhideChannel = { viewModel.unhideChannel(it.cwdKey) },
-				onAwayToggle = { viewModel.requestSwipeAtDesk(it.cwdKey) },
+				onHideConversation = { viewModel.hideConversation(it.id) },
+				onUnhideConversation = { viewModel.unhideConversation(it.id) },
 				onSpawnClick = { showSpawnDialog = true },
 				onResumeClick = { convId -> resumeConversationId = convId },
 				onCombineClick = { convId -> combineConversationId = convId },
-				onEndClick = { convId ->
-					viewModel.endConversation(convId)
-				},
-				activeConversations = activeConversations,
+				onEndClick = { convId -> viewModel.endConversation(convId) },
 			)
 		}
 		composable(
-			route = "session/{cwdKey}",
-			arguments = listOf(navArgument("cwdKey") { type = NavType.StringType }),
+			route = "session/{convId}",
+			arguments = listOf(navArgument("convId") { type = NavType.StringType }),
 		) { backStackEntry ->
-			val cwdKey = backStackEntry.arguments?.getString("cwdKey") ?: return@composable
-			val channel = channels[cwdKey]
-			if (channel == null) {
-				// Cold-start race: notification deep link can navigate here before
-				// the Firebase channels listener has populated. Show a brief loading
-				// state and let recomposition pick up the channel once it lands.
-				// Don't popBackStack — that would yank the user back to the list and
-				// strand the deep link.
+			val convId = backStackEntry.arguments?.getString("convId") ?: return@composable
+			val row = conversationRows[convId]
+			if (row == null) {
 				androidx.compose.foundation.layout.Box(
 					modifier = Modifier.padding(24.dp),
 				) {
@@ -211,53 +194,45 @@ private fun SwitchboardNavHost(
 				}
 				return@composable
 			}
-			val awayActive = viewModel.isAwayActive(cwdKey)
+			val awayActive = viewModel.isAwayActive(convId)
 			var infoOpen by remember { mutableStateOf(false) }
 
-			// Resolve agent status for this channel from the conversation path.
-			val sessionViewAgentStatus = run {
-				val conv = activeConversations.firstOrNull { conv ->
-					conv.members.any { it.cwd.equals(channel.cwdCanonical, ignoreCase = true) }
-				}
-				val memberSender = conv?.members
-					?.firstOrNull { it.cwd.equals(channel.cwdCanonical, ignoreCase = true) }
-					?.sender
-				memberSender?.let { conv?.agentStatuses?.get(it) }
-			}
-
-			DisposableEffect(cwdKey) {
-				viewModel.selectChannel(cwdKey)
+			DisposableEffect(convId) {
+				viewModel.selectConversation(convId)
 				onDispose {
 					viewModel.clearSelectedChannel()
 				}
 			}
 
 			SessionViewScreen(
-				channel = channel,
-				messages = channel.messages,
-				awayActive = awayActive,
-				currentPending = channel.pendingQuestions,
+				row = row,
 				scrollToMessageId = deepLinkMessageId.value,
 				onScrollConsumed = { deepLinkMessageId.value = null },
+				awayActive = awayActive,
 				onBack = { navController.popBackStack() },
-				onLongPressPill = { viewModel.requestAwayModeToggle(cwdKey, !awayActive) },
-				onSubmitReply = { sender, text, requestId -> viewModel.submitReply(cwdKey, sender, text, requestId) },
+				onLongPressPill = { viewModel.requestAwayModeToggle(null, !awayActive) },
+				onSubmitReply = { sender, text, requestId ->
+					// ReplyInputBar only opens for an actively-selected pending question,
+					// which always carries a request_id. Drop the call if somehow null.
+					if (requestId != null) {
+						viewModel.submitReplyForConversation(convId, sender, text, requestId)
+					}
+				},
 				onDownloadFile = { url, filename -> viewModel.downloadAndOpenFile(context, url, filename) },
 				onLongPressDownloadFile = { url, filename -> viewModel.saveFileToDownloads(context, url, filename) },
-				onMarkMessageOpened = { msgId -> viewModel.markMessageOpened(cwdKey, msgId) },
+				onMarkMessageOpened = { msgId -> viewModel.markMessageOpened(convId, msgId) },
 				onShowTabInfo = { infoOpen = true },
-				agentStatus = sessionViewAgentStatus,
 			)
 			if (infoOpen) {
 				TabInfoPopover(
-					channel = channel,
+					row = row,
 					awayActive = awayActive,
 					onDismiss = { infoOpen = false },
 					onToggleHidden = {
-						if (channel.hidden) viewModel.unhideChannel(cwdKey)
-						else viewModel.hideChannel(cwdKey)
+						if (row.hidden) viewModel.unhideConversation(convId)
+						else viewModel.hideConversation(convId)
 					},
-					onToggleAway = { viewModel.requestAwayModeToggle(cwdKey, !awayActive) },
+					onToggleAway = { viewModel.requestAwayModeToggle(null, !awayActive) },
 				)
 			}
 		}
@@ -284,21 +259,6 @@ private fun SwitchboardNavHost(
 			onCancel = { viewModel.cancelExitToggle() },
 		)
 	}
-	pendingSwipeAtDeskConfirm?.let { cwdKey ->
-		val channel = channels[cwdKey]
-		val channelLabel = channel?.title ?: channel?.let { leafName(it.cwdCanonical) } ?: cwdKey
-		AlertDialog(
-			onDismissRequest = { viewModel.cancelSwipeAtDesk() },
-			title = { Text("Set channel to At desk?") },
-			text = { Text("Mark $channelLabel as At desk. Agents in this channel will resume normal terminal output.") },
-			confirmButton = {
-				TextButton(onClick = { viewModel.confirmSwipeAtDesk() }) { Text("At desk") }
-			},
-			dismissButton = {
-				TextButton(onClick = { viewModel.cancelSwipeAtDesk() }) { Text("Cancel") }
-			},
-		)
-	}
 	if (showSpawnDialog) {
 		SpawnSessionDialog(
 			mruList = projectMru,
@@ -306,7 +266,6 @@ private fun SwitchboardNavHost(
 			wslAvailable = wslAvailable,
 			onDismiss = { showSpawnDialog = false },
 			onSpawn = { surface, project, prompt, targetConversationId ->
-				// Task 38: show toast if away mode was auto-enabled
 				val wasAwayOff = viewModel.spawnSession(surface, project, prompt, targetConversationId)
 				if (wasAwayOff) {
 					Toast.makeText(context, "Away mode enabled", Toast.LENGTH_SHORT).show()
@@ -317,7 +276,6 @@ private fun SwitchboardNavHost(
 		)
 	}
 
-	// T-027: Resume dialog
 	resumeConversationId?.let { convId ->
 		val conv = activeConversations.firstOrNull { it.id == convId }
 		if (conv != null) {
@@ -334,7 +292,6 @@ private fun SwitchboardNavHost(
 		}
 	}
 
-	// T-027: Combine dialog
 	combineConversationId?.let { sourceId ->
 		val source = activeConversations.firstOrNull { it.id == sourceId }
 		val targets = activeConversations.filter { it.id != sourceId }

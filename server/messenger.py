@@ -1,10 +1,9 @@
 """Messenger backend trait surfaces and shared types.
 
 Defines the abstract trait classes (Backend, MessageWriter, ResponsePoller,
-AwayModeMirror, ChannelLifecycle, InjectPort) that backend implementations
-must satisfy. The transport layer can evolve without touching the gateway
-core, since gateway handlers depend on specific traits rather than a
-god-interface.
+AwayModeMirror, ChannelLifecycle) that backend implementations must satisfy.
+The transport layer can evolve without touching the gateway core, since
+gateway handlers depend on specific traits rather than a god-interface.
 """
 
 from __future__ import annotations
@@ -79,7 +78,7 @@ class MessageWriter(ABC):
 		"""Send a simple text notification to the primary administrative channel."""
 		pass
 
-	async def send_spawn_ack(self, channel_id: str, prompt: str | None) -> None:
+	async def send_spawn_ack(self, conversation_id: str, prompt: str | None) -> None:
 		"""Acknowledge a successful spawn command. No-op by default."""
 		pass
 
@@ -91,6 +90,40 @@ class MessageWriter(ABC):
 	async def mark_question_cancelled(self, conversation_id: str, request_id: str) -> None:
 		"""Mark the question with this request_id as cancelled in storage.
 		No-op default; FirebaseBackend overrides."""
+		pass
+
+	async def add_pending_question_record(
+		self,
+		conversation_id: str,
+		request_id: str,
+		*,
+		sender: str,
+		msg_id: str | None,
+		question_text: str,
+		suggestions: list[str] | None = None,
+	) -> None:
+		"""Write a tracking record at /conversations/<id>/pending_questions/<request_id>.
+		Used by phone-side UI to render an indicator that an ask_human is in flight.
+		No-op default; FirebaseBackend overrides."""
+		pass
+
+	async def remove_pending_question_record(
+		self,
+		conversation_id: str,
+		request_id: str,
+	) -> None:
+		"""Delete /conversations/<id>/pending_questions/<request_id> when the
+		ask_human resolves (success / timeout / cancel). No-op default."""
+		pass
+
+	async def mark_question_answered(
+		self,
+		conversation_id: str,
+		msg_id: str,
+	) -> None:
+		"""Write /conversations/<id>/answered_question_msg_ids/<msg_id> = true.
+		Used by phone-side UI to derive the RESPONDED badge state without re-walking
+		the messages array. No-op default; FirebaseBackend overrides."""
 		pass
 
 	async def write_agent_status(
@@ -107,15 +140,11 @@ class MessageWriter(ABC):
 
 
 class ResponsePoller(ABC):
-	"""Response/command queues, cleanup, startup reset."""
+	"""Response queue, cleanup, startup reset."""
 
 	@abstractmethod
 	def poll_responses(self) -> "AsyncIterator[IncomingResponse]":
 		"""Yield IncomingResponse as replies arrive. Infinite async iterator."""
-
-	@abstractmethod
-	def poll_commands(self) -> "AsyncIterator[str]":
-		"""Yield slash-commands as they arrive. Infinite async iterator."""
 
 	async def poll_away_mode_commands(self) -> "AsyncIterator[dict]":
 		"""Yield away_mode_commands queue entries as they arrive. No-op by default."""
@@ -129,21 +158,13 @@ class ResponsePoller(ABC):
 		pass
 
 	async def reset_all_pending_responses(self) -> None:
-		"""Zero out channels/*/pending_responses for every channel. Called once
+		"""Zero out conversations/*/pending_responses for every conversation. Called once
 		at server startup to match the post-restart in-memory Registry state. No-op default."""
 		pass
 
 
 class AwayModeMirror(ABC):
 	"""Away-mode state mirror, listeners, startup resets."""
-
-	async def write_away_mode_mirror(self, cwd: str | None, active: bool | None) -> None:
-		"""Mirror away-mode state to Firebase.
-		cwd=None for global flag changes; cwd=<canonical> for per-cwd overrides.
-		active=None (only valid with cwd set) means the override entry should be
-		removed from the mirror.
-		No-op by default; FirebaseBackend overrides."""
-		pass
 
 	async def load_away_mode_snapshot(self, registry) -> None:
 		"""Read current global + per-channel away-mode state from the backend
@@ -152,9 +173,10 @@ class AwayModeMirror(ABC):
 		pass
 
 	async def start_away_mode_listeners(self, registry) -> None:
-		"""Subscribe to backend value events for global and per-channel away-mode
-		state; invoke registry.update_global_away_cache and
-		registry.update_cwd_override_cache as changes arrive. No-op default."""
+		"""Subscribe to the backend's global away-mode value event; invoke
+		registry.update_global_away_cache as changes arrive. Per-channel
+		overrides were retired in the conversations redesign — only the
+		single global flag remains. No-op default."""
 		pass
 
 	async def reset_all_away_mode(self) -> None:
@@ -172,26 +194,9 @@ class AwayModeMirror(ABC):
 class ChannelLifecycle(ABC):
 	"""Channel-state CRUD plus spawn-collision sub-flow."""
 
-	async def read_channel_meta(self, cwd: str) -> dict:
-		"""Return {'title': str|None, 'last_activity_at': str|None, 'hidden': bool}."""
-		return {"title": None, "last_activity_at": None, "hidden": False}
-
 	async def set_conversation_hidden(self, conv_id: str, hidden: bool) -> None:
 		"""Set the hidden flag on the conversation at /conversations/<conv_id>/meta/hidden."""
 		pass
-
-
-class InjectPort(ABC):
-	"""Per-session inject listener."""
-
-	async def start_inject_listener(self, session_id: str) -> None:
-		"""Start listening for human inject messages. No-op by default."""
-		pass
-
-	async def poll_inject_messages(self):
-		"""Yield (session_id, inject_id, text) tuples. Empty by default."""
-		if False:
-			yield
 
 
 class ConversationStore:
@@ -222,6 +227,12 @@ class ConversationStore:
 
 	async def remove_conversation_member(self, conv_id: str, sender: str) -> None:
 		"""Remove a member entry under /conversations/<id>/members_active/<sender>."""
+		pass
+
+	async def write_conversation_member_history(self, conv_id: str, member) -> None:
+		"""Write a departed member to /conversations/<id>/members_history/<sender>.
+		Persists parting metadata (left_at, session_ended_at, session_end_reason) so
+		hydration can restore members_history after restart."""
 		pass
 
 	async def write_conversation_message(
@@ -263,8 +274,12 @@ class ConversationStore:
 		"""Write the global open-conversation pointer."""
 		pass
 
-	async def set_session_home(self, session_id: str, conv_id: str) -> None:
-		"""Persist a cli session's home-conversation pointer."""
+	async def set_session_home(self, session_id: str, conv_id: str | None) -> None:
+		"""Persist a cli session's home-conversation pointer.
+
+		Pass conv_id=None to clear (delete) the stored home pointer for this session
+		— used by session-fallback when a dormant session's home conv has Ended
+		and we want to avoid leaving a stale pointer behind in storage."""
 		pass
 
 	async def remove_session_binding(self, session_id: str) -> None:

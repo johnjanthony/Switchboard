@@ -12,6 +12,17 @@ Doesn't rehydrate: wait_queue (futures die with the process), pending_responses
 (same), conv.lock (new lock per startup is fine). Any agent blocked on a future
 at restart time will eventually time out or surface CancelledError on their next
 MCP call — acceptable degradation per the parent design's T-001 acknowledgment.
+
+Also not rehydrated: /conversations/<id>/pending_questions/<request_id> and
+/conversations/<id>/answered_question_msg_ids/<msg_id>. Those subtrees are
+maintained purely for phone-side UI rendering (per 2026-05-19 spec lines
+349-356); the canonical in-memory PendingRequest map is owned by Registry, not
+by Firebase. Any pending_questions records left behind from before the restart
+become orphans — they can't be reactivated because the underlying futures are
+dead. They'll be overwritten or cleared the next time ask_human flows through
+the same request_id (impossible — request_ids are uuids) or are tolerated as
+visual cruft until force_end clears the conversation. A future cleanup pass
+could sweep them on startup; not done here.
 """
 
 from __future__ import annotations
@@ -61,7 +72,11 @@ async def hydrate_from_firebase(registry: Registry, backend, logger) -> None:
 	except Exception as exc:
 		await logger.surface_error(f"hydration_conversations_read_failed: {exc}")
 
-	# 3. Session home pointers
+	# 3. Session home pointers.
+	# Skip pointers that reference a conversation that wasn't hydrated (i.e.
+	# the home conv is Ended or has been deleted). Re-binding a session to a
+	# now-Ended home would defeat the dormant-fallback home-pointer cleanup
+	# performed during force-end and re-introduce the stale-pointer bug.
 	try:
 		sessions_data = await _read_path("cli_sessions")
 		if isinstance(sessions_data, dict):
@@ -69,8 +84,11 @@ async def hydrate_from_firebase(registry: Registry, backend, logger) -> None:
 				if not isinstance(session_node, dict):
 					continue
 				home_id = session_node.get("home_conversation_id")
-				if isinstance(home_id, str) and home_id:
-					registry._session_home_conversation_id[session_id] = home_id
+				if not isinstance(home_id, str) or not home_id:
+					continue
+				if home_id not in registry.conversations:
+					continue
+				registry._session_home_conversation_id[session_id] = home_id
 	except Exception as exc:
 		await logger.surface_error(f"hydration_cli_sessions_failed: {exc}")
 
@@ -148,6 +166,30 @@ def _hydrate_conversation(registry: Registry, conv_id: str, conv_node: Any) -> N
 				last_seen_seq=int(member_data.get("last_seen_seq", 0) or 0),
 			)
 			conv.members_active[member.sender] = member
+
+	# Departed members (parting metadata) — restored from /conversations/<id>/members_history
+	history_node = conv_node.get("members_history") or {}
+	if isinstance(history_node, dict):
+		for sender, member_data in history_node.items():
+			if not isinstance(member_data, dict):
+				continue
+			cli_session_id = member_data.get("cli_session_id")
+			if not isinstance(cli_session_id, str) or not cli_session_id:
+				continue
+			departed = ConversationMember(
+				cli_session_id=cli_session_id,
+				sender=member_data.get("sender", sender),
+				cwd=member_data.get("cwd", ""),
+				surface=member_data.get("surface", "windows"),
+				joined_at=_as_float(member_data.get("joined_at"), 0.0),
+				alive=bool(member_data.get("alive", False)),
+				session_lost_permanently=bool(member_data.get("session_lost_permanently", False)),
+				session_ended_at=member_data.get("session_ended_at"),
+				session_end_reason=member_data.get("session_end_reason"),
+				left_at=_as_float(member_data.get("left_at"), None),
+				last_seen_seq=int(member_data.get("last_seen_seq", 0) or 0),
+			)
+			conv.members_history.append(departed)
 
 	# Messages — order by push key (Firebase push keys are lexicographically sortable by time)
 	messages_node = conv_node.get("messages") or {}

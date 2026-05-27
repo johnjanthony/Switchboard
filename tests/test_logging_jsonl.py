@@ -191,30 +191,6 @@ async def test_away_mode_exited_without_reason(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_cwd_canonicalized_writes_expected_fields(tmp_path):
-	logger = JsonlLogger(tmp_path / "log.jsonl")
-	await logger.cwd_canonicalized("/C/Work/Foo", "c:/work/foo")
-	ev = read_events(tmp_path / "log.jsonl")[0]
-	assert ev["event"] == "cwd_canonicalized"
-	assert ev["raw"] == "/C/Work/Foo"
-	assert ev["canonical"] == "c:/work/foo"
-	assert "ts" in ev
-
-
-@pytest.mark.asyncio
-async def test_pending_superseded_writes_expected_fields(tmp_path):
-	logger = JsonlLogger(tmp_path / "log.jsonl")
-	await logger.pending_superseded("c:/work/foo", "Claude", "req-old", "req-new")
-	ev = read_events(tmp_path / "log.jsonl")[0]
-	assert ev["event"] == "pending_superseded"
-	assert ev["cwd"] == "c:/work/foo"
-	assert ev["sender"] == "Claude"
-	assert ev["prior_request_id"] == "req-old"
-	assert ev["new_request_id"] == "req-new"
-	assert "ts" in ev
-
-
-@pytest.mark.asyncio
 async def test_away_mode_global_changed_true(tmp_path):
 	logger = JsonlLogger(tmp_path / "log.jsonl")
 	await logger.away_mode_global_changed(True)
@@ -232,26 +208,3 @@ async def test_away_mode_global_changed_false(tmp_path):
 	assert ev["active"] is False
 
 
-@pytest.mark.asyncio
-async def test_away_mode_cwd_changed_writes_expected_fields(tmp_path):
-	logger = JsonlLogger(tmp_path / "log.jsonl")
-	await logger.away_mode_cwd_changed("c:/work/switchboard", True)
-	ev = read_events(tmp_path / "log.jsonl")[0]
-	assert ev["event"] == "away_mode_cwd_changed"
-	assert ev["cwd"] == "c:/work/switchboard"
-	assert ev["active"] is True
-	assert "ts" in ev
-
-
-
-@pytest.mark.asyncio
-async def test_title_truncated_writes_expected_fields(tmp_path):
-	logger = JsonlLogger(tmp_path / "log.jsonl")
-	long_title = "x" * 120
-	await logger.title_truncated("c:/work/foo", 120, long_title[:80])
-	ev = read_events(tmp_path / "log.jsonl")[0]
-	assert ev["event"] == "title_truncated"
-	assert ev["cwd"] == "c:/work/foo"
-	assert ev["original_length"] == 120
-	assert ev["truncated"] == long_title[:80]
-	assert "ts" in ev

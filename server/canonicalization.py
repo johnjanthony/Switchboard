@@ -1,8 +1,12 @@
-"""Path canonicalization for cwd-as-channel routing.
+"""Path canonicalization — display-only since the conversations redesign.
 
-Every cwd ingress (MCP tool calls, hook queries, phone reply paths,
-spawn submissions) is normalized via canonicalize_cwd. Firebase keys
-are derived via to_firebase_key.
+Routing keys are session_id / conversation_id; cwd is informational. The
+canonicalize_cwd function still normalizes raw cwd strings into a stable
+display form (so Page B shows a consistent label regardless of how the
+agent passed the path: Windows / Git-Bash / POSIX / WSL `/mnt/<letter>/...`
+all map to the same canonical form). to_firebase_key derives Firebase-safe
+keys; surviving callers are limited to the Wear-compat /channels/<key>
+projection and a few legacy slot-parsing paths in firebase.py.
 """
 
 from __future__ import annotations

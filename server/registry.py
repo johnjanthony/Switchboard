@@ -1,9 +1,14 @@
-"""In-memory pending-request registry.
+"""In-memory pending-request registry plus the Conversation routing maps.
 
-All access happens on a single asyncio event loop, so no locking is required.
-Pending requests are keyed by (cwd, sender) with supersede semantics: if a
-new request arrives for the same (cwd, sender) pair, the prior future is
-cancelled and replaced.
+All access happens on a single asyncio event loop, so no locking is required
+on the registry dicts themselves; per-Conversation work is serialized via
+each Conversation's own asyncio.Lock.
+
+Pending requests are keyed by (conversation_id, sender) with supersede
+semantics: if a new request arrives for the same (conversation_id, sender)
+pair, the prior future is cancelled and replaced. Routing from a CLI session
+to its current conversation uses session_to_conversation_id (hook-injected
+cli_session_id → conv-<uuid>); cwd is informational only.
 """
 
 from __future__ import annotations

@@ -89,6 +89,8 @@ async def test_ask_human_auto_creates_conversation_on_first_call(cfg, logger):
 	registers a pending request keyed to the new conv_id, and resolves correctly."""
 	backend = RecordingBackend()
 	registry = Registry()
+	# Away mode ON so ask_human blocks (away-OFF path is the at-desk redirect).
+	registry.global_away_mode = True
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
 	session_id = "s-ask-auto-003"
