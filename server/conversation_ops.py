@@ -269,6 +269,16 @@ async def _migrate_member(
 				backend.set_conversation_state(source_id, "ended"),
 				label=f"fb_set_state:{source_id}:ended",
 			)
+	# Wake any opener blocked on the target's open_peer_future. Migration is a
+	# peer-join from the target's POV, so the lobby/bootstrap wake protocol
+	# applies the same way as _add_member.
+	fut = target.open_peer_future
+	if fut is not None and not fut.done():
+		fut.set_result(
+			f"ok. open_conversation = {target_id}\n"
+			f"Peer '{actual_sender}' joined."
+		)
+		target.open_peer_future = None
 
 
 async def _queue_for_open_peer(

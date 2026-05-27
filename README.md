@@ -6,7 +6,7 @@ Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task an
 
 ## Features
 
-- **Session-id routing**: Each agent session is identified by a `cli_session_id` injected automatically by the PreToolUse hook. No manual channel wiring; agents only pass `sender` and tool arguments.
+- **Session-id routing**: Each agent session is identified by a `cli_session_id` injected automatically by the PreToolUse hook. Agents only pass `sender` and tool arguments.
 - **Conversations**: Messages, members, and state persist in Firebase as named conversations (Active / Ended). At most one is "open" — joinable by any new agent via `enter_conversation`.
 - **Asynchronous updates**: Send non-blocking notifications or deliver documents directly to your phone.
 - **In-line replies**: View your responses directly in the chat history for full context.
@@ -18,10 +18,7 @@ Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task an
 
 ## Design & Architecture
 
-For an agent-oriented project tour, see [`AGENTS.md`](AGENTS.md). The current architecture is defined by two dated design specs:
-
-- [Conversations + collab redesign](docs/superpowers/specs/2026-05-19-conversations-collab-redesign-design.md) — the `Conversation` primitive, session_id routing, the active tool surface.
-- [Spawn conversation-aware redesign](docs/superpowers/specs/2026-05-20-spawn-conversation-aware-redesign-design.md) — fresh / resume / combine spawn flows, launcher WSL support, hook plumbing.
+For an agent-oriented project tour, see [`AGENTS.md`](AGENTS.md). The current design is documented in [`docs/switchboard-design-spec-comprehensive.md`](docs/switchboard-design-spec-comprehensive.md) — covers the Conversation primitive, session-id routing, MCP tool surface, hook plumbing, Firebase schema, spawn (fresh / resume / combine), away mode, hydration, and the Android UI surface.
 
 ## Install
 
@@ -52,7 +49,7 @@ Switchboard reads its configuration from OS env vars. A `.env` file is loaded as
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | If enabled | | Absolute path to your Firebase service account key JSON file. |
 | `FIREBASE_STORAGE_BUCKET` | No | | Hostname of your Firebase Storage bucket. |
 | **Spawn** | | | |
-| `SWITCHBOARD_WINDOWS_SPAWN_ROOT` | For spawn | | Windows root containing your project folders (e.g. `C:\Work`). Legacy alias: `SWITCHBOARD_SPAWN_ROOT`. |
+| `SWITCHBOARD_WINDOWS_SPAWN_ROOT` | For spawn | | Windows root containing your project folders (e.g. `C:\Work`). Alias: `SWITCHBOARD_SPAWN_ROOT`. |
 | `SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT` | No | `work` | Segment appended to the resolved WSL home to locate the workspace root (e.g. `/home/john/work`). |
 
 ## Wire your agent to it
@@ -78,8 +75,6 @@ Switchboard ships as a Claude Code plugin. From any Claude Code session:
 The plugin install wires the skill and the Claude turn-end + agent-status hooks. The MCP server connection is bootstrapped per host by a parallel chezmoi dotfiles effort (Windows uses `localhost:9876`; WSL uses the Windows host IP, resolvable from `/etc/resolv.conf` or `ip route show default | awk '{print $3}'`). If you are not using chezmoi, run `claude mcp add switchboard --scope user --transport http <resolved-url>` per host.
 
 WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` and a firewall inbound rule for TCP 9876 from the WSL subnet.
-
-If you previously installed via `claude mcp add` + `install-turn-end-hook.ps1 -Claude` + a `~/.claude/skills/switchboard` symlink, see [`CLAUDE.md`](CLAUDE.md)'s "Migrating from the pre-plugin setup" for cleanup steps before installing the plugin.
 
 ## Android App
 
@@ -167,7 +162,7 @@ To exit away mode, reply *"I'm back"*. The agent will provide a **Welcome Back S
 
 ### Replying to messages
 
-Switchboard correlates your reply to the waiting `ask_human` call via the Android app's reply input at the bottom of the channel tab. Type your answer and tap Send. If the question included suggestion buttons, tap one to reply instantly without typing.
+Switchboard correlates your reply to the waiting `ask_human` call via the Android app's reply input at the bottom of the conversation tab. Type your answer and tap Send. If the question included suggestion buttons, tap one to reply instantly without typing.
 
 ### Conversation composition
 
@@ -189,7 +184,7 @@ Spawn auto-enables global away mode if it is currently off; the phone shows a co
 **Prerequisites:**
 
 - Set the spawn root env vars in `.env` and restart the service:
-  - `SWITCHBOARD_WINDOWS_SPAWN_ROOT` — Windows root path containing your project folders (e.g. `C:\Work`). The legacy name `SWITCHBOARD_SPAWN_ROOT` is still accepted as an alias.
+  - `SWITCHBOARD_WINDOWS_SPAWN_ROOT` — Windows root path containing your project folders (e.g. `C:\Work`). Alias: `SWITCHBOARD_SPAWN_ROOT`.
   - `SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT` — segment appended to the resolved WSL home (default `work`, giving e.g. `/home/john/work`).
 - Register the `SwitchboardSpawn` scheduled task (one-time, elevated PowerShell):
 
@@ -211,7 +206,7 @@ With the server running, the Android app installed, and an agent wired up:
 
 1. Open a Claude Code session and spawn an agent via the Android app (or say *"I'm stepping away"* to an existing session).
 2. Ask the agent to do something that should trigger a question, e.g. *"Delete the oldest file in `logs/`."*
-3. Watch your phone: you should receive a push notification and see the question appear in the channel tab.
+3. Watch your phone: you should receive a push notification and see the question appear in the conversation tab.
 4. Type your answer in the reply field at the bottom and tap Send (or tap a suggestion button if provided).
 5. The agent's `ask_human` tool call unblocks with your reply text.
 6. Check `logs/switchboard.jsonl` — you should see `request_created` and `request_resolved` events.

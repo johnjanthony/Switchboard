@@ -8,19 +8,17 @@ This file contains Claude-specific instructions for working in the Switchboard w
 - **Read [`skills/switchboard/SKILL.md`](skills/switchboard/SKILL.md)** for MCP tool signatures and the Away Mode protocol.
 - **If [`docs/project_next_session.md`](docs/project_next_session.md) exists**, read it first — it contains branch-specific resumption notes (committed with whichever feature branch you're on) describing in-progress work, remaining steps, and any pre-merge cleanup items.
 
-## MCP tool surface (current)
+## MCP tool surface
 
 Active tools: `ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `open_conversation`, `enter_conversation`, `combine_conversations`, `lookup_conversation_ids`, `leave_conversation`, `set_away_mode`.
 
-Retired tools (do not call): `end_collab`, `enter_away_mode`, `exit_away_mode`.
+Routing is by `cli_session_id`, injected by the `cli-session-injector-hook.py` PreToolUse hook. Agents pass `sender` and tool-specific args only.
 
-The `channel` parameter is gone — routing is by `cli_session_id`, injected by the `cli-session-injector-hook.py` PreToolUse hook. Agents pass `sender` and tool-specific args only.
+## Conversation model
 
-## Conversation model (current)
+Conversations are the persistence + routing unit. States: `Active` / `Ended`. At most one Active conversation is the "open" singleton (set by `open_conversation()`; joinable via `enter_conversation()`). Routing key is `cli_session_id` (hook-injected), not cwd. Away mode is a single global flag (`set_away_mode(bool)`).
 
-Conversations replace channels as the persistence + routing unit. States: `Active` / `Ended`. At most one Active conversation is the "open" singleton (set by `open_conversation()`; joinable via `enter_conversation()`). Routing key is `cli_session_id` (hook-injected), not cwd. Away mode is a single global flag (`set_away_mode(bool)`); per-cwd overrides are retired.
-
-## New hooks (plugin bundle)
+## Hooks (plugin bundle)
 
 - **`cli-session-injector-hook.py`** (PreToolUse) — injects `cli_session_id` and `cwd` into every switchboard MCP call. Agent never passes these.
 - **`cli-session-end-hook.py`** (SessionEnd) — fires on orderly exit; POSTs to `POST /cli-session/end` to mark the member dormant (not auto-leave).
@@ -54,18 +52,8 @@ The plugin install wires the skill and the Claude turn-end + agent-status hooks.
 	- `SWITCHBOARD_AGENT_STATUS_URL=http://<windows-host-ip>:9876/agent_status` — read by `agent-status-hook.py`.
 	- `SWITCHBOARD_URL=http://<windows-host-ip>:9876/away-mode` — read by `turn-end-hook-away-mode.py`.
 
-	The fragmented var names are a known wart (the cross-cutting branch review flagged this); unifying them under `SWITCHBOARD_BASE_URL` is a hook-script cleanup that hasn't shipped yet.
+	The fragmented var names are a known wart — unifying them under `SWITCHBOARD_BASE_URL` is a pending hook-script cleanup.
 
 2. **The Python server (NSSM Windows service).** Install with `scripts/install-service.ps1`. The plugin's MCP connection is useless until this is running.
 
 3. **The Gemini CLI `AfterAgent` hook** (only if you use Gemini). Install with `scripts/install-turn-end-hook.ps1`. Gemini's hook system is independent of the Claude plugin.
-
-### Migrating from the pre-plugin setup
-
-If you previously installed Switchboard via `claude mcp add` + `install-turn-end-hook.ps1 -Claude` + a `~/.claude/skills/switchboard` symlink, clean up the old artifacts before installing the plugin to avoid double-firing:
-
-1. Remove the symlink: `rm ~/.claude/skills/switchboard`.
-2. Remove the five hook entries in `~/.claude/settings.json` whose `command` field contains `turn-end-hook-away-mode` or `agent-status-hook`. (One Stop entry for turn-end; one each for UserPromptSubmit, PreToolUse, PostToolUse for agent-status; plus a second Stop matcher group for agent-status.)
-3. Leave the `switchboard` entry in `~/.claude.json` (`mcpServers`) alone — chezmoi (or your manual `claude mcp add` from step 1 above) will manage that going forward.
-
-Then install the plugin as above.

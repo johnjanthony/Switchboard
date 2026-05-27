@@ -113,3 +113,65 @@ def test_add_member_sender_collision_disambiguates():
 		assert conv.members_active["Claude"].cli_session_id == "s-a"
 		assert conv.members_active["Claude 2"].cli_session_id == "s-b"
 	asyncio.run(run())
+
+
+def test_add_member_resolves_open_peer_future():
+	"""Regression lock: when a peer is added to a conv whose open_peer_future
+	is set, the future resolves with a 'Peer X joined' payload. This is the
+	bootstrap-and-lobby wake protocol — re-asserted as a unit test here so
+	any future refactor of _add_member catches the break."""
+	from server.conversation_ops import _add_member
+
+	async def run():
+		r = Registry()
+		conv_id = await _create_active_conversation_for(
+			r, cli_session_id="s-opener", cwd="C:/Work/X", sender="Opener",
+		)
+		conv = r.conversations[conv_id]
+		# Simulate the opener being blocked on the future
+		future = asyncio.get_event_loop().create_future()
+		conv.open_peer_future = future
+
+		await _add_member(r, conv_id, "s-joiner", "Joiner", "/home/joiner")
+
+		assert future.done(), "_add_member must resolve open_peer_future"
+		result = future.result()
+		assert "Joiner" in result
+		assert "open_conversation" in result
+		assert conv.open_peer_future is None, "future slot should be cleared after resolution"
+	asyncio.run(run())
+
+
+def test_migrate_member_resolves_target_open_peer_future():
+	"""When a member migrates INTO a target conv whose open_peer_future is set
+	(blocked opener — either mint-path bootstrap or sole-alive lobby-hold), the
+	migrate must wake the opener. Without this the opener would block until
+	timeout while a peer effectively joined via combine or enter_conversation
+	Branch 3."""
+	from server.conversation_ops import _add_member, _migrate_member
+
+	async def run():
+		r = Registry()
+		# Source conv: the migrating peer's current home
+		source_id = await _create_active_conversation_for(
+			r, cli_session_id="s-mover", cwd="C:/Work/Src", sender="Mover",
+		)
+		# Target conv: separate conv with a blocked opener
+		target_id = await _create_active_conversation_for(
+			r, cli_session_id="s-opener", cwd="C:/Work/Tgt", sender="Opener",
+		)
+		target = r.conversations[target_id]
+		future = asyncio.get_event_loop().create_future()
+		target.open_peer_future = future
+
+		await _migrate_member(
+			r, source_id=source_id, target_id=target_id,
+			cli_session_id="s-mover", sender="Mover", cwd="/home/mover",
+		)
+
+		assert future.done(), "_migrate_member must resolve target's open_peer_future"
+		result = future.result()
+		assert "Mover" in result
+		assert "open_conversation" in result
+		assert target.open_peer_future is None
+	asyncio.run(run())
