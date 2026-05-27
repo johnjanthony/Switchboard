@@ -90,11 +90,19 @@ async def test_set_open_conversation_id_writes_to_global_settings(backend):
 
 
 @pytest.mark.asyncio
-async def test_set_open_conversation_id_accepts_none(backend):
-	"""set_open_conversation_id accepts None (clears the pointer)."""
+async def test_set_open_conversation_id_none_deletes_node(backend):
+	"""set_open_conversation_id(None) must call delete(), not set(None).
+
+	firebase_admin's ref.set(None) raises ValueError('Value must not be None.') —
+	the only way to clear a node is ref.delete(). The previous version called
+	set(None), which silently failed in a background task and left Firebase
+	pointing at a stale conversation id (observed 2026-05-27 in nssm-stderr.log:
+	`Task exception was never retrieved future: <Task finished
+	name='fb_clear_open_id:...' exception=ValueError('Value must not be None.')>`)."""
 	be, mock_db = backend
 	await be.set_open_conversation_id(None)
-	mock_db.reference.return_value.set.assert_called_with(None)
+	mock_db.reference.return_value.delete.assert_called_once()
+	mock_db.reference.return_value.set.assert_not_called()
 
 
 @pytest.mark.asyncio

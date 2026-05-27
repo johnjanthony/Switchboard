@@ -79,6 +79,14 @@ async def handle_session_end(
 		fut = entry.get("future")
 		if fut is not None and not fut.done():
 			fut.set_result(dormancy_msg["text"])
+	# Also surface dormancy to any mint-path opener blocked on open_peer_future
+	# (e.g. the opener's session itself ended, or a peer's session ended before
+	# they fully joined). Returning the dormancy text lets the opener decide
+	# what to do next instead of hanging until timeout.
+	opener_future = conv.open_peer_future
+	if opener_future is not None and not opener_future.done():
+		opener_future.set_result(dormancy_msg["text"])
+		conv.open_peer_future = None
 	# Cancel any pending ask_human futures owned by this departed member —
 	# their answer can never arrive (the agent's session is gone), so freeing
 	# the future immediately avoids a 24h _TIMEOUT wait if the agent ever

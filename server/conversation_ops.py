@@ -195,6 +195,17 @@ async def _add_member(
 				backend.set_session_home(cli_session_id, conversation_id),
 				label=f"fb_set_session_home:{cli_session_id}:{conversation_id}",
 			)
+	# Wake any mint-path opener blocked on conv.open_peer_future. The opener's
+	# wake payload identifies the newly-joined peer by sender so they can greet
+	# by name. Newline-separated so the leading line still matches the legacy
+	# `ok. open_conversation = <id>` format that existing parsers split on.
+	fut = conv.open_peer_future
+	if fut is not None and not fut.done():
+		fut.set_result(
+			f"ok. open_conversation = {conversation_id}\n"
+			f"Peer '{actual_sender}' joined."
+		)
+		conv.open_peer_future = None
 
 
 async def _migrate_member(
@@ -258,6 +269,44 @@ async def _migrate_member(
 				backend.set_conversation_state(source_id, "ended"),
 				label=f"fb_set_state:{source_id}:ended",
 			)
+
+
+async def _queue_for_open_peer(
+	registry: Registry,
+	conversation_id: str,
+	cli_session_id: str,
+	timeout_seconds: float,
+	backend=None,
+	end_conv_on_timeout: bool = True,
+) -> str:
+	"""Block the caller on conv.open_peer_future until a peer becomes an alive
+	member (which resolves the future from inside _add_member), until force-end
+	or session-end resolves the future, or until timeout.
+
+	Two callers:
+	- open_conversation mint path: end_conv_on_timeout=True. A timeout means
+	  no one joined the just-minted room, so we force-end it to avoid leaking
+	  an orphan.
+	- message_and_await_agent sole-alive + open-marker (lobby-hold): end_conv_on_timeout=False.
+	  The conv was already established; a timeout just means "no peer arrived
+	  this round." Return __TIMEOUT__ but leave the conv alive so the caller
+	  can poll again or explicitly leave_conversation."""
+	conv = registry.conversations[conversation_id]
+	future = asyncio.get_event_loop().create_future()
+	conv.open_peer_future = future
+	try:
+		return await asyncio.wait_for(future, timeout=timeout_seconds)
+	except asyncio.TimeoutError:
+		if conv.open_peer_future is future:
+			conv.open_peer_future = None
+		if end_conv_on_timeout:
+			from server.gateway.dispatch import handle_force_end
+			await handle_force_end(registry, conversation_id, backend=backend)
+		return "__TIMEOUT__"
+	except asyncio.CancelledError:
+		if conv.open_peer_future is future:
+			conv.open_peer_future = None
+		raise
 
 
 async def _queue_for_intro(

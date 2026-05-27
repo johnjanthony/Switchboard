@@ -18,7 +18,19 @@ def cfg(tmp_path):
 	return Config(
 		host="127.0.0.1",
 		port=9876,
-		timeout_seconds=60,
+		timeout_seconds=5.0,
+		log_path=str(tmp_path / "log.jsonl"),
+	)
+
+
+@pytest.fixture
+def short_timeout_cfg(tmp_path):
+	"""For tests that exercise the mint-path timeout — opener waits this long
+	for a peer before giving up. Keep small so the timeout case runs fast."""
+	return Config(
+		host="127.0.0.1",
+		port=9876,
+		timeout_seconds=0.3,
 		log_path=str(tmp_path / "log.jsonl"),
 	)
 
@@ -114,22 +126,32 @@ async def test_open_conversation_replaces_prior_open(cfg, logger):
 
 @pytest.mark.asyncio
 async def test_open_conversation_mints_when_unbound(cfg, logger):
-	"""Session not bound to any conversation: open_conversation mints one and promotes it.
+	"""Session not bound to any conversation: open_conversation mints one and
+	promotes it. The call blocks until a peer joins — we drive a peer-join
+	concurrently to unblock it.
 
-	Lets agents bootstrap a collab without first sending a real ask/notify.
-	"""
+	Lets agents bootstrap a collab without first sending a real ask/notify."""
 	backend = RecordingBackend()
 	r = Registry()
 	handlers = build_tool_handlers(cfg, r, backend, logger)
 
-	result = await handlers.open_conversation(
+	opener_task = asyncio.create_task(handlers.open_conversation(
 		"Claude-X",
 		cli_session_id="s-unbound",
 		cwd="C:/Work/X",
-	)
+	))
+	# Let the opener mint + reach the await
+	await asyncio.sleep(0.05)
+	# A peer joins to unblock the opener
+	peer_task = asyncio.create_task(handlers.enter_conversation(
+		"Peer",
+		cli_session_id="s-peer",
+		cwd="/home/peer",
+	))
+	result = await asyncio.wait_for(opener_task, timeout=2.0)
 
 	assert result.startswith("ok. open_conversation = ")
-	conv_id = result.removeprefix("ok. open_conversation = ")
+	conv_id = result.removeprefix("ok. open_conversation = ").split()[0]
 	assert conv_id.startswith("conv-")
 	assert r.open_conversation_id == conv_id
 	assert conv_id in r.conversations
@@ -138,23 +160,44 @@ async def test_open_conversation_mints_when_unbound(cfg, logger):
 	assert conv.members_active["Claude-X"].cli_session_id == "s-unbound"
 	assert r.session_to_conversation_id["s-unbound"] == conv_id
 
+	# Clean up the peer (still blocked in intro queue)
+	peer_task.cancel()
+	try:
+		await peer_task
+	except asyncio.CancelledError:
+		pass
+
 
 @pytest.mark.asyncio
 async def test_open_conversation_unbound_honors_title(cfg, logger):
-	"""When minting on unbound open, the supplied title is used."""
+	"""When minting on unbound open, the supplied title is used. The call still
+	blocks until a peer joins; drive a peer-join to unblock."""
 	backend = RecordingBackend()
 	r = Registry()
 	handlers = build_tool_handlers(cfg, r, backend, logger)
 
-	result = await handlers.open_conversation(
+	opener_task = asyncio.create_task(handlers.open_conversation(
 		"Claude-X",
 		title="Collab bootstrap",
 		cli_session_id="s-unbound",
 		cwd="C:/Work/X",
-	)
+	))
+	await asyncio.sleep(0.05)
+	peer_task = asyncio.create_task(handlers.enter_conversation(
+		"Peer",
+		cli_session_id="s-peer",
+		cwd="/home/peer",
+	))
+	result = await asyncio.wait_for(opener_task, timeout=2.0)
 
-	conv_id = result.removeprefix("ok. open_conversation = ")
+	conv_id = result.removeprefix("ok. open_conversation = ").split()[0]
 	assert r.conversations[conv_id].title == "Collab bootstrap"
+
+	peer_task.cancel()
+	try:
+		await peer_task
+	except asyncio.CancelledError:
+		pass
 
 
 @pytest.mark.asyncio
@@ -194,6 +237,94 @@ async def test_open_conversation_no_rename_when_sender_unchanged(cfg, logger):
 	assert "Claude-A" in conv.members_active
 	assert len(conv.members_active) == 1
 	assert result.startswith("ok.")
+
+
+@pytest.mark.asyncio
+async def test_open_conversation_mint_returns_peer_name_on_wake(cfg, logger):
+	"""When a peer joins via enter_conversation, the opener's wake payload
+	identifies the joiner by sender so the opener can greet by name."""
+	backend = RecordingBackend()
+	r = Registry()
+	handlers = build_tool_handlers(cfg, r, backend, logger)
+
+	opener_task = asyncio.create_task(handlers.open_conversation(
+		"Opener",
+		cli_session_id="s-opener",
+		cwd="C:/Work/O",
+	))
+	await asyncio.sleep(0.05)
+	peer_task = asyncio.create_task(handlers.enter_conversation(
+		"Joiner",
+		cli_session_id="s-joiner",
+		cwd="/home/joiner",
+	))
+	result = await asyncio.wait_for(opener_task, timeout=2.0)
+
+	assert "Joiner" in result, f"Expected joiner sender in wake payload, got: {result!r}"
+	assert "open_conversation" in result
+
+	peer_task.cancel()
+	try:
+		await peer_task
+	except asyncio.CancelledError:
+		pass
+
+
+@pytest.mark.asyncio
+async def test_open_conversation_mint_times_out_and_ends_conv(short_timeout_cfg, logger):
+	"""If no peer joins within timeout_seconds, the opener gets __TIMEOUT__,
+	the conversation is force-ended (state=ended), and the open marker is
+	cleared so the orphan conv doesn't leak."""
+	backend = RecordingBackend()
+	r = Registry()
+	handlers = build_tool_handlers(short_timeout_cfg, r, backend, logger)
+
+	result = await handlers.open_conversation(
+		"Lonely",
+		cli_session_id="s-lonely",
+		cwd="C:/Work/L",
+	)
+
+	assert result == "__TIMEOUT__"
+	# Marker should be cleared so subsequent agents don't try to join an orphan
+	assert r.open_conversation_id is None
+	# The minted conv should be marked ended
+	ended = [c for c in r.conversations.values() if c.state == "ended"]
+	assert len(ended) >= 1, "Timed-out mint conv should be marked ended"
+
+
+@pytest.mark.asyncio
+async def test_open_conversation_mint_blocks_then_unblocks_on_peer_join(cfg, logger):
+	"""The opener call should not complete before a peer joins. Verify the
+	blocking semantics by checking the opener task is still pending after a
+	short delay with no peer activity."""
+	backend = RecordingBackend()
+	r = Registry()
+	handlers = build_tool_handlers(cfg, r, backend, logger)
+
+	opener_task = asyncio.create_task(handlers.open_conversation(
+		"Opener",
+		cli_session_id="s-opener",
+		cwd="C:/Work/O",
+	))
+	await asyncio.sleep(0.1)
+	# Opener is still blocked — no peer has joined yet
+	assert not opener_task.done(), "open_conversation should block until a peer joins"
+
+	# Now drive a peer join
+	peer_task = asyncio.create_task(handlers.enter_conversation(
+		"Peer",
+		cli_session_id="s-peer",
+		cwd="/home/peer",
+	))
+	result = await asyncio.wait_for(opener_task, timeout=2.0)
+	assert result.startswith("ok. open_conversation = ")
+
+	peer_task.cancel()
+	try:
+		await peer_task
+	except asyncio.CancelledError:
+		pass
 
 
 @pytest.mark.asyncio

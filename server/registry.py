@@ -62,6 +62,10 @@ class Conversation:
 	ended_at: float | None = None
 	hidden: bool = False
 	lock: asyncio.Lock = None
+	# Mint-path opener's await-peer promise: open_conversation blocks on this
+	# future until a peer becomes an alive member (via _add_member) or until
+	# the conv is torn down. Not hydrated — futures don't survive restart.
+	open_peer_future: asyncio.Future | None = None
 
 	def __post_init__(self):
 		if self.members_active is None: self.members_active = {}

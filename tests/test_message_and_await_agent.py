@@ -28,6 +28,18 @@ def cfg(tmp_path):
 
 
 @pytest.fixture
+def short_timeout_cfg(tmp_path):
+	"""For tests that exercise the lobby-hold timeout — opener waits this long
+	for the next peer before getting __TIMEOUT__. Keep small to run fast."""
+	return Config(
+		host="127.0.0.1",
+		port=9876,
+		timeout_seconds=0.3,
+		log_path=str(tmp_path / "log.jsonl"),
+	)
+
+
+@pytest.fixture
 def logger(cfg):
 	return JsonlLogger(cfg.log_path)
 
@@ -178,6 +190,104 @@ async def test_message_and_await_sole_alive_member_returns_empty_sentinel(cfg, l
 	assert conv.ended_at is not None
 	# Session-fallback applied: global_away_mode default False → unbind.
 	assert "s-solo" not in r.session_to_conversation_id
+
+
+@pytest.mark.asyncio
+async def test_sole_alive_in_open_marker_conv_blocks_until_peer_joins(cfg, logger):
+	"""When the sole-alive caller is in the conv that holds the open marker,
+	message_and_await_agent does NOT auto-leave. It blocks via the same
+	open_peer_future mechanism as the mint-path bootstrap, so the lobby stays
+	alive across peers coming and going.
+
+	A peer-join concurrently unblocks the lobby-holder with a 'Peer X joined'
+	payload, and the conv is still active afterwards."""
+	backend = RecordingBackend()
+	r, conv_id = _make_registry_with_one_alive_member()
+	# This conv is the open marker — the lobby case.
+	r.open_conversation_id = conv_id
+	handlers = build_tool_handlers(cfg, r, backend, logger)
+
+	lobby_task = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-Solo",
+		message="anyone here?",
+		cli_session_id="s-solo",
+		cwd="C:/Z",
+	))
+	await asyncio.sleep(0.1)
+	# Lobby-holder should be blocked, not auto-leaving
+	assert not lobby_task.done(), "sole-alive in open-marker conv should block, not auto-leave"
+	assert "Claude-Solo" in r.conversations[conv_id].members_active
+
+	# A peer joins to unblock the lobby
+	peer_task = asyncio.create_task(handlers.enter_conversation(
+		"Joiner",
+		cli_session_id="s-joiner",
+		cwd="/home/j",
+	))
+	result = await asyncio.wait_for(lobby_task, timeout=2.0)
+
+	assert "Joiner" in result, f"Expected joiner sender in wake payload, got: {result!r}"
+	# Conv is still Active; lobby-holder remains a member; open marker still set
+	conv = r.conversations[conv_id]
+	assert conv.state == "active"
+	assert "Claude-Solo" in conv.members_active
+	assert r.open_conversation_id == conv_id
+
+	peer_task.cancel()
+	try:
+		await peer_task
+	except asyncio.CancelledError:
+		pass
+
+
+@pytest.mark.asyncio
+async def test_sole_alive_in_open_marker_conv_times_out_without_ending(short_timeout_cfg, logger):
+	"""Lobby-hold timeout: returns __TIMEOUT__ but does NOT force-end the conv
+	or clear the open marker. The caller stays a member and can poll again or
+	explicitly leave. Distinguishes the mid-conversation lobby case from the
+	bootstrap mint case (which DOES force-end on timeout to clean up an
+	orphan room that no one ever joined)."""
+	backend = RecordingBackend()
+	r, conv_id = _make_registry_with_one_alive_member()
+	r.open_conversation_id = conv_id
+	handlers = build_tool_handlers(short_timeout_cfg, r, backend, logger)
+
+	result = await handlers.message_and_await_agent(
+		"Claude-Solo",
+		message="anyone?",
+		cli_session_id="s-solo",
+		cwd="C:/Z",
+	)
+
+	assert result == "__TIMEOUT__"
+	conv = r.conversations[conv_id]
+	assert conv.state == "active", "lobby timeout should NOT end the conv"
+	assert "Claude-Solo" in conv.members_active, "caller should remain a member"
+	assert r.open_conversation_id == conv_id, "open marker should still be set"
+
+
+@pytest.mark.asyncio
+async def test_sole_alive_in_non_open_conv_still_auto_leaves(cfg, logger):
+	"""Belt-and-suspenders: confirm we ONLY changed behavior for the open-marker
+	case. A sole-alive caller in a conversation that is NOT the open marker
+	still hits the original auto-leave path."""
+	backend = RecordingBackend()
+	r, conv_id = _make_registry_with_one_alive_member()
+	# Deliberately NOT setting r.open_conversation_id — this is an ad-hoc conv.
+	assert r.open_conversation_id is None
+	handlers = build_tool_handlers(cfg, r, backend, logger)
+
+	result = await handlers.message_and_await_agent(
+		"Claude-Solo",
+		message="hello?",
+		cli_session_id="s-solo",
+		cwd="C:/Z",
+	)
+
+	assert result == "__CONVERSATION_EMPTY__"
+	conv = r.conversations[conv_id]
+	assert "Claude-Solo" not in conv.members_active
+	assert conv.state == "ended"
 
 
 @pytest.mark.asyncio

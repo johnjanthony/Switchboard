@@ -115,6 +115,11 @@ async def handle_force_end(registry, conversation_id: str, backend=None) -> None
 			future = entry["future"]
 			if not future.done():
 				future.set_result("__CONVERSATION_ENDED__\n(force-ended)")
+		# Also resolve any mint-path opener blocked on open_peer_future
+		opener_future = conv.open_peer_future
+		if opener_future is not None and not opener_future.done():
+			opener_future.set_result("__CONVERSATION_ENDED__\n(force-ended)")
+		conv.open_peer_future = None
 
 		# Collect session_ids for fallback (before clearing members).
 		# Both alive and dormant member sessions go through apply_fallback so

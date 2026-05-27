@@ -552,9 +552,16 @@ class FirebaseBackend(
 	# -------------------------------------------------------------------------
 
 	async def set_open_conversation_id(self, conv_id: str | None) -> None:
-		"""Write the global open-conversation pointer to /global_settings/open_conversation_id."""
+		"""Write the global open-conversation pointer to /global_settings/open_conversation_id.
+
+		Pass conv_id=None to clear the pointer. firebase_admin rejects ref.set(None)
+		with ValueError, so the None branch routes through ref.delete() instead
+		(idempotent — Firebase delete on a missing node is a no-op)."""
 		ref = db.reference("global_settings/open_conversation_id")
-		await asyncio.to_thread(ref.set, conv_id)
+		if conv_id is None:
+			await asyncio.to_thread(ref.delete)
+		else:
+			await asyncio.to_thread(ref.set, conv_id)
 
 	async def set_global_away_mode(self, value: bool) -> None:
 		"""Write the global away-mode flag to /global_settings/away_mode."""

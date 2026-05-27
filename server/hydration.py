@@ -72,6 +72,29 @@ async def hydrate_from_firebase(registry: Registry, backend, logger) -> None:
 	except Exception as exc:
 		await logger.surface_error(f"hydration_conversations_read_failed: {exc}")
 
+	# 2b. Validate the open-conversation pointer against hydrated state.
+	# Firebase can hold a stale pointer if a clear-write previously failed
+	# (e.g. the set_open_conversation_id(None) ValueError bug fixed 2026-05-27,
+	# or any other dropped background write). A dangling pointer breaks
+	# enter_conversation with confusing "open conversation is not Active" errors
+	# forever; clear it here so the system self-heals on restart.
+	open_id = registry._open_conversation_id
+	if open_id is not None:
+		conv = registry.conversations.get(open_id)
+		if conv is None or conv.state != "active":
+			await logger.surface_error(
+				f"hydration_clearing_dangling_open_pointer: conv_id={open_id} "
+				f"(state={'missing' if conv is None else conv.state})"
+			)
+			registry._open_conversation_id = None
+			if backend is not None:
+				try:
+					await backend.set_open_conversation_id(None)
+				except Exception as exc:
+					await logger.surface_error(
+						f"hydration_clear_open_pointer_backend_failed: {exc}"
+					)
+
 	# 3. Session home pointers.
 	# Skip pointers that reference a conversation that wasn't hydrated (i.e.
 	# the home conv is Ended or has been deleted). Re-binding a session to a
