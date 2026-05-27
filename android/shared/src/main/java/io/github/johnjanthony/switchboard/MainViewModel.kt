@@ -352,7 +352,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		// Clear unread badge on the server-side counter when this is the open row.
 		if (_selectedConversationId.value == convId) {
 			conversationsRef.child(convId).child("unread_count").setValue(0)
-		} else if (_selectedConversationId.value == null && !row.hidden) {
+		} else if (_selectedConversationId.value == null && !row.hidden && row.state == "active") {
 			_selectedConversationId.value = convId
 			refreshSelectedCwdKey()
 		}
@@ -417,7 +417,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 						val lastActivityAt = meta.child("last_activity_at").getValue(Double::class.java)
 							?.let { java.time.Instant.ofEpochMilli((it * 1000.0).toLong()).toString() } ?: ""
 
-						if (state != "active") return@mapNotNull null
+						// Ended conversations stay visible in the list so users can review the
+						// history and hide them manually when no longer wanted. SessionRowComposable
+						// gates state-mutating actions (Combine, End) on isActive=state=="active".
 
 						val membersNode = convNode.child("members_active")
 						val members = membersNode.children.mapNotNull { memberNode ->
@@ -505,10 +507,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		// If the previously-selected conv is gone, pick a fresh visible one for any UI that
 		// still cares about a default selection. We don't auto-select for phone UX
 		// (navigation drives selection), but Wear's selectedCwdKey flow needs a non-null
-		// fallback to avoid getting stuck.
+		// fallback to avoid getting stuck. Skip hidden AND ended convs — auto-selecting an
+		// ended conv would be confusing since it's read-only history.
 		val sel = _selectedConversationId.value
 		if (sel != null && sel !in incomingIds) {
-			_selectedConversationId.value = next.values.firstOrNull { !it.hidden }?.id
+			_selectedConversationId.value = next.values.firstOrNull { !it.hidden && it.state == "active" }?.id
 			refreshSelectedCwdKey()
 		}
 	}
