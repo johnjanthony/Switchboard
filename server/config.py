@@ -35,8 +35,10 @@ class Config:
 	# E.g. wsl_home_resolved="/home/john" + wsl_spawn_root_segment="work" → /home/john/work
 	# Env: SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT, default "work".
 	wsl_spawn_root_segment: str = "work"
-	# Resolved WSL home path (e.g. "/home/john"). NOT read from env —
-	# populated at server startup by resolve_wsl_home() in main.py.
+	# Resolved WSL home path (e.g. "/home/john"). Populated at server startup
+	# by main.py: first reads SWITCHBOARD_WSL_HOME env if set (escape hatch for
+	# the NSSM Session 0 case where wsl.exe -e bash fails silently); otherwise
+	# calls resolve_wsl_home() which spawns wsl.exe.
 	wsl_home_resolved: str | None = None
 
 

@@ -771,10 +771,15 @@ class FirebaseBackend(
 			except Exception:
 				pass  # best-effort; don't fail the message write on counter glitch
 
-		# Update conversation-level last_activity_at + preview (mirrors channel behaviour)
+		# Update conversation-level last_activity_at + preview (mirrors channel behaviour).
+		# last_activity_at is a FLOAT seconds-since-epoch in meta (Android reads it as
+		# Double); the message's `timestamp` field above uses ISO-string for the message
+		# log. Using the iso string here would clobber the float and break Android's
+		# parse, dropping the conversation row from Page A.
 		preview = text[:120].replace("\n", " ").strip()
+		now_ts = datetime.now(timezone.utc).timestamp()
 		await asyncio.to_thread(lambda: db.reference(f"conversations/{conv_id}/meta").update({
-			"last_activity_at": now,
+			"last_activity_at": now_ts,
 			"preview": preview,
 		}))
 
@@ -835,6 +840,12 @@ class FirebaseBackend(
 				self._loop.call_soon_threadsafe(
 					lambda c=coro: _spawn_bg(c, label=f"fb_combine_command:{path}"),
 				)
+				# Drop the command from Firebase after dispatch (at-most-once;
+				# matches away_mode_commands cleanup pattern). Prevents
+				# /combine_commands from accumulating stale entries forever.
+				def _delete_cmd(p=path):
+					db.reference(f"combine_commands/{p}").delete()
+				self._loop.run_in_executor(None, _delete_cmd)
 
 		err = self._logger.surface_error if self._logger else _no_op_async_logger
 		sup = SupervisedListener(
@@ -875,6 +886,11 @@ class FirebaseBackend(
 				self._loop.call_soon_threadsafe(
 					lambda c=coro: _spawn_bg(c, label=f"fb_force_end_command:{path}"),
 				)
+				# Drop the command from Firebase after dispatch (at-most-once;
+				# matches away_mode_commands cleanup pattern).
+				def _delete_cmd(p=path):
+					db.reference(f"force_end_commands/{p}").delete()
+				self._loop.run_in_executor(None, _delete_cmd)
 
 		err = self._logger.surface_error if self._logger else _no_op_async_logger
 		sup = SupervisedListener(
@@ -922,7 +938,14 @@ class FirebaseBackend(
 				return
 			slot = path  # used for cleanup: conv_id/answers/request_id
 			resp = IncomingResponse(correlation=(conv_id, sender), text=text, slot=slot)
-			_spawn_bg(self._response_queue.put(resp), label=f"conv_answer_enqueue:{conv_id}:{sender}")
+			# Bounce to the event loop: _on_answer runs on the Firebase listener
+			# thread, and _spawn_bg / asyncio.create_task require a running loop.
+			# Without this bounce, every answer event raises RuntimeError inside
+			# the SupervisedListener wrapper and the reply is silently lost.
+			coro = self._response_queue.put(resp)
+			self._loop.call_soon_threadsafe(
+				lambda c=coro: _spawn_bg(c, label=f"conv_answer_enqueue:{conv_id}:{sender}"),
+			)
 
 		err = self._logger.surface_error if self._logger else _no_op_async_logger
 		sup = SupervisedListener(
@@ -963,6 +986,11 @@ class FirebaseBackend(
 				self._loop.call_soon_threadsafe(
 					lambda c=coro: _spawn_bg(c, label=f"fb_spawn_command:{path}"),
 				)
+				# Drop the command from Firebase after dispatch (at-most-once;
+				# matches away_mode_commands cleanup pattern).
+				def _delete_cmd(p=path):
+					db.reference(f"spawn_commands/{p}").delete()
+				self._loop.run_in_executor(None, _delete_cmd)
 
 		err = self._logger.surface_error if self._logger else _no_op_async_logger
 		sup = SupervisedListener(

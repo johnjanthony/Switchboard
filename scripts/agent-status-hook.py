@@ -73,8 +73,11 @@ def _post(url: str, body: dict) -> None:
 
 
 def main() -> int:
+	# Read raw bytes; json.loads handles UTF-8. See cli-session-injector-hook
+	# for why we can't use sys.stdin.read() on Windows (cp1252 + surrogateescape
+	# mangles UTF-8 multi-byte sequences).
 	try:
-		raw = sys.stdin.read()
+		raw = sys.stdin.buffer.read()
 	except Exception:
 		return 0
 	try:

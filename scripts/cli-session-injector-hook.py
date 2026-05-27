@@ -15,8 +15,15 @@ import sys
 
 
 def main() -> None:
+	# Read raw bytes from stdin and let json.loads do the UTF-8 decode. Reading
+	# via `json.load(sys.stdin)` decodes through sys.stdin's TextIOWrapper, which
+	# on Windows defaults to cp1252 + errors='surrogateescape'. That decoder
+	# turns valid UTF-8 multi-byte sequences (em-dash 0xE2 0x80 0x94, many
+	# emojis) into mojibake or lone surrogate codepoints, which then survive
+	# back into the tool input via updatedInput — corrupting every switchboard
+	# message Claude sends. Reading bytes-first sidesteps the wrapper entirely.
 	try:
-		payload = json.load(sys.stdin)
+		payload = json.loads(sys.stdin.buffer.read())
 	except Exception:
 		sys.exit(0)
 	tool_name = payload.get("tool_name", "")

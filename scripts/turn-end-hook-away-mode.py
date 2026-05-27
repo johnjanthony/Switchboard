@@ -73,9 +73,12 @@ def main() -> int:
 	parser.add_argument("--cli", required=False)
 	args, _unknown = parser.parse_known_args()
 
-	stdin_data = ""
+	# Read raw bytes; json.loads handles UTF-8. See cli-session-injector-hook
+	# for why we can't use sys.stdin.read() on Windows (cp1252 + surrogateescape
+	# mangles UTF-8 multi-byte sequences).
+	stdin_data = b""
 	try:
-		stdin_data = sys.stdin.read()
+		stdin_data = sys.stdin.buffer.read()
 	except Exception:
 		pass
 

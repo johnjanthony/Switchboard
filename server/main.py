@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json as _json
 import logging
+import os
 import signal
 from pathlib import Path as _Path
 
@@ -311,21 +312,47 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 
 
 
-async def resolve_wsl_home() -> str | None:
-	"""Resolve the WSL user's home path by running `echo $HOME` inside WSL.
-	Returns None if WSL is unavailable, the command fails, or output is empty."""
+async def resolve_wsl_home(logger=None) -> str | None:
+	"""Resolve the WSL user's home path.
+
+	Order of resolution:
+	  1. SWITCHBOARD_WSL_HOME env var (escape hatch — used when the NSSM
+	     service runs in Session 0 and `wsl.exe -e bash` fails to find a
+	     usable distro for the service user).
+	  2. `wsl.exe -e bash -lc "echo $HOME"` probe.
+
+	Returns None if neither produces a result. Logs the failure cause via
+	the optional logger (surface_error) so future "wsl_available=false"
+	investigations have a breadcrumb.
+	"""
+	env_override = os.environ.get("SWITCHBOARD_WSL_HOME")
+	if env_override:
+		return env_override.strip() or None
 	try:
 		proc = await asyncio.create_subprocess_exec(
 			"wsl.exe", "-e", "bash", "-lc", "echo $HOME",
 			stdout=asyncio.subprocess.PIPE,
 			stderr=asyncio.subprocess.PIPE,
 		)
-		stdout, _ = await proc.communicate()
+		stdout, stderr = await proc.communicate()
 		if proc.returncode != 0:
+			if logger is not None:
+				err_text = stderr.decode("utf-8", errors="replace").strip()
+				await logger.surface_error(
+					f"resolve_wsl_home: wsl.exe exited {proc.returncode}: {err_text!r}"
+				)
 			return None
 		result = stdout.decode("utf-8", errors="replace").strip()
+		if not result and logger is not None:
+			await logger.surface_error("resolve_wsl_home: wsl.exe returned empty stdout")
 		return result or None
-	except Exception:
+	except FileNotFoundError as exc:
+		if logger is not None:
+			await logger.surface_error(f"resolve_wsl_home: wsl.exe not on PATH ({exc})")
+		return None
+	except Exception as exc:
+		if logger is not None:
+			await logger.surface_error(f"resolve_wsl_home: unexpected error {exc!r}")
 		return None
 
 
@@ -335,7 +362,8 @@ async def _run(config: Config) -> None:
 
 	# Resolve WSL home at startup so downstream code can compute WSL paths
 	# without spawning subprocesses per-request. Config is frozen; use replace().
-	wsl_home = await resolve_wsl_home()
+	# Pass the logger so probe failures surface (Session 0 wsl.exe quirks etc.).
+	wsl_home = await resolve_wsl_home(logger=logger)
 	config = dataclasses.replace(config, wsl_home_resolved=wsl_home)
 
 	if not (config.firebase_service_account_json and config.firebase_database_url):

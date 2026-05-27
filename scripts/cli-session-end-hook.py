@@ -23,8 +23,10 @@ SWITCHBOARD_URL = os.environ.get("SWITCHBOARD_BASE_URL", "http://127.0.0.1:9876"
 
 
 def main() -> None:
+	# Read raw bytes; json.loads handles UTF-8. See cli-session-injector-hook
+	# for why we can't use json.load(sys.stdin) on Windows.
 	try:
-		payload = json.load(sys.stdin)
+		payload = json.loads(sys.stdin.buffer.read())
 	except Exception:
 		sys.exit(0)
 	session_id = payload.get("session_id")
