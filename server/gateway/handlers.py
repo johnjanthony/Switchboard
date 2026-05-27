@@ -516,7 +516,19 @@ def build_tool_handlers(
 			return err
 		conv_id = registry.session_to_conversation_id.get(cli_session_id)
 		if conv_id is None:
-			return "ERROR: no current conversation to open. Call ask_human/notify_human first to create one, then open it."
+			# Caller isn't in any conversation yet. Mint one (with their title if
+			# supplied) and promote it. Lets agents bootstrap a collab without
+			# first sending a real ask_human/notify_human just to create a room.
+			from server.conversation_ops import _create_active_conversation_for
+			conv_id = await _create_active_conversation_for(
+				registry, cli_session_id, cwd, sender, backend=backend, title=title,
+			)
+			registry.open_conversation_id = conv_id
+			_spawn_bg(
+				backend.set_open_conversation_id(conv_id),
+				label=f"fb_set_open_conv_id:{conv_id}",
+			)
+			return f"ok. open_conversation = {conv_id}"
 		conv = registry.conversations.get(conv_id)
 		if conv is None:
 			return "ERROR: bound conversation no longer exists."

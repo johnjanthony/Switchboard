@@ -113,8 +113,11 @@ async def test_open_conversation_replaces_prior_open(cfg, logger):
 
 
 @pytest.mark.asyncio
-async def test_open_conversation_errors_when_unbound(cfg, logger):
-	"""Session not bound to any conversation returns an error."""
+async def test_open_conversation_mints_when_unbound(cfg, logger):
+	"""Session not bound to any conversation: open_conversation mints one and promotes it.
+
+	Lets agents bootstrap a collab without first sending a real ask/notify.
+	"""
 	backend = RecordingBackend()
 	r = Registry()
 	handlers = build_tool_handlers(cfg, r, backend, logger)
@@ -125,8 +128,33 @@ async def test_open_conversation_errors_when_unbound(cfg, logger):
 		cwd="C:/Work/X",
 	)
 
-	assert result.startswith("ERROR:")
-	assert "no current conversation" in result
+	assert result.startswith("ok. open_conversation = ")
+	conv_id = result.removeprefix("ok. open_conversation = ")
+	assert conv_id.startswith("conv-")
+	assert r.open_conversation_id == conv_id
+	assert conv_id in r.conversations
+	conv = r.conversations[conv_id]
+	assert "Claude-X" in conv.members_active
+	assert conv.members_active["Claude-X"].cli_session_id == "s-unbound"
+	assert r.session_to_conversation_id["s-unbound"] == conv_id
+
+
+@pytest.mark.asyncio
+async def test_open_conversation_unbound_honors_title(cfg, logger):
+	"""When minting on unbound open, the supplied title is used."""
+	backend = RecordingBackend()
+	r = Registry()
+	handlers = build_tool_handlers(cfg, r, backend, logger)
+
+	result = await handlers.open_conversation(
+		"Claude-X",
+		title="Collab bootstrap",
+		cli_session_id="s-unbound",
+		cwd="C:/Work/X",
+	)
+
+	conv_id = result.removeprefix("ok. open_conversation = ")
+	assert r.conversations[conv_id].title == "Collab bootstrap"
 
 
 @pytest.mark.asyncio

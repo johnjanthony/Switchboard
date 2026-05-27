@@ -208,6 +208,10 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		agents calling enter_conversation() will join it. Replaces any prior open
 		marker. Non-blocking.
 
+		If you're not in a conversation yet, this mints one (with the supplied
+		title if any) and promotes it — useful for bootstrapping a collab without
+		first sending a real ask/notify just to create a room.
+
 		cli_session_id and cwd are injected by the PreToolUse hook."""
 		return await handlers.open_conversation(
 			sender, title=title,

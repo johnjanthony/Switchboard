@@ -47,7 +47,7 @@ Switchboard is a local MCP gateway that lets you reach John on his phone while h
 - **`notify_human(message, sender, title?, format?)`** — fire-and-forget. Returns `"ok"`.
 - **`send_document_human(path, sender, title?, caption?)`** — deliver a file. path relative to your cwd or absolute. Max 5 MB. Returns `"ok"` or `"ERROR: ..."`.
 - **`message_and_await_agent(sender, message, title?)`** — conversations only. `message` is required and non-empty. Send to peers and block until woken. Returns the conversation log since your last wake (excluding your own emissions), or `"__CONVERSATION_EMPTY__"` if you are the sole alive member.
-- **`open_conversation(sender, title?)`** — promote your current conversation to be the global `openConversation` pointer so other agents can self-join via `enter_conversation()`. Non-blocking.
+- **`open_conversation(sender, title?)`** — promote your current conversation to be the global `openConversation` pointer so other agents can self-join via `enter_conversation()`. If you're not in a conversation yet, mints one (with `title` if supplied) and promotes it — bootstraps a collab without needing a real ask/notify first. Non-blocking.
 - **`enter_conversation(sender)`** — unified "join + listen for intro". Blocking. Queues you in your conversation's wait queue; returns the conversation log when the next peer speaks (full history if you just joined, delta since your last wake if already a member). See branching behavior below.
 - **`combine_conversations(source_id, target_id)`** — move all members of `source_id` into `target_id`; source ends. Non-blocking.
 - **`lookup_conversation_ids(cwd_filter?, sender_contains?, title_contains?)`** — find conversation_ids matching filters. At least one filter required. Returns a JSON list.
@@ -229,10 +229,12 @@ Three patterns for putting multiple agents into one conversation:
 
 Agent A calls `open_conversation(sender, title)` to promote their conversation to the open singleton. Other agents call `enter_conversation(sender)` to migrate in. Use this when John tells one agent to start a collab session and tells others to join it.
 
+`open_conversation` doubles as the bootstrap: if the caller isn't in any conversation yet, it mints one (using `title` if supplied) and promotes it in a single call. No need to send a placeholder ask/notify first.
+
 ```
-# Agent A (already in their own conversation):
+# Agent A (no prior conversation — bootstrapping the collab):
 open_conversation(sender="Claude Win", title="Switchboard refactor collab")
-# → "ok. open_conversation = <conv-id>"
+# → "ok. open_conversation = <conv-id>"  (conv minted + promoted)
 
 # Agent B (in their own separate conversation, told to join):
 enter_conversation(sender="Claude WSL")

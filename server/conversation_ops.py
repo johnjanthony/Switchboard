@@ -49,6 +49,7 @@ async def _create_active_conversation_for(
 	cwd: str,
 	sender: str,
 	backend=None,
+	title: str | None = None,
 ) -> str:
 	"""Mint a new Active conversation, add the session as its sole member, bind
 	routing, and set home pointer (only if not already set). Returns the new
@@ -68,7 +69,7 @@ async def _create_active_conversation_for(
 		existing = registry.session_to_conversation_id.get(cli_session_id)
 		if existing is not None:
 			return existing
-		return await _create_active_conversation_for_locked(registry, cli_session_id, cwd, sender, backend)
+		return await _create_active_conversation_for_locked(registry, cli_session_id, cwd, sender, backend, title)
 
 
 async def _create_active_conversation_for_locked(
@@ -77,11 +78,13 @@ async def _create_active_conversation_for_locked(
 	cwd: str,
 	sender: str,
 	backend=None,
+	title: str | None = None,
 ) -> str:
 	"""Inner implementation called while holding session_create_lock. Do not call directly."""
 	from server.gateway.bg_tasks import _spawn_bg
 	conv_id = "conv-" + uuid.uuid4().hex
-	conv = Conversation(id=conv_id, title=f"{sender} · {cwd}")
+	resolved_title = title if title else f"{sender} · {cwd}"
+	conv = Conversation(id=conv_id, title=resolved_title)
 	now = time.time()
 	conv.created_at = now
 	conv.last_activity_at = now
