@@ -456,8 +456,27 @@ async def _perform_combine(
 	if not any(not m.session_lost_permanently for m in source.members_active.values()):
 		return "ERROR: source has no movable members"
 
+	# Dormant movable members mean a relaunch (`claude --resume` via the
+	# scheduled task), which requires a desktop session: the same gate as
+	# handle_fresh/handle_resume (P0-4). Abort the whole combine rather than
+	# stranding a half-moved roster. pending_dir=None (test mode) writes no
+	# pending files, so no gate applies.
+	movable_dormant = [
+		m for m in source.members_active.values()
+		if not m.session_lost_permanently and not m.alive
+	]
+	if movable_dormant and pending_dir is not None:
+		from server import spawn as _spawn_mod
+		if not await _spawn_mod.user_has_interactive_session():
+			names = ", ".join(m.sender for m in movable_dormant)
+			return (
+				f"ERROR: combine aborted: dormant member(s) {names} need a relaunch "
+				"but no one is logged in to the desktop. Sign in (locally or via RDP) and try again."
+			)
+
 	# Lock ordering: smaller id first to avoid AB-BA deadlock
 	locks = sorted([source, target], key=lambda c: c.id)
+	combine_resume_count = 0
 	async with locks[0].lock, locks[1].lock:
 		moved_names = []
 		removed_from_source: list[str] = []
@@ -473,6 +492,17 @@ async def _perform_combine(
 				del source.members_active[sender_key]
 				target.members_active[actual_sender] = member
 				await _inject_combine_intro(registry, target, actual_sender, backend=backend)
+				# Wake any opener blocked on the target's open_peer_future:
+				# combine is a peer-join from the target's POV, exactly like
+				# _migrate_member's resolution (H01: without this, a
+				# lobby-holding sole member never learns a peer arrived).
+				fut = target.open_peer_future
+				if fut is not None and not fut.done():
+					fut.set_result(
+						f"ok. open_conversation = {target_id}\n"
+						f"Peer '{actual_sender}' joined."
+					)
+					target.open_peer_future = None
 				moved_names.append(actual_sender)
 				removed_from_source.append(sender_key)
 				if backend is not None:
@@ -485,8 +515,21 @@ async def _perform_combine(
 						label=f"fb_write_member:{target_id}:{actual_sender}",
 					)
 			else:
-				registry.bind_session(member.cli_session_id, target_id)
+				# Dormant member: write the relaunch pending file, then bind
+				# and flip alive TOGETHER (bound = alive-or-launching
+				# invariant; handle_resume does the same). Clearing the
+				# dormancy fields keeps message_and_await_agent's alive-peer
+				# count honest while the relaunch is in flight. With
+				# pending_dir=None (test mode) no relaunch happens, so the
+				# member moves as-is and stays unbound.
 				await _spawn_pending_for_combine_resume(pending_dir, member, target_id, source_id)
+				if pending_dir is not None:
+					member.alive = True
+					member.session_ended_at = None
+					member.session_end_reason = None
+					member.left_at = None
+					registry.bind_session(member.cli_session_id, target_id)
+					combine_resume_count += 1
 				member.last_seen_seq = 0
 				del source.members_active[sender_key]
 				target.members_active[actual_sender] = member
@@ -567,6 +610,12 @@ async def _perform_combine(
 					backend.set_open_conversation_id(None),
 					label=f"fb_clear_open_id:{source_id}",
 				)
+	# Fire the launcher once if any dormant member got a combine_resume
+	# pending file: the file alone does nothing until the scheduled task
+	# runs (H08/H09: state used to say "resumed" with no process behind it).
+	if combine_resume_count:
+		from server import spawn as _spawn_mod
+		await _spawn_mod.invoke_spawn_launcher(logger)
 	# Wake one waiter in target so any blocked agent sees the merge marker
 	async with target.lock:
 		_wake_one_from(target)

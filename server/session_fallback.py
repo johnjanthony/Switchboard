@@ -42,7 +42,8 @@ def apply_fallback(registry, session_id: str, backend=None) -> None:
 
 	# Dormant-session short-circuit: a session that is not in
 	# session_to_conversation_id has already had its binding cleared (by
-	# cli_session_end when its CLI process died). It will never make another
+	# cli_session_end when its CLI process died; hydration deliberately does
+	# not restore dormant bindings). It will never make another
 	# MCP call, so creating a new conversation for it would just spawn an
 	# orphan. Instead, do cleanup-only: if the session's home pointer points
 	# at a conversation that no longer exists or is Ended, clear it; if it

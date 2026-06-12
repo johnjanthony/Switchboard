@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -56,7 +57,7 @@ async def test_e2e_combine_alive_and_dormant(tmp_path):
 	"""Conv-A has 1 alive + 1 dormant member. Conv-B has 1 alive member.
 	Combine A into B. Verify:
 	- Alive A member's session rebound to B
-	- Dormant A member's session pre-bound to B
+	- Dormant A member's session bound to B and member flipped alive (relaunch in flight)
 	- A spawn-pending JSON exists for the dormant member
 	- Source A is Ended
 	- Target B has system message about merge"""
@@ -85,12 +86,14 @@ async def test_e2e_combine_alive_and_dormant(tmp_path):
 
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 
-	result = await handlers.combine_conversations(
-		"conv-a",
-		"conv-b",
-		cli_session_id="s-b",
-		cwd="C:/Work/X",
-	)
+	with patch("server.spawn.user_has_interactive_session", AsyncMock(return_value=True)), \
+			patch("server.spawn.invoke_spawn_launcher", AsyncMock()) as mock_launch:
+		result = await handlers.combine_conversations(
+			"conv-a",
+			"conv-b",
+			cli_session_id="s-b",
+			cwd="C:/Work/X",
+		)
 
 	assert result.startswith("ok"), f"Unexpected result: {result}"
 
@@ -106,8 +109,9 @@ async def test_e2e_combine_alive_and_dormant(tmp_path):
 	assert registry.session_to_conversation_id["s-dormant-a"] == "conv-b"
 	assert "claude-dormant-a" in conv_b.members_active
 
-	# Dormant member still dormant in B
-	assert not conv_b.members_active["claude-dormant-a"].alive
+	# Dormant member flipped alive in B (relaunch in flight) and launcher fired
+	assert conv_b.members_active["claude-dormant-a"].alive
+	mock_launch.assert_awaited_once()
 
 	# Spawn-pending file written for the dormant member
 	pending_files = list(tmp_path.glob("spawn-pending-*.json"))
@@ -480,3 +484,45 @@ async def test_e2e_combine_clears_open_when_source_was_open(tmp_path):
 	assert registry.open_conversation_id is None, \
 		"open pointer must be cleared when source was open"
 	assert conv_a.state == "ended"
+
+
+@pytest.mark.asyncio
+async def test_combine_wakes_target_lobby_holder(tmp_path):
+	"""H01: the target's sole member is blocked on open_peer_future
+	(mint-path open_conversation or sole-alive lobby-hold). Combining a
+	conversation into the target must resolve that future with a join
+	payload; previously only _migrate_member did, so combine left the
+	opener blocked until timeout/force-end."""
+	cfg = _cfg(tmp_path)
+	backend = RecordingBackend()
+	registry = Registry()
+	logger = JsonlLogger(cfg.log_path)
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	# Conv-A (source): one alive member, also the caller triggering combine
+	conv_a = Conversation(id="conv-a7", title="Source A7")
+	m_a = _make_member("s-a7", "claude-a7", alive=True)
+	conv_a.members_active["claude-a7"] = m_a
+	registry.conversations["conv-a7"] = conv_a
+	registry.bind_session("s-a7", "conv-a7")
+
+	# Conv-B (target): sole member blocked on open_peer_future (lobby-hold)
+	conv_b = Conversation(id="conv-b7", title="Target B7")
+	m_b = _make_member("s-b7", "claude-b7", alive=True)
+	conv_b.members_active["claude-b7"] = m_b
+	registry.conversations["conv-b7"] = conv_b
+	registry.bind_session("s-b7", "conv-b7")
+
+	opener_future = asyncio.get_event_loop().create_future()
+	conv_b.open_peer_future = opener_future
+
+	result = await handlers.combine_conversations(
+		"conv-a7", "conv-b7",
+		cli_session_id="s-a7", cwd="C:/Work/A7",
+	)
+	assert result.startswith("ok"), f"Unexpected result: {result}"
+
+	assert opener_future.done(), "combine must wake the target's lobby-holder"
+	payload = opener_future.result()
+	assert "joined" in payload, f"wake payload should announce the join; got: {payload!r}"
+	assert conv_b.open_peer_future is None

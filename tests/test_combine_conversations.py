@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -121,8 +122,7 @@ async def test_combine_alive_members(tmp_path):
 async def test_combine_resumes_dormant(tmp_path):
 	"""Source has 1 dormant member. Combine into active target. Verify:
 	- spawn-pending file written for the dormant member
-	- session pre-bound to target
-	- member entry moved to target with alive still False
+	- member entry moved to target, bound + flipped alive (relaunch in flight)
 	- source ends"""
 	cfg = _cfg(tmp_path)
 	backend = RecordingBackend()
@@ -133,7 +133,6 @@ async def test_combine_resumes_dormant(tmp_path):
 	mD = _make_member("s-dormant", "Claude-Dormant", alive=False)
 	src.members_active["Claude-Dormant"] = mD
 	registry.conversations["conv-src2"] = src
-	registry.bind_session("s-dormant", "conv-src2")
 
 	# Target with one alive member (caller)
 	tgt = Conversation(id="conv-tgt2", title="Active Target")
@@ -145,23 +144,26 @@ async def test_combine_resumes_dormant(tmp_path):
 
 	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
 
-	result = await handlers.combine_conversations(
-		"conv-src2",
-		"conv-tgt2",
-		cli_session_id="s-T2",
-		cwd="C:/Work/X",
-	)
+	with patch("server.spawn.user_has_interactive_session", AsyncMock(return_value=True)), \
+			patch("server.spawn.invoke_spawn_launcher", AsyncMock()) as mock_launch:
+		result = await handlers.combine_conversations(
+			"conv-src2",
+			"conv-tgt2",
+			cli_session_id="s-T2",
+			cwd="C:/Work/X",
+		)
 
 	assert result.startswith("ok")
 
 	# Source ended
 	assert registry.conversations["conv-src2"].state == "ended"
 
-	# Dormant member moved to target, still dormant
+	# Dormant member moved to target, flipped alive (relaunch in flight)
 	assert "Claude-Dormant" in registry.conversations["conv-tgt2"].members_active
-	assert not registry.conversations["conv-tgt2"].members_active["Claude-Dormant"].alive
+	assert registry.conversations["conv-tgt2"].members_active["Claude-Dormant"].alive
+	mock_launch.assert_awaited_once()
 
-	# Session pre-bound to target
+	# Session bound to target at relaunch time
 	assert registry.session_to_conversation_id["s-dormant"] == "conv-tgt2"
 
 	# Spawn-pending file written in the log's parent dir (tmp_path)

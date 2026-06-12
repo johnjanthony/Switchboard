@@ -115,18 +115,21 @@ async def hydrate_from_firebase(registry: Registry, backend, logger) -> None:
 	except Exception as exc:
 		await logger.surface_error(f"hydration_cli_sessions_failed: {exc}")
 
-	# 4. Derive session_to_conversation_id from alive AND resumable-dormant members
-	# in hydrated Active conversations. Dormant members that are not permanently lost
-	# get their binding restored so `claude --resume <session_id>` post-restart lands
-	# in the right conversation. Permanently-lost members are excluded — their
-	# session_ids are stale and should not be re-bound.
+	# 4. Derive session_to_conversation_id from alive members in hydrated
+	# Active conversations ONLY. Dormant members stay unbound: the
+	# steady-state invariant is "dormant = unbound" (cli_session_end clears
+	# the binding when a CLI dies), and both resume eligibility (spawn.py)
+	# and apply_fallback's dormant short-circuit (session_fallback.py) rely
+	# on it. Resume re-binds (and flips alive) when it actually relaunches a
+	# member. Re-binding dormant members here used to break phone Resume
+	# permanently after a restart (H03/M21).
 	for conv_id, conv in registry.conversations.items():
 		if conv.state != "active":
 			continue
 		for member in conv.members_active.values():
 			if not member.cli_session_id:
 				continue
-			if member.alive or (not member.session_lost_permanently):
+			if member.alive:
 				registry._session_to_conversation_id[member.cli_session_id] = conv_id
 
 	await logger.info(

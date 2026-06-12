@@ -61,6 +61,15 @@ def _read_pending(cfg: Config) -> dict:
 	return json.loads(files[0].read_text())
 
 
+@pytest.fixture(autouse=True)
+def _assume_logged_in(monkeypatch):
+	"""Default precondition: a user is logged in (no real quser call)."""
+	from server.spawn import SpawnHandler
+	monkeypatch.setattr(
+		SpawnHandler, "_user_has_interactive_session", AsyncMock(return_value=True)
+	)
+
+
 @pytest.mark.asyncio
 async def test_handle_fresh_windows_writes_pending_file(tmp_path):
 	"""handle_fresh with surface=windows writes spawn-pending file with correct fields

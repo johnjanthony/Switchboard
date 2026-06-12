@@ -91,7 +91,7 @@ async def dispatch_responses(
 		except Exception as exc:
 			await supervisor.record_crash(exc)
 
-async def handle_force_end(registry, conversation_id: str, backend=None) -> None:
+async def handle_force_end(registry, conversation_id: str, backend=None, logger=None) -> None:
 	"""Force-end a conversation: resolve all waiters with sentinel, clear members,
 	apply session-fallback for each session.
 
@@ -173,13 +173,28 @@ async def handle_force_end(registry, conversation_id: str, backend=None) -> None
 				label=f"fb_write_force_end_msg:{conversation_id}",
 			)
 
+	# Cancel any pending ask_human futures for this conversation (H02) and
+	# mark their Firebase question records cancelled so the phone's pending
+	# list clears. mark_question_cancelled also removes the pending_questions
+	# record; the registry's pending-mirror fires the badge decrement.
+	cancelled = registry.cancel_pending_for_conversation(conversation_id)
+	if backend is not None:
+		for request_id in cancelled:
+			try:
+				await backend.mark_question_cancelled(conversation_id, request_id)
+			except Exception as exc:
+				if logger is not None:
+					await logger.surface_error(
+						f"force_end_mark_cancelled_failed: conv={conversation_id} req={request_id} {exc}"
+					)
+
 	# Apply session-fallback for each member's session (alive AND dormant).
 	# apply_fallback dispatches internally based on binding state.
 	for sid in session_ids:
 		apply_fallback(registry, sid, backend=backend)
 
 
-async def dispatch_combine_commands(registry, backend, logger, supervisor):
+async def dispatch_combine_commands(registry, backend, logger, supervisor, pending_dir=None):
 	"""Watch /combine_commands for new entries; route to _perform_combine.
 
 	combine command shape:
@@ -192,6 +207,7 @@ async def dispatch_combine_commands(registry, backend, logger, supervisor):
 	The Firebase listener stubs on the backend (start_combine_command_listener) are
 	pass-through no-ops until Task 31's full listener implementation is wired. The
 	dispatcher is fully functional once the backend method is implemented.
+	pending_dir: pathlib.Path for spawn-pending files, or None (skips dormant relaunch).
 	"""
 	from server.conversation_ops import _perform_combine as _conv_perform_combine
 
@@ -201,7 +217,7 @@ async def dispatch_combine_commands(registry, backend, logger, supervisor):
 		if not source_id or not target_id:
 			await logger.surface_error(f"combine_command_missing_ids: {cmd}")
 			return
-		result = await _conv_perform_combine(registry, source_id, target_id, logger, pending_dir=None, backend=backend)
+		result = await _conv_perform_combine(registry, source_id, target_id, logger, pending_dir=pending_dir, backend=backend)
 		await logger.info(f"combine_command_handled: {result}")
 
 	if hasattr(backend, "start_combine_command_listener"):
@@ -222,7 +238,7 @@ async def dispatch_force_end_commands(registry, backend, logger, supervisor):
 		if not conv_id:
 			await logger.surface_error(f"force_end_command_missing_id: {cmd}")
 			return
-		await handle_force_end(registry, conv_id, backend=backend)
+		await handle_force_end(registry, conv_id, backend=backend, logger=logger)
 		await logger.info(f"force_end_command_handled: conv_id={conv_id}")
 
 	if hasattr(backend, "start_force_end_command_listener"):

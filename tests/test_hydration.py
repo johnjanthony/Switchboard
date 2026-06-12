@@ -303,13 +303,14 @@ async def test_hydrate_preserves_dormant_members():
 
 
 @pytest.mark.asyncio
-async def test_hydrate_derives_session_to_conversation_id_for_alive_and_resumable_dormant():
-	"""session_to_conversation_id contains bindings for alive members AND dormant
-	members that are not permanently lost (resumable). Permanently-lost dormant
-	members are excluded — their session_ids are stale.
+async def test_hydrate_binds_alive_members_only():
+	"""session_to_conversation_id contains bindings for alive members ONLY.
 
-	This enables `claude --resume <session_id>` post-restart to land in the right
-	conversation for all resumable agents."""
+	Dormant members (resumable or lost) stay unbound: the steady-state
+	invariant is "dormant = unbound" (cli_session_end clears the binding when
+	a CLI dies), and resume eligibility + apply_fallback's dormant
+	short-circuit both rely on it. Resume re-establishes the binding when it
+	actually relaunches the member (P0-2, decided 2026-06-11)."""
 	registry = Registry()
 	logger = make_logger()
 
@@ -333,9 +334,9 @@ async def test_hydrate_derives_session_to_conversation_id_for_alive_and_resumabl
 
 	# Alive member gets binding
 	assert registry._session_to_conversation_id.get("sess-alive") == "conv-mixed"
-	# Resumable dormant member gets binding (supports `claude --resume` post-restart)
-	assert registry._session_to_conversation_id.get("sess-dormant") == "conv-mixed"
-	# Permanently-lost member does NOT get binding (session_id is stale)
+	# Dormant member does NOT get binding (dormant = unbound; resume rebinds)
+	assert "sess-dormant" not in registry._session_to_conversation_id
+	# Permanently-lost member does NOT get binding
 	assert "sess-lost" not in registry._session_to_conversation_id
 
 
@@ -504,3 +505,42 @@ async def test_hydrate_restores_members_history():
 	# Active members still loaded
 	assert "Alive" in conv.members_active
 	assert conv.members_active["Alive"].cli_session_id == "sess-alive"
+
+
+@pytest.mark.asyncio
+async def test_force_end_after_hydration_does_not_mint_orphan_home_conv():
+	"""Rejected-option regression (spec §3 P0-2): if hydration re-bound dormant
+	members, apply_fallback would treat them as live on force-end and, with
+	away mode on, its create_new arm would mint an orphan '(home)'
+	conversation for a dead session."""
+	registry = Registry()
+	logger = make_logger()
+	snapshot = {
+		"global_settings/away_mode": True,
+		"conversations": {
+			"conv-d": conv_snapshot(
+				"conv-d",
+				members={
+					"Claude": member_data(
+						cli_session_id="sess-dormant",
+						sender="Claude",
+						alive=False,
+						session_lost_permanently=False,
+					),
+				},
+			),
+		},
+	}
+	with patch("server.hydration.db", make_firebase_db_mock(snapshot)):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, None, logger)
+
+	assert registry._global_away is True  # away on: the create_new arm is reachable
+	conv_count_before = len(registry.conversations)
+
+	from server.gateway.dispatch import handle_force_end
+	await handle_force_end(registry, "conv-d")
+
+	assert registry.conversations["conv-d"].state == "ended"
+	assert len(registry.conversations) == conv_count_before, \
+		"force-end must not mint a '(home)' conversation for a dead session"

@@ -478,7 +478,10 @@ async def _run(config: Config) -> None:
 	)
 
 	combine_task = asyncio.create_task(
-		dispatch_combine_commands(registry, backend, logger, loop_sups["dispatch_combine_commands"])
+		dispatch_combine_commands(
+			registry, backend, logger, loop_sups["dispatch_combine_commands"],
+			pending_dir=_Path(config.log_path).parent,
+		)
 	)
 
 	force_end_task = asyncio.create_task(

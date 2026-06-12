@@ -15,6 +15,65 @@ from server.registry import Registry
 _TASK_NAME = "SwitchboardSpawn"
 
 
+async def invoke_spawn_launcher(logger) -> None:
+	"""Trigger spawn-launcher.ps1 via the SwitchboardSpawn scheduled task.
+
+	Module-level so non-SpawnHandler paths (combine's dormant-member relaunch
+	in conversation_ops) can fire the launcher without a handler instance.
+	logger may be None; launcher failure then raises instead of logging."""
+	try:
+		proc = await asyncio.create_subprocess_exec(
+			"schtasks", "/run", "/tn", _TASK_NAME,
+			stdout=asyncio.subprocess.PIPE,
+			stderr=asyncio.subprocess.PIPE,
+		)
+		stdout, stderr = await proc.communicate()
+		if proc.returncode != 0:
+			error_msg = stderr.decode().strip() or f"exit code {proc.returncode}"
+			raise RuntimeError(error_msg)
+	except Exception as exc:
+		if logger is None:
+			raise
+		await logger.surface_error(f"spawn_invoke_launcher_failed: {exc}")
+
+
+async def user_has_interactive_session() -> bool:
+	"""Return True if any user has an interactive (Active or Disconnected)
+	session on this host. Used as a precondition before any launcher
+	invocation — the scheduled task that launches `wt` requires a desktop
+	session to write into, and `schtasks /run` reports success even when no
+	session exists, landing a Firebase channel with no agent behind it.
+
+	Disconnected (`Disc`) sessions count: an agent spawned now becomes
+	visible whenever the user reconnects (e.g. via RDP).
+
+	Degrades open: if `quser` is missing or fails to launch, return True
+	so the existing schtasks failure path stays the source of truth for
+	Windows-toolchain problems."""
+	try:
+		proc = await asyncio.create_subprocess_exec(
+			"quser",
+			stdout=asyncio.subprocess.PIPE,
+			stderr=asyncio.subprocess.PIPE,
+		)
+		stdout, _ = await proc.communicate()
+	except Exception:
+		return True
+
+	if proc.returncode != 0:
+		# quser exits non-zero when no users are logged on.
+		return False
+
+	text = stdout.decode("utf-8", errors="replace")
+	# Header line first; data rows after. Token-scan is robust to the
+	# column-shift that happens when SESSIONNAME is blank for Disc sessions.
+	for line in text.splitlines()[1:]:
+		tokens = line.split()
+		if any(t in ("Active", "Disc") for t in tokens):
+			return True
+	return False
+
+
 class _SpawnBackend(MessageWriter, ChannelLifecycle, ConversationStore):
 	"""Backend surface used by SpawnHandler."""
 
@@ -56,18 +115,7 @@ class SpawnHandler:
 
 	async def _invoke_launcher(self) -> None:
 		"""Trigger spawn-launcher.ps1 via the SwitchboardSpawn scheduled task."""
-		try:
-			proc = await asyncio.create_subprocess_exec(
-				"schtasks", "/run", "/tn", _TASK_NAME,
-				stdout=asyncio.subprocess.PIPE,
-				stderr=asyncio.subprocess.PIPE,
-			)
-			stdout, stderr = await proc.communicate()
-			if proc.returncode != 0:
-				error_msg = stderr.decode().strip() or f"exit code {proc.returncode}"
-				raise RuntimeError(error_msg)
-		except Exception as exc:
-			await self._logger.surface_error(f"spawn_invoke_launcher_failed: {exc}")
+		await invoke_spawn_launcher(self._logger)
 
 	def _format_fresh_prompt(self, cmd: dict, conv, join_existing: bool) -> str:
 		"""Build the initial prompt for a fresh-spawn agent.
@@ -307,6 +355,12 @@ class SpawnHandler:
 			await self._logger.surface_error(f"spawn_resume: source {source_id} not found")
 			return
 
+		if not await self._user_has_interactive_session():
+			await self._backend.send_text(
+				"Cannot resume: no one is logged in to the desktop. Sign in (locally or via RDP) and try again."
+			)
+			return
+
 		# Auto-enable away mode if currently off
 		if not self._registry.global_away_mode:
 			self._registry.global_away_mode = True
@@ -319,13 +373,23 @@ class SpawnHandler:
 		# Cancel any stale pending requests in the source before minting the resume conversation
 		await self._cancel_prior_pending(source_id)
 
-		# Identify resumable members: not alive, not permanently_lost, not currently bound
-		resumable = [
-			m for m in source.members_active.values()
-			if (not m.alive
-				and not m.session_lost_permanently
-				and m.cli_session_id not in self._registry.session_to_conversation_id)
-		]
+		# Identify resumable members. Member state is the single source of
+		# truth (decided 2026-06-11): resumable = dormant (not alive) and not
+		# permanently lost. The binding map is derived routing state and must
+		# agree (dormant = unbound); if it doesn't, log loudly and trust
+		# member state: a stale binding must not silently disable phone
+		# Resume (the post-restart hydration trap, H03/M21).
+		resumable = []
+		for m in source.members_active.values():
+			if m.alive or m.session_lost_permanently:
+				continue
+			bound_to = self._registry.session_to_conversation_id.get(m.cli_session_id)
+			if bound_to is not None:
+				await self._logger.surface_error(
+					f"resume_eligibility_drift: dormant member '{m.sender}' ({m.cli_session_id}) "
+					f"unexpectedly bound to {bound_to}; resuming anyway (member state wins)"
+				)
+			resumable.append(m)
 		if not resumable:
 			await self._logger.surface_error(f"spawn_resume: no resumable members in source {source_id}")
 			return
@@ -424,38 +488,7 @@ class SpawnHandler:
 		await self._invoke_launcher()
 
 	async def _user_has_interactive_session(self) -> bool:
-		"""Return True if any user has an interactive (Active or Disconnected)
-		session on this host. Used as a precondition before /spawn — the
-		scheduled task that launches `wt` requires a desktop session to write
-		into, and `schtasks /run` reports success even when no session exists,
-		landing a Firebase channel with no agent behind it.
-
-		Disconnected (`Disc`) sessions count: an agent spawned now becomes
-		visible whenever the user reconnects (e.g. via RDP).
-
-		Degrades open: if `quser` is missing or fails to launch, return True
-		so the existing schtasks failure path stays the source of truth for
-		Windows-toolchain problems."""
-		try:
-			proc = await asyncio.create_subprocess_exec(
-				"quser",
-				stdout=asyncio.subprocess.PIPE,
-				stderr=asyncio.subprocess.PIPE,
-			)
-			stdout, _ = await proc.communicate()
-		except Exception:
-			return True
-
-		if proc.returncode != 0:
-			# quser exits non-zero when no users are logged on.
-			return False
-
-		text = stdout.decode("utf-8", errors="replace")
-		# Header line first; data rows after. Token-scan is robust to the
-		# column-shift that happens when SESSIONNAME is blank for Disc sessions.
-		for line in text.splitlines()[1:]:
-			tokens = line.split()
-			if any(t in ("Active", "Disc") for t in tokens):
-				return True
-		return False
+		"""See module-level user_has_interactive_session(). Kept as a method so
+		existing tests and call sites can patch per-handler."""
+		return await user_has_interactive_session()
 
