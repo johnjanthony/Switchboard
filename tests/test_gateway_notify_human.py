@@ -11,6 +11,7 @@ import pytest
 from server.config import Config
 from server.gateway import build_tool_handlers
 from server.logging_jsonl import JsonlLogger
+from tests.conftest import make_active_conversation
 from server.messenger import (
 	IncomingResponse,
 	Backend,
@@ -200,7 +201,8 @@ async def test_notify_human_rate_limit_is_per_channel(cfg, logger):
 	await handlers.notify_human("only msg", "Claude", cli_session_id="s-chan-a", cwd="c:/work/chan-a")
 	assert (await handlers.notify_human("extra", "Claude", cli_session_id="s-chan-a", cwd="c:/work/chan-a")).startswith("ERROR:")
 	result = await handlers.notify_human("hello", "Claude", cli_session_id="s-chan-b", cwd="c:/work/chan-b")
-	assert result == "ok"
+	# away OFF, so the at-desk sentinel is returned (not a rate-limit error)
+	assert result == "ERROR: John is at his desk (notification delivered to phone anyway)."
 
 
 @pytest.mark.asyncio
@@ -218,7 +220,8 @@ async def test_notify_human_title_passthrough(cfg, logger):
 		cwd="c:/work/sw",
 	)
 
-	assert result == "ok"
+	# away OFF, so the at-desk sentinel is returned; the message was still written
+	assert result == "ERROR: John is at his desk (notification delivered to phone anyway)."
 	assert len(backend.channel_messages) == 1
 	assert backend.channel_messages[0]["title"] == "My Session"
 
@@ -233,3 +236,54 @@ async def test_recording_backend_records_agent_status_writes():
 		("conv-abc", "Claude", "thinking", None),
 		("conv-abc", "Claude", "tool:Bash", "npm test"),
 	]
+
+
+@pytest.mark.asyncio
+async def test_notify_human_at_desk_returns_sentinel_and_still_writes(tmp_path):
+	"""R1: at-desk (away off) notify_human still delivers the notification but
+	returns the at-desk sentinel instead of "ok" so the agent routes remaining
+	output to the terminal."""
+	cfg = Config(
+		host="127.0.0.1",
+		port=9876,
+		timeout_seconds=5.0,
+		log_path=str(tmp_path / "server.log"),
+	)
+	registry = Registry()  # away mode OFF by default
+	conv = make_active_conversation(conversation_id="conv-n1", member_session_id="s-n1", sender="Claude")
+	registry.conversations["conv-n1"] = conv
+	registry.bind_session("s-n1", "conv-n1")
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
+
+	result = await handlers.notify_human(
+		"build finished", "Claude",
+		cli_session_id="s-n1", cwd="C:/Work/X",
+	)
+
+	assert result == "ERROR: John is at his desk (notification delivered to phone anyway)."
+	assert len(backend.channel_messages) == 1, "the notification must still be written"
+	assert backend.channel_messages[0]["content"] == "build finished"
+
+
+@pytest.mark.asyncio
+async def test_notify_human_away_still_returns_ok(tmp_path):
+	cfg = Config(
+		host="127.0.0.1",
+		port=9876,
+		timeout_seconds=5.0,
+		log_path=str(tmp_path / "server.log"),
+	)
+	registry = Registry()
+	registry.global_away_mode = True
+	conv = make_active_conversation(conversation_id="conv-n2", member_session_id="s-n2", sender="Claude")
+	registry.conversations["conv-n2"] = conv
+	registry.bind_session("s-n2", "conv-n2")
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
+
+	result = await handlers.notify_human(
+		"build finished", "Claude",
+		cli_session_id="s-n2", cwd="C:/Work/X",
+	)
+	assert result == "ok"

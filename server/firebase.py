@@ -334,6 +334,30 @@ class FirebaseBackend(
 			db.reference().update(updates)
 		await asyncio.to_thread(_reset)
 
+	async def sweep_orphaned_pending_questions(self) -> int:
+		"""Startup sweep: cancel every conversations/*/pending_questions record
+		left behind by the previous server process. Pending futures don't
+		survive a restart, so any record present at startup is an orphan.
+		mark_question_cancelled sets the question message's cancelled flag
+		(what the phone's pending list keys off) AND removes the record.
+		Returns the number of records cancelled."""
+		def _conv_ids():
+			return db.reference('conversations').get(shallow=True)
+		conv_ids = await asyncio.to_thread(_conv_ids)
+		if not isinstance(conv_ids, dict):
+			return 0
+		count = 0
+		for conv_id in conv_ids.keys():
+			def _pending(cid=conv_id):
+				return db.reference(f'conversations/{cid}/pending_questions').get(shallow=True)
+			pending = await asyncio.to_thread(_pending)
+			if not isinstance(pending, dict):
+				continue
+			for request_id in pending.keys():
+				await self.mark_question_cancelled(conv_id, request_id)
+				count += 1
+		return count
+
 	async def reset_all_away_mode(self) -> None:
 		"""Force away mode off globally.
 
@@ -348,8 +372,17 @@ class FirebaseBackend(
 		Resetting away mode on startup means pre-restart agents fall back to
 		normal terminal output (which they can do without switchboard tools).
 		The user re-enables away mode via the phone toggle.
+		Clears /away_mode_commands in the same pass so stale queued toggles cannot replay after the reset (decided 2026-06-11).
 		"""
-		await asyncio.to_thread(lambda: db.reference('global_settings/away_mode').set(False))
+		def _reset():
+			db.reference('global_settings/away_mode').set(False)
+			# Also drop any queued away commands from before the restart: this
+			# reset is an authoritative state decision, so a stale enter_global
+			# left behind by a crash must not replay from the command
+			# listener's initial snapshot and silently re-enable away mode
+			# (M06). The command listener attaches after startup runs this.
+			db.reference('away_mode_commands').delete()
+		await asyncio.to_thread(_reset)
 
 	async def delete_legacy_away_mode_node(self) -> None:
 		"""One-shot startup migration: delete the old away_mode/ top-level node.
@@ -927,25 +960,14 @@ class FirebaseBackend(
 		if listener_name in self._supervised:
 			return
 
-		def _on_answer(event):
-			if event.event_type != "put" or not event.data:
-				return
-			# path form: /<conv_id>/answers/<request_id>
-			path = event.path.strip("/")
-			parts = path.split("/")
-			if len(parts) != 3 or parts[1] != "answers":
-				return
-			conv_id = parts[0]
-			data = event.data
-			if not isinstance(data, dict):
-				return
+		def _enqueue_answer(conv_id: str, request_id: str, data: dict) -> None:
 			text = data.get("text")
 			sender = data.get("sender")
 			if not isinstance(text, str) or not isinstance(sender, str):
 				return
-			slot = path  # used for cleanup: conv_id/answers/request_id
+			slot = f"{conv_id}/answers/{request_id}"  # cleanup path for the slot delete
 			resp = IncomingResponse(correlation=(conv_id, sender), text=text, slot=slot)
-			# Bounce to the event loop: _on_answer runs on the Firebase listener
+			# Bounce to the event loop: this runs on the Firebase listener
 			# thread, and _spawn_bg / asyncio.create_task require a running loop.
 			# Without this bounce, every answer event raises RuntimeError inside
 			# the SupervisedListener wrapper and the reply is silently lost.
@@ -953,6 +975,39 @@ class FirebaseBackend(
 			self._loop.call_soon_threadsafe(
 				lambda c=coro: _spawn_bg(c, label=f"conv_answer_enqueue:{conv_id}:{sender}"),
 			)
+
+		def _on_answer(event):
+			if event.event_type != "put" or not event.data:
+				return
+			path = event.path.strip("/")
+			if not path:
+				# Initial/reconnect snapshot: data is the whole conversations
+				# tree. Replay any undelivered answers (H06): a reply written
+				# while the listener was detached would otherwise never be
+				# enqueued and the asker would block the full 24h. Idempotent:
+				# dispatch_responses deletes the slot on resolve and
+				# stale-notices unknown correlations.
+				data = event.data
+				if not isinstance(data, dict):
+					return
+				for conv_id, conv_node in data.items():
+					if not isinstance(conv_node, dict):
+						continue
+					answers = conv_node.get("answers")
+					if not isinstance(answers, dict):
+						continue
+					for request_id, entry in answers.items():
+						if isinstance(entry, dict):
+							_enqueue_answer(conv_id, request_id, entry)
+				return
+			# Incremental put, path form: <conv_id>/answers/<request_id>
+			parts = path.split("/")
+			if len(parts) != 3 or parts[1] != "answers":
+				return
+			data = event.data
+			if not isinstance(data, dict):
+				return
+			_enqueue_answer(parts[0], parts[2], data)
 
 		err = self._logger.surface_error if self._logger else _no_op_async_logger
 		sup = SupervisedListener(

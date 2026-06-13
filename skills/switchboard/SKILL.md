@@ -31,7 +31,7 @@ Spawned sessions auto-enter away mode on spawn (the phone auto-enables it) — d
    - **Zero terminal text.** A compound user message like "I'm stepping away. Call send_document_human with foo.txt, then ask_human about delivery." is NOT a license to skip `set_away_mode(true)` and dive into the explicit commands. Set the flag first, then do the work.
 2. **Execution:** Route **every** status update, question, or completion ping through `notify_human`, `ask_human` or `send_document_human`.
 3. **Replies:** When `ask_human` returns a reply, do not acknowledge it in the terminal. Treat it as input for your next tool call or task.
-4. **Exit:** The **only** exit trigger is John's MOST RECENT prompt explicitly saying he is back ("I'm back", "back at desk"). Call `set_away_mode(false)` as your first action, then resume terminal chat with a concise summary of your work. A back-at-desk message from earlier in the conversation does not retroactively authorize an exit on a later turn.
+4. **Exit:** The **only** exit trigger is John's MOST RECENT prompt explicitly saying he is back ("I'm back", "back at desk"). Call `set_away_mode(false)` as your first action, then resume terminal chat with a concise summary of your work. A back-at-desk message from earlier in the conversation does not retroactively authorize an exit on a later turn. `set_away_mode(false)` also resolves any still-pending `ask_human` questions with the notice `"John is back at his desk; your question was not answered remotely. Re-ask in the terminal."`, so their askers wake in their own terminals; nothing stays parked on the phone.
 
 **At-desk `ask_human` redirect.** If `ask_human` returns the literal string `"ERROR: John is at his desk. Ask this question via the terminal."`, the human is at their desk, and your question has already been delivered to their phone as a passive notification (chat history + Updates channel, no reply UI). Your next action is to **produce the question content verbatim in the terminal** — the human will respond via terminal input. Do NOT retry `ask_human`, do NOT call `set_away_mode(false)` (the flag is already off), and do NOT treat this as an error worth surfacing beyond asking the question. This redirect only applies to `ask_human`; `notify_human` and `send_document_human` always deliver normally regardless of away-mode state.
 
@@ -44,7 +44,7 @@ Switchboard is a local MCP gateway that lets you reach John on his phone while h
 **Active tools:**
 
 - **`ask_human(question, sender, title?, format?, suggestions?)`** — blocks until John replies. Returns reply text or `"__TIMEOUT__"`.
-- **`notify_human(message, sender, title?, format?)`** — fire-and-forget. Returns `"ok"`.
+- **`notify_human(message, sender, title?, format?)`** — fire-and-forget. Returns `"ok"` when away mode is on. At-desk it still delivers the notification and returns `"ERROR: John is at his desk (notification delivered to phone anyway)."`; that is routing guidance (continue in the terminal), not a failure, and there is nothing to re-send.
 - **`send_document_human(path, sender, title?, caption?)`** — deliver a file. path relative to your cwd or absolute. Max 5 MB. Returns `"ok"` or `"ERROR: ..."`.
 - **`message_and_await_agent(sender, message, title?)`** — conversations only. `message` is required and non-empty. Send to peers and block until woken. Returns the conversation log since your last wake (excluding your own emissions). **Sole-alive behavior depends on whether the conv is the open marker:**
   - **Open-marker conv (lobby-hold):** blocks like the mint-path `open_conversation` — waits for the next peer to join, then returns `"ok. open_conversation = <id>\nPeer '<name>' joined."`. On timeout returns `"__TIMEOUT__"` but leaves the conv alive so you can poll again or `leave_conversation` explicitly.
@@ -56,7 +56,7 @@ Switchboard is a local MCP gateway that lets you reach John on his phone while h
 - **`combine_conversations(source_id, target_id)`** — move all members of `source_id` into `target_id`; source ends. Non-blocking.
 - **`lookup_conversation_ids(cwd_filter?, sender_contains?, title_contains?)`** — find conversation_ids matching filters. At least one filter required. Returns a JSON list.
 - **`leave_conversation(sender, parting_message)`** — leave your current conversation. `parting_message` is required. Session falls back to home conversation (away on) or unbound terminal output (away off).
-- **`set_away_mode(value)`** — flip the global away-mode flag to `true` or `false`. Persisted to Firebase.
+- **`set_away_mode(value)`** — flip the global away-mode flag to `true` or `false`. Persisted to Firebase. Flipping to `false` bulk-resolves any pending `ask_human` questions with the at-desk notice (their askers re-ask in their terminals) and reports the count in the return string.
 
 **Retired tools (do not call):**
 
@@ -147,6 +147,8 @@ Use `notify_human` to record the pause if it is helpful context for later: `noti
 If `ask_human` returns a string starting with `"ERROR:"`, the gateway itself failed. Treat this the same as a timeout — pause, do not guess. If possible, use a shell command to check if the Switchboard server process is still running (e.g., `netstat -ano | findstr :9876`) to diagnose the failure before pausing.
 
 **Exception:** the literal string `"ERROR: John is at his desk. Ask this question via the terminal."` is NOT a gateway failure — it is the at-desk redirect described in the Away Mode Protocol above. In that specific case, produce the question in the terminal and continue; do not pause.
+
+The same applies to `notify_human`'s at-desk return `"ERROR: John is at his desk (notification delivered to phone anyway)."`: the notification was delivered, nothing failed, and there is nothing to re-send. Route any remaining output to the terminal and continue.
 
 ## Staying alive in away mode
 
@@ -295,7 +297,7 @@ Title: optional on every Switchboard tool. **Set one on your first call.**
 
 ## Rate limit note
 
-`notify_human` and `send_document_human` are rate-limited per conversation. If you hit the limit, you'll get `"ERROR: rate limit exceeded..."` with a wait time. Back off and retry after the indicated interval.
+`ask_human`, `notify_human` and `send_document_human` are rate-limited per conversation. If you hit the limit, you'll get `"ERROR: rate limit exceeded..."` with a wait time. Back off and retry after the indicated interval.
 
 ## Parallel openings on session start
 

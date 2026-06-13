@@ -106,3 +106,49 @@ def test_delete_response_slot_routes_answers_to_conversations_path(backend):
 
 	assert "/answers/" in conv_answer_slot, "Conv-answer slots contain /answers/"
 	assert "/answers/" not in legacy_slot, "Legacy slots do not contain /answers/"
+
+
+@pytest.mark.asyncio
+async def test_initial_snapshot_replays_undelivered_answers(backend):
+	"""H06: a reply present in Firebase when the listener (re)attaches arrives
+	as the initial snapshot (path '/', data = whole conversations tree) and
+	must be enqueued like an incremental answer event."""
+	be, mock_db = backend
+	captured = []
+
+	class CapturingSupervisedListener:
+		def __init__(self, *, name, path, callback, error_logger, loop):
+			self.callback = callback
+			captured.append(self)
+		def start(self):
+			pass
+
+	with patch("server.firebase_supervisor.SupervisedListener", CapturingSupervisedListener):
+		await be.start_conversation_answers_listener()
+
+	on_answer = captured[0].callback
+	event = MagicMock()
+	event.event_type = "put"
+	event.path = "/"
+	event.data = {
+		"conv-1": {
+			"meta": {"state": "active"},
+			"answers": {
+				"req-1": {"text": "yes do it", "sender": "Claude", "written_at": "x"},
+			},
+		},
+		"conv-2": {
+			"meta": {"state": "active"},
+			# no answers node: must be skipped without error
+		},
+	}
+	on_answer(event)
+
+	# One answer enqueued: queue.put called with the right IncomingResponse,
+	# bounced to the loop via call_soon_threadsafe.
+	assert be._response_queue.put.call_count == 1
+	resp = be._response_queue.put.call_args.args[0]
+	assert resp.correlation == ("conv-1", "Claude")
+	assert resp.text == "yes do it"
+	assert resp.slot == "conv-1/answers/req-1"
+	assert be._loop.call_soon_threadsafe.call_count == 1

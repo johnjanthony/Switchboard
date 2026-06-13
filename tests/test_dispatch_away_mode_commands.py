@@ -127,3 +127,64 @@ async def test_unknown_command_type_logs_error_and_continues(tmp_path):
 	events = [json.loads(line) for line in log_path.read_text().splitlines() if line]
 	errors = [e for e in events if e["event"] == "surface_error"]
 	assert any("away_mode_command_unknown_type" in e["detail"] for e in errors)
+
+
+@pytest.mark.asyncio
+async def test_exit_global_decision_cancel_does_not_flip(tmp_path):
+	"""M07: the phone's decision field is authoritative. 'cancel' means leave
+	away mode ON and leave pendings alone."""
+	registry = Registry()
+	registry.global_away_mode = True
+	future = registry.add("conv-1", "Claude", request_id="req-1", msg_id="msg-1")
+
+	backend = _make_backend([
+		{"type": "exit_global", "issued_at": "2026-06-11T00:00:00Z", "decision": "cancel"},
+	])
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+	supervisor = _make_supervisor()
+
+	with pytest.raises(asyncio.CancelledError):
+		await dispatch_away_mode_commands(registry, backend, logger, supervisor)
+
+	assert registry.global_away_mode is True, "cancel must not commit the flip"
+	assert not future.done(), "cancel must leave pendings alone"
+
+
+@pytest.mark.asyncio
+async def test_exit_global_send_default_blank_text_is_rejected(tmp_path):
+	"""M07: 'Send to all' with blank text used to silently degrade to skip.
+	It must surface a validation error and not flip the flag."""
+	registry = Registry()
+	registry.global_away_mode = True
+	future = registry.add("conv-1", "Claude", request_id="req-1", msg_id="msg-1")
+
+	backend = _make_backend([
+		{"type": "exit_global", "issued_at": "2026-06-11T00:00:00Z", "decision": "send_default", "default_text": ""},
+	])
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+	supervisor = _make_supervisor()
+
+	with pytest.raises(asyncio.CancelledError):
+		await dispatch_away_mode_commands(registry, backend, logger, supervisor)
+
+	assert registry.global_away_mode is True, "blank send_default must not commit the flip"
+	assert not future.done()
+
+
+@pytest.mark.asyncio
+async def test_exit_global_decision_skip_flips_but_leaves_pendings(tmp_path):
+	registry = Registry()
+	registry.global_away_mode = True
+	future = registry.add("conv-1", "Claude", request_id="req-1", msg_id="msg-1")
+
+	backend = _make_backend([
+		{"type": "exit_global", "issued_at": "2026-06-11T00:00:00Z", "decision": "skip"},
+	])
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+	supervisor = _make_supervisor()
+
+	with pytest.raises(asyncio.CancelledError):
+		await dispatch_away_mode_commands(registry, backend, logger, supervisor)
+
+	assert registry.global_away_mode is False
+	assert not future.done(), "skip leaves pendings in place"

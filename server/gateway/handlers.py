@@ -110,6 +110,13 @@ def build_tool_handlers(
 			return f"ERROR: sender name '{sender}' contains restricted characters '__'."
 		return None
 
+	def _rate_limit_error() -> str:
+		return (
+			f"ERROR: rate limit exceeded — you are sending too fast.\n"
+			f"Limit is {limiter.rate_per_minute} messages/min per channel.\n"
+			f"Wait at least {limiter.wait_seconds} seconds before retrying, or slow your notify cadence."
+		)
+
 	@require_cli_session_id
 	async def notify_human(
 		message: str,
@@ -128,15 +135,17 @@ def build_tool_handlers(
 		)
 		if limiter is not None and not limiter.consume(conversation_id):
 			await logger.rate_limited(conversation_id, "notify_human")
-			return (
-				f"ERROR: rate limit exceeded — you are sending too fast.\n"
-				f"Limit is {limiter.rate_per_minute} messages/min per channel.\n"
-				f"Wait at least {limiter.wait_seconds} seconds before retrying, or slow your notify cadence."
-			)
+			return _rate_limit_error()
 		try:
 			await backend.write_conversation_message(conversation_id, sender, "notify", message, format=format, title=title)
 			await logger.notify_sent(conversation_id, message)
 			await _append_session_log(config.log_path, conversation_id, "→", message, logger)
+			if not registry.global_away_mode:
+				# R1 (decided 2026-06-11): the notification is delivered either
+				# way, but at-desk the terminal is the canonical surface. The
+				# sentinel tells the agent to route remaining output there.
+				# This is routing guidance, not a failure.
+				return "ERROR: John is at his desk (notification delivered to phone anyway)."
 			return "ok"
 		except Exception as exc:
 			await logger.tool_error(None, conversation_id, str(exc))
@@ -159,6 +168,10 @@ def build_tool_handlers(
 		conversation_id = await _resolve_conversation_and_member(
 			registry, cli_session_id, cwd, sender, backend=backend,
 		)
+
+		if limiter is not None and not limiter.consume(conversation_id):
+			await logger.rate_limited(conversation_id, "ask_human")
+			return _rate_limit_error()
 
 		# At-desk redirect: when global away mode is OFF, John is at his desk
 		# watching the terminal. Don't block the agent for 24h — write the
@@ -223,9 +236,13 @@ def build_tool_handlers(
 		except asyncio.TimeoutError:
 			await logger.timeout(request_id, conversation_id, config.timeout_seconds)
 			registry.remove(conversation_id, sender)
+			# Mark the question message cancelled, which also removes the
+			# pending_questions record (firebase.py). The phone derives
+			# "pending" purely from message flags, so without the cancelled
+			# flag a timed-out question stays pending on the phone forever (H05).
 			_spawn_bg(
-				backend.remove_pending_question_record(conversation_id, request_id),
-				label=f"fb_remove_pending_question:timeout:{conversation_id}:{request_id}",
+				backend.mark_question_cancelled(conversation_id, request_id),
+				label=f"fb_mark_cancelled:timeout:{conversation_id}:{request_id}",
 			)
 			try:
 				await backend.send_timeout_followup(
@@ -245,8 +262,8 @@ def build_tool_handlers(
 			await logger.tool_error(request_id, conversation_id, str(exc))
 			registry.remove(conversation_id, sender)
 			_spawn_bg(
-				backend.remove_pending_question_record(conversation_id, request_id),
-				label=f"fb_remove_pending_question:error:{conversation_id}:{request_id}",
+				backend.mark_question_cancelled(conversation_id, request_id),
+				label=f"fb_mark_cancelled:error:{conversation_id}:{request_id}",
 			)
 			return f"ERROR: {exc}"
 
@@ -305,11 +322,7 @@ def build_tool_handlers(
 
 		if limiter is not None and not limiter.consume(conversation_id):
 			await logger.rate_limited(conversation_id, "send_document_human")
-			return (
-				f"ERROR: rate limit exceeded — you are sending too fast.\n"
-				f"Limit is {limiter.rate_per_minute} messages/min per channel.\n"
-				f"Wait at least {limiter.wait_seconds} seconds before retrying, or slow your notify cadence."
-			)
+			return _rate_limit_error()
 
 		try:
 			size_bytes = resolved.stat().st_size
@@ -786,6 +799,26 @@ def build_tool_handlers(
 		"""Flip the global away_mode flag. Persisted to Firebase under /global_settings/away_mode."""
 		if not isinstance(value, bool):
 			return "ERROR: value must be a boolean"
+		resolved = 0
+		if value is False:
+			pendings = registry.all_pending()
+			if pendings:
+				# Decided 2026-06-11 (P1-8): exiting away mode from the tool
+				# side resolves every pending ask_human with the at-desk
+				# notice, so blocked askers wake in their own terminals (the
+				# canonical at-desk surface, consistent with R1) instead of
+				# blocking until the 24h timeout. Same bulk entry point as the
+				# phone's exit modal.
+				from server.gateway.bulk_respond import _apply_bulk_respond_decision
+				try:
+					await _apply_bulk_respond_decision(
+						registry, backend, logger,
+						decision="send_default",
+						default_text="John is back at his desk; your question was not answered remotely. Re-ask in the terminal.",
+					)
+					resolved = len(pendings)
+				except Exception as exc:
+					await logger.surface_error(f"set_away_mode_bulk_resolve_failed: {exc}")
 		registry.global_away_mode = value
 		try:
 			if hasattr(backend, "set_global_away_mode"):
@@ -794,6 +827,8 @@ def build_tool_handlers(
 				await backend.set_away_mode(value)
 		except Exception as exc:
 			await logger.surface_error(f"set_away_mode_persist_failed: {exc}")
+		if value is False and resolved:
+			return f"ok. away_mode=False ({resolved} pending question(s) resolved with the at-desk notice)"
 		return f"ok. away_mode={value}"
 
 	@require_cli_session_id

@@ -143,7 +143,7 @@ async def test_fresh_spawn_then_session_end_marks_dormant(tmp_path):
 	handlers = build_tool_handlers(_cfg(tmp_path), registry, backend, logger)
 
 	result = await handlers.notify_human("online", "Claude Win", cli_session_id="s-fresh", cwd="C:/Work/modules")
-	assert result == "ok"
+	assert result == "ERROR: John is at his desk (notification delivered to phone anyway)."
 	member = next((m for m in conv.members_active.values() if m.cli_session_id == "s-fresh"), None)
 	assert member is not None and member.alive is True
 

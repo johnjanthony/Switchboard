@@ -401,6 +401,11 @@ async def _run(config: Config) -> None:
 	await backend.delete_legacy_away_mode_node()
 	await backend.start_away_mode_listeners(registry)
 	await backend.reset_all_pending_responses()
+	sweep_fn = getattr(backend, "sweep_orphaned_pending_questions", None)
+	if callable(sweep_fn):
+		swept = await sweep_fn()
+		if swept:
+			await logger.info(f"startup_pending_questions_sweep: cancelled={swept}")
 	await backend.start_conversation_answers_listener()
 
 	await hydrate_from_firebase(registry, backend, logger)

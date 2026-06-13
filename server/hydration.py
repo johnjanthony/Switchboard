@@ -21,8 +21,8 @@ by Firebase. Any pending_questions records left behind from before the restart
 become orphans — they can't be reactivated because the underlying futures are
 dead. They'll be overwritten or cleared the next time ask_human flows through
 the same request_id (impossible — request_ids are uuids) or are tolerated as
-visual cruft until force_end clears the conversation. A future cleanup pass
-could sweep them on startup; not done here.
+visual cruft until force_end clears the conversation. The startup sweep
+(sweep_orphaned_pending_questions, wired in main.py) handles exactly this.
 """
 
 from __future__ import annotations

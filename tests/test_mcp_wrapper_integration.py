@@ -171,4 +171,6 @@ async def test_wrapper_notify_human_with_valid_session_routes_to_handler(cfg, tm
 		"cwd": _CWD,
 	})
 	text = _extract_text(result)
-	assert text == "ok", f"Expected 'ok', got: {text!r}"
+	assert text == "ERROR: John is at his desk (notification delivered to phone anyway).", f"Expected at-desk sentinel, got: {text!r}"
+	assert len(backend.channel_messages) == 1, "notification must still be written even when at desk"
+	assert backend.channel_messages[0]["content"] == "status update"

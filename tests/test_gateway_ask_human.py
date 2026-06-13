@@ -751,7 +751,11 @@ class PendingQuestionTrackingBackend(RecordingBackend):
 		super().__init__()
 		self.pending_added: list[dict] = []
 		self.pending_removed: list[tuple[str, str]] = []
+		self.cancelled_questions: list[tuple[str, str]] = []
 		self.answered_marked: list[tuple[str, str]] = []
+
+	async def mark_question_cancelled(self, conversation_id: str, request_id: str) -> None:
+		self.cancelled_questions.append((conversation_id, request_id))
 
 	async def add_pending_question_record(
 		self,
@@ -850,6 +854,8 @@ async def test_ask_human_removes_pending_questions_on_timeout(cfg, logger):
 	assert backend.pending_added, "pending_questions record was never written"
 	req_id = backend.pending_added[0]["request_id"]
 	conv_id = registry.session_to_conversation_id.get(_SID)
-	assert (conv_id, req_id) in backend.pending_removed
+	# Timeout now calls mark_question_cancelled (superset of remove_pending_question_record):
+	# sets the cancelled flag on the phone AND removes the pending_questions record.
+	assert (conv_id, req_id) in backend.cancelled_questions
 	# answered should NOT have been marked — the question wasn't answered.
 	assert backend.answered_marked == []

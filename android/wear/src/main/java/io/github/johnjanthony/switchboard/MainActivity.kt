@@ -65,6 +65,10 @@ class MainActivity : ComponentActivity() {
 		super.onCreate(savedInstanceState)
 		requestNotificationPermission()
 		handleNotificationIntent(intent)
+		// Wear-only: opt in to the message-arrival auto-select fallback. The
+		// legacy Wear screens need a non-null selection; the phone must not do
+		// this (H07: it suppressed the unread badge while on Page A).
+		viewModel.autoSelectOnMessageArrival = true
 		setContent {
 			WearApp(viewModel, pendingDeepLinkConvId)
 		}

@@ -126,7 +126,16 @@ data class ConversationSummary(
 			val now = System.currentTimeMillis()
 			return members.any { m ->
 				m.sessionEndedAt?.let { iso ->
-					val ms = java.time.Instant.parse(iso).toEpochMilli()
+					// The server writes isoformat() with a +00:00 offset, which
+					// Instant.parse (ISO_INSTANT, wants Z) rejects; an unguarded
+					// parse crashed list rendering for any dormant member (M14).
+					// OffsetDateTime accepts both +00:00 and Z; anything else
+					// degrades to "no warning", like formatRelativeTime.
+					val ms = try {
+						java.time.OffsetDateTime.parse(iso).toInstant().toEpochMilli()
+					} catch (_: Exception) {
+						return@let false
+					}
 					val days = (now - ms) / (1000L * 60 * 60 * 24)
 					days in 25L..29L
 				} ?: false

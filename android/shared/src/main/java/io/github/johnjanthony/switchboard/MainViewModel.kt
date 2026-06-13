@@ -81,6 +81,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _selectedConversationId = MutableStateFlow<String?>(null)
 	val selectedConversationId: StateFlow<String?> = _selectedConversationId.asStateFlow()
 
+	/**
+	 * Wear-only fallback: when nothing is selected, auto-select the
+	 * conversation of the first arriving message. The phone must leave this
+	 * false: selection is navigation-driven there, and force-selecting on
+	 * message arrival permanently zeroed the most active conversation's
+	 * unread badge while John sat on Page A (H07). Wear opts in at startup.
+	 */
+	var autoSelectOnMessageArrival: Boolean = false
+
 	// Wear-compat: legacy state flow exposing the selected key in cwdKey form.
 	// Backed by the same `_selectedConversationId` value; the Wear app reads the cwdKey
 	// of the conversation's first alive member.
@@ -352,7 +361,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		// Clear unread badge on the server-side counter when this is the open row.
 		if (_selectedConversationId.value == convId) {
 			conversationsRef.child(convId).child("unread_count").setValue(0)
-		} else if (_selectedConversationId.value == null && !row.hidden && row.state == "active") {
+		} else if (shouldAutoSelectOnMessageArrival(
+				autoSelectOnMessageArrival, _selectedConversationId.value, row.hidden, row.state)) {
 			_selectedConversationId.value = convId
 			refreshSelectedCwdKey()
 		}

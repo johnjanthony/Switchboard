@@ -131,6 +131,8 @@ Sends a question to John's phone; blocks for `SWITCHBOARD_TIMEOUT_SECONDS` (defa
 
 Writes a one-way notification. Auto-mints a conversation if the session is unbound. At-desk-redirected when away mode is off (same gating as `ask_human`, but the call always returns `"ok"` and never waits).
 
+Return contract (R1, decided 2026-06-11): `"ok"` when global away mode is on. When away mode is off the notification is still written and pushed, but the call returns `"ERROR: John is at his desk (notification delivered to phone anyway)."` so the agent learns to route remaining output to the terminal. The sentinel is not a failure and there is nothing to re-send.
+
 ### `send_document_human(path, sender, title?, caption?)` — non-blocking
 
 Delivers a file to the phone. `path` is relative to the caller's cwd or absolute. 5 MB cap. Denylist on `.env*`, `*token*`, `*secret*`, `*.pem`, `*.key`. Path-traversal rejected. **Not at-desk-gated** — documents always deliver regardless of away mode.
@@ -568,7 +570,7 @@ Gemini CLI gets a separate AfterAgent hook installed via `scripts/install-turn-e
 | `FIREBASE_STORAGE_BUCKET` | No | — | Storage bucket hostname (document delivery). |
 | `SWITCHBOARD_WINDOWS_SPAWN_ROOT` | For spawn | — | Windows project root (e.g. `C:\Work`). Alias: `SWITCHBOARD_SPAWN_ROOT`. |
 | `SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT` | No | `work` | Segment appended to resolved WSL home for WSL project paths. |
-| `SWITCHBOARD_RATE_LIMIT` | No | `30` | Per-conversation rate limit for `notify_human` + `send_document_human` (tokens/min). |
+| `SWITCHBOARD_RATE_LIMIT` | No | `30` | Per-conversation rate limit for `ask_human` + `notify_human` + `send_document_human` (tokens/min). |
 
 ---
 
@@ -592,7 +594,7 @@ Gemini CLI gets a separate AfterAgent hook installed via `scripts/install-turn-e
 - **Localhost bind by default.** `SWITCHBOARD_HOST=127.0.0.1` keeps the server unreachable off-host. WSL setups must explicitly set `0.0.0.0` and gate via firewall to the WSL subnet only.
 - **No sandboxing.** Spawned agents run with `--dangerously-skip-permissions`; safety is governed by the agent's `SKILL.md` instructions, which gate destructive actions behind `ask_human`. Switchboard enforces the protocol (no terminal leaks while away), not the execution.
 - **Document path validation.** `send_document_human` denylist matches `.env*`, `*token*`, `*secret*`, `*.pem`, `*.key`. Path-traversal (`..`) rejected. 5 MB cap. SHA-256 logged.
-- **Rate limiting.** `notify_human` + `send_document_human` bucket per conversation, default 30 tokens/min.
+- **Rate limiting.** `ask_human` + `notify_human` + `send_document_human` bucket per conversation, default 30 tokens/min.
 
 ### 15.4 Modalities
 

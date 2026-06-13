@@ -51,7 +51,7 @@ async def test_notify_human_auto_creates_conversation_on_first_call(cfg, logger)
 		cwd="c:/work/proj",
 	)
 
-	assert result == "ok"
+	assert result == "ERROR: John is at his desk (notification delivered to phone anyway)."
 	assert session_id in registry.session_to_conversation_id
 	conv_id = registry.session_to_conversation_id[session_id]
 	assert conv_id.startswith("conv-")
@@ -78,7 +78,7 @@ async def test_notify_human_routes_to_existing_conversation(cfg, logger):
 		cwd="c:/work/proj",
 	)
 
-	assert result == "ok"
+	assert result == "ERROR: John is at his desk (notification delivered to phone anyway)."
 	assert len(backend.channel_messages) == 1
 	assert backend.channel_messages[0]["channel_id"] == existing_conv_id
 

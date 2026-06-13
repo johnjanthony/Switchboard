@@ -344,11 +344,10 @@ async def dispatch_away_mode_commands(registry, backend, logger, supervisor):
 
 	Command shapes (Android-emitted via MainViewModel):
 	- {type: "enter_global", issued_at: "<ISO>"}
-	- {type: "exit_global", issued_at: "<ISO>", default_text?: "<text>"}
+	- {type: "exit_global", issued_at: "<ISO>", decision?: "send_default"|"skip"|"cancel", default_text?: "<text>"}
 
 	enter_global flips global_away_mode True.
-	exit_global flips False, optionally bulk-resolves pending ask_human requests
-	with `default_text`.
+	exit_global applies the decision via _apply_bulk_respond_decision and flips False only when the decision commits (send_default with non-blank text, skip, or no-decision with no pendings).
 	"""
 	from server.gateway.bulk_respond import _apply_bulk_respond_decision
 
@@ -367,24 +366,31 @@ async def dispatch_away_mode_commands(registry, backend, logger, supervisor):
 						await logger.info("away_mode_enter_global")
 
 					elif cmd_type == "exit_global":
-						registry.global_away_mode = False
+						decision = cmd.get("decision")
+						default_text = cmd.get("default_text") or ""
+						# Legacy payloads sent only default_text; map them onto
+						# the decision contract so the field is authoritative
+						# without breaking older app builds (M07).
+						if decision is None and default_text:
+							decision = "send_default"
+						commit = False
 						try:
-							await backend.set_global_away_mode(False)
+							commit = await _apply_bulk_respond_decision(
+								registry, backend, logger,
+								decision=decision,
+								default_text=default_text,
+							)
 						except Exception as exc:
-							await logger.surface_error(f"away_mode_exit_persist_failed: {exc}")
-
-						default_text = cmd.get("default_text")
-						if default_text:
+							await logger.surface_error(f"bulk_respond_failed: {exc}")
+						if commit:
+							registry.global_away_mode = False
 							try:
-								await _apply_bulk_respond_decision(
-									registry, backend, logger,
-									decision="send_default",
-									default_text=default_text,
-								)
+								await backend.set_global_away_mode(False)
 							except Exception as exc:
-								await logger.surface_error(f"bulk_respond_failed: {exc}")
-
-						await logger.info(f"away_mode_exit_global default_text={bool(default_text)}")
+								await logger.surface_error(f"away_mode_exit_persist_failed: {exc}")
+						await logger.info(
+							f"away_mode_exit_global decision={decision!r} committed={commit}"
+						)
 
 					else:
 						await logger.surface_error(f"away_mode_command_unknown_type: {cmd_type}")

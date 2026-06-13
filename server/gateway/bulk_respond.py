@@ -35,6 +35,11 @@ async def _apply_bulk_respond_decision(
 		return False
 
 	if decision == "send_default":
+		if not default_text.strip():
+			await logger.surface_error(
+				"away_mode_commands: send_default with blank default_text; treating as cancel (M07)"
+			)
+			return False
 		# Resolve every pending in scope in parallel: registry.resolve +
 		# send_resolution_confirmation + write_channel_message. The reply's
 		# attached_to_msg_id links it back to the question; the client uses this
