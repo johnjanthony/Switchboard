@@ -5,8 +5,8 @@ canonicalize_cwd function still normalizes raw cwd strings into a stable
 display form (so Page B shows a consistent label regardless of how the
 agent passed the path: Windows / Git-Bash / POSIX / WSL `/mnt/<letter>/...`
 all map to the same canonical form). to_firebase_key derives Firebase-safe
-keys; surviving callers are limited to the Wear-compat /channels/<key>
-projection and a few legacy slot-parsing paths in firebase.py.
+keys; the only surviving caller is the legacy response-slot parser in
+firebase.py (to_firebase_key / from_firebase_key for legacy composite slots).
 """
 
 from __future__ import annotations

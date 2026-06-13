@@ -94,6 +94,12 @@ async def handle_session_end(
 		fut = entry.get("future")
 		if fut is not None and not fut.done():
 			fut.set_result(dormancy_msg["text"])
+			# Advance the woken member's cursor past the dormancy message so
+			# its next wake delta does not re-include the dormancy line
+			# (parity with _wake_one_from in conversation_ops.py). F-70.
+			member = entry.get("member")
+			if member is not None:
+				member.last_seen_seq = len(conv.messages)
 	# Also surface dormancy to any mint-path opener blocked on open_peer_future
 	# (e.g. the opener's session itself ended, or a peer's session ended before
 	# they fully joined). Returning the dormancy text lets the opener decide

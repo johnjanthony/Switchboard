@@ -101,7 +101,7 @@ class FirebaseBackend(
 							)
 						elif self._logger:
 							self._loop.call_soon_threadsafe(
-								lambda: _spawn_bg(self._logger.surface_error(f"firebase_malformed_response_entry: {slot} -> {type(data)}"), label="firebase_malformed_response_entry")
+								lambda s=slot, d=data: _spawn_bg(self._logger.surface_error(f"firebase_malformed_response_entry: {s} -> {type(d)}"), label="firebase_malformed_response_entry")
 							)
 				else:
 					if self._logger:
@@ -164,18 +164,6 @@ class FirebaseBackend(
 						f"supervisor_stop_failed: {sup.name} {exc}"
 					)
 		self._supervised.clear()
-
-		# Legacy bare ListenerRegistration paths (poll_responses, away-mode
-		# command listener) still use this until those tasks are migrated.
-		listeners = []
-		for attr in ("_resp_listener", "_away_mode_cmd_listener"):
-			lst = getattr(self, attr)
-			if lst:
-				listeners.append(lst)
-		if listeners:
-			await asyncio.gather(*(
-				asyncio.to_thread(l.close) for l in listeners
-			), return_exceptions=True)
 
 	def listener_health(self) -> list:
 		"""Return per-listener health snapshots for /healthz.
@@ -255,14 +243,6 @@ class FirebaseBackend(
 	) -> None:
 		ref = db.reference(f"conversations/{conversation_id}/pending_questions/{request_id}")
 		await asyncio.to_thread(ref.delete)
-
-	async def mark_question_answered(
-		self,
-		conversation_id: str,
-		msg_id: str,
-	) -> None:
-		ref = db.reference(f"conversations/{conversation_id}/answered_question_msg_ids/{msg_id}")
-		await asyncio.to_thread(ref.set, True)
 
 	async def write_agent_status(
 		self,
@@ -670,15 +650,19 @@ class FirebaseBackend(
 	) -> None:
 		"""Write the top-level conversation fields (everything except members and messages)."""
 		ref = db.reference(f"conversations/{conv_id}/meta")
-		await asyncio.to_thread(ref.set, {
-			"title": title,
+		# update() not set(): set() overwrites the whole /meta node and would
+		# clobber sibling fields (preview) if ever called on an existing
+		# conversation (F-80). All current callers are creation-only, but the
+		# partial write makes the method safe to call post-creation too.
+		await asyncio.to_thread(lambda: ref.update({
+			"title": title[:80],
 			"state": state,
 			"continued_from": continued_from,
 			"created_at": created_at,
 			"last_activity_at": last_activity_at,
 			"ended_at": ended_at,
 			"hidden": hidden,
-		})
+		}))
 
 	async def remove_conversation_member(self, conv_id: str, sender: str) -> None:
 		"""Remove a member entry under /conversations/<id>/members_active/<sender>."""
@@ -850,10 +834,13 @@ class FirebaseBackend(
 		ref = db.reference(f"conversations/{conv_id}/meta/last_activity_at")
 		await asyncio.to_thread(ref.set, ts)
 
-	async def remove_session_binding(self, session_id: str) -> None:
-		"""Remove /cli_sessions/<session_id>/home_conversation_id when session is unbound."""
-		ref = db.reference(f"cli_sessions/{session_id}/home_conversation_id")
-		await asyncio.to_thread(ref.delete)
+	async def write_conversation_title(self, conv_id: str, title: str) -> None:
+		"""Update /conversations/<id>/meta/title without touching sibling fields.
+		Targeted update (not a full meta set) so a post-creation title change
+		from message_and_await_agent / open_conversation reaches the phone
+		without clobbering preview, state, or activity timestamps (M3)."""
+		ref = db.reference(f"conversations/{conv_id}/meta")
+		await asyncio.to_thread(lambda: ref.update({"title": title[:80]}))
 
 	def _schedule_command_delete(self, node: str, cmd_id: str) -> None:
 		"""Bridge-safe Firebase delete from a listener-thread callback (M32):

@@ -31,8 +31,9 @@ def compute_fallback(
 def apply_fallback(registry, session_id: str, backend=None) -> None:
 	"""Apply session fallback routing when a session leaves a conversation.
 
-	backend: optional ConversationStore — if provided, Firebase writes are issued:
-	  - "unbind": remove_session_binding for the session
+	backend: optional ConversationStore - if provided, Firebase writes are issued:
+	  - "unbind": no Firebase write (the durable home pointer is preserved for a
+	    later away-on rebind; M01/M34, decided 2026-06-12)
 	  - "rebind_home": no Firebase write (home pointer unchanged)
 	  - "create_new": write_conversation_meta + set_session_home for the new conv
 	"""
@@ -77,12 +78,12 @@ def apply_fallback(registry, session_id: str, backend=None) -> None:
 		global_away_mode=registry._global_away,
 	)
 	if action == "unbind":
+		# In-memory unbind only: PRESERVE the durable home pointer (M01/M34,
+		# decided 2026-06-12). A later away-on rebind (compute_fallback's
+		# rebind_home arm) needs a durable target across restarts. The only
+		# legitimate home-pointer deleter is the dormant stale-cleanup path
+		# above (set_session_home(None) once the home conv is missing/ended).
 		registry.unbind_session(session_id)
-		if backend is not None:
-			_spawn_bg(
-				backend.remove_session_binding(session_id),
-				label=f"fb_remove_session_binding:{session_id}",
-			)
 	elif action == "rebind_home":
 		registry.unbind_session(session_id)
 		registry.bind_session(session_id, target)

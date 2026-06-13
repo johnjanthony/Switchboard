@@ -116,16 +116,6 @@ class MessageWriter(ABC):
 		ask_human resolves (success / timeout / cancel). No-op default."""
 		pass
 
-	async def mark_question_answered(
-		self,
-		conversation_id: str,
-		msg_id: str,
-	) -> None:
-		"""Write /conversations/<id>/answered_question_msg_ids/<msg_id> = true.
-		Used by phone-side UI to derive the RESPONDED badge state without re-walking
-		the messages array. No-op default; FirebaseBackend overrides."""
-		pass
-
 	async def write_agent_status(
 		self,
 		conv_id: str,
@@ -270,6 +260,10 @@ class ConversationStore:
 		"""Update /conversations/<id>/meta/last_activity_at."""
 		pass
 
+	async def write_conversation_title(self, conv_id: str, title: str) -> None:
+		"""Update /conversations/<id>/meta/title (partial write). No-op default."""
+		pass
+
 	async def set_open_conversation_id(self, conv_id: str | None) -> None:
 		"""Write the global open-conversation pointer."""
 		pass
@@ -280,10 +274,6 @@ class ConversationStore:
 		Pass conv_id=None to clear (delete) the stored home pointer for this session
 		— used by session-fallback when a dormant session's home conv has Ended
 		and we want to avoid leaving a stale pointer behind in storage."""
-		pass
-
-	async def remove_session_binding(self, session_id: str) -> None:
-		"""Remove /cli_sessions/<session_id>/home_conversation_id."""
 		pass
 
 	async def set_global_wsl_available(self, available: bool) -> None:

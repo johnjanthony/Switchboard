@@ -32,7 +32,8 @@ def make_registry_with_loopback() -> Registry:
 	don't trip the at-desk redirect (which short-circuits ask_human into a
 	notify when John is at his desk). Tests that need at-desk behavior should
 	construct ``Registry()`` directly or set ``r.global_away_mode = False``."""
-	# TODO: Task 22 will route cwd-level away mode through global_away_mode
+	# global_away_mode=True avoids the at-desk redirect in blocking-path tests
+	# (ask_human short-circuits to a notify when away mode is off).
 	r = Registry()
 	r.global_away_mode = True
 	return r

@@ -1,52 +1,59 @@
-# Next Session Pickup - P2 implemented (post-review), awaiting commit
+# Next Session Pickup - P5 implemented (post-review), awaiting commit
 
-**Branch:** session_id-as-key. **Written:** 2026-06-11, updated 2026-06-13 (P1 committed; P2 implemented + independently verified via subagent-driven workflow; P5 plan drafted). Supersedes the prior P1-focused version (history lives in git + [completed-ledger](tracking/completed-ledger.md) + [PROJECT-JOURNAL.md](../PROJECT-JOURNAL.md)).
+**Branch:** session_id-as-key. **Written:** 2026-06-11, updated 2026-06-13 (P1 + P2 committed; P5 implemented + independently verified via subagent-driven workflow). The remediation pass (P0, P1, P2, P5) is then complete except P4. History lives in git + [completed-ledger](tracking/completed-ledger.md) + [PROJECT-JOURNAL.md](../PROJECT-JOURNAL.md).
 
 ## Where things stand
 
-**P0, P0-6, T-146, and P1 are committed.** P0 at 37305d2; P0-6 at 938779b; T-146 at 9ecb9ec; the plugin.json version bump at b1f220e; **P1 (away-mode + phone trust) at 95ceeb0**. T-146 is fully closed (code + deployment: plugin.json bumped + committed, `SWITCHBOARD_MARKER_DIR` applied to both hosts via chezmoi). The four 2026-06-11 design decisions are pinned in the [remediation spec](2026-06-11-remediation-spec.md) §9.
+**Committed:** P0 (37305d2), P0-6 (938779b), T-146 (9ecb9ec), plugin.json bump (b1f220e), **P1 (95ceeb0)**, **P2 (501dfcd)**. T-146 fully closed (code + deployment: plugin.json bumped + committed; `SWITCHBOARD_MARKER_DIR` applied to both hosts via chezmoi). The four 2026-06-11 design decisions are pinned in the [remediation spec](2026-06-11-remediation-spec.md) section 9.
 
-**P2 (listener robustness) is implemented and verified this session (2026-06-13), uncommitted, awaiting John's commit.** Executed via subagent-driven-development as a deterministic Workflow (implementer sonnet + spec-review sonnet + code-review opus per task, bounded fix-loops, then a final whole-implementation opus review). Final review returned **ready_for_commit** (0 blocking). Independently re-verified by the controller: full Python suite **483 passed**; Android `:shared:testDebugUnitTest` + `:app:assembleDebug` + `:wear:assembleDebug` **BUILD SUCCESSFUL**. Convention audit (byte-level): all 4 new files CRLF + tab-indented; **zero em-dashes in any added line**. M32 invariant verified intact: the 5 remaining `run_in_executor` calls are all legal on-loop `await`s (firebase.py:489,499; firebase_supervisor.py:160,183,228); every listener callback bounces through `call_soon_threadsafe`.
+**P5 (observability, tests, docs, low-severity cleanup) is implemented and verified this session (2026-06-13), uncommitted, awaiting John's commit.** Executed via subagent-driven-development as a deterministic Workflow (implementer sonnet + spec-review sonnet + code-review opus per task across 11 tasks, bounded fix-loops, then a final whole-implementation opus review). Final review returned **ready_for_commit** (0 blocking). The two open decisions were resolved by John (2026-06-13): **F-67 = return ERROR on persist failure**, **F-66/F-73 = delete the dead `answered_question_msg_ids` write path**; both baked into the plan and implemented.
 
-### P2 acceptance mapping (each spec item -> the passing test/audit)
+Independently re-verified by the controller: full Python suite **495 passed**; Android `:shared` tests + `:app`/`:wear` builds **BUILD SUCCESSFUL** (P5 changed no Android code). Convention audit (byte-level): all 10 new test files CRLF + tab-indented; **zero em-dashes in any added line**; diff is 15 modified + 10 new files (130/111 lines), no scope creep, no mass line-ending conversion. **Controller strengthened one test beyond the workflow output:** `tests/test_session_fallback_preserves_home.py` originally asserted only the in-memory home pointer, which survives even the old buggy code (`unbind_session` never touched the home pointer), so it did not actually guard M01/M34. Added `backend.set_session_home.assert_not_awaited()` (the real guard: the unbind arm must not issue the Firebase home delete) and dropped the dead `remove_session_binding` mock. Verified green.
 
-- **P2-1 (H12/M13)** snapshot replay + TTL + dedupe: `tests/test_firebase_command_listeners.py::{test_combine_command_listener_invokes_handler_on_new_entry, test_force_end_command_listener_invokes_handler_on_new_entry}` (both inverted to assert the initial-snapshot queued command IS dispatched) + `::test_redelivered_command_is_dispatched_once`. Stale-drop with notice: `::test_stale_command_is_dropped_with_notice_not_dispatched` + away belt-and-braces `tests/test_dispatch_away_mode_commands.py::test_stale_away_command_is_dropped_with_notice`. Freshness gate unit-pinned: `tests/test_command_freshness.py` (6 tests incl. fail-open).
-- **P2-2 (M32)** no listener-thread loop-affined call: `tests/test_firebase_command_listeners.py::{test_listener_callback_never_calls_run_in_executor, test_schedule_command_delete_bridges_from_a_foreign_thread}` + the `grep -rn run_in_executor server/` audit (5 hits, all legal on-loop awaits).
-- **P2-3 (M17/M18)** loud schema-drift degradation: `android .../ParseFailureNoticeTest` (3 cases) + compile-verified MainViewModel wiring (logcat + `_conversationParseFailures` StateFlow + toast; inner member catch degrades to a missing roster entry, not a vanished conversation).
+### P5 acceptance mapping (each item -> the passing test/verification)
 
-### P2 files touched (uncommitted)
+- **P5-1 observability (M35/M42):** `tests/test_handler_observability.py` (leave/set_away_mode/lookup assert an `event==info` line; open/enter/combine log lines verified by code reading). Round-trip is reconstructable from `switchboard.jsonl`.
+- **P5-3 title writer + F-80 (M3):** `tests/test_conversation_title_writer.py`; `write_conversation_meta` converted from `ref.set` to `ref.update` (no clobber).
+- **P5-2 away chain (H17/M12):** `tests/test_e2e_away_mode_chain.py` (enter -> registry True -> GET /away-mode True; exit send_default -> False + pending resolved).
+- **F-70:** `tests/test_cli_session_end_last_seen_seq.py` (woken member `last_seen_seq == len(conv.messages)`).
+- **F-69(g):** `tests/test_spawn_resume_clears_open_pointer.py` (`set_open_conversation_id(None)` awaited on source-ended resume).
+- **F-72:** `tests/test_open_conversation_promote_guards.py` (Ended-conv promote rejected; bound-but-not-member guard).
+- **F-75:** `tests/test_on_response_lambda_capture.py` (malformed entries log distinct slots) + dead `aclose()` block removed.
+- **F-67 (resolved YES):** `tests/test_set_away_mode_persist_failure.py` (persist failure -> ERROR string).
+- **P5-4 home-pointer (M01/M34):** `tests/test_session_fallback_preserves_home.py` (strengthened; `remove_session_binding` deleted from firebase.py + messenger.py; `set_session_home(None)` stale-cleanup deleter intact).
+- **F-66/F-73 (resolved DELETE):** `tests/test_ask_human_no_answered_write.py` + updated `test_gateway_ask_human.py`; `mark_question_answered` removed (call + backend method + protocol decl); hydration docstring corrected; `pending_questions` writes retained (P1 sweep reads them).
+- **P5-4 docs:** comprehensive spec section 10 (answers/away_mode_commands/agent_status) + 12.7 Wear + 13.3, in-repo `CLAUDE.md` env-var unification, F-78/F-83/F-85/F-68/F-71/F-84/F-63/F-62. (F-85: `server/collab.py` confirmed absent.)
 
-Server: NEW `server/command_freshness.py` (`COMMAND_TTL_SECONDS=600`, `command_age_seconds` fail-open); `server/firebase.py` (3 command listeners collapsed into shared `_start_command_listener` + `_schedule_command_delete`; `_enqueue_away_mode_cmd` bridged); `server/gateway/dispatch.py` (away-command staleness gate).
-Android: NEW `android/shared/.../ParseFailureNotice.kt`; `android/shared/.../MainViewModel.kt` (parse-failure collection + toast + StateFlow).
-Docs: `docs/2026-06-11-remediation-spec.md` (pointer now P0+P1+P2), `docs/2026-06-11-implementation-plan-p2.md` (Task 3 Step 3 grep prediction corrected from "ZERO hits" to "5 legal on-loop hits remain").
-New tests: `tests/test_command_freshness.py`, `android/shared/.../ParseFailureNoticeTest.kt`. Modified tests: `tests/test_firebase_command_listeners.py` (snapshot assertions inverted, stamps refreshed, 4 tests added), `tests/test_dispatch_away_mode_commands.py` (all 8 fixed stamps refreshed to `_now_iso()` so the new TTL gate does not drop the P1-added cancel/blank/skip tests; stale-drop test added).
+### P5 files touched (uncommitted)
 
-### Suggested P2 commit message (repo style)
+Server: `firebase.py` (write_conversation_title + meta set->update; dead aclose block removed; _on_response lambda capture fix; remove_session_binding + mark_question_answered deleted), `gateway/handlers.py` (6 success logs; title wiring; promote guards; set_away_mode ERROR; combine log gated on non-ERROR; mark_question_answered call removed), `messenger.py` (write_conversation_title decl; remove_session_binding + mark_question_answered decls deleted), `cli_session_end.py` (last_seen_seq), `spawn.py` (set_open_conversation_id(None)), `session_fallback.py` (unbind preserves home), `hydration.py` (docstring), `canonicalization.py` (docstring).
+Docs: `docs/switchboard-design-spec-comprehensive.md`, `CLAUDE.md` (in-repo), `skills/switchboard/SKILL.md`, `docs/tracking/backlog.md`.
+Tests: 10 new (`test_handler_observability`, `test_conversation_title_writer`, `test_cli_session_end_last_seen_seq`, `test_spawn_resume_clears_open_pointer`, `test_open_conversation_promote_guards`, `test_on_response_lambda_capture`, `test_set_away_mode_persist_failure`, `test_session_fallback_preserves_home`, `test_ask_human_no_answered_write`, `test_e2e_away_mode_chain`); modified `test_gateway_ask_human.py`, `test_firebase_writes_for_handlers.py`, `tests/conftest.py`.
+
+### Suggested P5 commit message (repo style)
 
 ```text
-P2: listener robustness (snapshot replay + TTL + thread-safe deletes + loud schema drift)
+P5: observability, tests, docs, and low-severity cleanup
 
-- P2-1 (H12/M13): collapse the combine/force-end/spawn listeners into one shared _start_command_listener that processes the initial/reconnect snapshot (queued-while-down commands now dispatch), gates dispatch on a 10-minute issued_at TTL (stale commands deleted WITH a phone-visible notice, never executed or silently dropped), and dedupes redeliveries by push-id within a run. New server/command_freshness.py holds the fail-open freshness helper. Away-command dispatcher gains the same belt-and-braces gate.
-- P2-2 (M32): every Firebase-listener-thread delete now bounces through call_soon_threadsafe via _schedule_command_delete; _enqueue_away_mode_cmd made uniform. Audit confirms no listener callback calls a loop-affined API directly.
-- P2-3 (M17/M18): Android conversation parse failures degrade loudly (logcat + a StateFlow + a toast via the pure conversationParseFailureNotice); a bad member degrades to a missing roster entry instead of vanishing the whole conversation.
+- P5-1 (M35/M42): success-path logger.info in the 6 MCP conversation handlers; a combine/open/enter/leave round-trip is now reconstructable from switchboard.jsonl (combine logs only on success).
+- P5-3 + F-80 (M3): add write_conversation_title (ref.update) wired where conv.title is mutated post-creation; convert write_conversation_meta from ref.set to ref.update so it can no longer clobber sibling meta fields.
+- P5-2 (H17/M12): in-process away-mode chain end-to-end test (phone command -> registry flip -> /away-mode gating -> pending resolution).
+- P5-4 home-pointer (M01/M34): the away-off unbind preserves the durable home pointer (no longer deletes the Firebase side); remove_session_binding is deleted; the stale-cleanup set_session_home(None) deleter is intact.
+- Low-severity shortlist: F-70 (cli_session_end advances last_seen_seq), F-69(g) (source-ended resume persists the open-pointer clear), F-72 (open_conversation rejects promoting an Ended conversation), F-75 (delete dead aclose block + fix _on_response lambda late-binding), F-67 (set_away_mode returns ERROR on Firebase persist failure), F-66/F-73 (retire the dead answered_question_msg_ids write path).
+- P5-4 docs: comprehensive spec section 10 schema (answers / away_mode_commands / agent_status) + 12.7 Wear + 13.3; in-repo CLAUDE.md env-var unification (SWITCHBOARD_BASE_URL for both HTTP hooks, SWITCHBOARD_MARKER_DIR for the marker-file hook); F-78/F-83/F-85/F-68/F-71/F-84 doc-drift; F-63 ageout scope; F-62 FCM wontfix rationale.
 
-Python suite 483 passed; Android shared tests + app/wear builds green. T-029 stays as-is (not removable): a restart still invalidates every CC MCP transport, which stale-command hygiene does not change.
+Python suite 495 passed; Android shared tests + app/wear builds green.
 ```
 
-## Remaining work, in order
+## Remaining work
 
-1. **John commits P2**, then (if continuing) says go for P5.
-2. **P5 plan is drafted this session** at [2026-06-13-implementation-plan-p5.md](2026-06-13-implementation-plan-p5.md) (12 tasks: observability, away-chain test, title writer, home-pointer preserve change, doc fixes, + the 7-item low-severity shortlist). Its two open decisions are RESOLVED (see below; baked into Tasks 7 and 9). Ready to execute via the same subagent-driven workflow, but ONLY after P2 is committed: P5 edits the same files P2 touches (`server/firebase.py`, `server/gateway/dispatch.py`, `server/gateway/handlers.py`, `MainViewModel.kt`), so running it on uncommitted P2 would make the two commits inseparable. NOT yet implemented.
-3. **P4 plan (Wear minimal rebuild)** still needs John's input on Wear screen shapes (R2 settled the away-surface question: minimal read+reply, no away affordance; P4-3 deletes the dead `WearBulkRespondDialog`). P4-1 prerequisite: write Wear regression tests for current behavior before the rewrite (F-89). Needs deep Wear exploration.
-
-## P5 decisions (RESOLVED by John, 2026-06-13; baked into the P5 plan)
-
-- **F-66/F-73 (answered_question_msg_ids): DELETE** the dead write path + correct the `hydration.py` docstring (the phone derives answered-state from message flags; `pending_questions` stays because P1's startup sweep consumes it). P5 Task 9.
-- **F-67 (set_away_mode persist failure): YES** - return an ERROR/degraded string when the Firebase persist raises (no longer returns ok on a registry/phone split-brain). P5 Task 7.
+1. **John commits P5** with the message above. After that, the P0/P1/P2/P5 remediation tracks are all landed.
+2. **P4 (Wear minimal rebuild)** is the only track left, and it needs John's input on **Wear screen shapes**. Settled inputs: R2 (Wear is minimal read+reply, no away affordance), P4-3 deletes the dead `WearBulkRespondDialog` (F-91), P4-2 adds `_admin` sentinel guards (R3), P4-4 retires the legacy `/responses` path (dissolves F-74). P4-1 prerequisite: write Wear regression tests for current behavior before the rewrite (F-89; F-90 deep-link dead-ends noted). Needs deep Wear exploration. P3 (T-141 control-surface) stays deferred until John picks a mechanism.
 
 ## Notes for next agent
 
 - Ground rules (binding): tabs (Python AND Kotlin), CRLF + `unix2dos` for every NEW file, no em-dashes in authored text, predicted-failure TDD, no git writes (John commits). Python: `.venv\Scripts\python.exe -m pytest tests/<file> -v` from repo root. Android: `JAVA_HOME=C:\Program Files\Android\Android Studio\jbr` then `.\gradlew.bat ...` from `android/`; first build after a clean transforms cache can hit a Sophos AccessDeniedException - just re-run.
+- Pre-existing convention drift noted in P5 review (NOT introduced by P5, candidates for a future whole-file normalization pass): `server/spawn.py` and `server/cli_session_end.py` are whole-file LF (and cli_session_end.py has authored em-dashes in its module docstring). P5 edits matched each file's existing style rather than mixing endings.
 - The atexit `PermissionError` on the `pytest-current` temp-dir symlink is benign post-session noise.
-- Suite count reference: **483 passed** as of P2 (was 472 post-P1, 459 post-T-146).
-- P1/P2 plan checkboxes were not ticked during execution; this file + the workflows' per-task review approvals are the completion record.
+- Suite count reference: **495 passed** as of P5 (was 483 post-P2, 472 post-P1).
+- Plan checkboxes were not ticked during execution; this file + the workflows' per-task review approvals are the completion record.

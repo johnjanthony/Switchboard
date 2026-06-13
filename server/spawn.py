@@ -464,16 +464,26 @@ class SpawnHandler:
 
 		# If source has no remaining members (all were resumable), end it
 		source_ended = False
+		open_cleared = False
 		if not source.members_active:
 			source.state = "ended"
 			source.ended_at = datetime.now(timezone.utc).timestamp()
 			source_ended = True
 			if self._registry.open_conversation_id == source_id:
 				self._registry.open_conversation_id = None
+				open_cleared = True
 		if source_ended:
 			_sbg(
 				self._backend.set_conversation_state(source_id, "ended"),
 				label=f"fb_set_state:{source_id}:ended",
+			)
+		if open_cleared:
+			# Persist the open-pointer clear so the phone's open badge does not
+			# stick on the Ended source until restart (F-69(g)). Mirrors the
+			# set_open_conversation_id(None) calls in handlers.py and dispatch.py.
+			_sbg(
+				self._backend.set_open_conversation_id(None),
+				label=f"fb_clear_open_id:{source_id}",
 			)
 
 		# Write spawn-pending file (type "resume")

@@ -37,7 +37,6 @@ def _make_store_backend():
 	backend.write_conversation_member_history = AsyncMock()
 	backend.add_pending_question_record = AsyncMock()
 	backend.remove_pending_question_record = AsyncMock()
-	backend.mark_question_answered = AsyncMock()
 	return backend
 
 

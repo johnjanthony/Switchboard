@@ -794,9 +794,9 @@ class PendingQuestionTrackingBackend(RecordingBackend):
 @pytest.mark.asyncio
 async def test_ask_human_writes_pending_questions_and_clears_on_reply(cfg, logger):
 	"""ask_human must write /conversations/<id>/pending_questions/<request_id> when
-	the question goes out, and delete it + mark answered_question_msg_ids/<msg_id>
-	when the reply lands. Persisting these subtrees is required by the 2026-05-19
-	spec; the phone-side UI uses them to render question-state indicators."""
+	the question goes out, and delete it when the reply lands.
+	answered_question_msg_ids is NOT written: the phone derives answered-state
+	from message flags, so that subtree has no reader (F-66/F-73, retired)."""
 	backend = PendingQuestionTrackingBackend()
 	registry = make_registry_with_loopback()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
@@ -814,9 +814,6 @@ async def test_ask_human_writes_pending_questions_and_clears_on_reply(cfg, logge
 	added = backend.pending_added[0]
 	assert added["sender"] == _SENDER
 	assert added["question_text"] == "Proceed?"
-	# Capture the msg_id the handler stored for cross-check with answered set.
-	question_msg_id = added["msg_id"]
-	assert question_msg_id is not None
 
 	conv_id = registry.session_to_conversation_id.get(_SID)
 	registry.resolve(conversation_id=conv_id, sender=_SENDER, text="yes")
@@ -827,8 +824,8 @@ async def test_ask_human_writes_pending_questions_and_clears_on_reply(cfg, logge
 	assert result == "yes"
 	# pending_questions cleared on successful resolution
 	assert (conv_id, added["request_id"]) in backend.pending_removed
-	# msg_id marked answered
-	assert (conv_id, question_msg_id) in backend.answered_marked
+	# answered_question_msg_ids is NOT written (F-66/F-73, retired)
+	assert backend.answered_marked == []
 
 
 @pytest.mark.asyncio

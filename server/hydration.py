@@ -13,16 +13,12 @@ Doesn't rehydrate: wait_queue (futures die with the process), pending_responses
 at restart time will eventually time out or surface CancelledError on their next
 MCP call — acceptable degradation per the parent design's T-001 acknowledgment.
 
-Also not rehydrated: /conversations/<id>/pending_questions/<request_id> and
-/conversations/<id>/answered_question_msg_ids/<msg_id>. Those subtrees are
-maintained purely for phone-side UI rendering (per 2026-05-19 spec lines
-349-356); the canonical in-memory PendingRequest map is owned by Registry, not
-by Firebase. Any pending_questions records left behind from before the restart
-become orphans — they can't be reactivated because the underlying futures are
-dead. They'll be overwritten or cleared the next time ask_human flows through
-the same request_id (impossible — request_ids are uuids) or are tolerated as
-visual cruft until force_end clears the conversation. The startup sweep
-(sweep_orphaned_pending_questions, wired in main.py) handles exactly this.
+Also not rehydrated: /conversations/<id>/pending_questions/<request_id>. That
+subtree is read by the startup sweep (sweep_orphaned_pending_questions, wired
+in main.py) to cancel orphaned records whose futures died with the old
+process; the canonical in-memory PendingRequest map is owned by Registry, not
+by Firebase. The answered_question_msg_ids subtree was retired (F-66/F-73): the
+phone derives answered-state from message flags, so the write had no reader.
 """
 
 from __future__ import annotations

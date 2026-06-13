@@ -37,7 +37,7 @@ Local host (Windows)                              │ Cloud / Mobile
 
 **Components.**
 
-- **MCP server** (Python 3.11+, FastMCP with `stateless_http=False`). Serves the streamable HTTP transport on `0.0.0.0:9876` (`SWITCHBOARD_HOST` / `SWITCHBOARD_PORT`). Plus four HTTP endpoints (`/healthz`, `/away-mode`, `/agent_status`, `/cli-session/end`) for hook callbacks and health checks.
+- **MCP server** (Python 3.11+, FastMCP with `stateless_http=False`). Serves the streamable HTTP transport on `127.0.0.1:9876` by default (`SWITCHBOARD_HOST` defaults to `127.0.0.1`; set to `0.0.0.0` for WSL-reachable; `SWITCHBOARD_PORT` defaults to `9876`). Plus four HTTP endpoints (`/healthz`, `/away-mode`, `/agent_status`, `/cli-session/end`) for hook callbacks and health checks.
 - **Firebase Realtime Database** — the persistence and phone-side synchronization surface. The server writes; the Android app reads + writes replies.
 - **Firebase Cloud Messaging (FCM)** — delivers push notifications. Three channels (Asks / Updates / Documents) drive separate notification priorities.
 - **Android app** (`android/app/`) and Wear OS app (`android/wear/`) — the human surface. Kotlin/Compose. Notifications, conversation list, conversation view, reply input, spawn dialog, resume dialog, combine dialog, global away pill.
@@ -367,13 +367,16 @@ conversations/<conversation_id>/
     suggestions
     created_at
 
-  answered_question_msg_ids/<msg_id>/ -> true
+  answers/<request_id>/         # phone -> server: John's reply to a pending ask_human
+    text
+    sender
+    request_id
+    written_at
 
-  agent_status/
-    sender                      (current stick holder)
+  agent_status/<sender>/        # per-member; written only while away mode is on
     state                       "thinking" | "tool:<name>" | ...
     detail                      (str | null)
-    updated_at                  (epoch ms)
+    updated_at                  (Firebase server-timestamp sentinel)
 
 cli_sessions/<session_id>/
   home_conversation_id          (conversation_id)
@@ -383,10 +386,11 @@ global_settings/
   open_conversation_id          (conversation_id | absent — deleted, not set null)
   wsl_available                 (bool)
 
-away_mode_commands/<push_id>/   # phone → server
-  type                          "set"
-  value                         (bool)
+away_mode_commands/<push_id>/   # phone -> server
+  type                          "enter_global" | "exit_global"
   issued_at                     (iso-8601)
+  decision                      "send_default" | "skip" | "cancel"   (exit_global only)
+  default_text                  (str)                                 (exit_global, send_default only)
 
 force_end_commands/<push_id>/   # phone → server
   conversation_id
@@ -405,12 +409,6 @@ spawn_commands/<push_id>/       # phone → server
   target_conversation_id        (conversation_id | null)  (fresh: optional join-existing)
   source_conversation_id        (conversation_id)         (resume only)
   issued_at
-
-conversation_answers/<conversation_id>/<sender>/<push_id>/
-                                # phone → server: John's reply to a pending ask_human
-  text
-  attached_to_msg_id
-  timestamp
 
 admin_notifications/<push_id>/
   sender                        "system"
@@ -516,7 +514,7 @@ FCM tap deep-links to Page B for the referenced conversation.
 
 ### 12.7 Wear OS surface
 
-Companion Wear app shows a conversation list (filtered to non-hidden), reads agent-status, supports voice-dictation replies. Independent of the phone app's dispatch but uses the same Firebase nodes.
+Companion Wear app shows a conversation list (filtered to non-hidden) and supports voice-dictation replies. It does NOT read agent-status (F-88). It currently uses the legacy cwdKey `_channels` projection; the conversation-id migration is tracked under P4-1.
 
 ---
 
@@ -547,10 +545,10 @@ Switchboard ships as a Claude Code plugin. From any Claude Code session:
 
 The plugin install wires the skill and four hooks. The MCP server connection itself is bootstrapped separately per-host (chezmoi dotfiles, or `claude mcp add switchboard --scope user --transport http http://<host>:9876/mcp`). WSL agents require bridge networking (not mirrored), `SWITCHBOARD_HOST=0.0.0.0` on the server, and a Windows firewall inbound rule for TCP 9876 from the WSL subnet.
 
-WSL agents also need three env vars pointing their hook scripts at the Windows host (the IP from `/etc/resolv.conf` or `ip route show default | awk '{print $3}'`):
-- `SWITCHBOARD_BASE_URL` — `cli-session-end-hook.py`.
-- `SWITCHBOARD_AGENT_STATUS_URL` — `agent-status-hook.py`.
-- `SWITCHBOARD_URL` — `turn-end-hook-away-mode.py`.
+WSL agents also need env vars pointing their hook scripts at the Windows host (the IP from `/etc/resolv.conf` or `ip route show default | awk '{print $3}'`):
+
+- `SWITCHBOARD_BASE_URL` -- both HTTP hooks (`agent-status-hook.py` -> `/agent_status`, `turn-end-hook-away-mode.py` -> `/away-mode`).
+- `SWITCHBOARD_MARKER_DIR` -- `cli-session-end-hook.py` (marker-file path, not HTTP).
 
 Gemini CLI gets a separate AfterAgent hook installed via `scripts/install-turn-end-hook.ps1`.
 

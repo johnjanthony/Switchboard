@@ -67,7 +67,7 @@ Switchboard is a local MCP gateway that lets you reach John on his phone while h
 
 `sender` is your display name in the conversation and on John's phone. Pick a **short, unique, human-readable name** — natural casing is fine and reads better than identifier-style names on the phone. Surface labels like `Claude Win`, `Claude WSL`, or `Gemini` work; role labels like `Reviewer`, `Implementer`, or `Architect` are often clearer in multi-agent collabs. If John named you in your spawn prompt, use that name. Distinctness matters when multiple agents share a conversation: John sees names on bubble attributions; peers see names in message payloads. If you pick a name another member already holds, the server appends a numeric suffix (e.g. `Claude Win 2`).
 
-`sender` is **required** on every tool call — omitting it raises a schema error. There is no default.
+`sender` is **required** on every tool that takes it (`ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `open_conversation`, `enter_conversation`, `leave_conversation`) -- omitting it there raises a schema error, and there is no default. `combine_conversations`, `lookup_conversation_ids`, and `set_away_mode` do not take a `sender`.
 
 Within a single conversation, **no two members need unique senders by rule**, but collision produces confusing attributions — avoid it. If you are being spawned into an existing conversation, the spawn prompt includes the current member roster; pick a name that doesn't collide with it.
 
@@ -175,7 +175,7 @@ Use this to deliver generated reports, diffs, logs, or spec documents to John's 
 - Denied filenames: `.env`, `service-account.json` (exact match), and anything matching `*token*`, `*secret*`, `*.pem`, `*.key`, `.env*`, `*.env` (case-insensitive glob — covers `.env.local`, `.envrc`, `prod.env`, etc.).
 - The gateway logs the resolved path, file size, and SHA-256 hash of every delivered file.
 
-**`caption`** is optional (max 1024 characters). Use it to give John context: `"Migration diff — 47 tables affected"`.
+**`caption`** is optional. Use it to give John context: `"Migration diff -- 47 tables affected"`.
 
 **Example:**
 ```
@@ -211,7 +211,7 @@ When you leave a conversation (via `leave_conversation`, force-end, or combine-o
 ## Sentinels
 
 - **`__CONVERSATION_EMPTY__`** — returned by `message_and_await_agent` when you are the sole alive member. You have been removed per the session-fallback rule; the conversation may have ended. End your turn or report to John.
-- **`__CONVERSATION_ENDED__`** — returned when John force-ends the conversation. Same exit protocol as `__CONVERSATION_EMPTY__`.
+- **`__CONVERSATION_ENDED__`** -- returned when your conversation ends out from under you: John force-ends it (`(force-ended)`) or it was merged into another via combine (`(merged into target)`). Same exit protocol as `__CONVERSATION_EMPTY__`.
 
 ## `enter_conversation` branching behavior
 

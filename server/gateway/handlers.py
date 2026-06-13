@@ -113,7 +113,7 @@ def build_tool_handlers(
 	def _rate_limit_error() -> str:
 		return (
 			f"ERROR: rate limit exceeded — you are sending too fast.\n"
-			f"Limit is {limiter.rate_per_minute} messages/min per channel.\n"
+			f"Limit is {limiter.rate_per_minute} messages/min per conversation.\n"
 			f"Wait at least {limiter.wait_seconds} seconds before retrying, or slow your notify cadence."
 		)
 
@@ -267,17 +267,14 @@ def build_tool_handlers(
 			)
 			return f"ERROR: {exc}"
 
-		# Successful resolution: pending_questions record is cleared and
-		# answered_question_msg_ids is marked. Both writes are best-effort.
+		# Successful resolution: clear the pending_questions record (read by
+		# the startup sweep). answered_question_msg_ids is NOT written: the
+		# phone derives answered-state from message flags, so that subtree had
+		# no reader (F-66/F-73, decided 2026-06-13).
 		_spawn_bg(
 			backend.remove_pending_question_record(conversation_id, request_id),
 			label=f"fb_remove_pending_question:resolved:{conversation_id}:{request_id}",
 		)
-		if msg_id:
-			_spawn_bg(
-				backend.mark_question_answered(conversation_id, msg_id),
-				label=f"fb_mark_question_answered:{conversation_id}:{msg_id}",
-			)
 
 		await _append_session_log(config.log_path, conversation_id, "←", result, logger)
 		duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
@@ -401,6 +398,10 @@ def build_tool_handlers(
 			conv.last_activity_at = now_ts
 			if title is not None:
 				conv.title = title
+				_spawn_bg(
+					backend.write_conversation_title(conversation_id, title),
+					label=f"fb_write_title:{conversation_id}",
+				)
 
 			# Write to /conversations/<id>/messages
 			_spawn_bg(
@@ -560,12 +561,17 @@ def build_tool_handlers(
 				backend.set_open_conversation_id(conv_id),
 				label=f"fb_set_open_conv_id:{conv_id}",
 			)
+			await logger.info(f"open_conversation: minted+promoted conv_id={conv_id} sender={sender}")
 			return await _queue_for_open_peer(
 				registry, conv_id, cli_session_id, config.timeout_seconds, backend=backend,
 			)
 		conv = registry.conversations.get(conv_id)
 		if conv is None:
 			return "ERROR: bound conversation no longer exists."
+		if conv.state != "active":
+			# Don't promote an Ended conversation to the open singleton (F-72):
+			# an Ended conv has no members and joiners would block forever.
+			return "ERROR: cannot open an ended conversation."
 		# Ensure the (possibly fresh-spawn-bound, member-less) caller is a member
 		# before the rename/open logic, which otherwise silently finds no member.
 		from server.conversation_ops import _resolve_conversation_and_member
@@ -573,6 +579,10 @@ def build_tool_handlers(
 		async with conv.lock:
 			if title:
 				conv.title = title
+				_spawn_bg(
+					backend.write_conversation_title(conv_id, title),
+					label=f"fb_write_title:{conv_id}",
+				)
 			# Locate and update the caller's member entry (rename if sender changed)
 			caller_member = None
 			old_key = None
@@ -581,6 +591,8 @@ def build_tool_handlers(
 					caller_member = m
 					old_key = s
 					break
+			if caller_member is None:
+				return "ERROR: session bound to conversation but not a member."
 			renamed = caller_member is not None and old_key != sender
 			actual_sender = sender
 			if renamed:
@@ -607,6 +619,7 @@ def build_tool_handlers(
 		result = f"ok. open_conversation = {conv_id}"
 		if actual_sender != sender:
 			result += f", sender = {actual_sender} (your requested '{sender}' was already taken)"
+		await logger.info(f"open_conversation: promoted conv_id={conv_id} sender={actual_sender}")
 		return result
 
 	@require_cli_session_id
@@ -631,6 +644,7 @@ def build_tool_handlers(
 				# _queue_for_intro returns "caller not a member".
 				from server.conversation_ops import _resolve_conversation_and_member
 				await _resolve_conversation_and_member(registry, cli_session_id, cwd, sender, backend=backend)
+				await logger.info(f"enter_conversation: queue_in_current conv_id={current_id} sender={sender}")
 				return await _queue_for_intro(registry, current_id, cli_session_id, sender, cwd, config.timeout_seconds)
 			# Branch 3: migrate from current to open
 			conv_open = registry.conversations.get(open_id)
@@ -641,6 +655,7 @@ def build_tool_handlers(
 			locks = sorted([conv_current, conv_open], key=lambda c: c.id)
 			async with locks[0].lock, locks[1].lock:
 				await _migrate_member(registry, current_id, open_id, cli_session_id, sender, cwd, backend=backend)
+			await logger.info(f"enter_conversation: migrated {current_id}->{open_id} sender={sender}")
 			return await _queue_for_intro(registry, open_id, cli_session_id, sender, cwd, config.timeout_seconds)
 
 		# Caller unbound
@@ -656,6 +671,7 @@ def build_tool_handlers(
 			return "ERROR: open conversation is not Active."
 		async with conv_open.lock:
 			await _add_member(registry, open_id, cli_session_id, sender, cwd, backend=backend)
+		await logger.info(f"enter_conversation: joined_open conv_id={open_id} sender={sender}")
 		return await _queue_for_intro(registry, open_id, cli_session_id, sender, cwd, config.timeout_seconds)
 
 	@require_cli_session_id
@@ -685,6 +701,7 @@ def build_tool_handlers(
 				if not any(cwd_filter.lower() == m.cwd.lower() for m in conv.members_active.values()):
 					continue
 			results.append(conv_id)
+		await logger.info(f"lookup_conversation_ids: matched={len(results)}")
 		return json.dumps(results)
 
 	@require_cli_session_id
@@ -787,6 +804,7 @@ def build_tool_handlers(
 
 		# Apply session-fallback OUTSIDE the lock (it may touch other conversations)
 		apply_fallback(registry, cli_session_id, backend=backend)
+		await logger.info(f"leave_conversation: conv_id={conv_id} sender={sender}")
 		return f"ok. Left conversation {conv_id}."
 
 	@require_cli_session_id
@@ -826,7 +844,13 @@ def build_tool_handlers(
 			elif hasattr(backend, "set_away_mode"):
 				await backend.set_away_mode(value)
 		except Exception as exc:
+			# Persist failed: the in-memory flag is set but the phone's
+			# Firebase-read pill will not see it until restart (registry/phone
+			# split-brain). Surface ERROR so the caller knows (F-67, decided
+			# 2026-06-13).
 			await logger.surface_error(f"set_away_mode_persist_failed: {exc}")
+			return f"ERROR: away_mode set in memory but Firebase persist failed: {exc}"
+		await logger.info(f"set_away_mode: value={value} resolved={resolved}")
 		if value is False and resolved:
 			return f"ok. away_mode=False ({resolved} pending question(s) resolved with the at-desk notice)"
 		return f"ok. away_mode={value}"
@@ -845,7 +869,10 @@ def build_tool_handlers(
 		pending_dir = None
 		if hasattr(config, "log_path") and config.log_path:
 			pending_dir = Path(config.log_path).parent
-		return await _perform_combine(registry, source_id, target_id, logger, pending_dir, backend=backend)
+		result = await _perform_combine(registry, source_id, target_id, logger, pending_dir, backend=backend)
+		if not result.startswith("ERROR"):
+			await logger.info(f"combine_conversations: source={source_id} target={target_id}")
+		return result
 
 	async def handle_agent_status(session_id: str, state: str, detail: str | None) -> None:
 		"""Hook-driven write. Fire-and-forget — never raises to the caller.

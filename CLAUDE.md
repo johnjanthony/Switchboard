@@ -21,7 +21,7 @@ Conversations are the persistence + routing unit. States: `Active` / `Ended`. At
 ## Hooks (plugin bundle)
 
 - **`cli-session-injector-hook.py`** (PreToolUse) — injects `cli_session_id` and `cwd` into every switchboard MCP call. Agent never passes these.
-- **`cli-session-end-hook.py`** (SessionEnd) — fires on orderly exit; POSTs to `POST /cli-session/end` to mark the member dormant (not auto-leave).
+- **`cli-session-end-hook.py`** (SessionEnd) -- fires on orderly exit; writes a SessionEnd marker file under `SWITCHBOARD_MARKER_DIR` (the reliable path that wins the process-exit race), which the server sweeps to mark the member dormant (not auto-leave). The legacy `POST /cli-session/end` route remains for manual/testing use only.
 
 ## Setup
 
@@ -46,13 +46,12 @@ The plugin install wires the skill and the Claude turn-end + agent-status hooks.
 
 	WSL must be running in bridge networking mode (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` and a firewall inbound rule for TCP 9876 from the WSL subnet.
 
-	For WSL agents, also point the hook scripts at the Windows host so their HTTP callbacks don't fall back to `127.0.0.1` (unreachable from WSL). Each script reads a different env var — set all three in the WSL environment (e.g., in `~/.bashrc`):
+	For WSL agents, also point the hook scripts at the Windows host so their HTTP callbacks don't fall back to `127.0.0.1` (unreachable from WSL). Set these in the WSL environment (e.g., in `~/.bashrc`):
 
-	- `SWITCHBOARD_BASE_URL=http://<windows-host-ip>:9876` — read by `cli-session-end-hook.py`.
-	- `SWITCHBOARD_AGENT_STATUS_URL=http://<windows-host-ip>:9876/agent_status` — read by `agent-status-hook.py`.
-	- `SWITCHBOARD_URL=http://<windows-host-ip>:9876/away-mode` — read by `turn-end-hook-away-mode.py`.
+	- `SWITCHBOARD_BASE_URL=http://<windows-host-ip>:9876` -- read by both HTTP hooks (`agent-status-hook.py` POSTs to `/agent_status`; `turn-end-hook-away-mode.py` GETs `/away-mode`).
+	- `SWITCHBOARD_MARKER_DIR=<path>` -- read by `cli-session-end-hook.py`, which writes a SessionEnd marker FILE (not an HTTP POST) that the server sweeps; point it at the server's `<logs>/session-end` dir when the hook runs on a different host.
 
-	The fragmented var names are a known wart — unifying them under `SWITCHBOARD_BASE_URL` is a pending hook-script cleanup.
+	The two HTTP hooks are now unified under `SWITCHBOARD_BASE_URL` (the old `SWITCHBOARD_AGENT_STATUS_URL` / `SWITCHBOARD_URL` vars are retired); `cli-session-end-hook.py` is marker-file based and reads `SWITCHBOARD_MARKER_DIR` instead of any HTTP URL.
 
 2. **The Python server (NSSM Windows service).** Install with `scripts/install-service.ps1`. The plugin's MCP connection is useless until this is running.
 
