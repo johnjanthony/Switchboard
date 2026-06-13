@@ -23,19 +23,30 @@ async def handle_session_end(
 	reason: str,
 	now: Callable[[], str],
 	backend=None,
+	logger=None,
 ) -> None:
 	"""Mark a conversation member dormant when its CLI session ends.
 
-	backend: optional ConversationStore — if provided, Firebase writes are issued:
+	backend: optional ConversationStore -- if provided, Firebase writes are issued:
 	  write_conversation_member (updated alive=False fields) and write_conversation_message
 	  for the dormancy system message.
+	logger: optional logger with a surface_error(msg) coroutine -- if provided,
+	  the three silent early-return paths emit a loud log instead of returning silently.
 	"""
 	from server.gateway.bg_tasks import _spawn_bg
 	conversation_id = registry.unbind_session(session_id)
 	if conversation_id is None:
+		if logger is not None:
+			await logger.surface_error(
+				f"session_end_no_binding: session {session_id} not bound to any conversation (reason={reason})"
+			)
 		return
 	conv = registry.conversations.get(conversation_id)
 	if conv is None:
+		if logger is not None:
+			await logger.surface_error(
+				f"session_end_conv_missing: session {session_id} bound to {conversation_id} but conversation absent (reason={reason})"
+			)
 		return
 	target = None
 	for member in conv.members_active.values():
@@ -43,6 +54,10 @@ async def handle_session_end(
 			target = member
 			break
 	if target is None:
+		if logger is not None:
+			await logger.surface_error(
+				f"session_end_no_member: session {session_id} bound to {conversation_id} but no member matches (reason={reason}); dormancy skipped"
+			)
 		return
 	target.alive = False
 	target.session_ended_at = now()

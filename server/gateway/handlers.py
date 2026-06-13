@@ -122,12 +122,10 @@ def build_tool_handlers(
 	) -> str:
 		if err := _validate_sender(sender):
 			return err
-		conversation_id = registry.session_to_conversation_id.get(cli_session_id)
-		if conversation_id is None:
-			from server.conversation_ops import _create_active_conversation_for
-			conversation_id = await _create_active_conversation_for(
-				registry, cli_session_id, cwd, sender, backend=backend,
-			)
+		from server.conversation_ops import _resolve_conversation_and_member
+		conversation_id = await _resolve_conversation_and_member(
+			registry, cli_session_id, cwd, sender, backend=backend,
+		)
 		if limiter is not None and not limiter.consume(conversation_id):
 			await logger.rate_limited(conversation_id, "notify_human")
 			return (
@@ -157,12 +155,10 @@ def build_tool_handlers(
 	) -> str:
 		if err := _validate_sender(sender):
 			return err
-		conversation_id = registry.session_to_conversation_id.get(cli_session_id)
-		if conversation_id is None:
-			from server.conversation_ops import _create_active_conversation_for
-			conversation_id = await _create_active_conversation_for(
-				registry, cli_session_id, cwd, sender, backend=backend,
-			)
+		from server.conversation_ops import _resolve_conversation_and_member
+		conversation_id = await _resolve_conversation_and_member(
+			registry, cli_session_id, cwd, sender, backend=backend,
+		)
 
 		# At-desk redirect: when global away mode is OFF, John is at his desk
 		# watching the terminal. Don't block the agent for 24h — write the
@@ -295,12 +291,10 @@ def build_tool_handlers(
 	) -> str:
 		if err := _validate_sender(sender):
 			return err
-		conversation_id = registry.session_to_conversation_id.get(cli_session_id)
-		if conversation_id is None:
-			from server.conversation_ops import _create_active_conversation_for
-			conversation_id = await _create_active_conversation_for(
-				registry, cli_session_id, cwd, sender, backend=backend,
-			)
+		from server.conversation_ops import _resolve_conversation_and_member
+		conversation_id = await _resolve_conversation_and_member(
+			registry, cli_session_id, cwd, sender, backend=backend,
+		)
 		# Path validation: resolve against the agent's actual filesystem cwd.
 		cwd_path = _cwd_path if _cwd_path is not None else Path(cwd)
 		try:
@@ -353,7 +347,10 @@ def build_tool_handlers(
 		if not message:
 			return "ERROR: message is required. The 'listen without speaking' use case is enter_conversation()."
 
-		conversation_id = registry.session_to_conversation_id.get(cli_session_id)
+		from server.conversation_ops import _resolve_conversation_and_member
+		conversation_id = await _resolve_conversation_and_member(
+			registry, cli_session_id, cwd, sender, backend=backend, mint_if_unbound=False,
+		)
 		if conversation_id is None:
 			return "ERROR: not in any conversation. End your turn."
 		conv = registry.conversations.get(conversation_id)
@@ -556,6 +553,10 @@ def build_tool_handlers(
 		conv = registry.conversations.get(conv_id)
 		if conv is None:
 			return "ERROR: bound conversation no longer exists."
+		# Ensure the (possibly fresh-spawn-bound, member-less) caller is a member
+		# before the rename/open logic, which otherwise silently finds no member.
+		from server.conversation_ops import _resolve_conversation_and_member
+		await _resolve_conversation_and_member(registry, cli_session_id, cwd, sender, backend=backend)
 		async with conv.lock:
 			if title:
 				conv.title = title
@@ -612,7 +613,11 @@ def build_tool_handlers(
 		if current_id is not None:
 			# Caller is bound to some conversation
 			if open_id is None or open_id == current_id:
-				# Branch 1 / Branch 5: queue in current
+				# Branch 1 / Branch 5: queue in current. Ensure the (possibly
+				# fresh-spawn-bound, member-less) caller is a member first, else
+				# _queue_for_intro returns "caller not a member".
+				from server.conversation_ops import _resolve_conversation_and_member
+				await _resolve_conversation_and_member(registry, cli_session_id, cwd, sender, backend=backend)
 				return await _queue_for_intro(registry, current_id, cli_session_id, sender, cwd, config.timeout_seconds)
 			# Branch 3: migrate from current to open
 			conv_open = registry.conversations.get(open_id)

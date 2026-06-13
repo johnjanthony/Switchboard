@@ -166,6 +166,7 @@ class SpawnHandler:
 		else:
 			base += (
 				"Pick a short human-readable sender name (e.g. 'Claude Win', 'Implementer'). "
+				"Your first switchboard tool call registers you as a member of this conversation. "
 			)
 			user_prompt = cmd.get("prompt")
 			if user_prompt:

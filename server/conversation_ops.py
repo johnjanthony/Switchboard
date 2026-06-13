@@ -127,6 +127,49 @@ async def _create_active_conversation_for_locked(
 	return conv_id
 
 
+async def _resolve_conversation_and_member(
+	registry: Registry,
+	cli_session_id: str,
+	cwd: str,
+	sender: str,
+	backend=None,
+	mint_if_unbound: bool = True,
+) -> str | None:
+	"""Return the conversation id the session belongs to, guaranteeing the
+	caller is a member of it.
+
+	- Truly unbound (no binding): if mint_if_unbound, mint a fresh single-agent
+	  Active conversation (which already creates the member); else return None
+	  so the caller applies its own unbound policy (message_and_await_agent
+	  errors rather than minting into an empty room).
+	- Bound to a conv_id whose Conversation object is not loaded: return the id
+	  unchanged. Do not mint or relocate the session; membership cannot be
+	  ensured without a conversation object, and minting here would silently
+	  move the session and break legacy routing.
+	- Bound with the Conversation present but no member for this cli_session_id
+	  (the fresh-spawn state: handle_fresh binds without adding a member): add
+	  the member.
+	- Bound with a member already present: no-op.
+	"""
+	conv_id = registry.session_to_conversation_id.get(cli_session_id)
+	if conv_id is None:
+		if not mint_if_unbound:
+			return None
+		return await _create_active_conversation_for(
+			registry, cli_session_id, cwd, sender, backend=backend,
+		)
+	conv = registry.conversations.get(conv_id)
+	if conv is None:
+		return conv_id
+	if not any(m.cli_session_id == cli_session_id for m in conv.members_active.values()):
+		async with conv.lock:
+			# Re-check inside the lock: a concurrent first call from the same
+			# session may have added the member already.
+			if not any(m.cli_session_id == cli_session_id for m in conv.members_active.values()):
+				await _add_member(registry, conv_id, cli_session_id, sender, cwd, backend=backend)
+	return conv_id
+
+
 def _compose_wake_payload(conversation: Conversation, member: ConversationMember, kind: str) -> str:
 	"""Compose the payload string a waking member sees when their future resolves.
 

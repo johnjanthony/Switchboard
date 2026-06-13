@@ -47,7 +47,7 @@ def _build_away_mode_route(registry: Registry):
 	return away_mode
 
 
-def _build_cli_session_end_route(registry, backend=None):
+def _build_cli_session_end_route(registry, backend=None, logger=None):
 	"""POST /cli-session/end — SessionEnd hook posts here to mark the matching
 	conversation member dormant. Best-effort: returns 200 even on bad input or
 	unknown session so the hook never blocks shutdown."""
@@ -70,6 +70,7 @@ def _build_cli_session_end_route(registry, backend=None):
 				reason=reason if isinstance(reason, str) else "other",
 				now=lambda: datetime.now(timezone.utc).isoformat(),
 				backend=backend,
+				logger=logger,
 			)
 		except Exception:
 			# Don't surface server errors to the hook — best-effort.
@@ -463,7 +464,7 @@ async def _run(config: Config) -> None:
 	app.add_route("/healthz", healthz, methods=["GET"])
 	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
 	app.add_route("/agent_status", _build_agent_status_route(handlers), methods=["POST"])
-	app.add_route("/cli-session/end", _build_cli_session_end_route(registry, backend=backend), methods=["POST"])
+	app.add_route("/cli-session/end", _build_cli_session_end_route(registry, backend=backend, logger=logger), methods=["POST"])
 
 	uv_config = uvicorn.Config(
 		app,
