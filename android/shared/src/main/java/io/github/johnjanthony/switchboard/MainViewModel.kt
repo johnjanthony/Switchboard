@@ -90,6 +90,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	 */
 	var autoSelectOnMessageArrival: Boolean = false
 
+	/** Conversations dropped from the list because their node failed to parse (convId to error). */
+	private val _conversationParseFailures = MutableStateFlow<Map<String, String>>(emptyMap())
+	val conversationParseFailures: StateFlow<Map<String, String>> = _conversationParseFailures.asStateFlow()
+	private var lastParseFailureNotice: String? = null
+
+	private fun maybeToastParseFailures(failures: Map<String, String>) {
+		val notice = conversationParseFailureNotice(failures)
+		if (notice != null && notice != lastParseFailureNotice) {
+			Handler(Looper.getMainLooper()).post {
+				Toast.makeText(getApplication(), notice, Toast.LENGTH_LONG).show()
+			}
+		}
+		lastParseFailureNotice = notice
+	}
+
 	// Wear-compat: legacy state flow exposing the selected key in cwdKey form.
 	// Backed by the same `_selectedConversationId` value; the Wear app reads the cwdKey
 	// of the conversation's first alive member.
@@ -418,6 +433,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		ref.addValueEventListener(object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
 				val openId = _openConversationId.value
+				val failures = mutableMapOf<String, String>()
 				val summaries = snapshot.children.mapNotNull { convNode ->
 					try {
 						val convId = convNode.key ?: return@mapNotNull null
@@ -447,7 +463,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 									leftAt = memberNode.child("left_at").getValue(Double::class.java),
 									lastSeenSeq = memberNode.child("last_seen_seq").getValue(Int::class.java) ?: 0,
 								)
-							} catch (e: Exception) { null }
+							} catch (e: Exception) {
+								android.util.Log.w("MainViewModel", "member parse failed in ${convNode.key}: ${memberNode.key}", e)
+								null
+							}
 						}
 
 						val agentStatusNode = convNode.child("agent_status")
@@ -480,8 +499,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 							preview = preview,
 							agentStatuses = agentStatuses,
 						)
-					} catch (e: Exception) { null }
+					} catch (e: Exception) {
+						val id = convNode.key ?: "?"
+						android.util.Log.e("MainViewModel", "conversation parse failed: $id", e)
+						failures[id] = e.javaClass.simpleName + ": " + (e.message ?: "")
+						null
+					}
 				}
+				_conversationParseFailures.value = failures
+				maybeToastParseFailures(failures)
 				_activeConversations.value = summaries
 				mergeSummariesIntoRows(summaries)
 				refreshChannelsProjection()

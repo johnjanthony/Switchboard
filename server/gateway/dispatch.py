@@ -12,6 +12,7 @@ from server.messenger import (
 )
 from server.gateway.bg_tasks import _spawn_bg
 from server.firebase_supervisor import LoopSupervisor
+from server.command_freshness import COMMAND_TTL_SECONDS, command_age_seconds
 
 class _DispatchResponsesBackend(ResponsePoller, MessageWriter, ConversationStore):
 	"""Backend surface used by dispatch_responses."""
@@ -357,6 +358,23 @@ async def dispatch_away_mode_commands(registry, backend, logger, supervisor):
 				supervisor.record_success()
 				try:
 					cmd_type = cmd.get("type")
+					# Belt-and-braces over P1-5's startup clear (decided
+					# 2026-06-11): a stale toggle that survived a
+					# crash-before-delete replay must not flip away mode
+					# minutes or hours later. Dropped loudly, never silently.
+					age = command_age_seconds(cmd.get("issued_at"))
+					if age is not None and age > COMMAND_TTL_SECONDS:
+						await logger.surface_error(
+							f"away_mode_command_stale_dropped: type={cmd_type} issued_at={cmd.get('issued_at')}"
+						)
+						try:
+							await backend.send_text(
+								f"Dropped stale away-mode command ({cmd_type}) from {cmd.get('issued_at')}: "
+								f"older than {COMMAND_TTL_SECONDS // 60} minutes. Re-send it if still wanted."
+							)
+						except Exception as exc:
+							await logger.surface_error(f"stale_away_notice_failed: {exc}")
+						continue
 					if cmd_type == "enter_global":
 						registry.global_away_mode = True
 						try:

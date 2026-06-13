@@ -11,6 +11,7 @@ from typing import AsyncIterator
 import firebase_admin
 from firebase_admin import credentials, db, messaging, storage
 
+from server.command_freshness import COMMAND_TTL_SECONDS, command_age_seconds
 from server.gateway.bg_tasks import _spawn_bg
 from server.logging_jsonl import JsonlLogger
 from server.messenger import (
@@ -515,9 +516,11 @@ class FirebaseBackend(
 
 	def _enqueue_away_mode_cmd(self, cmd_id: str, entry: dict):
 		_spawn_bg(self._away_mode_cmd_queue.put(entry), label=f"away_mode_cmd_enqueue:{cmd_id}")
-		def _cleanup():
-			db.reference(f'away_mode_commands/{cmd_id}').delete()
-		self._loop.run_in_executor(None, _cleanup)
+		# Uniform with the command-queue listeners (M32 audit): delete via the
+		# bridged worker-thread helper. This method already runs on the loop
+		# (bounced by _on_away_mode_command), so this is consistency, not a
+		# thread-safety fix.
+		self._schedule_command_delete("away_mode_commands", cmd_id)
 
 	async def poll_away_mode_commands(self) -> AsyncIterator[dict]:
 		from server.firebase_supervisor import SupervisedListener
@@ -852,96 +855,102 @@ class FirebaseBackend(
 		ref = db.reference(f"cli_sessions/{session_id}/home_conversation_id")
 		await asyncio.to_thread(ref.delete)
 
-	async def start_combine_command_listener(self, handler) -> None:
-		"""Listen for new entries under /combine_commands; call handler(cmd_dict) for each new entry.
+	def _schedule_command_delete(self, node: str, cmd_id: str) -> None:
+		"""Bridge-safe Firebase delete from a listener-thread callback (M32):
+		loop.run_in_executor is not thread-safe off-loop, so bounce via
+		call_soon_threadsafe and do the blocking delete in a worker thread."""
+		def _delete():
+			db.reference(f"{node}/{cmd_id}").delete()
+		self._loop.call_soon_threadsafe(
+			lambda: _spawn_bg(asyncio.to_thread(_delete), label=f"fb_command_delete:{node}/{cmd_id}"),
+		)
 
-		Skips the initial bulk-load snapshot (path == "/") so only entries written
-		after the listener starts are dispatched. Follows the SupervisedListener
-		pattern.
+	def _start_command_listener(self, node: str, handler) -> None:
+		"""Shared listener for the /<node> command queues (combine_commands,
+		force_end_commands, spawn_commands).
+
+		- Processes the initial snapshot as well as incremental puts, so
+		  commands written while the server was down are dispatched on
+		  (re)connect (H12/M13; T-015 queue-until-online).
+		- Gates every dispatch on the command's issued_at freshness: commands
+		  older than COMMAND_TTL_SECONDS are deleted WITH a phone-visible
+		  notice, never executed and never silently dropped (decided
+		  2026-06-11). Missing/unparseable stamps fail open (dispatch).
+		- Delivery is at-least-once: the delete is scheduled after dispatch,
+		  so a crash in between re-delivers on the next snapshot; a per-run
+		  processed-id set dedupes redeliveries within this process. A
+		  deduped redelivery is not re-deleted; if its original delete
+		  failed it lingers until the next restart's TTL pass.
+		- Runs on the Firebase SDK listener thread: every loop-affined call
+		  is bridged via call_soon_threadsafe (M32).
 		"""
 		from server.firebase_supervisor import SupervisedListener
-
-		listener_name = "combine_commands"
-		if listener_name in self._supervised:
+		if node in self._supervised:
 			return
 
-		def _on_combine(event):
+		processed: set[str] = set()
+
+		def _dispatch_entry(cmd_id: str, cmd: dict) -> None:
+			if cmd_id in processed:
+				return
+			processed.add(cmd_id)
+			age = command_age_seconds(cmd.get("issued_at"))
+			if age is not None and age > COMMAND_TTL_SECONDS:
+				notice = (
+					f"Dropped stale {node[:-1].replace('_', ' ')} from {cmd.get('issued_at')}: "
+					f"the server was offline when it was sent and it is older than "
+					f"{COMMAND_TTL_SECONDS // 60} minutes. Re-send it if still wanted."
+				)
+				coro = self.send_text(notice)
+				self._loop.call_soon_threadsafe(
+					lambda c=coro: _spawn_bg(c, label=f"fb_stale_command_notice:{node}/{cmd_id}"),
+				)
+			else:
+				# Route via _spawn_bg so a hanging or raising handler shows up
+				# in logs and the task isn't GC-eligible mid-execution.
+				coro = handler(cmd)
+				self._loop.call_soon_threadsafe(
+					lambda c=coro: _spawn_bg(c, label=f"fb_command:{node}/{cmd_id}"),
+				)
+			self._schedule_command_delete(node, cmd_id)
+
+		def _on_event(event):
 			if event.event_type != "put" or not event.data:
 				return
 			path = event.path.strip("/")
-			# Skip the initial snapshot (path == "" means the whole subtree).
-			if not path:
-				return
 			data = event.data
+			if not path:
+				# Initial/reconnect snapshot: the whole node.
+				if isinstance(data, dict):
+					for cmd_id, cmd in data.items():
+						if isinstance(cmd, dict):
+							_dispatch_entry(cmd_id, cmd)
+				return
+			if "/" in path:
+				return  # nested field write; commands are pushed whole
 			if isinstance(data, dict):
-				# Route via _spawn_bg so a hanging or raising handler shows up in logs
-				# and the task isn't GC-eligible mid-execution.
-				coro = handler(data)
-				self._loop.call_soon_threadsafe(
-					lambda c=coro: _spawn_bg(c, label=f"fb_combine_command:{path}"),
-				)
-				# Drop the command from Firebase after dispatch (at-most-once;
-				# matches away_mode_commands cleanup pattern). Prevents
-				# /combine_commands from accumulating stale entries forever.
-				def _delete_cmd(p=path):
-					db.reference(f"combine_commands/{p}").delete()
-				self._loop.run_in_executor(None, _delete_cmd)
+				_dispatch_entry(path, data)
 
 		err = self._logger.surface_error if self._logger else _no_op_async_logger
 		sup = SupervisedListener(
-			name=listener_name,
-			path="combine_commands",
-			callback=_on_combine,
+			name=node,
+			path=node,
+			callback=_on_event,
 			error_logger=err,
 			loop=self._loop,
 		)
-		self._supervised[listener_name] = sup
+		self._supervised[node] = sup
 		sup.start()
+
+	async def start_combine_command_listener(self, handler) -> None:
+		"""Listen for entries under /combine_commands; dispatch handler(cmd_dict)
+		for each queued or new entry (initial snapshot included; TTL-gated)."""
+		self._start_command_listener("combine_commands", handler)
 
 	async def start_force_end_command_listener(self, handler) -> None:
-		"""Listen for new entries under /force_end_commands; call handler(cmd_dict) for each new entry.
-
-		Skips the initial bulk-load snapshot (path == "/") so only entries written
-		after the listener starts are dispatched. Follows the SupervisedListener
-		pattern.
-		"""
-		from server.firebase_supervisor import SupervisedListener
-
-		listener_name = "force_end_commands"
-		if listener_name in self._supervised:
-			return
-
-		def _on_force_end(event):
-			if event.event_type != "put" or not event.data:
-				return
-			path = event.path.strip("/")
-			# Skip the initial snapshot (path == "" means the whole subtree).
-			if not path:
-				return
-			data = event.data
-			if isinstance(data, dict):
-				# Route via _spawn_bg so a hanging or raising handler shows up in logs
-				# and the task isn't GC-eligible mid-execution.
-				coro = handler(data)
-				self._loop.call_soon_threadsafe(
-					lambda c=coro: _spawn_bg(c, label=f"fb_force_end_command:{path}"),
-				)
-				# Drop the command from Firebase after dispatch (at-most-once;
-				# matches away_mode_commands cleanup pattern).
-				def _delete_cmd(p=path):
-					db.reference(f"force_end_commands/{p}").delete()
-				self._loop.run_in_executor(None, _delete_cmd)
-
-		err = self._logger.surface_error if self._logger else _no_op_async_logger
-		sup = SupervisedListener(
-			name=listener_name,
-			path="force_end_commands",
-			callback=_on_force_end,
-			error_logger=err,
-			loop=self._loop,
-		)
-		self._supervised[listener_name] = sup
-		sup.start()
+		"""Listen for entries under /force_end_commands; dispatch handler(cmd_dict)
+		for each queued or new entry (initial snapshot included; TTL-gated)."""
+		self._start_command_listener("force_end_commands", handler)
 
 	async def start_conversation_answers_listener(self) -> None:
 		"""Listen for answer events under /conversations/<conv_id>/answers/<request_id>.
@@ -1021,46 +1030,6 @@ class FirebaseBackend(
 		sup.start()
 
 	async def start_spawn_command_listener(self, handler) -> None:
-		"""Listen for new entries under /spawn_commands; call handler(cmd_dict) for each new entry.
-
-		Skips the initial bulk-load snapshot (path == "/") so only entries written
-		after the listener starts are dispatched. Follows the SupervisedListener /
-		start_combine_command_listener pattern.
-		"""
-		from server.firebase_supervisor import SupervisedListener
-
-		listener_name = "spawn_commands"
-		if listener_name in self._supervised:
-			return
-
-		def _on_spawn(event):
-			if event.event_type != "put" or not event.data:
-				return
-			path = event.path.strip("/")
-			# Skip the initial snapshot (path == "" means the whole subtree).
-			if not path:
-				return
-			data = event.data
-			if isinstance(data, dict):
-				# Route via _spawn_bg so a hanging or raising handler shows up in logs
-				# and the task isn't GC-eligible mid-execution.
-				coro = handler(data)
-				self._loop.call_soon_threadsafe(
-					lambda c=coro: _spawn_bg(c, label=f"fb_spawn_command:{path}"),
-				)
-				# Drop the command from Firebase after dispatch (at-most-once;
-				# matches away_mode_commands cleanup pattern).
-				def _delete_cmd(p=path):
-					db.reference(f"spawn_commands/{p}").delete()
-				self._loop.run_in_executor(None, _delete_cmd)
-
-		err = self._logger.surface_error if self._logger else _no_op_async_logger
-		sup = SupervisedListener(
-			name=listener_name,
-			path="spawn_commands",
-			callback=_on_spawn,
-			error_logger=err,
-			loop=self._loop,
-		)
-		self._supervised[listener_name] = sup
-		sup.start()
+		"""Listen for entries under /spawn_commands; dispatch handler(cmd_dict)
+		for each queued or new entry (initial snapshot included; TTL-gated)."""
+		self._start_command_listener("spawn_commands", handler)

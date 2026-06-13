@@ -1,4 +1,4 @@
-"""Tests for start_combine_command_listener and start_force_end_command_listener."""
+"""Tests for the shared command-queue listener (combine/force-end/spawn)."""
 
 from __future__ import annotations
 
@@ -89,18 +89,26 @@ async def test_combine_command_listener_invokes_handler_on_new_entry(monkeypatch
 	assert sup.path == "combine_commands"
 	assert sup.started
 
-	# Fire the initial bulk-load event (path == "/") — must be ignored.
-	sup.callback(_Event("put", "/", {"old_key": {"source_conversation_id": "a", "target_conversation_id": "b"}}))
-	await asyncio.sleep(0)  # allow any tasks to drain
-	assert received == []
+	# Fire the initial bulk-load event (path == "/"): queued commands written
+	# while the server was down MUST be dispatched on (re)connect (H12/M13).
+	from datetime import datetime, timezone
+	queued = {
+		"source_conversation_id": "a",
+		"target_conversation_id": "b",
+		"issued_at": datetime.now(timezone.utc).isoformat(),
+	}
+	sup.callback(_Event("put", "/", {"old_key": queued}))
+	await asyncio.sleep(0)
+	await asyncio.sleep(0)
+	assert received == [queued]
 
 	# Fire a new-child event (path == "/<push_id>").
-	cmd = {"source_conversation_id": "conv-1", "target_conversation_id": "conv-2", "issued_at": "2026-01-01T00:00:00Z"}
+	cmd = {"source_conversation_id": "conv-1", "target_conversation_id": "conv-2", "issued_at": datetime.now(timezone.utc).isoformat()}
 	sup.callback(_Event("put", "/-Nxyz123", cmd))
 	# Two yields: first lets call_soon_threadsafe flush; second runs the created task.
 	await asyncio.sleep(0)
 	await asyncio.sleep(0)
-	assert received == [cmd]
+	assert cmd in received
 
 
 @pytest.mark.asyncio
@@ -125,18 +133,21 @@ async def test_force_end_command_listener_invokes_handler_on_new_entry(monkeypat
 	assert sup.path == "force_end_commands"
 	assert sup.started
 
-	# Fire the initial bulk-load event — must be ignored.
-	sup.callback(_Event("put", "/", {"old_key": {"conversation_id": "conv-old"}}))
+	# Fire the initial bulk-load event: queued commands must dispatch (H12/M13).
+	from datetime import datetime, timezone
+	queued = {"conversation_id": "conv-old", "issued_at": datetime.now(timezone.utc).isoformat()}
+	sup.callback(_Event("put", "/", {"old_key": queued}))
 	await asyncio.sleep(0)
-	assert received == []
+	await asyncio.sleep(0)
+	assert received == [queued]
 
 	# Fire a new-child event.
-	cmd = {"conversation_id": "conv-99", "issued_at": "2026-01-01T00:00:00Z"}
+	cmd = {"conversation_id": "conv-99", "issued_at": datetime.now(timezone.utc).isoformat()}
 	sup.callback(_Event("put", "/-NaabbCC", cmd))
 	# Two yields: first lets call_soon_threadsafe flush; second runs the created task.
 	await asyncio.sleep(0)
 	await asyncio.sleep(0)
-	assert received == [cmd]
+	assert cmd in received
 
 
 @pytest.mark.asyncio
@@ -173,3 +184,135 @@ async def test_force_end_listener_idempotent(monkeypatch):
 	await be.start_force_end_command_listener(_noop)
 
 	assert len(_FakeSupervised.instances) == 1, "second call must not create a second listener"
+
+
+@pytest.mark.asyncio
+async def test_stale_command_is_dropped_with_notice_not_dispatched(monkeypatch):
+	"""Decided 2026-06-11: a command older than the TTL is deleted with a
+	phone-visible notice, never executed and never silently swallowed."""
+	from datetime import datetime, timedelta, timezone
+	from unittest.mock import AsyncMock
+	from server.command_freshness import COMMAND_TTL_SECONDS
+
+	loop = asyncio.get_running_loop()
+	be = _make_backend(monkeypatch, loop)
+	be.send_text = AsyncMock()
+
+	import server.firebase_supervisor as sup_mod
+	_FakeSupervised.instances.clear()
+	monkeypatch.setattr(sup_mod, "SupervisedListener", _FakeSupervised)
+
+	received: list[dict] = []
+
+	async def _handler(cmd, ack=None):
+		received.append(cmd)
+
+	await be.start_combine_command_listener(_handler)
+	sup = _FakeSupervised.instances[0]
+
+	stale_iso = (datetime.now(timezone.utc) - timedelta(seconds=COMMAND_TTL_SECONDS + 600)).isoformat()
+	stale = {"source_conversation_id": "a", "target_conversation_id": "b", "issued_at": stale_iso}
+	sup.callback(_Event("put", "/-Nstale1", stale))
+	await asyncio.sleep(0.05)  # drain call_soon_threadsafe + to_thread
+
+	assert received == [], "stale command must not execute"
+	be.send_text.assert_awaited_once()
+	notice = be.send_text.await_args.args[0]
+	assert "stale" in notice.lower() and stale_iso in notice
+	# The stale entry is still deleted so it cannot replay forever.
+	from server import firebase as fb_module
+	assert any(c.args == ("combine_commands/-Nstale1",) for c in fb_module.db.reference.call_args_list)
+	fb_module.db.reference.return_value.delete.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_redelivered_command_is_dispatched_once(monkeypatch):
+	"""At-least-once with per-run dedupe: the same push-id arriving again
+	(snapshot replay after a listener reconnect) must not re-execute."""
+	from datetime import datetime, timezone
+
+	loop = asyncio.get_running_loop()
+	be = _make_backend(monkeypatch, loop)
+
+	import server.firebase_supervisor as sup_mod
+	_FakeSupervised.instances.clear()
+	monkeypatch.setattr(sup_mod, "SupervisedListener", _FakeSupervised)
+
+	received: list[dict] = []
+
+	async def _handler(cmd, ack=None):
+		received.append(cmd)
+
+	await be.start_combine_command_listener(_handler)
+	sup = _FakeSupervised.instances[0]
+
+	cmd = {
+		"source_conversation_id": "a",
+		"target_conversation_id": "b",
+		"issued_at": datetime.now(timezone.utc).isoformat(),
+	}
+	sup.callback(_Event("put", "/-Ndup1", cmd))
+	await asyncio.sleep(0)
+	await asyncio.sleep(0)
+	# The same push-id arrives again: an SSE redelivery, or (post-implementation)
+	# a reconnect snapshot re-delivering an entry whose delete hadn't landed.
+	sup.callback(_Event("put", "/-Ndup1", cmd))
+	await asyncio.sleep(0)
+	await asyncio.sleep(0)
+	# And once more in snapshot shape; the dedupe key is the push-id either way.
+	sup.callback(_Event("put", "/", {"-Ndup1": cmd}))
+	await asyncio.sleep(0)
+	await asyncio.sleep(0)
+
+	assert received == [cmd], f"dedupe must suppress redeliveries; got {len(received)} dispatches"
+
+
+@pytest.mark.asyncio
+async def test_listener_callback_never_calls_run_in_executor(monkeypatch):
+	"""M32: the listener callback runs on the Firebase SDK thread;
+	loop.run_in_executor is not thread-safe from there. Every loop-affined
+	call must bounce through call_soon_threadsafe."""
+	from datetime import datetime, timezone
+	from unittest.mock import MagicMock
+
+	fake_loop = MagicMock()
+	be = _make_backend(monkeypatch, fake_loop)
+
+	import server.firebase_supervisor as sup_mod
+	_FakeSupervised.instances.clear()
+	monkeypatch.setattr(sup_mod, "SupervisedListener", _FakeSupervised)
+
+	handler = MagicMock()  # sync mock: the coroutine is never awaited here
+	await be.start_combine_command_listener(handler)
+	sup = _FakeSupervised.instances[0]
+
+	cmd = {
+		"source_conversation_id": "a",
+		"target_conversation_id": "b",
+		"issued_at": datetime.now(timezone.utc).isoformat(),
+	}
+	sup.callback(_Event("put", "/-Nbridge1", cmd))
+
+	fake_loop.run_in_executor.assert_not_called()
+	assert fake_loop.call_soon_threadsafe.call_count >= 2, \
+		"both the dispatch and the delete must bounce via call_soon_threadsafe"
+
+
+@pytest.mark.asyncio
+async def test_schedule_command_delete_bridges_from_a_foreign_thread(monkeypatch):
+	"""The honest M32 lock: fire the delete helper from a non-loop thread
+	(like the Firebase SDK listener thread) and verify the delete lands via
+	the loop bounce."""
+	import threading
+
+	loop = asyncio.get_running_loop()
+	be = _make_backend(monkeypatch, loop)
+
+	t = threading.Thread(target=lambda: be._schedule_command_delete("combine_commands", "cmd-x"))
+	t.start()
+	t.join()
+	await asyncio.sleep(0.05)  # let call_soon_threadsafe + to_thread run
+
+	from server import firebase as fb_module
+	assert any(c.args == ("combine_commands/cmd-x",) for c in fb_module.db.reference.call_args_list)
+	fb_module.db.reference.return_value.delete.assert_called()
