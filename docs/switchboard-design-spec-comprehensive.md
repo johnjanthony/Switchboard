@@ -215,7 +215,7 @@ Four Python hook scripts bundled with the Claude Code plugin. Registered via `ho
 | Hook | Event | Purpose |
 |---|---|---|
 | `cli-session-injector-hook.py` | PreToolUse | Self-filters on `tool_name.startswith("mcp__switchboard__")`. Reads `session_id` and `cwd` from the hook payload, merges them into the tool's input via `hookSpecificOutput.updatedInput`. The agent never passes either field directly. **`updatedInput` replaces the input** (despite docs claiming merge), so the hook explicitly carries forward every original `tool_input` field. **Stdin must be read as raw bytes** (`sys.stdin.buffer.read()` + `json.loads(bytes)`) — `json.load(sys.stdin)` uses a TextIOWrapper that on Windows defaults to cp1252+surrogateescape and mangles UTF-8 (em-dashes, emojis) into surrogate codepoints. |
-| `cli-session-end-hook.py` | SessionEnd | POSTs `{session_id, reason}` to `POST /cli-session/end`. Fires on orderly Claude exit (`/exit`, Ctrl+D, terminal closed). Does NOT fire on SIGKILL / BSOD / network loss — those leave the member as stale-alive. |
+| `cli-session-end-hook.py` | SessionEnd | Writes a SessionEnd marker FILE under `SWITCHBOARD_MARKER_DIR` (atomic temp + `os.replace`), which the server's `dispatch_session_end_markers` loop sweeps to mark the member dormant (T-146: the marker file wins the process-exit race a synchronous POST loses; see section 13.3). The legacy `POST /cli-session/end` route remains for manual/testing use. Fires on orderly Claude exit (`/exit`, Ctrl+D, terminal closed); does NOT fire on SIGKILL / BSOD / network loss, which leave the member stale-alive. |
 | `agent-status-hook.py` | PreToolUse, PostToolUse, UserPromptSubmit, Stop | POSTs `{session_id, state, detail}` to `POST /agent_status` to surface "thinking" / "tool:X" indicators on the phone. Server gates to stick-holder only. |
 | `turn-end-hook-away-mode.py` | Stop | Calls `GET /away-mode`. If the response says away mode is on, returns a `BLOCK` decision (Claude) so the agent's turn cannot end until output has been routed through `ask_human` / `notify_human`. |
 
@@ -450,7 +450,7 @@ On startup, `server/hydration.py:hydrate_from_firebase` rebuilds the in-memory r
 - `wait_queue` and `pending_responses` — futures die with the process. Any agent blocked at restart times out on its next MCP call or returns CancelledError.
 - `Conversation.open_peer_future` — same reason.
 - `Conversation.lock` — a fresh `asyncio.Lock` is recreated.
-- `pending_questions/<request_id>/` and `answered_question_msg_ids/<msg_id>/` subtrees — these are phone-side UI display only. Stale entries from before the restart are orphans (their futures can't be reactivated) and are tolerated as visual cruft until force-end clears the conversation.
+- `pending_questions/<request_id>/` subtree - read at startup by `sweep_orphaned_pending_questions` (P1), which cancels orphaned records whose futures died with the old process. (The `answered_question_msg_ids` subtree was retired in P5 / F-66-F-73: the phone derives answered-state from message flags, so the write had no reader.)
 
 The "never restart during an active multi-member conversation" operational rule reflects the wait_queue loss; persistence of in-flight futures is future work.
 
@@ -484,7 +484,7 @@ Title bar shows the conversation title plus a sub-line listing alive + dormant m
 
 Bubble feed renders messages chronologically; right-aligned for John, left for agents, system messages styled distinctly. Markdown rendering when `format == "markdown"`. Suggestion buttons under questions. Pull-down reveals timestamps; pinch zooms text scale.
 
-Reply input visible when a pending `ask_human` exists in the conv; routed via `conversation_answers/<conv_id>/<sender>/<push_id>/`. Suggestion-chip taps short-circuit the typing path.
+Reply input visible when a pending `ask_human` exists in the conv; routed via `conversations/<conv_id>/answers/<request_id>/`. Suggestion-chip taps short-circuit the typing path.
 
 ### 12.3 Spawn dialog
 
