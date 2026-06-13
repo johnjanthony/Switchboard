@@ -27,6 +27,7 @@ from server.gateway.dispatch import (
 	dispatch_force_end_commands,
 	dispatch_spawn_commands,
 	dispatch_away_mode_commands,
+	dispatch_session_end_markers,
 )
 from server.gateway.bg_tasks import _spawn_bg
 from server.hydration import hydrate_from_firebase
@@ -48,9 +49,10 @@ def _build_away_mode_route(registry: Registry):
 
 
 def _build_cli_session_end_route(registry, backend=None, logger=None):
-	"""POST /cli-session/end — SessionEnd hook posts here to mark the matching
-	conversation member dormant. Best-effort: returns 200 even on bad input or
-	unknown session so the hook never blocks shutdown."""
+	"""POST /cli-session/end - marks the matching conversation member dormant.
+	Retained for manual/testing use; the reliable path is now marker files swept
+	by dispatch_session_end_markers. Best-effort: returns 200 even on bad input
+	or unknown session."""
 	from datetime import datetime, timezone
 	from server.cli_session_end import handle_session_end
 
@@ -424,6 +426,7 @@ async def _run(config: Config) -> None:
 		"dispatch_force_end_commands": LoopSupervisor("dispatch_force_end_commands", backend, logger.surface_error),
 		"dispatch_spawn_commands": LoopSupervisor("dispatch_spawn_commands", backend, logger.surface_error),
 		"dispatch_away_mode_commands": LoopSupervisor("dispatch_away_mode_commands", backend, logger.surface_error),
+		"dispatch_session_end_markers": LoopSupervisor("dispatch_session_end_markers", backend, logger.surface_error),
 	}
 	mcp = _build_fastmcp(handlers, config.host)
 
@@ -474,6 +477,10 @@ async def _run(config: Config) -> None:
 	)
 	server = uvicorn.Server(uv_config)
 
+	session_end_marker_dir = _Path(config.log_path).parent / "session-end"
+	session_end_marker_dir.mkdir(parents=True, exist_ok=True)
+	await logger.info(f"session_end_marker_dir: {session_end_marker_dir}")
+
 	dispatch_task = asyncio.create_task(
 		dispatch_responses(registry, backend, logger, loop_sups["dispatch_responses"])
 	)
@@ -495,6 +502,13 @@ async def _run(config: Config) -> None:
 
 	away_mode_task = asyncio.create_task(
 		dispatch_away_mode_commands(registry, backend, logger, loop_sups["dispatch_away_mode_commands"])
+	)
+
+	session_end_markers_task = asyncio.create_task(
+		dispatch_session_end_markers(
+			registry, backend, logger, loop_sups["dispatch_session_end_markers"],
+			session_end_marker_dir,
+		)
 	)
 
 	loop = asyncio.get_running_loop()
@@ -519,6 +533,7 @@ async def _run(config: Config) -> None:
 		force_end_task.cancel()
 		spawn_task.cancel()
 		away_mode_task.cancel()
+		session_end_markers_task.cancel()
 		with contextlib.suppress(asyncio.CancelledError):
 			await dispatch_task
 		with contextlib.suppress(asyncio.CancelledError):
@@ -529,6 +544,8 @@ async def _run(config: Config) -> None:
 			await spawn_task
 		with contextlib.suppress(asyncio.CancelledError):
 			await away_mode_task
+		with contextlib.suppress(asyncio.CancelledError):
+			await session_end_markers_task
 		await backend.aclose()
 
 

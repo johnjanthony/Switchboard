@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
+from pathlib import Path as _Path
 from server.registry import Registry
 from server.logging_jsonl import JsonlLogger
 from server.messenger import (
@@ -13,6 +15,71 @@ from server.firebase_supervisor import LoopSupervisor
 
 class _DispatchResponsesBackend(ResponsePoller, MessageWriter, ConversationStore):
 	"""Backend surface used by dispatch_responses."""
+
+
+async def _sweep_session_end_markers(registry, marker_dir, backend=None, logger=None) -> int:
+	"""Process and delete SessionEnd marker files written by the hook.
+
+	Each marker is `<marker_dir>/<session_id>.json` with {session_id, reason,
+	ended_at}. For each, call handle_session_end (using the marker's recorded
+	ended_at as `now`, so session_ended_at reflects when the session actually
+	ended, not sweep time), then delete the marker. Reprocessing is harmless:
+	handle_session_end unbinds first, so a re-run logs session_end_no_binding and
+	no-ops. Returns the number of markers processed."""
+	from server.cli_session_end import handle_session_end
+	from datetime import datetime, timezone
+	d = _Path(marker_dir)
+	if not d.exists():
+		return 0
+	count = 0
+	for marker_path in sorted(d.glob("*.json")):
+		try:
+			data = _json.loads(marker_path.read_text(encoding="utf-8"))
+			session_id = data.get("session_id")
+			reason = data.get("reason", "other")
+			# Use the marker's recorded end time so session_ended_at reflects when
+			# the session actually ended, not sweep time. Markers from the hook
+			# always include ended_at; fall back defensively if one does not.
+			ended_at = data.get("ended_at") or datetime.now(timezone.utc).isoformat()
+			if session_id:
+				await handle_session_end(
+					registry=registry,
+					session_id=session_id,
+					reason=reason if isinstance(reason, str) else "other",
+					now=lambda ts=ended_at: ts,
+					backend=backend,
+					logger=logger,
+				)
+				count += 1
+		except Exception as exc:
+			if logger is not None:
+				await logger.surface_error(f"session_end_marker_failed: {marker_path.name}: {exc}")
+		finally:
+			try:
+				marker_path.unlink()
+			except OSError:
+				pass
+	return count
+
+
+async def dispatch_session_end_markers(registry, backend, logger, supervisor, marker_dir, interval: float = 5.0) -> None:
+	"""Periodically sweep SessionEnd marker files and mark members dormant.
+
+	Marker-file delivery (not the racy SessionEnd HTTP POST) is the reliable
+	path: Claude Code SessionEnd hooks are fire-and-forget and do not block
+	process exit, so a synchronous POST gets dropped. The hook writes a marker
+	file (a fast filesystem write that wins the exit race); this loop applies it
+	via handle_session_end. The first tick after a restart drains markers left
+	from sessions that ended while the server was down."""
+	while True:
+		try:
+			await _sweep_session_end_markers(registry, marker_dir, backend=backend, logger=logger)
+			supervisor.record_success()
+		except asyncio.CancelledError:
+			raise
+		except Exception as exc:
+			await supervisor.record_crash(exc)
+		await asyncio.sleep(interval)
 
 
 async def dispatch_responses(
