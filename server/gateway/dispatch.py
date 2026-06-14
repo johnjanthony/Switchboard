@@ -99,7 +99,7 @@ async def dispatch_responses(
 					if isinstance(corr, tuple) and len(corr) == 2:
 						conversation_id, sender = corr
 						record = registry.get((conversation_id, sender))
-						req_id = registry.resolve(conversation_id, sender, response.text)
+						req_id = registry.resolve(conversation_id, sender, response.text, request_id=response.request_id)
 						if req_id is None:
 							await logger.surface_error(f"unknown_correlation: conversation_id={conversation_id} sender={sender}")
 							try:

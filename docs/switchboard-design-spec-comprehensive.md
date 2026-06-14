@@ -201,7 +201,7 @@ Four routes mounted on the Starlette app:
 |---|---|---|
 | `/healthz` | GET | Liveness + per-loop supervisor status. Used by external monitoring. |
 | `/away-mode` | GET | Returns the current global away-mode flag. Consumed by `turn-end-hook-away-mode.py` to gate turn-end. Query param `cwd` is informational only (logged). |
-| `/agent_status` | POST | Hook-driven status writes. Body: `{session_id, state, detail}`. Server resolves the session to a conversation and writes to `/conversations/<id>/agent_status/` — gated so only the current stick-holder's status lands. |
+| `/agent_status` | POST | Hook-driven status writes. Body: `{session_id, state, detail}`. Server resolves the session to a conversation and writes per-sender entries to `/conversations/<id>/agent_status/<sender>` (gated on global away mode; `state == "clear"` deletes). |
 | `/cli-session/end` | POST | SessionEnd-hook callback. Body: `{session_id, reason}` where reason ∈ {`logout`, `clear`, `compact`, `other`}. Server marks the matching member dormant; for `clear`/`compact` additionally sets `session_lost_permanently=True`; wakes blocked waiters with a dormancy system message; resolves any open `ask_human` futures owned by the departed member. |
 
 The MCP transport is mounted under `/mcp` (FastMCP, streamable HTTP, stateful).
@@ -216,7 +216,7 @@ Four Python hook scripts bundled with the Claude Code plugin. Registered via `ho
 |---|---|---|
 | `cli-session-injector-hook.py` | PreToolUse | Self-filters on `tool_name.startswith("mcp__switchboard__")`. Reads `session_id` and `cwd` from the hook payload, merges them into the tool's input via `hookSpecificOutput.updatedInput`. The agent never passes either field directly. **`updatedInput` replaces the input** (despite docs claiming merge), so the hook explicitly carries forward every original `tool_input` field. **Stdin must be read as raw bytes** (`sys.stdin.buffer.read()` + `json.loads(bytes)`) — `json.load(sys.stdin)` uses a TextIOWrapper that on Windows defaults to cp1252+surrogateescape and mangles UTF-8 (em-dashes, emojis) into surrogate codepoints. |
 | `cli-session-end-hook.py` | SessionEnd | Writes a SessionEnd marker FILE under `SWITCHBOARD_MARKER_DIR` (atomic temp + `os.replace`), which the server's `dispatch_session_end_markers` loop sweeps to mark the member dormant (T-146: the marker file wins the process-exit race a synchronous POST loses; see section 13.3). The legacy `POST /cli-session/end` route remains for manual/testing use. Fires on orderly Claude exit (`/exit`, Ctrl+D, terminal closed); does NOT fire on SIGKILL / BSOD / network loss, which leave the member stale-alive. |
-| `agent-status-hook.py` | PreToolUse, PostToolUse, UserPromptSubmit, Stop | POSTs `{session_id, state, detail}` to `POST /agent_status` to surface "thinking" / "tool:X" indicators on the phone. Server gates to stick-holder only. |
+| `agent-status-hook.py` | PreToolUse, PostToolUse, UserPromptSubmit, Stop | POSTs `{session_id, state, detail}` to `POST /agent_status` to surface "thinking" / "tool:X" indicators on the phone. Server gated on global away mode; writes are dropped at-desk. |
 | `turn-end-hook-away-mode.py` | Stop | Calls `GET /away-mode`. If the response says away mode is on, returns a `BLOCK` decision (Claude) so the agent's turn cannot end until output has been routed through `ask_human` / `notify_human`. |
 
 A separate `install-turn-end-hook.ps1` script installs the Gemini CLI variant of the turn-end hook (Gemini's hook system is independent of the Claude plugin).

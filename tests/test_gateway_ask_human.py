@@ -321,7 +321,7 @@ async def test_dispatch_loop_continues_after_iteration_exception(
 	call_count = {"n": 0}
 	original_resolve = registry.resolve
 
-	def flaky_resolve(cwd, sender, text):
+	def flaky_resolve(cwd, sender, text, request_id=None):
 		call_count["n"] += 1
 		if call_count["n"] == 1:
 			raise RuntimeError("kaboom")

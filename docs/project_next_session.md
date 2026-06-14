@@ -1,4 +1,4 @@
-# Next Session Pickup - remediation P0/P1/P2/P5 committed + holistically reviewed; P4 is next
+# Next Session Pickup - Stream A (T-148..T-151) implemented + verified (uncommitted); P4 (Stream B) is next
 
 **Branch:** session_id-as-key. **Written:** 2026-06-11, updated 2026-06-13 (P1+P2+P5 all committed; final holistic cross-phase review done, 0 blocking). The remediation pass (P0, P1, P2, P5) is complete except P4. History lives in git + [completed-ledger](tracking/completed-ledger.md) + [PROJECT-JOURNAL.md](../PROJECT-JOURNAL.md).
 
@@ -56,15 +56,74 @@ A final whole-remediation review of the integrated P0+P0-6+T-146+P1+P2+P5 (commi
 
 **Disposition (John, 2026-06-13): fix the safe spec-doc contradictions now; record the code findings (T-148..T-151) for a deliberate pass.** The 3 self-contradicting comprehensive-spec lines were a P5 Task 11 doc miss (it rewrote section 10's schema but left these cross-refs): line 218 (cli-session-end "POSTs" -> writes a marker file swept by dispatch_session_end_markers, per T-146), line 453 (`answered_question_msg_ids` listed as a live subtree -> retired by P5/F-66/F-73; `pending_questions` is server-read by P1's startup sweep, not phone-display), line 487 (`conversation_answers/<conv_id>/<sender>/<push_id>/` -> `conversations/<id>/answers/<request_id>`). These are corrected.
 
+## Stream A (holistic-review findings T-148..T-151) - DONE, verified, UNCOMMITTED (2026-06-13)
+
+Executed via subagent-driven-development as a deterministic Workflow (sonnet implementer + sonnet spec-review + opus code-review per task across 6 tasks, bounded fix-loops, then a final whole-implementation opus review). All 6 tasks landed with **0 spec-review and 0 code-review fix iterations**; final review returned **ready_for_commit (0 blocking)**. Plan: [2026-06-13-implementation-plan-stream-a.md](2026-06-13-implementation-plan-stream-a.md).
+
+Controller-independent verification: full Python suite **506 passed** (was 495; +11 new test functions), 1 warning (benign atexit `pytest-current` PermissionError). Android `:shared` tests + `:app`/`:wear` builds **BUILD SUCCESSFUL** (98 tasks UP-TO-DATE; `android/` byte-unchanged - this stream touches zero Kotlin). The final reviewer proved **red-then-green for both T-148 manifestations** by neutralizing the registry guard (`if False and ...`), observing the exact predicted failures, then restoring byte-identical. Convention audit (byte-level): all 6 new test files CRLF + tab-indented; **zero em-dashes in any added server/docs diff line**.
+
+### Stream A acceptance mapping (finding -> passing evidence)
+
+- **T-148 (correctness, request_id-blind pending resolution):** carried `request_id` end-to-end. **(a) ANSWER MISROUTE** -> `tests/test_dispatch_replayed_answer_misroute.py` (snapshot-replay no-ops, superseded Q2 stays pending). **(b) SUPERSEDE+CANCEL race** -> `tests/test_ask_human_supersede_cancel_race.py` (Q1's shielded cleanup leaves the live Q2 entry intact). **primitive** -> `tests/test_registry_request_id_guard.py` (5 guard tests). Touched: `registry.py` (resolve/remove get-then-conditional-pop guard), `messenger.py` (`IncomingResponse.request_id`), `firebase.py` (`_enqueue_answer`/`_enqueue_response` set it), `dispatch.py` (`dispatch_responses` passes `response.request_id`), `handlers.py` (all 4 `ask_human` cleanup `registry.remove` calls pass `request_id`), `bulk_respond.py` (`_resolve_one` passes `p.request_id`). `request_id=None` preserves legacy behavior; `cli_session_end.py`'s legacy `remove(conv,sender)` stays guard-inert (correct).
+- **T-149 (handle_resume empty-context):** `tests/test_resume_resets_last_seen_seq.py` (member with `last_seen_seq=50` resets to 0 on resume). `spawn.py` `handle_resume` member-move loop now sets `m.last_seen_seq = 0`, mirroring `_perform_combine`.
+- **T-150 (test fidelity):** snapshot-replay resolution now asserted (by Task 3's misroute test); `tests/test_set_away_mode_false_persist_failure.py` (F-67 False+pendings+persist-fail returns ERROR, flag still flips); `tests/test_away_mode_command_listener.py` (foreign-thread bounce + per-run dedupe).
+- **T-151 (cleanup):** dead `elif hasattr(backend,"set_away_mode")` removed from `handlers.py` + `spawn.py` (handle_fresh); `set_away_mode` `resolved` over-report fixed (before/after pending_count); vestigial `_resp_listener`/`_away_mode_cmd_listener` `__init__` assignments removed; away-cmd per-run dedupe added (`_away_mode_processed`); 4 stale `remove_session_binding` test mocks swept (`mark_question_answered` assertion-guards correctly KEPT - they guard F-66/F-73); `canonicalization.py` docstring (cwd display-only, not routing key) + comprehensive-spec agent_status "stick-holder" doc drift corrected.
+
+### Stream A files touched (uncommitted)
+
+Server: `registry.py`, `messenger.py`, `firebase.py`, `gateway/dispatch.py`, `gateway/handlers.py`, `gateway/bulk_respond.py`, `spawn.py`, `canonicalization.py`. Docs: `docs/switchboard-design-spec-comprehensive.md`, this file, the new plan. Tests: 6 new (`test_resume_resets_last_seen_seq`, `test_registry_request_id_guard`, `test_dispatch_replayed_answer_misroute`, `test_ask_human_supersede_cancel_race`, `test_set_away_mode_false_persist_failure`, `test_away_mode_command_listener`); 5 modified (`test_gateway_ask_human` flaky_resolve signature; `test_e2e_spawn_resume` / `test_firebase_writes_for_handlers` / `test_spawn_handler` / `test_gateway_dispatch_combine_force_end` stale-mock sweep).
+
+### Suggested Stream A commit message (repo style)
+
+```text
+Stream A holistic-review findings: T-148 request_id-keyed pending resolution + T-149/T-150/T-151
+
+- T-148 (correctness): carry request_id end-to-end (IncomingResponse -> firebase enqueue -> dispatch_responses/bulk_respond resolve, and ask_human cleanup) and guard registry.resolve/remove against it, so a replayed/stale answer (snapshot-replay) can no longer misroute onto a superseded entry, and a superseded asker's shielded cleanup no longer removes the live entry. Both manifestations reproduced red-then-green.
+- T-149: handle_resume resets moved members' last_seen_seq to 0 (mirrors combine-resume), so a dormant member no longer wakes to empty context in the continuation conversation.
+- T-150: cover the set_away_mode(False)+pendings+persist-fail path, the away-mode listener foreign-thread bounce, and assert actual resolution in the snapshot-replay test.
+- T-151: remove dead set_away_mode hasattr fallback (handlers + spawn); fix set_away_mode resolved-count over-report; drop vestigial _resp_listener/_away_mode_cmd_listener assignments; add away-mode per-run dedupe; sweep stale remove_session_binding test mocks; correct canonicalization + comprehensive-spec doc drift.
+
+Python suite 506 passed; Android shared tests + app/wear builds green.
+```
+
+(Optional follow-up: backlog T-148..T-151 entries can be moved to the completed-ledger once committed. Scratch Workflow script lives at `logs/wf-stream-a.mjs` - gitignored, safe to leave or delete.)
+
 ## Remaining work
 
-1. **P5 is committed (0e7f80f); the P0/P1/P2/P5 remediation tracks are all landed and holistically reviewed (0 blocking).** Next: triage the review findings T-148..T-151 (T-148, the request_id race, is the only one with correctness teeth and wants a deliberate TDD pass) and/or proceed to P4 per priority.
-2. **P4 (Wear minimal rebuild)** is the only track left, and it needs John's input on **Wear screen shapes**. Settled inputs: R2 (Wear is minimal read+reply, no away affordance), P4-3 deletes the dead `WearBulkRespondDialog` (F-91), P4-2 adds `_admin` sentinel guards (R3), P4-4 retires the legacy `/responses` path (dissolves F-74). P4-1 prerequisite: write Wear regression tests for current behavior before the rewrite (F-89; F-90 deep-link dead-ends noted). Needs deep Wear exploration. P3 (T-141 control-surface) stays deferred until John picks a mechanism.
+1. **Stream A (T-148..T-151) is implemented, verified, and ready_for_commit (uncommitted).** Once John commits it, the only track left is P4.
+2. **P4 (Wear minimal rebuild)** is the only track left, and it **starts with John's input on the Wear screen layout** - the FUNCTIONAL decisions are settled (R2/R3/R4) but the visual screen shapes are John's call. Do NOT design them solo: begin with `superpowers:brainstorming` WITH John on the Wear screens, then write the P4 plan (P1/P2/P5 format), get John's approval, then execute subagent-driven (same Workflow protocol as Stream A). See the dedicated pickup section below.
+
+## Stream B (P4 Wear minimal rebuild) - pickup for a fresh session
+
+**Gate:** brainstorm the Wear screen layout WITH John FIRST (`superpowers:brainstorming`); do not design solo. Then plan -> John approves -> execute subagent-driven Workflow -> final whole-implementation review -> STOP and report. John commits.
+
+**Authoritative sources (read these; the briefing is reconstructed from them):**
+
+- [`docs/2026-06-11-remediation-spec.md`](2026-06-11-remediation-spec.md) **section 7** (lines ~138-154) = P4-1..P4-4 (authoritative). **Section 1 decisions R2/R3/R4** at lines 31-33. The **P1-3/P4-1 navigation-yank disposition** at line ~84.
+- [`docs/2026-06-12-low-severity-triage.md`](2026-06-12-low-severity-triage.md) Wear findings with controller dispositions: **F-65/F-74/F-77/F-86/F-87/F-88/F-89/F-90/F-91**.
+- Backlog **T-031** is the STALE predecessor (M27: names dead symbols, misstates BulkRespond ownership) - spec section 7 supersedes it.
+
+**Settled functional decisions:**
+
+- **R2 (Wear scope):** minimal - conversation list (read), message view (read), reply to a pending question. **No** resume/end/combine, **no** away toggle (away control stays phone-only).
+- **R3 (`_admin`):** synthetic `ConversationRow` with sentinel id `"_admin"`; delete the legacy `Channel` data class; guard EVERY Firebase-writing call site that assumes a real conversation (row-select -> `unread_count=0`, mark-opened, hide) against the sentinel so nothing writes to `conversations/_admin`.
+- **R4 (bulk-respond label):** group pendings by conversation; label each section by title, falling back to roster when blank; client-only (server does not build sections).
+
+**The four P4 items:**
+
+- **P4-1** migrate the watch off the cwdKey `/channels` projection to conversation-id keying for list + message view + reply; drop resume/end/combine/away affordances; this also removes the message-arrival navigation yank (Wear's `LaunchedEffect(selectedCwdKey)` + the `autoSelectOnMessageArrival` fallback P1 froze behind an opt-in) and retires the legacy `/responses` Wear reply fallback (P4-4, dissolves F-74). **PREREQUISITE (F-89): Wear has ZERO automated tests - write regression tests for current Wear behavior BEFORE the rewrite.** Note F-90 (deep-link dead-ends) as scope.
+- **P4-2** `_admin` as synthetic `ConversationRow` (sentinel id `"_admin"`); delete the legacy `Channel` data class; sentinel-guard every Firebase writer (R3).
+- **P4-3** delete the dead `WearBulkRespondDialog` (its only trigger was removed in b56b024; F-91/F-77/F-65); bulk-respond grouped by conversation, title-with-roster-fallback label, client-only (R4).
+- **P4-4** retire the dead `/responses` Wear reply fallback.
+
+**Wear source:** `android/wear/src/main/java/io/github/johnjanthony/switchboard/` (`MainActivity.kt`); the projection/bridge it depends on is in `android/shared` `MainViewModel.kt` (`refreshChannelsProjection`, `findConvIdForCwdKey`, the `/channels` listener, the deep-link resolver). Android build/test: `JAVA_HOME=C:\Program Files\Android\Android Studio\jbr` then `.\gradlew.bat :wear:testDebugUnitTest :shared:testDebugUnitTest :app:assembleDebug :wear:assembleDebug` from `android/`. Live Wear verification (deploying to the watch) is John's hands.
+
+**Still deferred / out of scope:** P3 (T-141 control-surface hardening) until John picks a mechanism; T-145 and T-147 remain open and are not P4.
 
 ## Notes for next agent
 
 - Ground rules (binding): tabs (Python AND Kotlin), CRLF + `unix2dos` for every NEW file, no em-dashes in authored text, predicted-failure TDD, no git writes (John commits). Python: `.venv\Scripts\python.exe -m pytest tests/<file> -v` from repo root. Android: `JAVA_HOME=C:\Program Files\Android\Android Studio\jbr` then `.\gradlew.bat ...` from `android/`; first build after a clean transforms cache can hit a Sophos AccessDeniedException - just re-run.
 - Pre-existing convention drift noted in P5 review (NOT introduced by P5, candidates for a future whole-file normalization pass): `server/spawn.py` and `server/cli_session_end.py` are whole-file LF (and cli_session_end.py has authored em-dashes in its module docstring). P5 edits matched each file's existing style rather than mixing endings.
 - The atexit `PermissionError` on the `pytest-current` temp-dir symlink is benign post-session noise.
-- Suite count reference: **495 passed** as of P5 (was 483 post-P2, 472 post-P1).
+- Suite count reference: **506 passed** as of Stream A (was 495 post-P5, 483 post-P2, 472 post-P1).
 - Plan checkboxes were not ticked during execution; this file + the workflows' per-task review approvals are the completion record.

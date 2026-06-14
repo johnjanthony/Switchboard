@@ -231,8 +231,6 @@ class SpawnHandler:
 			try:
 				if hasattr(self._backend, "set_global_away_mode"):
 					await self._backend.set_global_away_mode(True)
-				elif hasattr(self._backend, "set_away_mode"):
-					await self._backend.set_away_mode(True)
 			except Exception as exc:
 				await self._logger.surface_error(f"spawn_fresh_away_mode_persist_failed: {exc}")
 
@@ -442,6 +440,11 @@ class SpawnHandler:
 			m.session_ended_at = None
 			m.session_end_reason = None
 			m.left_at = None
+			# Reset so the resumed member sees the continuation conversation from
+			# its start (the resume system message at seq 0) rather than slicing
+			# past the end of a fresh message list with a stale source-conv
+			# last_seen_seq (T-149). Mirrors _perform_combine's combine-resume reset.
+			m.last_seen_seq = 0
 			self._registry.bind_session(m.cli_session_id, new_id)
 			new_conv.members_active[m.sender] = m
 			del source.members_active[m.sender]

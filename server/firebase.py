@@ -80,14 +80,13 @@ class FirebaseBackend(
 		self._resp_ref = db.reference('responses')
 		self._response_queue: asyncio.Queue[IncomingResponse] = asyncio.Queue()
 		self._loop = asyncio.get_running_loop()
-		self._resp_listener = None
 		# SupervisedListener instances, keyed by listener name. Populated by
 		# the start_*/poll_* methods that own each listener. aclose() iterates
 		# this map to stop everything cleanly on shutdown.
 		from server.firebase_supervisor import SupervisedListener  # type: ignore
 		self._supervised: dict[str, SupervisedListener] = {}
 		self._away_mode_cmd_queue: asyncio.Queue[dict] = asyncio.Queue()
-		self._away_mode_cmd_listener = None
+		self._away_mode_processed: set[str] = set()
 
 	def _on_response(self, event):
 		if event.event_type == 'put' and event.data:
@@ -149,7 +148,8 @@ class FirebaseBackend(
 			cwd_key = parsed_cwd_key
 			sender = parsed_sender
 		cwd = from_firebase_key(cwd_key)
-		resp = IncomingResponse(correlation=(cwd, sender), text=text, slot=slot)
+		req_id = data.get('request_id') if isinstance(data.get('request_id'), str) else None
+		resp = IncomingResponse(correlation=(cwd, sender), text=text, slot=slot, request_id=req_id)
 		_spawn_bg(self._response_queue.put(resp), label=f"response_enqueue:{cwd}:{sender}")
 
 	async def aclose(self) -> None:
@@ -495,6 +495,9 @@ class FirebaseBackend(
 			)
 
 	def _enqueue_away_mode_cmd(self, cmd_id: str, entry: dict):
+		if cmd_id in self._away_mode_processed:
+			return
+		self._away_mode_processed.add(cmd_id)
 		_spawn_bg(self._away_mode_cmd_queue.put(entry), label=f"away_mode_cmd_enqueue:{cmd_id}")
 		# Uniform with the command-queue listeners (M32 audit): delete via the
 		# bridged worker-thread helper. This method already runs on the loop
@@ -962,7 +965,7 @@ class FirebaseBackend(
 			if not isinstance(text, str) or not isinstance(sender, str):
 				return
 			slot = f"{conv_id}/answers/{request_id}"  # cleanup path for the slot delete
-			resp = IncomingResponse(correlation=(conv_id, sender), text=text, slot=slot)
+			resp = IncomingResponse(correlation=(conv_id, sender), text=text, slot=slot, request_id=request_id)
 			# Bounce to the event loop: this runs on the Firebase listener
 			# thread, and _spawn_bg / asyncio.create_task require a running loop.
 			# Without this bounce, every answer event raises RuntimeError inside

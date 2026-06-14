@@ -224,7 +224,7 @@ def build_tool_handlers(
 			# CancelledError. Without this shield, the Firebase write below
 			# never completes and the question stays cancelled=false.
 			with anyio.CancelScope(shield=True):
-				registry.remove(conversation_id, sender)
+				registry.remove(conversation_id, sender, request_id=request_id)
 				await _safe_mark_cancelled(backend, conversation_id, request_id, logger)
 			raise
 		except Exception as exc:
@@ -235,7 +235,7 @@ def build_tool_handlers(
 			result = await asyncio.wait_for(future, timeout=config.timeout_seconds)
 		except asyncio.TimeoutError:
 			await logger.timeout(request_id, conversation_id, config.timeout_seconds)
-			registry.remove(conversation_id, sender)
+			registry.remove(conversation_id, sender, request_id=request_id)
 			# Mark the question message cancelled, which also removes the
 			# pending_questions record (firebase.py). The phone derives
 			# "pending" purely from message flags, so without the cancelled
@@ -255,12 +255,12 @@ def build_tool_handlers(
 			# See note above re: shielding. This is the live cancel-from-MCP
 			# path that the user observes when pressing Esc on the tool call.
 			with anyio.CancelScope(shield=True):
-				registry.remove(conversation_id, sender)
+				registry.remove(conversation_id, sender, request_id=request_id)
 				await _safe_mark_cancelled(backend, conversation_id, request_id, logger)
 			raise
 		except Exception as exc:
 			await logger.tool_error(request_id, conversation_id, str(exc))
-			registry.remove(conversation_id, sender)
+			registry.remove(conversation_id, sender, request_id=request_id)
 			_spawn_bg(
 				backend.mark_question_cancelled(conversation_id, request_id),
 				label=f"fb_mark_cancelled:error:{conversation_id}:{request_id}",
@@ -821,6 +821,7 @@ def build_tool_handlers(
 		if value is False:
 			pendings = registry.all_pending()
 			if pendings:
+				before = registry.pending_count
 				# Decided 2026-06-11 (P1-8): exiting away mode from the tool
 				# side resolves every pending ask_human with the at-desk
 				# notice, so blocked askers wake in their own terminals (the
@@ -834,15 +835,13 @@ def build_tool_handlers(
 						decision="send_default",
 						default_text="John is back at his desk; your question was not answered remotely. Re-ask in the terminal.",
 					)
-					resolved = len(pendings)
+					resolved = before - registry.pending_count
 				except Exception as exc:
 					await logger.surface_error(f"set_away_mode_bulk_resolve_failed: {exc}")
 		registry.global_away_mode = value
 		try:
 			if hasattr(backend, "set_global_away_mode"):
 				await backend.set_global_away_mode(value)
-			elif hasattr(backend, "set_away_mode"):
-				await backend.set_away_mode(value)
 		except Exception as exc:
 			# Persist failed: the in-memory flag is set but the phone's
 			# Firebase-read pill will not see it until restart (registry/phone

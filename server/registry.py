@@ -182,25 +182,40 @@ class Registry:
 	def get(self, key: tuple[str, str]) -> "PendingRequest | None":
 		return self._pending.get(key)
 
-	def resolve(self, conversation_id: str, sender: str, text: str) -> str | None:
+	def resolve(self, conversation_id: str, sender: str, text: str, request_id: str | None = None) -> str | None:
 		"""Resolve the pending request for (conversation_id, sender). Returns the
-		request_id of the resolved entry, or None if no pending exists."""
+		request_id of the resolved entry, or None if no pending exists.
+
+		If request_id is provided and does not match the occupying entry's
+		request_id, this is a no-op (returns None, leaves the live entry intact):
+		a stale or replayed answer for a superseded request must not resolve the
+		newer entry that now holds the (conversation_id, sender) key (T-148)."""
 		key = (conversation_id, sender)
-		record = self._pending.pop(key, None)
+		record = self._pending.get(key)
 		if record is None:
 			return None
+		if request_id is not None and record.request_id != request_id:
+			return None
+		self._pending.pop(key, None)
 		if not record.future.done():
 			record.future.set_result(text)
 		self._fire_pending_mirror(conversation_id, -1)
 		return record.request_id
 
-	def remove(self, conversation_id: str, sender: str) -> str | None:
+	def remove(self, conversation_id: str, sender: str, request_id: str | None = None) -> str | None:
 		"""Remove the pending entry for (conversation_id, sender). Cancels the future if
-		pending. Returns the request_id of the removed entry, or None."""
+		pending. Returns the request_id of the removed entry, or None.
+
+		If request_id is provided and does not match the occupying entry's
+		request_id, this is a no-op: a superseded asker's shielded cleanup must
+		remove only its own entry, not the live entry that superseded it (T-148)."""
 		key = (conversation_id, sender)
-		record = self._pending.pop(key, None)
+		record = self._pending.get(key)
 		if record is None:
 			return None
+		if request_id is not None and record.request_id != request_id:
+			return None
+		self._pending.pop(key, None)
 		if not record.future.done():
 			record.future.cancel()
 		self._fire_pending_mirror(conversation_id, -1)

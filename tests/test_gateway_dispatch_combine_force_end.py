@@ -136,10 +136,9 @@ async def test_dispatch_force_end_command_invokes_handle_force_end(logger):
 	backend.set_open_conversation_id = AsyncMock()
 	backend.write_conversation_message = AsyncMock(return_value="key-1")
 	# handle_force_end now calls apply_fallback(..., backend=backend) for every
-	# member session — including alive members whose fallback path may issue
-	# remove_session_binding / set_session_home Firebase writes. Mock those so
+	# member session - including alive members whose fallback path may issue
+	# set_session_home Firebase writes. Mock those so
 	# _spawn_bg's create_task doesn't choke on MagicMock returns.
-	backend.remove_session_binding = AsyncMock()
 	backend.set_session_home = AsyncMock()
 	registered_handler = None
 
@@ -229,7 +228,6 @@ async def test_handle_force_end_clears_dormant_member_home_pointer(logger):
 	backend.set_conversation_state = AsyncMock()
 	backend.set_open_conversation_id = AsyncMock()
 	backend.write_conversation_message = AsyncMock(return_value="key-fe")
-	backend.remove_session_binding = AsyncMock()
 	backend.set_session_home = AsyncMock()
 
 	conv_count_before = len(registry.conversations)

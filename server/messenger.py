@@ -29,11 +29,22 @@ class IncomingResponse:
 	Firebase RTDB child under `responses/`). Carried so the dispatcher can
 	clean up unroutable / stale responses without having to reconstruct the
 	key from correlation fields.
+
+	`request_id` is the exact request_id the answer was minted for. Carried
+	so the dispatcher can pass it to registry.resolve as a guard, ensuring a
+	replayed or stale answer does not resolve a newer entry at the same
+	(conversation_id, sender) key (T-148). None for legacy responses/ payloads.
 	"""
 
 	correlation: CorrelationToken
 	text: str
 	slot: str | None = None
+	request_id: str | None = None
+	"""The request_id the answer was written for. Carried so the dispatcher can
+	resolve the EXACT pending entry it was minted for, rejecting a replayed or
+	stale answer that lands after the entry was superseded (T-148). None for
+	legacy responses/ payloads that predate request_id routing; the resolve
+	guard then falls back to (conversation_id, sender) keying."""
 
 
 class Backend(ABC):
