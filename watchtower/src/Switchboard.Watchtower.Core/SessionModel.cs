@@ -1,0 +1,15 @@
+namespace Switchboard.Watchtower.Core;
+
+public sealed record SessionModel(
+	string Label,
+	string? Distro,           // null for native Windows sessions
+	long ContextTokens,
+	long WindowSize,
+	string? Model,
+	SessionStatus Status,
+	DateTime LastActiveUtc,
+	bool IsError = false)
+{
+	public double Pct => WindowSize <= 0 ? 0 : (double)ContextTokens / WindowSize;
+	public Severity Severity => SeverityClassifier.For(Pct);
+}

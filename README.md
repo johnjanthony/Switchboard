@@ -222,3 +222,5 @@ All unit tests are offline; no credentials required.
 ## Project layout
 
 See [`CLAUDE.md`](CLAUDE.md) for the agent-oriented project tour, or design spec §11 for the canonical tree.
+
+The repo is a monorepo of components: `server/` (the Python MCP), `android/` (the Android + Wear client), and `watchtower/` (the Windows client — Switchboard Watchtower, a .NET 9 taskbar widget).

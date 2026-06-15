@@ -1,0 +1,141 @@
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using Switchboard.Watchtower.Core;
+
+namespace Switchboard.Watchtower;
+
+internal sealed class TrayIcon : IDisposable
+{
+	static readonly int[] PollMinuteChoices = { 1, 5, 15, 60 };
+
+	readonly NotifyIcon _icon;
+	readonly ToolStripMenuItem _autostartItem;
+	readonly ToolStripMenuItem _clearTypeItem;
+	readonly ToolStripMenuItem _showQuotaItem;
+	readonly List<ToolStripMenuItem> _intervalItems = new();
+	IntPtr _hicon;
+	Icon? _ownedIcon;
+
+	public event Action? RefreshRequested;
+	public event Action<bool>? AutostartToggled;
+	public event Action<bool>? RenderModeToggled;    // true = opaque ClearType, false = true transparency
+	public event Action<bool>? QuotaShowToggled;     // show/hide the plan-usage block
+	public event Action<int>? QuotaIntervalChanged;  // new poll cadence in minutes
+	public event Action? QuitRequested;
+
+	public TrayIcon(bool autostartOn, bool showQuota, int quotaPollMinutes)
+	{
+		var menu = new ContextMenuStrip();
+		menu.Items.Add("Refresh now", null, (_, _) => RefreshRequested?.Invoke());
+		_autostartItem = new ToolStripMenuItem("Start with Windows", null, (_, _) =>
+		{
+			_autostartItem!.Checked = !_autostartItem.Checked;
+			AutostartToggled?.Invoke(_autostartItem.Checked);
+		})
+		{ Checked = autostartOn, CheckOnClick = false };
+		menu.Items.Add(_autostartItem);
+		_clearTypeItem = new ToolStripMenuItem("Crisp text (ClearType)", null, (_, _) =>
+		{
+			_clearTypeItem!.Checked = !_clearTypeItem.Checked;
+			RenderModeToggled?.Invoke(_clearTypeItem.Checked);
+		})
+		{ Checked = true, CheckOnClick = false };
+		menu.Items.Add(_clearTypeItem);
+
+		menu.Items.Add(new ToolStripSeparator());
+		_showQuotaItem = new ToolStripMenuItem("Show plan usage", null, (_, _) =>
+		{
+			_showQuotaItem!.Checked = !_showQuotaItem.Checked;
+			QuotaShowToggled?.Invoke(_showQuotaItem.Checked);
+		})
+		{ Checked = showQuota, CheckOnClick = false };
+		menu.Items.Add(_showQuotaItem);
+
+		var intervalMenu = new ToolStripMenuItem("Usage poll interval");
+		foreach (int minutes in PollMinuteChoices)
+		{
+			int choice = minutes;
+			var item = new ToolStripMenuItem(IntervalLabel(choice), null, (_, _) => SelectInterval(choice))
+			{ Checked = choice == quotaPollMinutes, CheckOnClick = false };
+			_intervalItems.Add(item);
+			intervalMenu.DropDownItems.Add(item);
+		}
+		menu.Items.Add(intervalMenu);
+
+		menu.Items.Add(new ToolStripSeparator());
+		menu.Items.Add("Quit", null, (_, _) => QuitRequested?.Invoke());
+
+		_icon = new NotifyIcon
+		{
+			Icon = SystemIcons.Application,   // placeholder, replaced immediately below
+			Visible = true,
+			Text = "Claude Context Widget",
+			ContextMenuStrip = menu,
+		};
+		SetGauge(0, anyError: false, Severity.Green, light: false);
+	}
+
+	// Render the tray icon as a ring gauge of the busiest session's context fullness, like the VS Code
+	// Claude Code context indicator: a muted track ring with a severity-colored arc filling clockwise.
+	public void SetGauge(double pct, bool anyError, Severity severity, bool light)
+	{
+		var palette = new Palette(light);
+		Color arc = anyError ? palette.Warning : Palette.ForSeverity(severity);
+		using var bmp = RenderGauge(pct, arc, palette.Track, anyError);
+
+		IntPtr hicon = bmp.GetHicon();
+		var icon = Icon.FromHandle(hicon);
+		_icon.Icon = icon;
+		_icon.Text = anyError
+			? "Claude Context Widget - attention needed"
+			: $"Claude Context Widget - {(int)Math.Round(Math.Clamp(pct, 0, 1) * 100)}%";
+
+		// Icon.FromHandle does not own the HICON, so free the previous icon + handle ourselves.
+		var oldIcon = _ownedIcon;
+		var oldHicon = _hicon;
+		_ownedIcon = icon;
+		_hicon = hicon;
+		oldIcon?.Dispose();
+		if (oldHicon != IntPtr.Zero) Native.DestroyIcon(oldHicon);
+	}
+
+	static Bitmap RenderGauge(double pct, Color arc, Color track, bool anyError)
+	{
+		var bmp = new Bitmap(32, 32, PixelFormat.Format32bppArgb);
+		using var g = Graphics.FromImage(bmp);
+		g.SmoothingMode = SmoothingMode.AntiAlias;
+		g.Clear(Color.Transparent);
+
+		const float thickness = 5f;
+		float inset = thickness / 2f + 1f;
+		var ring = new RectangleF(inset, inset, 32 - 2 * inset, 32 - 2 * inset);
+
+		using (var trackPen = new Pen(track, thickness))
+			g.DrawEllipse(trackPen, ring);
+
+		float sweep = anyError ? 360f : (float)(360.0 * Math.Clamp(pct, 0, 1));
+		if (sweep > 0f)
+			using (var arcPen = new Pen(arc, thickness) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+				g.DrawArc(arcPen, ring, -90f, sweep);   // start at 12 o'clock, fill clockwise
+
+		return bmp;
+	}
+
+	static string IntervalLabel(int minutes) => minutes == 60 ? "1 hour" : minutes == 1 ? "1 minute" : $"{minutes} minutes";
+
+	void SelectInterval(int minutes)
+	{
+		foreach (var item in _intervalItems)
+			item.Checked = item.Text == IntervalLabel(minutes);
+		QuotaIntervalChanged?.Invoke(minutes);
+	}
+
+	public void Dispose()
+	{
+		_icon.Visible = false;
+		_icon.Dispose();
+		_ownedIcon?.Dispose();
+		if (_hicon != IntPtr.Zero) Native.DestroyIcon(_hicon);
+	}
+}

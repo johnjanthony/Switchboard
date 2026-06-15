@@ -29,6 +29,7 @@ local.properties
 
 # Superpowers implementation plans (scaffolding, not history-worthy)
 docs/superpowers/plans/
+watchtower/docs/superpowers/plans/
 
 # Superpowers brainstorming visual-companion artifacts (per-session, ephemeral)
 .superpowers/
@@ -38,3 +39,11 @@ docs/superpowers/plans/
 android/.artifacts/*
 .artifacts/*
 scripts/verify/*
+
+# Watchtower (.NET) build artifacts
+watchtower/**/bin/
+watchtower/**/obj/
+watchtower/**/publish/
+**/*.user
+**/*.suo
+.vs/
