@@ -29,7 +29,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import io.github.johnjanthony.switchboard.AwayModePillChip
-import io.github.johnjanthony.switchboard.network.Channel
 import io.github.johnjanthony.switchboard.network.ConversationRow
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -37,11 +36,11 @@ import io.github.johnjanthony.switchboard.network.ConversationRow
 fun SessionListScreen(
 	rows: List<ConversationRow>,
 	hiddenRows: List<ConversationRow>,
-	adminChannel: Channel?,
+	adminRow: ConversationRow?,
 	showHidden: Boolean,
 	globalAway: Boolean,
 	onSessionClick: (ConversationRow) -> Unit,
-	onAdminClick: (Channel) -> Unit,
+	onAdminClick: (ConversationRow) -> Unit,
 	onToggleShowHidden: () -> Unit,
 	onEnterGlobalAway: () -> Unit,
 	onExitGlobalAway: () -> Unit,
@@ -81,7 +80,7 @@ fun SessionListScreen(
 		},
 	) { padding ->
 		val displayed = if (showHidden) (rows + hiddenRows) else rows
-		val nothingToShow = displayed.isEmpty() && adminChannel == null
+		val nothingToShow = displayed.isEmpty() && adminRow == null
 		if (nothingToShow) {
 			Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
 				Column(
@@ -96,14 +95,13 @@ fun SessionListScreen(
 			}
 		} else {
 			LazyColumn(modifier = Modifier.fillMaxSize().padding(padding)) {
-				// Admin row stays at the top: it's a system-broadcast pseudo-conversation that
-				// doesn't fit the conversation model. Rendered via the legacy SessionRow signature
-				// (taking a Channel) since admin has no ConversationSummary to back a Row.
-				if (adminChannel != null) {
+				// Admin row stays at the top: it's a system-broadcast pseudo-conversation
+				// rendered as a synthetic ConversationRow with id "_admin" (R3).
+				if (adminRow != null) {
 					item(key = "_admin_row") {
 						AdminRow(
-							channel = adminChannel,
-							onClick = { onAdminClick(adminChannel) },
+							row = adminRow,
+							onClick = { onAdminClick(adminRow) },
 						)
 						Divider()
 					}

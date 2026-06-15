@@ -52,7 +52,6 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import io.github.johnjanthony.switchboard.network.Channel
 import io.github.johnjanthony.switchboard.network.ConversationRow
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
@@ -331,13 +330,13 @@ fun SessionRow(
 
 /**
  * Static row for the synthetic `_admin` pseudo-conversation (admin_notifications surface).
- * Lives outside the conversation model and renders as a passive notification banner —
+ * Lives outside the conversation model and renders as a passive notification banner -
  * no swipe-to-hide, no resume/combine/end menu. Clicking opens the legacy session screen
  * (admin route) to view notifications.
  */
 @Composable
 fun AdminRow(
-	channel: Channel,
+	row: ConversationRow,
 	onClick: () -> Unit,
 ) {
 	Box(
@@ -353,12 +352,12 @@ fun AdminRow(
 		) {
 			Column(modifier = Modifier.weight(1f)) {
 				Text(
-					text = channel.title ?: "Admin",
+					text = row.title,
 					style = MaterialTheme.typography.titleMedium,
 					maxLines = 1,
 					overflow = TextOverflow.Ellipsis,
 				)
-				val preview = channel.preview
+				val preview = row.preview
 				if (!preview.isNullOrBlank()) {
 					Text(
 						text = preview,
@@ -369,8 +368,8 @@ fun AdminRow(
 					)
 				}
 			}
-			if (channel.unreadCount > 0) {
-				Badge { Text(channel.unreadCount.toString()) }
+			if (row.displayCount > 0) {
+				Badge { Text(row.displayCount.toString()) }
 			}
 		}
 		// Click target overlay so the row still feels clickable when tapped.

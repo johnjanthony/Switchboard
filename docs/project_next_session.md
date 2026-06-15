@@ -1,6 +1,6 @@
-# Next Session Pickup - Stream A (T-148..T-151) implemented + verified (uncommitted); P4 (Stream B) is next
+# Next Session Pickup - Full remediation pass + P4 complete and verified on physical devices; pending John commit
 
-**Branch:** session_id-as-key. **Written:** 2026-06-11, updated 2026-06-13 (P1+P2+P5 all committed; final holistic cross-phase review done, 0 blocking). The remediation pass (P0, P1, P2, P5) is complete except P4. History lives in git + [completed-ledger](tracking/completed-ledger.md) + [PROJECT-JOURNAL.md](../PROJECT-JOURNAL.md).
+**Branch:** session_id-as-key. **Written:** 2026-06-11, updated 2026-06-15. Stream A is committed (39c77df, HEAD). P4 (Wear minimal rebuild) is implemented and verified on physical phone + watch, pending commit together with a follow-up Wear auth-timing fix found while live-testing the watch (T-158: attach Firebase listeners via `IdTokenListener` once authed, plus a Wear empty/connecting state) and the tracking updates below. The remediation pass (P0, P1, P2, P5, Stream A, P4) is complete; the 2026-06-15 [PROJECT-JOURNAL](../PROJECT-JOURNAL.md) entry has the full arc. History lives in git + [completed-ledger](tracking/completed-ledger.md) + [PROJECT-JOURNAL.md](../PROJECT-JOURNAL.md).
 
 ## Where things stand
 
@@ -88,37 +88,47 @@ Python suite 506 passed; Android shared tests + app/wear builds green.
 
 (Optional follow-up: backlog T-148..T-151 entries can be moved to the completed-ledger once committed. Scratch Workflow script lives at `logs/wf-stream-a.mjs` - gitignored, safe to leave or delete.)
 
+## P4 (Stream B, Wear minimal rebuild) - IMPLEMENTED and VERIFIED (2026-06-14, uncommitted)
+
+Plan: [2026-06-14-implementation-plan-p4-wear.md](2026-06-14-implementation-plan-p4-wear.md). Executed via 6 Tasks (subagent-driven). Full build BUILD SUCCESSFUL (101 tasks; :shared 21 tests, 0 failures). Live watch verification is John's hands.
+
+### P4 acceptance mapping
+
+| Item | Evidence |
+| --- | --- |
+| P4-1 conv-keyed list/message/reply; no cwdKey projection; nav-yank gone | Task 3 Wear rewrite + Task 5 bridge-removal grep returns 0 matches; `:wear:assembleDebug` green |
+| P4-2 `_admin` read-only ConversationRow; no `conversations/_admin` write; `Channel` deleted | Task 2 (sentinel guards + row) + Task 5 Step 3; `ConversationPolicyTest` sentinel + admin-partition tests PASS |
+| P4-3 bulk-respond grouped by conversation, title/roster label; `WearBulkRespondDialog` removed | Task 4 + Task 3; `bulkRespondSectionLabel` test PASS |
+| P4-4 no `/responses` write path; no cwdKey collision | Task 5 (submitReply cwdKey overload + responsesRef removed) |
+| F-89 regression net | `ConversationPolicyTest` (7 tests) PASS |
+| F-90 deep-link loading state | `MessageViewScreen` null-row loading branch + deep-link LaunchedEffect wait |
+
+### P4 files touched (uncommitted)
+
+New: `android/shared/src/main/java/io/github/johnjanthony/switchboard/ConversationPolicy.kt`, `android/shared/src/test/java/io/github/johnjanthony/switchboard/ConversationPolicyTest.kt`. Modified: `android/shared/src/main/java/io/github/johnjanthony/switchboard/MainViewModel.kt`, `android/shared/src/main/java/io/github/johnjanthony/switchboard/network/Models.kt`, `android/app/src/main/java/io/github/johnjanthony/switchboard/MainActivity.kt`, `android/app/src/main/java/io/github/johnjanthony/switchboard/ui/SessionListScreen.kt`, `android/app/src/main/java/io/github/johnjanthony/switchboard/ui/SessionRowComposable.kt`, `android/app/src/main/java/io/github/johnjanthony/switchboard/ui/BulkRespondDialog.kt`, `android/wear/src/main/java/io/github/johnjanthony/switchboard/MainActivity.kt`. Deleted: `android/shared/src/main/java/io/github/johnjanthony/switchboard/SelectionPolicy.kt`, `android/shared/src/test/java/io/github/johnjanthony/switchboard/SelectionPolicyTest.kt`. Diff: 341 insertions, 824 deletions (9 files).
+
+### Suggested P4 commit message (repo style)
+
+```text
+P4: Wear conversation-keyed rebuild; _admin synthetic ConversationRow; cwdKey bridge deleted
+
+- P4-1 + P4-4: rewrite Wear MainActivity entirely on conversationRows; list partitions pending-first; message view and reply screen conv-keyed; FCM deep-link navigates to message_view/<convId> with a loading state for cold-start race (F-90); no cwdKey projection, no /responses write path, no autoSelectOnMessageArrival nav-yank.
+- P4-2: _admin becomes a synthetic ConversationRow (id "_admin") in _conversationRows; merged across summary updates (R3 preserve); sentinel guards on selectConversation, markMessageOpened, hideConversation, and the open-row unread clear so nothing writes to conversations/_admin; Channel data class deleted.
+- P4-3: WearBulkRespondDialog removed; phone bulk-respond section labeled by conversation title with member-roster fallback (R4); BulkRespondSection.cwd -> label; leafName call removed.
+- F-89 regression net: ConversationPolicyTest (7 JUnit tests) covers partition, pending count, sentinel id, answerable question, and bulk label logic as pure functions in ConversationPolicy.kt.
+- Bridge deletion (Task 5): _channels StateFlow, channelsRef, setupChannelsListener, syncLegacyChannel, removeLegacyChannel, refreshChannelsProjection, refreshSelectedCwdKey, _selectedCwdKey, selectChannel, submitReply(cwdKey) overload, findConvIdForCwdKey, toFirebaseKey, legacyCwdKeyForConv, responsesRef, ADMIN_CWD_KEY, shouldAutoSelectOnMessageArrival, autoSelectOnMessageArrival all removed.
+
+Android :shared 21 tests passed; :app + :wear assembleDebug BUILD SUCCESSFUL.
+```
+
 ## Remaining work
 
-1. **Stream A (T-148..T-151) is implemented, verified, and ready_for_commit (uncommitted).** Once John commits it, the only track left is P4.
-2. **P4 (Wear minimal rebuild)** is the only track left, and it **starts with John's input on the Wear screen layout** - the FUNCTIONAL decisions are settled (R2/R3/R4) but the visual screen shapes are John's call. Do NOT design them solo: begin with `superpowers:brainstorming` WITH John on the Wear screens, then write the P4 plan (P1/P2/P5 format), get John's approval, then execute subagent-driven (same Workflow protocol as Stream A). See the dedicated pickup section below.
+**The entire remediation pass is now complete.** John needs to:
 
-## Stream B (P4 Wear minimal rebuild) - pickup for a fresh session
+1. Commit P4 (the only uncommitted track; Stream A already landed at 39c77df) - see the suggested P4 commit message above. The P4 design doc and plan (`docs/2026-06-14-p4-wear-minimal-rebuild-design.md`, `docs/2026-06-14-implementation-plan-p4-wear.md`) are also uncommitted and go with the P4 commit.
+2. Verify Wear behavior live on the watch (deploying to the device is not automatable from here).
 
-**Gate:** brainstorm the Wear screen layout WITH John FIRST (`superpowers:brainstorming`); do not design solo. Then plan -> John approves -> execute subagent-driven Workflow -> final whole-implementation review -> STOP and report. John commits.
-
-**Authoritative sources (read these; the briefing is reconstructed from them):**
-
-- [`docs/2026-06-11-remediation-spec.md`](2026-06-11-remediation-spec.md) **section 7** (lines ~138-154) = P4-1..P4-4 (authoritative). **Section 1 decisions R2/R3/R4** at lines 31-33. The **P1-3/P4-1 navigation-yank disposition** at line ~84.
-- [`docs/2026-06-12-low-severity-triage.md`](2026-06-12-low-severity-triage.md) Wear findings with controller dispositions: **F-65/F-74/F-77/F-86/F-87/F-88/F-89/F-90/F-91**.
-- Backlog **T-031** is the STALE predecessor (M27: names dead symbols, misstates BulkRespond ownership) - spec section 7 supersedes it.
-
-**Settled functional decisions:**
-
-- **R2 (Wear scope):** minimal - conversation list (read), message view (read), reply to a pending question. **No** resume/end/combine, **no** away toggle (away control stays phone-only).
-- **R3 (`_admin`):** synthetic `ConversationRow` with sentinel id `"_admin"`; delete the legacy `Channel` data class; guard EVERY Firebase-writing call site that assumes a real conversation (row-select -> `unread_count=0`, mark-opened, hide) against the sentinel so nothing writes to `conversations/_admin`.
-- **R4 (bulk-respond label):** group pendings by conversation; label each section by title, falling back to roster when blank; client-only (server does not build sections).
-
-**The four P4 items:**
-
-- **P4-1** migrate the watch off the cwdKey `/channels` projection to conversation-id keying for list + message view + reply; drop resume/end/combine/away affordances; this also removes the message-arrival navigation yank (Wear's `LaunchedEffect(selectedCwdKey)` + the `autoSelectOnMessageArrival` fallback P1 froze behind an opt-in) and retires the legacy `/responses` Wear reply fallback (P4-4, dissolves F-74). **PREREQUISITE (F-89): Wear has ZERO automated tests - write regression tests for current Wear behavior BEFORE the rewrite.** Note F-90 (deep-link dead-ends) as scope.
-- **P4-2** `_admin` as synthetic `ConversationRow` (sentinel id `"_admin"`); delete the legacy `Channel` data class; sentinel-guard every Firebase writer (R3).
-- **P4-3** delete the dead `WearBulkRespondDialog` (its only trigger was removed in b56b024; F-91/F-77/F-65); bulk-respond grouped by conversation, title-with-roster-fallback label, client-only (R4).
-- **P4-4** retire the dead `/responses` Wear reply fallback.
-
-**Wear source:** `android/wear/src/main/java/io/github/johnjanthony/switchboard/` (`MainActivity.kt`); the projection/bridge it depends on is in `android/shared` `MainViewModel.kt` (`refreshChannelsProjection`, `findConvIdForCwdKey`, the `/channels` listener, the deep-link resolver). Android build/test: `JAVA_HOME=C:\Program Files\Android\Android Studio\jbr` then `.\gradlew.bat :wear:testDebugUnitTest :shared:testDebugUnitTest :app:assembleDebug :wear:assembleDebug` from `android/`. Live Wear verification (deploying to the watch) is John's hands.
-
-**Still deferred / out of scope:** P3 (T-141 control-surface hardening) until John picks a mechanism; T-145 and T-147 remain open and are not P4.
+**Still deferred / out of scope:** P3 (T-141 control-surface hardening) until John picks a mechanism; T-145 and T-147 remain open and are not part of this remediation pass.
 
 ## Notes for next agent
 

@@ -105,7 +105,6 @@ private fun SwitchboardNavHost(
 	val context = androidx.compose.ui.platform.LocalContext.current
 	val navController = rememberNavController()
 	val conversationRows by viewModel.conversationRows.collectAsState()
-	val channels by viewModel.channels.collectAsState()
 	val globalAway by viewModel.globalAway.collectAsState()
 	val pendingExitToggle by viewModel.pendingExitToggle.collectAsState()
 	val markdownViewerContent by viewModel.markdownViewerContent.collectAsState()
@@ -147,17 +146,17 @@ private fun SwitchboardNavHost(
 	NavHost(navController = navController, startDestination = "list") {
 		composable("list") {
 			val visibleRows = conversationRows.values
-				.filter { !it.hidden }
+				.filter { it.id != "_admin" && !it.hidden }
 				.sortedByDescending { it.lastActivityAt }
 			val hiddenRows = conversationRows.values
-				.filter { it.hidden }
+				.filter { it.id != "_admin" && it.hidden }
 				.sortedByDescending { it.lastActivityAt }
-			val adminChannel = channels["_admin"]
+			val adminRow = conversationRows["_admin"]
 
 			SessionListScreen(
 				rows = visibleRows,
 				hiddenRows = hiddenRows,
-				adminChannel = adminChannel,
+				adminRow = adminRow,
 				showHidden = showHidden,
 				globalAway = globalAway,
 				onSessionClick = { row -> navController.navigate("session/${row.id}") },

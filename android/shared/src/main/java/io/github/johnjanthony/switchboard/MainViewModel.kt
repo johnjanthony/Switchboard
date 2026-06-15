@@ -12,6 +12,7 @@ import android.webkit.MimeTypeMap
 import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.core.content.FileProvider
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.ChildEventListener
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
@@ -20,7 +21,6 @@ import com.google.firebase.database.ValueEventListener
 import io.github.johnjanthony.switchboard.network.BulkRespondEntry
 import io.github.johnjanthony.switchboard.network.BulkRespondPayload
 import io.github.johnjanthony.switchboard.network.BulkRespondSection
-import io.github.johnjanthony.switchboard.network.Channel
 import io.github.johnjanthony.switchboard.network.ChannelMessage
 import io.github.johnjanthony.switchboard.network.ConversationMember
 import io.github.johnjanthony.switchboard.network.ConversationRow
@@ -49,22 +49,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		// the edited value rides on the away_mode_commands exit command as
 		// `default_text`, and the server applies it on `decision == "send_default"`.
 		private const val BULK_RESPOND_DEFAULT_TEXT = "I'll respond when I'm back at my desk."
-		// Synthetic "_admin" cwdKey used for the admin-notifications pseudo-channel.
-		// Lives outside the conversations model — admin notifications are system-wide
-		// broadcasts, not bound to any conversation.
-		private const val ADMIN_CWD_KEY = "_admin"
 	}
 
 	// Primary phone-side state: conversations keyed by conv_id with per-conversation
 	// runtime state (messages, pendings, answered set) folded in.
 	private val _conversationRows = MutableStateFlow<Map<String, ConversationRow>>(emptyMap())
 	val conversationRows: StateFlow<Map<String, ConversationRow>> = _conversationRows.asStateFlow()
-
-	// Wear-compat projection. Derived from _conversationRows whenever it changes,
-	// plus the synthetic _admin channel for admin notifications. TODO Dispatch C:
-	// retire once Wear migrates to the conversation model.
-	private val _channels = MutableStateFlow<Map<String, Channel>>(emptyMap())
-	val channels: StateFlow<Map<String, Channel>> = _channels.asStateFlow()
 
 	private val _projectMru = MutableStateFlow<List<String>>(emptyList())
 	val projectMru: StateFlow<List<String>> = _projectMru.asStateFlow()
@@ -81,15 +71,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _selectedConversationId = MutableStateFlow<String?>(null)
 	val selectedConversationId: StateFlow<String?> = _selectedConversationId.asStateFlow()
 
-	/**
-	 * Wear-only fallback: when nothing is selected, auto-select the
-	 * conversation of the first arriving message. The phone must leave this
-	 * false: selection is navigation-driven there, and force-selecting on
-	 * message arrival permanently zeroed the most active conversation's
-	 * unread badge while John sat on Page A (H07). Wear opts in at startup.
-	 */
-	var autoSelectOnMessageArrival: Boolean = false
-
 	/** Conversations dropped from the list because their node failed to parse (convId to error). */
 	private val _conversationParseFailures = MutableStateFlow<Map<String, String>>(emptyMap())
 	val conversationParseFailures: StateFlow<Map<String, String>> = _conversationParseFailures.asStateFlow()
@@ -105,12 +86,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		lastParseFailureNotice = notice
 	}
 
-	// Wear-compat: legacy state flow exposing the selected key in cwdKey form.
-	// Backed by the same `_selectedConversationId` value; the Wear app reads the cwdKey
-	// of the conversation's first alive member.
-	private val _selectedCwdKey = MutableStateFlow<String?>(null)
-	val selectedCwdKey: StateFlow<String?> = _selectedCwdKey.asStateFlow()
-
 	private val _activeConversations = MutableStateFlow<List<ConversationSummary>>(emptyList())
 	val activeConversations: StateFlow<List<ConversationSummary>> = _activeConversations.asStateFlow()
 
@@ -123,35 +98,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _pendingDeepLinkMessageId = MutableStateFlow<String?>(null)
 	val pendingDeepLinkMessageId: StateFlow<String?> = _pendingDeepLinkMessageId.asStateFlow()
 
-	// Maps requestId → convId so submitReply can write to the new
+	// Maps requestId → convId so submitReplyForConversation can write to the new
 	// /conversations/<convId>/answers/<requestId> path. Populated by routeConversationMessage
-	// as questions arrive; consumed by submitReply when answers go out.
+	// as questions arrive; consumed by submitReplyForConversation when answers go out.
 	private val requestIdToConvId = mutableMapOf<String, String>()
 
 	private val database = FirebaseDatabase.getInstance()
-	private val channelsRef = database.getReference("channels")
-	private val responsesRef = database.getReference("responses")
 	private val awayCommandsRef = database.getReference("away_mode_commands")
 	private val globalAwayRef = database.getReference("global_settings/away_mode")
 	private val conversationsRef = database.getReference("conversations")
 	private val adminNotificationsRef = database.getReference("admin_notifications")
 
-	// Legacy /channels listener — retained ONLY to surface the synthetic _admin channel
-	// (admin_notifications listener feeds it). The phone Page A no longer reads from
-	// `_channels` for real conversations; Wear still does via the derived projection.
 	private val conversationMessageListeners = mutableMapOf<String, ChildEventListener>()
 	private var adminListener: ChildEventListener? = null
 
 	init {
-		channelsRef.keepSynced(true)
-		setupChannelsListener()
-		setupAwayModeListener()
-		startOpenConversationListener()
-		startWslAvailableListener()
-		startConversationListener()
-		startConversationMessageSubscriptions()
-		setupAdminNotificationsListener()
 		loadProjectMru()
+		attachFirebaseListenersWhenAuthed()
+	}
+
+	private var firebaseListenersAttached = false
+
+	/**
+	 * Attach the Firebase DB listeners only once an authenticated user exists.
+	 * Attaching them in init (before the async Google sign-in completes) makes the
+	 * unauthenticated listens fail Permission denied under auth-required rules, and
+	 * Firebase cancels them with no auto-retry, leaving the UI empty. Uses an
+	 * IdTokenListener, NOT an AuthStateListener: on a saved-login restore FirebaseAuth
+	 * notifies only its id-token listeners, so an AuthStateListener can stay silent and
+	 * the DB listeners would never attach. IdTokenListener fires on sign-in, restore,
+	 * and token refresh, always with currentUser available; shouldAttachFirebaseListeners
+	 * keeps attachment idempotent across the repeated fires.
+	 */
+	private fun attachFirebaseListenersWhenAuthed() {
+		FirebaseAuth.getInstance().addIdTokenListener(FirebaseAuth.IdTokenListener { auth ->
+			if (shouldAttachFirebaseListeners(auth.currentUser != null, firebaseListenersAttached)) {
+				firebaseListenersAttached = true
+				setupAwayModeListener()
+				startOpenConversationListener()
+				startWslAvailableListener()
+				startConversationListener()
+				startConversationMessageSubscriptions()
+				setupAdminNotificationsListener()
+			}
+		})
 	}
 
 	private fun loadProjectMru() {
@@ -189,31 +179,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 	// --- Firebase listeners ---
 
-	private fun setupChannelsListener() {
-		// Listener retained for the legacy channel data the Wear app reads. Phone Page A
-		// no longer drives off this — `_conversationRows` is the primary source, and the
-		// Wear-compat projection re-derives a fresh `_channels` map from it. The only data
-		// we still need from /channels/<key> on the Wear path is the cwd_canonical / title
-		// for routes the conversation projection synthesizes. Once Wear migrates, this
-		// listener disappears entirely (Dispatch C).
-		channelsRef.addChildEventListener(object : ChildEventListener {
-			override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
-				val cwdKey = snapshot.key ?: return
-				syncLegacyChannel(cwdKey, snapshot)
-			}
-			override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {
-				val cwdKey = snapshot.key ?: return
-				syncLegacyChannel(cwdKey, snapshot)
-			}
-			override fun onChildRemoved(snapshot: DataSnapshot) {
-				val cwdKey = snapshot.key ?: return
-				removeLegacyChannel(cwdKey)
-			}
-			override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
-			override fun onCancelled(error: DatabaseError) {}
-		})
-	}
-
 	private fun setupAdminNotificationsListener() {
 		val listener = object : ChildEventListener {
 			override fun onChildAdded(snapshot: DataSnapshot, prev: String?) {
@@ -226,8 +191,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 					sender = sender, type = "notify",
 					text = text, format = format, timestamp = timestamp,
 				)
-				// Surface via existing channel infrastructure: synthesize a synthetic "_admin" channel.
-				ensureAdminChannelExists()
+				// Surface via ConversationRow: synthesize a synthetic "_admin" row (R3).
+				ensureAdminRowExists()
 				appendAdminMessage(msgId, msg)
 			}
 			override fun onChildChanged(snapshot: DataSnapshot, prev: String?) {}
@@ -241,67 +206,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		adminListener = listener
 	}
 
-	/** Ensure the synthetic _admin channel exists in _channels (Wear-compat surface). */
-	private fun ensureAdminChannelExists() {
-		if (!_channels.value.containsKey(ADMIN_CWD_KEY)) {
-			val newMap = _channels.value.toMutableMap()
-			newMap[ADMIN_CWD_KEY] = Channel(cwd = ADMIN_CWD_KEY, cwdKey = ADMIN_CWD_KEY, title = "Admin")
-			_channels.value = newMap
+	/** Ensure the synthetic _admin ConversationRow exists in _conversationRows (R3). */
+	private fun ensureAdminRowExists() {
+		if (!_conversationRows.value.containsKey(ADMIN_CONVERSATION_ID)) {
+			val newMap = _conversationRows.value.toMutableMap()
+			newMap[ADMIN_CONVERSATION_ID] = ConversationRow(
+				summary = ConversationSummary(
+					id = ADMIN_CONVERSATION_ID,
+					title = "Admin",
+					state = "active",
+					members = emptyList(),
+					lastActivityAt = "",
+				),
+			)
+			_conversationRows.value = newMap
 		}
 	}
 
-	/** Append an admin message to the synthetic _admin channel (Wear-compat). */
+	/** Append an admin message to the synthetic _admin ConversationRow. */
 	private fun appendAdminMessage(msgId: String, msg: ChannelMessage) {
-		val channel = _channels.value[ADMIN_CWD_KEY] ?: return
-		val rawMessages = channel.messages.toMutableList()
+		val row = _conversationRows.value[ADMIN_CONVERSATION_ID] ?: return
+		val rawMessages = row.messages.toMutableList()
 		val idx = rawMessages.indexOfFirst { it.first == msgId }
 		if (idx >= 0) rawMessages[idx] = msgId to msg else rawMessages.add(msgId to msg)
 		val sortedRaw = rawMessages.sortedBy { it.first }
 		val displayMessages = applySpliceOrder(sortedRaw)
-		val updated = channel.copy(messages = displayMessages)
-		val newMap = _channels.value.toMutableMap()
-		newMap[ADMIN_CWD_KEY] = updated
-		_channels.value = newMap
-	}
-
-	/**
-	 * Pull the per-cwd channel record into the Wear-compat `_channels` map. We extract
-	 * only the legacy fields Wear still needs (title, cwd_canonical, hidden, last_activity,
-	 * preview, unread_count, pending_responses); messages/pendings ride on conversationRows
-	 * and are merged in via [refreshChannelsProjection].
-	 */
-	private fun syncLegacyChannel(cwdKey: String, snapshot: DataSnapshot) {
-		val hidden = snapshot.child("hidden").getValue(Boolean::class.java) == true
-		val title = snapshot.child("title").getValue(String::class.java)
-		val cwdCanonical = snapshot.child("cwd_canonical").getValue(String::class.java) ?: ""
-		val lastActivityAt = snapshot.child("last_activity_at").getValue(String::class.java)
-		val preview = snapshot.child("preview").getValue(String::class.java)
-		val unreadCount = snapshot.child("unread_count").getValue(Int::class.java) ?: 0
-		val pendingResponses = snapshot.child("pending_responses").getValue(Int::class.java) ?: 0
-		val cwd = cwdCanonical.ifBlank { fromFirebaseKey(cwdKey) }
-
-		val existing = _channels.value[cwdKey]
-		val updated = (existing ?: Channel(cwd = cwd, cwdKey = cwdKey)).copy(
-			cwd = cwd,
-			cwdKey = cwdKey,
-			title = title,
-			cwdCanonical = cwdCanonical,
-			hidden = hidden,
-			lastActivityAt = lastActivityAt,
-			preview = preview,
-			unreadCount = unreadCount,
-			pendingResponses = pendingResponses,
-		)
-		val newMap = _channels.value.toMutableMap()
-		newMap[cwdKey] = updated
-		_channels.value = newMap
-	}
-
-	private fun removeLegacyChannel(cwdKey: String) {
-		val newMap = _channels.value.toMutableMap()
-		if (newMap.remove(cwdKey) != null) {
-			_channels.value = newMap
-		}
+		val updated = row.copy(messages = displayMessages)
+		val newMap = _conversationRows.value.toMutableMap()
+		newMap[ADMIN_CONVERSATION_ID] = updated
+		_conversationRows.value = newMap
 	}
 
 	private fun isQuestionType(type: String): Boolean {
@@ -374,15 +307,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		_conversationRows.value = newMap
 
 		// Clear unread badge on the server-side counter when this is the open row.
-		if (_selectedConversationId.value == convId) {
+		if (_selectedConversationId.value == convId && !isSyntheticConversation(convId)) {
 			conversationsRef.child(convId).child("unread_count").setValue(0)
-		} else if (shouldAutoSelectOnMessageArrival(
-				autoSelectOnMessageArrival, _selectedConversationId.value, row.hidden, row.state)) {
-			_selectedConversationId.value = convId
-			refreshSelectedCwdKey()
 		}
-
-		refreshChannelsProjection()
 
 		if (msg.rejected) {
 			Handler(Looper.getMainLooper()).post {
@@ -510,7 +437,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 				maybeToastParseFailures(failures)
 				_activeConversations.value = summaries
 				mergeSummariesIntoRows(summaries)
-				refreshChannelsProjection()
 			}
 
 			override fun onCancelled(error: DatabaseError) {
@@ -536,19 +462,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 				next[s.id] = existing.copy(summary = s)
 			}
 		}
+		// Carry the synthetic _admin row forward: it has no backing ConversationSummary
+		// in /conversations, so the incomingIds filter above would otherwise drop it (R3).
+		current[ADMIN_CONVERSATION_ID]?.let { next[ADMIN_CONVERSATION_ID] = it }
 		// Drop rows for conversations no longer in the active set.
 		// (Anything in `current` whose key is NOT in incomingIds is implicitly excluded.)
 		_conversationRows.value = next
 
-		// If the previously-selected conv is gone, pick a fresh visible one for any UI that
-		// still cares about a default selection. We don't auto-select for phone UX
-		// (navigation drives selection), but Wear's selectedCwdKey flow needs a non-null
-		// fallback to avoid getting stuck. Skip hidden AND ended convs — auto-selecting an
-		// ended conv would be confusing since it's read-only history.
+		// If the previously-selected conv is gone, clear the selection so the
+		// phone nav can fall back gracefully.
 		val sel = _selectedConversationId.value
 		if (sel != null && sel !in incomingIds) {
 			_selectedConversationId.value = next.values.firstOrNull { !it.hidden && it.state == "active" }?.id
-			refreshSelectedCwdKey()
 		}
 	}
 
@@ -602,7 +527,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private fun routeConversationMessage(convId: String, msgId: String, snap: DataSnapshot) {
 		try {
 			val msg = snap.getValue(ChannelMessage::class.java) ?: return
-			// Track requestId → convId so submitReply can write to the conversation-scoped
+			// Track requestId → convId so submitReplyForConversation can write to the conversation-scoped
 			// answer path even after the row's pendingQuestions entry is gone.
 			if ((msg.type == "question" || msg.type == "ask_human") && msg.request_id != null) {
 				requestIdToConvId[msg.request_id!!] = convId
@@ -613,84 +538,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		}
 	}
 
-	/**
-	 * Rebuild the Wear-compat `_channels` map from the current `_conversationRows`.
-	 * Each conversation maps to one synthetic Channel keyed by the first alive member's
-	 * cwdKey, populated with the row's preview/title/unread/pending counts and message list.
-	 *
-	 * The `_admin` channel and any legacy /channels entries already populated by
-	 * syncLegacyChannel survive: we only touch entries that resolve to a real conv.
-	 */
-	private fun refreshChannelsProjection() {
-		val rows = _conversationRows.value
-		val current = _channels.value.toMutableMap()
-
-		// Track cwdKeys derived from current conversations so we can prune stale projections.
-		val cwdKeysFromConvs = mutableSetOf<String>()
-
-		for (row in rows.values) {
-			// Pick the first alive member's cwd as the legacy display anchor.
-			val firstAlive = row.members.firstOrNull { it.alive && it.cwd.isNotBlank() }
-				?: row.members.firstOrNull { it.cwd.isNotBlank() }
-				?: continue
-			val memberCwd = firstAlive.cwd
-			val cwdKey = toFirebaseKey(memberCwd)
-			cwdKeysFromConvs += cwdKey
-
-			val existing = current[cwdKey]
-			val projected = (existing ?: Channel(cwd = memberCwd, cwdKey = cwdKey)).copy(
-				cwd = memberCwd,
-				cwdKey = cwdKey,
-				title = row.title.takeIf { it.isNotBlank() } ?: existing?.title,
-				cwdCanonical = if (existing?.cwdCanonical.isNullOrBlank()) memberCwd else existing!!.cwdCanonical,
-				hidden = row.hidden,
-				lastActivityAt = row.lastActivityAt.takeIf { it.isNotBlank() } ?: existing?.lastActivityAt,
-				preview = row.preview ?: existing?.preview,
-				unreadCount = row.summary.unreadCount,
-				pendingResponses = row.summary.pendingResponses,
-				pendingQuestions = row.pendingQuestions,
-				messages = row.messages,
-				answeredQuestionMsgIds = row.answeredQuestionMsgIds,
-				agentStatus = row.agentStatus,
-			)
-			current[cwdKey] = projected
-		}
-
-		_channels.value = current
-	}
-
 	/** Re-emit the current conversations list with refreshed isOpenConversation flags. */
 	private fun recomputeConversationOpenFlags() {
 		val openId = _openConversationId.value
 		val updated = _activeConversations.value.map { it.copy(isOpenConversation = (it.id == openId)) }
 		_activeConversations.value = updated
 		mergeSummariesIntoRows(updated)
-		refreshChannelsProjection()
-	}
-
-	/** Sync selectedCwdKey from the currently-selected conv (Wear-compat flow). */
-	private fun refreshSelectedCwdKey() {
-		val convId = _selectedConversationId.value
-		if (convId == null) {
-			_selectedCwdKey.value = null
-			return
-		}
-		val row = _conversationRows.value[convId]
-		val firstAliveCwd = row?.members?.firstOrNull { it.alive && it.cwd.isNotBlank() }?.cwd
-			?: row?.members?.firstOrNull { it.cwd.isNotBlank() }?.cwd
-		_selectedCwdKey.value = firstAliveCwd?.let { toFirebaseKey(it) }
-	}
-
-	private fun toFirebaseKey(cwd: String): String {
-		val sb = StringBuilder()
-		for (ch in cwd) {
-			when (ch) {
-				'/' -> sb.append("__")
-				'_' -> sb.append("____")
-				else -> sb.append(ch)
-			}
-		}
-		return sb.toString()
 	}
 
 	// --- Public actions ---
@@ -698,29 +551,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	/** Phone-side: select a conversation by convId. */
 	fun selectConversation(convId: String) {
 		_selectedConversationId.value = convId
-		refreshSelectedCwdKey()
+		// The synthetic _admin row has no Firebase node; never write under conversations/_admin (R3).
+		if (isSyntheticConversation(convId)) return
 		// Clear the server-maintained unread badge so the indicator drops on every device.
 		conversationsRef.child(convId).child("unread_count").setValue(0)
 	}
 
-	/**
-	 * Wear-compat: select by cwdKey. Maps to the conversation whose first alive member's
-	 * cwdKey matches. Falls back to no-op when the key is the synthetic `_admin` or has no
-	 * corresponding conversation yet (cold-start race).
-	 */
-	fun selectChannel(cwdKey: String) {
-		val convId = findConvIdForCwdKey(cwdKey)
-		if (convId != null) {
-			selectConversation(convId)
-		} else {
-			// Could be the _admin synthetic channel; just track the cwdKey for Wear.
-			_selectedCwdKey.value = cwdKey
-		}
-	}
-
 	fun clearSelectedChannel() {
 		_selectedConversationId.value = null
-		_selectedCwdKey.value = null
 	}
 
 	fun setPendingDeepLinkMessageId(messageId: String?) {
@@ -737,6 +575,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 	/** Phone-side: mark a message opened given the convId (no bridge lookup needed). */
 	fun markMessageOpened(convId: String, msgId: String) {
+		if (isSyntheticConversation(convId)) return  // no Firebase node for _admin (R3)
 		conversationsRef.child(convId).child("messages").child(msgId).child("opened").setValue(true)
 	}
 
@@ -761,43 +600,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		newMap[convId] = row.copy(pendingQuestions = newPending)
 		_conversationRows.value = newMap
 		requestIdToConvId.remove(requestId)
-		refreshChannelsProjection()
-	}
-
-	/**
-	 * Wear-compat: submit reply by cwdKey. Resolves the convId from the rows projection,
-	 * falling back to the legacy /responses path when no conv is found (e.g. requests
-	 * pre-dating this session, or _admin pseudo-channel).
-	 */
-	fun submitReply(cwdKey: String, sender: String, text: String, requestId: String?) {
-		val viaRequest = if (requestId != null) requestIdToConvId[requestId] else null
-		val convId = viaRequest ?: findConvIdForCwdKey(cwdKey)
-		if (convId != null && requestId != null) {
-			submitReplyForConversation(convId, sender, text, requestId)
-		} else {
-			// Pre-migration / admin / null-requestId fallback: write to legacy /responses path
-			// with cwd_key so the server's slot parser can still route the answer.
-			val key = requestId ?: "${cwdKey}__$sender"
-			responsesRef.child(key).setValue(mapOf(
-				"text" to text,
-				"cwd_key" to cwdKey,
-				"sender" to sender,
-				"request_id" to requestId,
-				"written_at" to nowIso(),
-			))
-		}
-	}
-
-	/** Return the convId whose first alive member's cwdKey matches, else null. */
-	private fun findConvIdForCwdKey(cwdKey: String): String? {
-		val rows = _conversationRows.value
-		for ((convId, row) in rows) {
-			val firstAlive = row.members.firstOrNull { it.alive && it.cwd.isNotBlank() }
-				?: row.members.firstOrNull { it.cwd.isNotBlank() }
-				?: continue
-			if (toFirebaseKey(firstAlive.cwd) == cwdKey) return convId
-		}
-		return null
 	}
 
 	fun requestAwayModeToggle(cwdKey: String?, desired: Boolean) {
@@ -822,17 +624,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	private fun buildBulkRespondSectionForRow(row: ConversationRow): BulkRespondSection? {
-		// Use the conversation row's pendingQuestions map (populated by addMessageToConversation
-		// as messages stream in). cwd label is the first alive member's cwd, falling back to
-		// the row's title for display when no cwd is set.
+		// Group by conversation; label by the conversation title, falling back to the
+		// member roster when the title is blank (R4). Client-only; the server returns a
+		// flat pending list and does not build sections.
 		val entries = row.pendingQuestions.values
 			.filter { !it.cancelled }
 			.map { BulkRespondEntry(it.requestId, it.sender, it.questionText) }
 		if (entries.isEmpty()) return null
-		val cwdLabel = row.members.firstOrNull { it.alive && it.cwd.isNotBlank() }?.cwd
-			?: row.members.firstOrNull { it.cwd.isNotBlank() }?.cwd
-			?: row.title
-		return BulkRespondSection(cwd = cwdLabel, entries = entries)
+		return BulkRespondSection(label = bulkRespondSectionLabel(row.title, row.memberRoster), entries = entries)
 	}
 
 	private fun buildBulkRespondSectionsForGlobal(): List<BulkRespondSection> {
@@ -843,33 +642,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			.mapNotNull { buildBulkRespondSectionForRow(it) }
 	}
 
-	/** Phone-side hide by convId. Dual-writes the legacy channels path for Wear-compat. */
+	/** Phone-side hide by convId. */
 	fun hideConversation(convId: String) {
+		if (isSyntheticConversation(convId)) return  // _admin is not hideable; no Firebase node (R3)
 		conversationsRef.child(convId).child("meta").child("hidden").setValue(true)
-		// Wear-compat: legacy /channels/<key>/hidden also needs to flip so the Wear UI's
-		// channels-list filter reflects the change. TODO Dispatch C: remove once Wear migrates.
-		legacyCwdKeyForConv(convId)?.let { cwdKey ->
-			channelsRef.child(cwdKey).child("hidden").setValue(true)
-		}
 	}
 
 	/** Phone-side unhide by convId. */
 	fun unhideConversation(convId: String) {
 		conversationsRef.child(convId).child("meta").child("hidden").setValue(false)
-		legacyCwdKeyForConv(convId)?.let { cwdKey ->
-			channelsRef.child(cwdKey).child("hidden").setValue(false)
-		}
 		_selectedConversationId.value = convId
-		refreshSelectedCwdKey()
-	}
-
-	/** First alive member's cwdKey for a conv, or null if none resolvable (Wear-compat dual-write). */
-	private fun legacyCwdKeyForConv(convId: String): String? {
-		val row = _conversationRows.value[convId] ?: return null
-		val firstAlive = row.members.firstOrNull { it.alive && it.cwd.isNotBlank() }
-			?: row.members.firstOrNull { it.cwd.isNotBlank() }
-			?: return null
-		return toFirebaseKey(firstAlive.cwd)
 	}
 
 	fun submitExitToggleDecision(decision: String, defaultText: String?) {
@@ -1047,17 +829,4 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	private fun nowIso(): String = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
-
-	private fun fromFirebaseKey(key: String): String {
-		val result = StringBuilder()
-		var i = 0
-		while (i < key.length) {
-			when {
-				key.startsWith("____", i) -> { result.append('_'); i += 4 }
-				key.startsWith("__", i) -> { result.append('/'); i += 2 }
-				else -> { result.append(key[i]); i++ }
-			}
-		}
-		return result.toString()
-	}
 }

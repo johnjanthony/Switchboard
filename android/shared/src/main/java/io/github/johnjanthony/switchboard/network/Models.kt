@@ -42,26 +42,8 @@ data class AgentStatus(
 		(now - updatedAt) < AGENT_STATUS_RECENCY_MS
 }
 
-data class Channel(
-	val cwd: String,
-	val cwdKey: String,
-	val title: String? = null,
-	val cwdCanonical: String = "",
-	val hidden: Boolean = false,
-	val lastActivityAt: String? = null,
-	val preview: String? = null,
-	val unreadCount: Int = 0,
-	val pendingResponses: Int = 0,
-	val pendingQuestions: Map<String, Pending> = emptyMap(),
-	val messages: List<Pair<String, ChannelMessage>> = emptyList(),
-	val answeredQuestionMsgIds: Set<String> = emptySet(),
-	val agentStatus: AgentStatus? = null,
-) {
-	val displayCount: Int get() = kotlin.math.max(unreadCount, pendingResponses)
-}
-
 data class BulkRespondSection(
-	val cwd: String,
+	val label: String,
 	val entries: List<BulkRespondEntry>,
 )
 
@@ -81,10 +63,8 @@ data class PendingExitToggle(
 )
 
 // --- Conversation model (post T-027 / 2026-05-19 conversations redesign) ---
-// ConversationSummary / ConversationRow are the primary data model on the phone;
-// Channel survives only for (a) the synthetic _admin row and (b) the Wear app's
-// derived projection until T-031 retires it. Real conversations are read from
-// /conversations/<id>/...; /channels/<cwd>/ is the legacy compat surface.
+// ConversationSummary / ConversationRow are the primary data model on the phone and Wear.
+// Real conversations are read from /conversations/<id>/...
 
 data class ConversationMember(
 	val cliSessionId: String = "",
@@ -148,11 +128,9 @@ data class ConversationSummary(
 }
 
 /**
- * View-model composite for Page A rows on the phone. Wraps a [ConversationSummary]
- * (Firebase-mirrored conversation state) with the per-conversation runtime state that
- * was previously held by [Channel] (messages, pending questions, answered set).
- *
- * Wear continues to operate on [Channel] via a derived projection from `_conversationRows`.
+ * View-model composite for both phone and Wear. Wraps a [ConversationSummary]
+ * (Firebase-mirrored conversation state) with per-conversation runtime state:
+ * messages, pending questions, and the answered-question set.
  */
 data class ConversationRow(
 	val summary: ConversationSummary,
