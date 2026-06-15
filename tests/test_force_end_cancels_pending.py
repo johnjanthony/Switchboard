@@ -1,7 +1,13 @@
-"""P0-3 (H02): handle_force_end must cancel the conversation's pending
-ask_human futures and mark their question records cancelled; otherwise an
-agent blocked in ask_human when John force-ends from the phone stays blocked
-for the full 24h timeout."""
+"""P0-3 (H02): handle_force_end must clear the conversation's pending ask_human
+futures and mark their question records cancelled; otherwise an agent blocked in
+ask_human when John force-ends from the phone stays blocked for the full 24h
+timeout.
+
+T-145 (2026-06-15): the future is now RESOLVED with the
+'__CONVERSATION_ENDED__\n(force-ended)' sentinel rather than cancelled. A
+cancelled future surfaces on the agent's MCP client as a transport error, which
+the agent retries (re-stranding it / minting orphan state); a resolved future
+returns the sentinel as a normal value so the agent stops without retrying."""
 
 from __future__ import annotations
 
@@ -37,7 +43,7 @@ def _registry_with_conv(conv_id: str = "conv-fe") -> Registry:
 
 
 @pytest.mark.asyncio
-async def test_force_end_cancels_pending_ask_human_future():
+async def test_force_end_resolves_pending_ask_human_future():
 	registry = _registry_with_conv()
 	backend = CancelTrackingBackend()
 
@@ -47,8 +53,12 @@ async def test_force_end_cancels_pending_ask_human_future():
 
 	await handle_force_end(registry, "conv-fe", backend=backend)
 
-	# The future resolves promptly (cancelled), not stranded for 24h
-	assert future.cancelled(), "pending ask_human future must be cancelled on force-end"
+	# The future resolves promptly with the terminal sentinel (not cancelled,
+	# which the agent would read as a transport error and retry), not stranded
+	# for 24h (T-145).
+	assert future.done()
+	assert not future.cancelled(), "force-end must resolve the future, not cancel it"
+	assert future.result() == "__CONVERSATION_ENDED__\n(force-ended)"
 	# No pending entry survives for the ended conversation
 	assert registry.pending_for_conversation("conv-fe") == []
 	# The question's Firebase record is marked cancelled (mark_question_cancelled

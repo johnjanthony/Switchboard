@@ -241,11 +241,17 @@ async def handle_force_end(registry, conversation_id: str, backend=None, logger=
 				label=f"fb_write_force_end_msg:{conversation_id}",
 			)
 
-	# Cancel any pending ask_human futures for this conversation (H02) and
-	# mark their Firebase question records cancelled so the phone's pending
-	# list clears. mark_question_cancelled also removes the pending_questions
-	# record; the registry's pending-mirror fires the badge decrement.
-	cancelled = registry.cancel_pending_for_conversation(conversation_id)
+	# Resolve any pending ask_human futures for this conversation (H02) with the
+	# terminal __CONVERSATION_ENDED__ sentinel and mark their Firebase question
+	# records cancelled so the phone's pending list clears. Resolving (rather
+	# than cancelling) the future hands the agent a semantic value it returns
+	# normally, so it stops instead of reading a cancellation as a transport
+	# error and retrying onto orphan/home state (T-145). mark_question_cancelled
+	# also removes the pending_questions record; the registry's pending-mirror
+	# fires the badge decrement.
+	cancelled = registry.resolve_pending_for_conversation(
+		conversation_id, "__CONVERSATION_ENDED__\n(force-ended)"
+	)
 	if backend is not None:
 		for request_id in cancelled:
 			try:

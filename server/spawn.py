@@ -175,15 +175,31 @@ class SpawnHandler:
 				base += "\n\nWait for John's first message via ask_human or notify_human."
 		return base
 
-	def _format_resume_prompt(self, cmd: dict, member, new_conv_id: str) -> str:
-		"""Build the resume prompt for a returning agent."""
+	def _format_resume_prompt(self, cmd: dict, member, new_conv_id: str, solo: bool) -> str:
+		"""Build the resume prompt for a returning agent.
+
+		solo: True when this member is the only resumable member, so the
+		continuation conversation has no other alive peer. A solo agent must
+		come online via ask_human / notify_human; enter_conversation would park
+		it in the wait queue waiting for a peer that will never speak (T-147).
+		"""
 		base = (
 			f"You are resuming as '{member.sender}' in conversation '{new_conv_id}' "
 			f"(continued from {cmd.get('source_conversation_id')}). "
 			"Tool calls auto-inject your cli_session_id. "
-			f"Call enter_conversation(sender='{member.sender}') to receive the conversation's "
-			"new context. You will get the recent history since your session ended."
 		)
+		if solo:
+			base += (
+				"You are the only agent in this conversation, so do NOT call enter_conversation "
+				"(it would block in the wait queue waiting for a peer that will never speak). "
+				"Come online to John directly: use ask_human to report your status and ask what's "
+				"next, or notify_human for a non-blocking status update."
+			)
+		else:
+			base += (
+				f"Call enter_conversation(sender='{member.sender}') to receive the conversation's "
+				"new context. You will get the recent history since your session ended."
+			)
 		user_prompt = cmd.get("prompt")
 		if user_prompt:
 			base += f"\n\nADDITIONAL CONTEXT FROM JOHN:\n{user_prompt}"
@@ -434,6 +450,10 @@ class SpawnHandler:
 		# Flip alive=True (and clear dormancy fields) so message_and_await_agent's
 		# alive-peer count includes these resumed members. Without this, a two-agent
 		# resume yields __CONVERSATION_EMPTY__ on the first speak attempt.
+		# A solo resume (one resumable member) has no alive peer to wake an
+		# enter_conversation wait, so the prompt must direct it to ask_human /
+		# notify_human instead (T-147).
+		solo_resume = len(resumable) == 1
 		agents = []
 		for m in resumable:
 			m.alive = True
@@ -451,7 +471,7 @@ class SpawnHandler:
 			agents.append({
 				"surface": m.surface,
 				"cli_session_id": m.cli_session_id,
-				"prompt": self._format_resume_prompt(cmd, m, new_id),
+				"prompt": self._format_resume_prompt(cmd, m, new_id, solo_resume),
 				"project_path": m.cwd,
 				"prior_sender": m.sender,
 			})

@@ -248,6 +248,30 @@ class Registry:
 			self._fire_pending_mirror(conversation_id, -len(cancelled_request_ids))
 		return cancelled_request_ids
 
+	def resolve_pending_for_conversation(self, conversation_id: str, result_text: str) -> list[str]:
+		"""Pop every pending request for this conversation_id and resolve its
+		future with result_text (a terminal do-not-retry sentinel), rather than
+		cancelling it. Returns the list of request_ids resolved so the caller can
+		mark each question's Firebase record cancelled.
+
+		Used by force-end (T-145). A cancelled future surfaces on the agent's MCP
+		client as a transport error, which the agent retries (re-stranding it or
+		minting orphan state); a resolved future returns result_text as a normal
+		value, so the agent gets a semantic terminal signal and stops.
+		cancel_pending_for_conversation (true cancel) remains for spawn's
+		stale-pending cleanup of a dead prior agent, where there is no live
+		awaiter to receive a semantic result."""
+		victims = [key for key, record in self._pending.items() if record.conversation_id == conversation_id]
+		resolved_request_ids: list[str] = []
+		for key in victims:
+			record = self._pending.pop(key)
+			resolved_request_ids.append(record.request_id)
+			if not record.future.done():
+				record.future.set_result(result_text)
+		if resolved_request_ids:
+			self._fire_pending_mirror(conversation_id, -len(resolved_request_ids))
+		return resolved_request_ids
+
 	def update_global_away_cache(self, active: bool) -> None:
 		"""Listener entry point: update the in-memory cache to reflect a Firebase change."""
 		self._global_away = bool(active)

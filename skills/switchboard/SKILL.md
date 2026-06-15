@@ -43,7 +43,7 @@ Switchboard is a local MCP gateway that lets you reach John on his phone while h
 
 **Active tools:**
 
-- **`ask_human(question, sender, title?, format?, suggestions?)`** — blocks until John replies. Returns reply text or `"__TIMEOUT__"`.
+- **`ask_human(question, sender, title?, format?, suggestions?)`** — blocks until John replies. Returns reply text, `"__TIMEOUT__"`, or (if John force-ends the conversation from his phone while you are blocked) `"__CONVERSATION_ENDED__\n(force-ended)"` — a terminal signal: stop and do NOT retry `ask_human` (see Sentinels below).
 - **`notify_human(message, sender, title?, format?)`** — fire-and-forget. Returns `"ok"` when away mode is on. At-desk it still delivers the notification and returns `"ERROR: John is at his desk (notification delivered to phone anyway)."`; that is routing guidance (continue in the terminal), not a failure, and there is nothing to re-send.
 - **`send_document_human(path, sender, title?, caption?)`** — deliver a file. path relative to your cwd or absolute. Max 5 MB. Returns `"ok"` or `"ERROR: ..."`.
 - **`message_and_await_agent(sender, message, title?)`** — conversations only. `message` is required and non-empty. Send to peers and block until woken. Returns the conversation log since your last wake (excluding your own emissions). **Sole-alive behavior depends on whether the conv is the open marker:**

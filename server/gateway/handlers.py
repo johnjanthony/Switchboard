@@ -164,6 +164,16 @@ def build_tool_handlers(
 	) -> str:
 		if err := _validate_sender(sender):
 			return err
+		# Defensive (T-145): a session still bound to an Ended conversation (the
+		# race window after force-end resolved its future but before
+		# session-fallback rebinds it) must not register a new pending question
+		# or mint orphan state. Return the terminal sentinel so the agent stops
+		# instead of re-stranding or re-adding itself to a dead conversation.
+		bound_id = registry.session_to_conversation_id.get(cli_session_id)
+		if bound_id is not None:
+			bound_conv = registry.conversations.get(bound_id)
+			if bound_conv is not None and bound_conv.state == "ended":
+				return "__CONVERSATION_ENDED__\n(force-ended)"
 		from server.conversation_ops import _resolve_conversation_and_member
 		conversation_id = await _resolve_conversation_and_member(
 			registry, cli_session_id, cwd, sender, backend=backend,
@@ -266,6 +276,15 @@ def build_tool_handlers(
 				label=f"fb_mark_cancelled:error:{conversation_id}:{request_id}",
 			)
 			return f"ERROR: {exc}"
+
+		# Force-end resolves the pending future with the __CONVERSATION_ENDED__
+		# sentinel (T-145) rather than cancelling it. That is a terminal signal,
+		# not an answer: hand it straight back so the agent stops without
+		# retrying, and skip the answered-path side effects (resolution
+		# confirmation, pending-record removal). handle_force_end already marked
+		# the question cancelled in Firebase.
+		if isinstance(result, str) and result.startswith("__CONVERSATION_ENDED__"):
+			return result
 
 		# Successful resolution: clear the pending_questions record (read by
 		# the startup sweep). answered_question_msg_ids is NOT written: the
