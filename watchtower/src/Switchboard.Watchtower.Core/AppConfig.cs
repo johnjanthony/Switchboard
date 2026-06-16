@@ -78,4 +78,7 @@ public sealed class SwitchboardConfig
 
 	/// <summary>When true and pending_count is greater than zero, the tray icon shows a pending badge.</summary>
 	public bool ShowBadge { get; set; }
+
+	/// <summary>How often (seconds) to poll /stats. Decoupled from the 60s session-scan cadence so the pending badge updates near-instantly. Floored at 2s.</summary>
+	public int PollSeconds { get; set; } = 4;
 }

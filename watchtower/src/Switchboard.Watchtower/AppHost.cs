@@ -35,7 +35,7 @@ internal sealed class AppHost : IDisposable
 		if (_config.Switchboard.Enabled)
 		{
 			_switchboardReader = new SwitchboardStatsReader(_config.Switchboard.StatsUrl, LogError);
-			_switchboardTimer.Interval = Math.Max(5, _config.PollIntervalSeconds) * 1000;
+			_switchboardTimer.Interval = Math.Max(2, _config.Switchboard.PollSeconds) * 1000;
 			_switchboardTimer.Tick += (_, _) => PollSwitchboard();
 		}
 		_tray.OpenDashboardRequested += () => OpenDashboard();
@@ -219,6 +219,7 @@ internal sealed class AppHost : IDisposable
 			var stats = t.Result;
 			_panel.UpdateSwitchboard(enabled: true, stats);
 			_tray.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
+			_widget.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
 		}, TaskScheduler.FromCurrentSynchronizationContext());
 	}
 

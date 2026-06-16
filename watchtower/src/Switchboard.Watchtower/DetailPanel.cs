@@ -11,7 +11,6 @@ internal sealed class DetailPanel : Form
 	const int WS_EX_NOACTIVATE = 0x08000000;
 	const int RowH = 42;
 	const int Pad = 12;
-	const int FooterH = 18;
 	const int QuotaWindowRowH = 46;
 	const int GroupVPad = 8;     // inner top/bottom padding inside a group panel
 	const int GroupGap = 10;     // vertical gap between the two group panels
@@ -45,13 +44,39 @@ internal sealed class DetailPanel : Form
 			Text = "Open dashboard",
 			FlatStyle = FlatStyle.Flat,
 			AutoSize = false,
-			Height = 24,
+			Height = 26,
 			Visible = false,
 			TabStop = false,
+			Cursor = Cursors.Hand,
+			Font = new Font("Segoe UI", 8.5f),
 		};
-		_openDashboard.FlatAppearance.BorderSize = 1;
+		_openDashboard.FlatAppearance.BorderSize = 0;
+		// Soft, rounded button: clip the corners to a rounded region whenever it
+		// resizes (its width is set during paint to fit the panel).
+		_openDashboard.SizeChanged += (_, _) => ApplyButtonRegion();
 		_openDashboard.Click += (_, _) => OpenDashboardRequested?.Invoke();
 		Controls.Add(_openDashboard);
+	}
+
+	void ApplyButtonRegion()
+	{
+		if (_openDashboard.Width <= 0 || _openDashboard.Height <= 0) return;
+		using var path = RoundedRect(_openDashboard.Width, _openDashboard.Height, 7);
+		var old = _openDashboard.Region;
+		_openDashboard.Region = new Region(path);
+		old?.Dispose();
+	}
+
+	static GraphicsPath RoundedRect(int w, int h, int r)
+	{
+		int d = r * 2;
+		var path = new GraphicsPath();
+		path.AddArc(0, 0, d, d, 180, 90);
+		path.AddArc(w - d, 0, d, d, 270, 90);
+		path.AddArc(w - d, h - d, d, d, 0, 90);
+		path.AddArc(0, h - d, d, d, 90, 90);
+		path.CloseFigure();
+		return path;
 	}
 
 	protected override bool ShowWithoutActivation => true;
@@ -92,8 +117,8 @@ internal sealed class DetailPanel : Form
 	{
 		int quotaH = _quota.HasValue ? 2 * QuotaWindowRowH + 2 * GroupVPad + GroupGap : 0;
 		int ctxH = Math.Max(1, _sessions.Count) * RowH + 2 * GroupVPad;
-		int sbH = _switchboardEnabled ? SwitchboardRowH + _openDashboard.Height + GroupVPad + GroupGap : 0;
-		Height = Pad + quotaH + ctxH + sbH + Pad + FooterH;
+		int sbH = _switchboardEnabled ? SwitchboardRowH + _openDashboard.Height + 2 * GroupVPad + GroupGap : 0;
+		Height = Pad + quotaH + ctxH + sbH + Pad;
 	}
 
 	public void ShowAbove(Rectangle widgetScreenBounds)
@@ -189,7 +214,7 @@ internal sealed class DetailPanel : Form
 		// Group 3: Switchboard readout (gated by config). One line of counts plus a launch button.
 		if (_switchboardEnabled)
 		{
-			int sbTop = y + GroupGap;
+			int sbTop = ctxTop + ctxH + GroupGap;
 			int sbH = SwitchboardRowH + _openDashboard.Height + 2 * GroupVPad;
 			DrawGroupPanel(g, sbTop, sbH);
 			string sbLine = _switchboardStats is SwitchboardStats st
@@ -198,10 +223,14 @@ internal sealed class DetailPanel : Form
 			g.DrawString(sbLine, label, textBrush, Pad, sbTop + GroupVPad);
 			_openDashboard.Location = new Point(Pad, sbTop + GroupVPad + SwitchboardRowH);
 			_openDashboard.Width = Width - 2 * Pad;
+			// Soft, theme-aware colors so the button blends into the dark panel
+			// rather than using the stark default system button face.
+			_openDashboard.BackColor = _palette.Track;
+			_openDashboard.ForeColor = _palette.Text;
+			_openDashboard.FlatAppearance.MouseOverBackColor = ControlPaint.Light(_palette.Track, 0.2f);
+			_openDashboard.FlatAppearance.MouseDownBackColor = _palette.Surface;
 			y = sbTop + sbH;
 		}
-
-		g.DrawString("updates every tick", small, mutedBrush, Width - 110, Height - FooterH);
 	}
 
 	int DrawQuotaWindow(Graphics g, int y, string name, QuotaWindow w, TimeSpan duration, Font label, Font small)

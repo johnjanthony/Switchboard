@@ -33,6 +33,8 @@ internal sealed class WidgetWindow : Form
 	bool _clearType = true;   // true = opaque theme bg + ClearType text (monitor style, default); false = true per-pixel-alpha transparency
 	QuotaUsage? _quota;       // latest Claude plan usage (5h/7d); null until first successful poll
 	bool _showQuota = true;   // user preference; the block also requires _quota to have a value
+	bool _showBadge;          // Switchboard ShowBadge preference
+	bool _hasPending;         // Switchboard has unanswered questions -> draw the amber badge
 
 	bool QuotaVisible => _showQuota && _quota.HasValue;
 	public QuotaUsage? Quota => _quota;
@@ -221,6 +223,16 @@ internal sealed class WidgetWindow : Form
 		PositionOverTaskbar();
 	}
 
+	// Show/clear the Switchboard pending badge (an amber dot), mirroring the tray icon.
+	// No size change, so this only repaints.
+	public void SetPending(bool showBadge, bool hasPending)
+	{
+		if (_showBadge == showBadge && _hasPending == hasPending) return;
+		_showBadge = showBadge;
+		_hasPending = hasPending;
+		Render();
+	}
+
 	// Re-render only (no reposition): the countdown text is recomputed from the stored reset times at
 	// paint time, so the host can tick this faster than the poll without refetching.
 	public void RefreshQuotaCountdown()
@@ -381,6 +393,12 @@ internal sealed class WidgetWindow : Form
 			}
 		using var textBrush = new SolidBrush(labelColor);
 		g.DrawString(text, font, textBrush, tx, ty);
+
+		// Switchboard pending badge: an amber dot in the top-right corner, mirroring
+		// the tray icon, when there are unanswered questions.
+		if (_showBadge && _hasPending)
+			using (var dot = new SolidBrush(Color.FromArgb(210, 153, 34)))
+				g.FillEllipse(dot, Width - 10, 2, 8, 8);
 	}
 
 	// Two CodeZeno-style usage rows (5h on top, 7d below), left of the context equalizer.
