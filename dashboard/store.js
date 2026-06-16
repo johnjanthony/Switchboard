@@ -112,15 +112,27 @@ export function createStore(deps) {
 		notify();
 	}
 
-	function toggleLeftCollapsed() {
-		state.ui.leftCollapsed = !state.ui.leftCollapsed;
+	function setLeftCollapsed(value) {
+		state.ui.leftCollapsed = !!value;
 		storage.setItem('sb.leftCollapsed', String(state.ui.leftCollapsed));
 		notify();
+	}
+
+	function toggleLeftCollapsed() {
+		setLeftCollapsed(!state.ui.leftCollapsed);
 	}
 
 	function toggleRightCollapsed() {
 		state.ui.rightCollapsed = !state.ui.rightCollapsed;
 		storage.setItem('sb.rightCollapsed', String(state.ui.rightCollapsed));
+		notify();
+	}
+
+	// Drag-to-resize the left conversation list. Width is clamped to a sane range
+	// and persisted, like the collapse flags. Only meaningful when not collapsed.
+	function setLeftWidth(px) {
+		state.ui.leftWidth = clampLeftWidth(px);
+		storage.setItem('sb.leftWidth', String(state.ui.leftWidth));
 		notify();
 	}
 
@@ -218,6 +230,14 @@ export function createStore(deps) {
 				pendingUnsubsByConv.set(id, unsub);
 			} else if (!active && pendingUnsubsByConv.has(id)) {
 				detachPendingListener(id);
+				// The listener is gone, so the server's removal update (e.g. from
+				// mark_question_cancelled) will never arrive. Clear the already-merged
+				// pending so a stale, answerable question does not freeze in local state.
+				if (conv) {
+					state.conversations[id] = { ...conv, pending: {} };
+				}
+				rebuildPendingsFlat();
+				notify();
 			}
 		}
 	}
@@ -298,12 +318,34 @@ export function createStore(deps) {
 		selectConversation,
 		retrySelectedConversation,
 		toggleLeftCollapsed,
+		setLeftCollapsed,
 		toggleRightCollapsed,
+		setLeftWidth,
 		mergeConversationMessages,
 		mergeConversationMembers,
 		mergeConversationAgentStatus,
 		mergeConversationPending,
 	};
+}
+
+const LEFT_WIDTH_DEFAULT = 280;
+const LEFT_WIDTH_MIN = 180;
+const LEFT_WIDTH_MAX = 560;
+
+function clampLeftWidth(px) {
+	const n = Number(px);
+	if (!Number.isFinite(n)) {
+		return LEFT_WIDTH_DEFAULT;
+	}
+	return Math.max(LEFT_WIDTH_MIN, Math.min(LEFT_WIDTH_MAX, Math.round(n)));
+}
+
+function readStoredLeftWidth(storage) {
+	const raw = storage.getItem('sb.leftWidth');
+	if (raw == null || raw === '') {
+		return LEFT_WIDTH_DEFAULT;
+	}
+	return clampLeftWidth(raw);
 }
 
 function initialState(storage) {
@@ -322,6 +364,7 @@ function initialState(storage) {
 		ui: {
 			leftCollapsed: storage.getItem('sb.leftCollapsed') === 'true',
 			rightCollapsed: storage.getItem('sb.rightCollapsed') === 'true',
+			leftWidth: readStoredLeftWidth(storage),
 			awayOffDialogOpen: false,
 		},
 		paneErrors: {},

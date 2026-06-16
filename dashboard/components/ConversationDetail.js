@@ -1,6 +1,6 @@
 import { html, useState } from "../vendor/htm-preact.js";
 import * as fb from "../firebase.js";
-import { memberState } from "../derive.js";
+import { memberState, isActive } from "../derive.js";
 import { renderMarkdown } from "../markdown.js";
 import { answerCmd } from "../commands.js";
 import { PaneBanner } from "./PaneBanner.js";
@@ -107,7 +107,11 @@ export function ConversationDetail({ store }) {
 	}
 
 	// pendingsFlat carries camelCase questionText/suggestions per add_pending_question_record.
-	const pendings = state.pendingsFlat.filter((p) => p.convId === id);
+	// Only an active conversation renders answer boxes; an ended/force-ended conversation
+	// shows none, so a stale pending question is never presented as answerable.
+	const pendings = isActive(conv && conv.meta)
+		? state.pendingsFlat.filter((p) => p.convId === id)
+		: [];
 
 	return html`
 		<section class="detail">

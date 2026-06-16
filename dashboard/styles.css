@@ -59,13 +59,25 @@ body {
 .shell {
 	flex: 1; min-height: 0;
 	display: grid;
-	grid-template-columns: 280px 1fr 300px;
+	grid-template-columns: var(--left-rail-width, 280px) 1fr 300px;
+	position: relative;
 }
 .shell.left-collapsed { grid-template-columns: var(--rail-collapsed) 1fr 300px; }
-.shell.right-collapsed { grid-template-columns: 280px 1fr var(--rail-collapsed); }
+.shell.right-collapsed { grid-template-columns: var(--left-rail-width, 280px) 1fr var(--rail-collapsed); }
 .shell.left-collapsed.right-collapsed {
 	grid-template-columns: var(--rail-collapsed) 1fr var(--rail-collapsed);
 }
+
+/* Drag handle to resize the left conversation list: a thin grab strip on the
+   left/center boundary, spanning the shell height. Hidden when the rail is
+   collapsed (not rendered). Width is clamped + persisted in the store. */
+.left-resizer {
+	position: absolute; top: 0; bottom: 0;
+	left: calc(var(--left-rail-width, 280px) - 3px);
+	width: 6px; cursor: col-resize; z-index: 5;
+}
+.left-resizer:hover { background: var(--accent); opacity: 0.5; }
+body.resizing-col { cursor: col-resize; user-select: none; }
 
 .rail { background: var(--panel); overflow-y: auto; display: flex; flex-direction: column; }
 .rail-left { border-right: 1px solid var(--border); }
@@ -137,6 +149,27 @@ body {
 .msg-body p { margin: 4px 0; }
 .msg-body pre { background: var(--panel-2); padding: 8px; border-radius: 4px; overflow-x: auto; }
 .msg-body code { background: var(--panel-2); padding: 1px 4px; border-radius: 3px; }
+/* Highlighted fenced blocks render as <pre class="hljs"><code class="language-..">.
+   The hljs theme paints the inner code dark; keep the wrapper consistent and let
+   the inner code own padding/background so it does not double up. */
+.msg-body pre.hljs { background: #0d1117; padding: 0; }
+.msg-body pre.hljs code { background: transparent; padding: 8px; border-radius: 0; display: block; }
+
+/* GFM tables: collapsed borders, subtle cell lines, modest padding. */
+.msg-body table { border-collapse: collapse; margin: 6px 0; }
+.msg-body th, .msg-body td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+.msg-body th { background: var(--panel-2); font-weight: 600; }
+
+/* Blockquote: left accent bar + muted text. */
+.msg-body blockquote {
+	margin: 6px 0; padding: 2px 12px;
+	border-left: 3px solid var(--border); color: var(--muted);
+}
+
+/* GFM task lists: drop the default bullet for checkbox items, align the box. */
+.msg-body ul.contains-task-list { list-style: none; padding-left: 18px; }
+.msg-body li.task-list-item { list-style: none; }
+.msg-body li.task-list-item input[type="checkbox"] { margin-right: 6px; vertical-align: middle; }
 .msg-cancelled { opacity: 0.5; text-decoration: line-through; }
 .msg-rejected { border-left: 3px solid var(--red); }
 

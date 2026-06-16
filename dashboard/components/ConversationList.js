@@ -1,6 +1,6 @@
 import { html, useState } from "../vendor/htm-preact.js";
 import * as fb from "../firebase.js";
-import { pendingCountFor } from "../derive.js";
+import { pendingCountFor, isActive } from "../derive.js";
 import { setHiddenCmd } from "../commands.js";
 
 export function ConversationList({ store }) {
@@ -25,10 +25,12 @@ export function ConversationList({ store }) {
 		return html`
 			<aside class="rail rail-left rail-collapsed">
 				<button class="rail-toggle" title="Expand conversations"
-					onClick=${() => store.toggleLeftCollapsed()}>&raquo;</button>
+					onClick=${() => store.toggleLeftCollapsed()}>»</button>
 				<div class="rail-icons">
 					${rows.map((r) => {
-						const count = pendingCountFor(r.pending);
+						// Only an active conversation shows a pending badge; an ended/force-ended
+						// conversation must not surface a stale, answerable question count.
+						const count = isActive(r.meta) ? pendingCountFor(r.pending) : 0;
 						return html`
 							<button
 								key=${r.id}
@@ -54,11 +56,13 @@ export function ConversationList({ store }) {
 						onChange=${(e) => setShowHidden(e.target.checked)} /> show hidden
 				</label>
 				<button class="rail-toggle" title="Collapse conversations"
-					onClick=${() => store.toggleLeftCollapsed()}>&laquo;</button>
+					onClick=${() => store.toggleLeftCollapsed()}>«</button>
 			</div>
 			<ul class="conv-list">
 				${rows.map((r) => {
-					const count = pendingCountFor(r.pending);
+					// Only an active conversation shows a pending badge; an ended/force-ended
+					// conversation must not surface a stale, answerable question count.
+					const count = isActive(r.meta) ? pendingCountFor(r.pending) : 0;
 					return html`
 						<li
 							key=${r.id}

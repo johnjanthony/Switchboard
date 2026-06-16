@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createStore } from './store.js';
 import * as paths from './schema.js';
+import { pendingCountFor } from './derive.js';
 
 function makeFakeStorage(initial = {}) {
 	const map = new Map(Object.entries(initial));
@@ -61,9 +62,48 @@ test('initialState shape is exactly the contract', () => {
 		pendingsFlat: [],
 		messageTimestampResolver: {},
 		health: { reachable: false, healthy: false, totalAnswered: null },
-		ui: { leftCollapsed: false, rightCollapsed: false, awayOffDialogOpen: false },
+		ui: { leftCollapsed: false, rightCollapsed: false, leftWidth: 280, awayOffDialogOpen: false },
 		paneErrors: {},
 	});
+});
+
+test('initialState reads and clamps leftWidth from storage', () => {
+	assert.equal(makeStore({ storageInit: { 'sb.leftWidth': '420' } }).store.getState().ui.leftWidth, 420);
+	// Out-of-range and non-numeric values clamp / fall back to defaults.
+	assert.equal(makeStore({ storageInit: { 'sb.leftWidth': '50' } }).store.getState().ui.leftWidth, 180);
+	assert.equal(makeStore({ storageInit: { 'sb.leftWidth': '9999' } }).store.getState().ui.leftWidth, 560);
+	assert.equal(makeStore({ storageInit: { 'sb.leftWidth': 'nope' } }).store.getState().ui.leftWidth, 280);
+});
+
+test('setLeftWidth clamps to range, persists, and notifies', () => {
+	const { store, storage } = makeStore();
+	let notified = 0;
+	store.subscribe(() => { notified += 1; });
+
+	store.setLeftWidth(360);
+	assert.equal(store.getState().ui.leftWidth, 360);
+	assert.equal(storage.getItem('sb.leftWidth'), '360');
+	assert.equal(notified, 1);
+
+	store.setLeftWidth(40); // below min
+	assert.equal(store.getState().ui.leftWidth, 180);
+	store.setLeftWidth(5000); // above max
+	assert.equal(store.getState().ui.leftWidth, 560);
+	assert.equal(storage.getItem('sb.leftWidth'), '560');
+});
+
+test('setLeftCollapsed is idempotent, persists, and backs the toggle', () => {
+	const { store, storage } = makeStore();
+	store.setLeftCollapsed(true);
+	assert.equal(store.getState().ui.leftCollapsed, true);
+	assert.equal(storage.getItem('sb.leftCollapsed'), 'true');
+	// Idempotent: setting true again keeps it true (drag emits many move events).
+	store.setLeftCollapsed(true);
+	assert.equal(store.getState().ui.leftCollapsed, true);
+	// The toggle is defined in terms of it.
+	store.toggleLeftCollapsed();
+	assert.equal(store.getState().ui.leftCollapsed, false);
+	assert.equal(storage.getItem('sb.leftCollapsed'), 'false');
 });
 
 test('initialState reads collapse flags from storage', () => {
@@ -225,6 +265,24 @@ test('ending an active conversation detaches its pending listener', () => {
 	store.upsertConversationMeta('c1', { state: 'ended' });
 	const detached = fb.calls.unsubs.slice(unsubsBefore).map((u) => u.path);
 	assert.ok(detached.includes('conversations/c1/pending_questions'));
+});
+
+test('ending an active conversation clears its stale pending from local state and pendingsFlat', () => {
+	const { store } = makeStore();
+	store.upsertConversationMeta('c1', { state: 'active' });
+	store.mergeConversationPending('c1', {
+		r1: { sender: 'John', questionText: 'still answerable?', msgId: 'm1', cancelled: false },
+	});
+	assert.equal(store.getState().pendingsFlat.length, 1);
+	assert.equal(store.getState().pendingsFlat[0].convId, 'c1');
+
+	// Transition to ended: syncPendingListeners runs via upsertConversationMeta and must
+	// both detach the listener AND clear the already-merged pending so it does not freeze.
+	store.upsertConversationMeta('c1', { state: 'ended' });
+	const s = store.getState();
+	assert.equal(s.pendingsFlat.length, 0);
+	assert.deepEqual(s.conversations.c1.pending, {});
+	assert.equal(pendingCountFor(s.conversations.c1.pending), 0);
 });
 
 test('mergeConversationPending builds pendingsFlat from camelCase keys, dropping cancelled', () => {

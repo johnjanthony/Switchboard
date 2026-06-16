@@ -184,12 +184,12 @@ export function CommandRail({ store }) {
 		return html`
 			<aside class="rail rail-right rail-collapsed">
 				<button class="rail-toggle" title="Expand commands"
-					onClick=${() => store.toggleRightCollapsed()}>&laquo;</button>
+					onClick=${() => store.toggleRightCollapsed()}>«</button>
 				<div class="rail-icons">
 					<button class="cmd-icon" title="Spawn fresh" onClick=${() => setOpenDialog("spawn")}>+</button>
-					<button class="cmd-icon" title="Resume" onClick=${() => setOpenDialog("resume")}>&#8635;</button>
-					<button class="cmd-icon" title="Combine" onClick=${() => setOpenDialog("combine")}>&#8862;</button>
-					<button class="cmd-icon" title="Force-end" onClick=${() => setOpenDialog("forceend")}>&times;</button>
+					<button class="cmd-icon" title="Resume" onClick=${() => setOpenDialog("resume")}>↻</button>
+					<button class="cmd-icon" title="Combine" onClick=${() => setOpenDialog("combine")}>⊗</button>
+					<button class="cmd-icon" title="Force-end" onClick=${() => setOpenDialog("forceend")}>×</button>
 				</div>
 				${openDialog === "spawn" ? html`<${SpawnDialog} onClose=${close} />` : null}
 				${openDialog === "resume" ? html`<${ResumeDialog} store=${store} onClose=${close} />` : null}
@@ -207,7 +207,7 @@ export function CommandRail({ store }) {
 			<div class="rail-head">
 				<span class="rail-title">Commands</span>
 				<button class="rail-toggle" title="Collapse commands"
-					onClick=${() => store.toggleRightCollapsed()}>&raquo;</button>
+					onClick=${() => store.toggleRightCollapsed()}>»</button>
 			</div>
 			<div class="cmd-buttons">
 				<button onClick=${() => setOpenDialog("spawn")}>Spawn fresh</button>
