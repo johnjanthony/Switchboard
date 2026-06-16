@@ -32,14 +32,13 @@ AWAY_MODE_PATH = "/away-mode"
 TIMEOUT_SECONDS = 0.5
 
 REDIRECT_REASON_AWAY_MODE = (
-	"You are in away mode. John is not watching the terminal. Do not produce "
-	"terminal output. Instead:\n"
-	"- Use ask_human() to check in or ask a question.\n"
-	"- Use notify_human() to send a non-blocking status update.\n"
-	"- Use message_and_await_agent() to speak to collab partners and wait for their reply.\n"
-	"- Use leave_conversation() to step out of a conversation when done.\n"
-	"- Use set_away_mode(False) to turn away mode off if John has returned.\n"
-	"End this turn only after routing output through one of the above tools."
+	"You are in away mode. John is on his phone, not watching the terminal.\n"
+	"To hand your turn back, call ask_human() and wait for his reply. This is "
+	"the correct and ONLY way to end your turn while away.\n"
+	"Do NOT end your turn with notify_human(): it is non-blocking, so it will not "
+	"end the turn and you will loop straight back to this message. (You may call "
+	"notify_human() to push a status update, but you must still end on ask_human().)\n"
+	"Only call set_away_mode(False) if John has explicitly told you he is back."
 )
 
 
