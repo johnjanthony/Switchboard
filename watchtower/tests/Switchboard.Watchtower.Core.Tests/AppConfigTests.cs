@@ -38,4 +38,36 @@ public class AppConfigTests
 		}
 		finally { if (File.Exists(path)) File.Delete(path); }
 	}
+
+	[Fact]
+	public void Switchboard_defaults_match_spec()
+	{
+		var c = new AppConfig();
+		Assert.NotNull(c.Switchboard);
+		Assert.False(c.Switchboard.Enabled);
+		Assert.Equal("http://localhost:9876/stats", c.Switchboard.StatsUrl);
+		Assert.Equal("http://localhost:9876/dashboard", c.Switchboard.DashboardUrl);
+		Assert.False(c.Switchboard.ShowBadge);
+	}
+
+	[Fact]
+	public void Switchboard_block_round_trips()
+	{
+		var path = Path.Combine(Path.GetTempPath(), "cccfg-sb-" + Guid.NewGuid().ToString("N") + ".json");
+		try
+		{
+			var c = new AppConfig();
+			c.Switchboard.Enabled = true;
+			c.Switchboard.StatsUrl = "http://192.168.1.5:9876/stats";
+			c.Switchboard.DashboardUrl = "http://192.168.1.5:9876/dashboard";
+			c.Switchboard.ShowBadge = true;
+			c.SaveTo(path);
+			var loaded = AppConfig.LoadFrom(path);
+			Assert.True(loaded.Switchboard.Enabled);
+			Assert.Equal("http://192.168.1.5:9876/stats", loaded.Switchboard.StatsUrl);
+			Assert.Equal("http://192.168.1.5:9876/dashboard", loaded.Switchboard.DashboardUrl);
+			Assert.True(loaded.Switchboard.ShowBadge);
+		}
+		finally { if (File.Exists(path)) File.Delete(path); }
+	}
 }

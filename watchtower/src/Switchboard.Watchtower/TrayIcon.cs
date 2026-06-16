@@ -16,6 +16,12 @@ internal sealed class TrayIcon : IDisposable
 	readonly List<ToolStripMenuItem> _intervalItems = new();
 	IntPtr _hicon;
 	Icon? _ownedIcon;
+	bool _showBadge;
+	bool _hasPending;
+	double _lastPct;
+	bool _lastAnyError;
+	Severity _lastSeverity = Severity.Green;
+	bool _lastLight;
 
 	public event Action? RefreshRequested;
 	public event Action<bool>? AutostartToggled;
@@ -23,6 +29,7 @@ internal sealed class TrayIcon : IDisposable
 	public event Action<bool>? QuotaShowToggled;     // show/hide the plan-usage block
 	public event Action<int>? QuotaIntervalChanged;  // new poll cadence in minutes
 	public event Action? QuitRequested;
+	public event Action? OpenDashboardRequested;
 
 	public TrayIcon(bool autostartOn, bool showQuota, int quotaPollMinutes)
 	{
@@ -64,6 +71,9 @@ internal sealed class TrayIcon : IDisposable
 		menu.Items.Add(intervalMenu);
 
 		menu.Items.Add(new ToolStripSeparator());
+		menu.Items.Add("Open Switchboard dashboard", null, (_, _) => OpenDashboardRequested?.Invoke());
+
+		menu.Items.Add(new ToolStripSeparator());
 		menu.Items.Add("Quit", null, (_, _) => QuitRequested?.Invoke());
 
 		_icon = new NotifyIcon
@@ -80,9 +90,13 @@ internal sealed class TrayIcon : IDisposable
 	// Claude Code context indicator: a muted track ring with a severity-colored arc filling clockwise.
 	public void SetGauge(double pct, bool anyError, Severity severity, bool light)
 	{
+		_lastPct = pct;
+		_lastAnyError = anyError;
+		_lastSeverity = severity;
+		_lastLight = light;
 		var palette = new Palette(light);
 		Color arc = anyError ? palette.Warning : Palette.ForSeverity(severity);
-		using var bmp = RenderGauge(pct, arc, palette.Track, anyError);
+		using var bmp = RenderGauge(pct, arc, palette.Track, anyError, _showBadge && _hasPending);
 
 		IntPtr hicon = bmp.GetHicon();
 		var icon = Icon.FromHandle(hicon);
@@ -100,7 +114,7 @@ internal sealed class TrayIcon : IDisposable
 		if (oldHicon != IntPtr.Zero) Native.DestroyIcon(oldHicon);
 	}
 
-	static Bitmap RenderGauge(double pct, Color arc, Color track, bool anyError)
+	static Bitmap RenderGauge(double pct, Color arc, Color track, bool anyError, bool badge)
 	{
 		var bmp = new Bitmap(32, 32, PixelFormat.Format32bppArgb);
 		using var g = Graphics.FromImage(bmp);
@@ -119,6 +133,13 @@ internal sealed class TrayIcon : IDisposable
 			using (var arcPen = new Pen(arc, thickness) { StartCap = LineCap.Round, EndCap = LineCap.Round })
 				g.DrawArc(arcPen, ring, -90f, sweep);   // start at 12 o'clock, fill clockwise
 
+		// Pending badge: a small amber dot in the top-right corner when there are unanswered questions.
+		if (badge)
+		{
+			using var dotBrush = new SolidBrush(Color.FromArgb(210, 153, 34));
+			g.FillEllipse(dotBrush, 22, 2, 8, 8);
+		}
+
 		return bmp;
 	}
 
@@ -129,6 +150,14 @@ internal sealed class TrayIcon : IDisposable
 		foreach (var item in _intervalItems)
 			item.Checked = item.Text == IntervalLabel(minutes);
 		QuotaIntervalChanged?.Invoke(minutes);
+	}
+
+	// Configure the optional pending badge. The dot is overlaid on the gauge when showBadge && pending > 0.
+	public void SetPending(bool showBadge, bool hasPending)
+	{
+		_showBadge = showBadge;
+		_hasPending = hasPending;
+		SetGauge(_lastPct, _lastAnyError, _lastSeverity, _lastLight);
 	}
 
 	public void Dispose()

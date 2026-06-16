@@ -17,11 +17,18 @@ internal sealed class DetailPanel : Form
 	const int GroupGap = 10;     // vertical gap between the two group panels
 	const int PanelMargin = 6;   // horizontal inset of a group panel from the popup edge
 	const int PanelRadius = 6;
+	const int SwitchboardRowH = 24;
 
 	IReadOnlyList<SessionModel> _sessions = Array.Empty<SessionModel>();
 	Palette _palette = new(light: false);
 	QuotaUsage? _quota;   // latest Claude plan usage (5h/7d); null until first successful poll -> section hidden
 	DateTime? _lastActivityUtc;   // newest transcript mtime when no session is active; null if never seen
+
+	bool _switchboardEnabled;
+	SwitchboardStats? _switchboardStats;   // latest /stats; null means unavailable when enabled
+	readonly Button _openDashboard;
+
+	public event Action? OpenDashboardRequested;
 
 	public DetailPanel()
 	{
@@ -32,6 +39,19 @@ internal sealed class DetailPanel : Form
 		DoubleBuffered = true;
 		Width = 320;
 		Visible = false;
+
+		_openDashboard = new Button
+		{
+			Text = "Open dashboard",
+			FlatStyle = FlatStyle.Flat,
+			AutoSize = false,
+			Height = 24,
+			Visible = false,
+			TabStop = false,
+		};
+		_openDashboard.FlatAppearance.BorderSize = 1;
+		_openDashboard.Click += (_, _) => OpenDashboardRequested?.Invoke();
+		Controls.Add(_openDashboard);
 	}
 
 	protected override bool ShowWithoutActivation => true;
@@ -58,11 +78,22 @@ internal sealed class DetailPanel : Form
 		Invalidate();
 	}
 
+	// Latest Switchboard /stats (null == unavailable). enabled gates the whole block; when false it is hidden.
+	public void UpdateSwitchboard(bool enabled, SwitchboardStats? stats)
+	{
+		_switchboardEnabled = enabled;
+		_switchboardStats = stats;
+		_openDashboard.Visible = enabled;
+		RecomputeHeight();
+		Invalidate();
+	}
+
 	void RecomputeHeight()
 	{
 		int quotaH = _quota.HasValue ? 2 * QuotaWindowRowH + 2 * GroupVPad + GroupGap : 0;
 		int ctxH = Math.Max(1, _sessions.Count) * RowH + 2 * GroupVPad;
-		Height = Pad + quotaH + ctxH + Pad + FooterH;
+		int sbH = _switchboardEnabled ? SwitchboardRowH + _openDashboard.Height + GroupVPad + GroupGap : 0;
+		Height = Pad + quotaH + ctxH + sbH + Pad + FooterH;
 	}
 
 	public void ShowAbove(Rectangle widgetScreenBounds)
@@ -153,6 +184,21 @@ internal sealed class DetailPanel : Form
 			g.DrawString(pct, label, pctBrush, Width - Pad - 34, barY - 4);
 
 			y += RowH;
+		}
+
+		// Group 3: Switchboard readout (gated by config). One line of counts plus a launch button.
+		if (_switchboardEnabled)
+		{
+			int sbTop = y + GroupGap;
+			int sbH = SwitchboardRowH + _openDashboard.Height + 2 * GroupVPad;
+			DrawGroupPanel(g, sbTop, sbH);
+			string sbLine = _switchboardStats is SwitchboardStats st
+				? $"Switchboard: {st.ActiveConversations} active - {st.PendingCount} pending - away {(st.AwayMode ? "ON" : "OFF")}"
+				: "Switchboard: unavailable";
+			g.DrawString(sbLine, label, textBrush, Pad, sbTop + GroupVPad);
+			_openDashboard.Location = new Point(Pad, sbTop + GroupVPad + SwitchboardRowH);
+			_openDashboard.Width = Width - 2 * Pad;
+			y = sbTop + sbH;
 		}
 
 		g.DrawString("updates every tick", small, mutedBrush, Width - 110, Height - FooterH);

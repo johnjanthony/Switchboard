@@ -1,0 +1,212 @@
+:root {
+	--bg: #1e1f22;
+	--panel: #2b2d31;
+	--panel-2: #232428;
+	--border: #3a3c41;
+	--text: #e3e5e8;
+	--muted: #9aa0a6;
+	--accent: #5865f2;
+	--green: #3ba55d;
+	--amber: #faa61a;
+	--red: #ed4245;
+	--grey: #80848e;
+	--rail-collapsed: 44px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+	margin: 0;
+	font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+	background: var(--bg);
+	color: var(--text);
+	font-size: 14px;
+}
+
+.app-root { display: flex; flex-direction: column; height: 100vh; }
+
+/* Sign-in gate */
+.signin-gate {
+	display: flex; flex-direction: column; align-items: center; justify-content: center;
+	height: 100vh; gap: 12px; text-align: center;
+}
+.signin-gate h1 { margin: 0; font-size: 28px; }
+.signin-sub { color: var(--muted); margin: 0; }
+.signin-error { color: var(--red); margin: 0; }
+.signin-retry {
+	padding: 10px 20px; border: none; border-radius: 6px;
+	background: var(--accent); color: #fff; cursor: pointer; font-size: 15px;
+}
+
+/* Status bar */
+.status-bar {
+	display: flex; align-items: center; gap: 16px;
+	padding: 8px 14px; background: var(--panel-2); border-bottom: 1px solid var(--border);
+}
+.away-pill {
+	border: 1px solid var(--border); border-radius: 14px; padding: 4px 12px;
+	cursor: pointer; font-weight: 600;
+}
+.away-pill.away-on { background: var(--amber); color: #1e1f22; }
+.away-pill.away-off { background: transparent; color: var(--muted); }
+.status-counts { display: flex; gap: 14px; }
+.status-counts .count, .status-health .count { color: var(--muted); }
+.status-health { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.wsl-indicator { font-size: 12px; color: var(--muted); }
+.wsl-indicator.wsl-on { color: var(--green); }
+
+/* Layout C grid: left rail / center / right rail. Rails collapse independently. */
+.shell {
+	flex: 1; min-height: 0;
+	display: grid;
+	grid-template-columns: 280px 1fr 300px;
+}
+.shell.left-collapsed { grid-template-columns: var(--rail-collapsed) 1fr 300px; }
+.shell.right-collapsed { grid-template-columns: 280px 1fr var(--rail-collapsed); }
+.shell.left-collapsed.right-collapsed {
+	grid-template-columns: var(--rail-collapsed) 1fr var(--rail-collapsed);
+}
+
+.rail { background: var(--panel); overflow-y: auto; display: flex; flex-direction: column; }
+.rail-left { border-right: 1px solid var(--border); }
+.rail-right { border-left: 1px solid var(--border); }
+.rail-collapsed { align-items: center; padding-top: 8px; }
+.rail-head {
+	display: flex; align-items: center; gap: 8px;
+	padding: 10px 12px; border-bottom: 1px solid var(--border);
+}
+.rail-title { font-weight: 600; }
+.rail-toggle {
+	margin-left: auto; background: transparent; border: none; color: var(--muted);
+	cursor: pointer; font-size: 16px;
+}
+.rail-collapsed .rail-toggle { margin-left: 0; }
+.rail-icons { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.show-hidden { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+
+/* Status dots: green / amber / red / grey */
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: var(--grey); }
+.dot-green { background: var(--green); }
+.dot-amber { background: var(--amber); }
+.dot-red { background: var(--red); }
+.conv-state-active { background: var(--green); }
+.conv-state-ended { background: var(--grey); }
+.member-alive { background: var(--green); }
+.member-dormant { background: var(--amber); }
+.member-lost { background: var(--red); }
+
+/* Conversation list */
+.conv-list { list-style: none; margin: 0; padding: 0; }
+.conv-row {
+	display: flex; align-items: center; gap: 8px;
+	padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--panel-2);
+}
+.conv-row:hover { background: var(--panel-2); }
+.conv-row.selected { background: var(--panel-2); border-left: 3px solid var(--accent); }
+.conv-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-state-label { font-size: 11px; color: var(--muted); }
+.conv-hide { font-size: 11px; background: transparent; border: 1px solid var(--border);
+	border-radius: 4px; color: var(--muted); cursor: pointer; padding: 2px 6px; }
+.badge {
+	background: var(--red); color: #fff; border-radius: 9px; font-size: 11px;
+	padding: 1px 6px; min-width: 18px; text-align: center;
+}
+.conv-dot {
+	position: relative; width: 24px; height: 24px; border-radius: 50%;
+	border: 2px solid transparent; cursor: pointer; background: var(--grey);
+}
+.conv-dot.selected { border-color: var(--accent); }
+.conv-dot .badge { position: absolute; top: -6px; right: -6px; }
+
+/* Detail pane */
+.detail { padding: 14px; overflow-y: auto; }
+.detail-title { margin: 0 0 12px; }
+.detail-empty, .roster-empty, .transcript-empty { color: var(--muted); padding: 12px 0; }
+.roster { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px;
+	border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+.member { display: flex; align-items: center; gap: 8px; }
+.member-name { font-weight: 600; }
+.member-surface { font-size: 12px; color: var(--muted); }
+.member-status { font-size: 12px; color: var(--accent); }
+.member-status.idle { color: var(--muted); }
+
+.transcript { display: flex; flex-direction: column; gap: 12px; }
+.msg { background: var(--panel); border-radius: 6px; padding: 8px 12px; }
+.msg-head { display: flex; gap: 10px; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.msg-sender { font-weight: 600; color: var(--text); }
+.msg-body p { margin: 4px 0; }
+.msg-body pre { background: var(--panel-2); padding: 8px; border-radius: 4px; overflow-x: auto; }
+.msg-body code { background: var(--panel-2); padding: 1px 4px; border-radius: 3px; }
+.msg-cancelled { opacity: 0.5; text-decoration: line-through; }
+.msg-rejected { border-left: 3px solid var(--red); }
+
+/* Inline answer box */
+.pending-stack { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; }
+.answer-box { background: var(--panel-2); border: 1px solid var(--accent); border-radius: 6px; padding: 12px; }
+.pending-question { font-weight: 600; margin-bottom: 8px; }
+.suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.suggestion { background: var(--panel); border: 1px solid var(--border); border-radius: 4px;
+	color: var(--text); cursor: pointer; padding: 4px 8px; }
+.answer-input { width: 100%; min-height: 60px; background: var(--bg); color: var(--text);
+	border: 1px solid var(--border); border-radius: 4px; padding: 6px; resize: vertical; }
+.answer-send { margin-top: 8px; background: var(--accent); color: #fff; border: none;
+	border-radius: 4px; padding: 6px 14px; cursor: pointer; }
+
+/* Command rail */
+.cmd-buttons { display: flex; flex-direction: column; gap: 8px; padding: 12px; }
+.cmd-buttons button {
+	background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+	border-radius: 4px; padding: 8px; cursor: pointer;
+}
+.cmd-icon {
+	width: 32px; height: 32px; border-radius: 6px; border: 1px solid var(--border);
+	background: var(--panel-2); color: var(--text); cursor: pointer;
+}
+
+/* Dialogs */
+.dialog {
+	margin: 12px; padding: 14px; background: var(--panel-2);
+	border: 1px solid var(--accent); border-radius: 6px;
+	display: flex; flex-direction: column; gap: 10px;
+}
+.dialog h3 { margin: 0; }
+.dialog label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.dialog input, .dialog select, .dialog textarea {
+	background: var(--bg); color: var(--text); border: 1px solid var(--border);
+	border-radius: 4px; padding: 6px;
+}
+.dialog-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.dialog-actions button {
+	background: var(--accent); color: #fff; border: none; border-radius: 4px;
+	padding: 6px 12px; cursor: pointer;
+}
+.dialog-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+.confirm { color: var(--amber); font-size: 12px; }
+
+/* Pane banner */
+.pane-banner {
+	display: flex; align-items: center; gap: 12px;
+	background: #3a2326; border: 1px solid var(--red); border-radius: 6px;
+	padding: 8px 12px; margin-bottom: 12px;
+}
+.pane-banner-msg { flex: 1; color: var(--text); }
+.pane-banner-retry {
+	background: var(--red); color: #fff; border: none; border-radius: 4px;
+	padding: 4px 12px; cursor: pointer;
+}
+
+/* --- Phase 3 resolution additions (open accent, admin strip, resume hint) --- */
+
+/* Open-conversation accent: the singleton "open" conversation. Coexists with .selected. */
+.conv-row.open { box-shadow: inset 3px 0 0 var(--green); }
+.conv-dot.open { box-shadow: 0 0 0 2px var(--green); }
+
+/* Admin-notifications strip: a thin, scrollable band under the status bar. */
+.admin-strip { background: var(--panel-2); border-bottom: 1px solid var(--border); max-height: 96px; overflow-y: auto; }
+.admin-note { display: flex; gap: 12px; align-items: baseline; padding: 4px 14px; font-size: 12px; border-bottom: 1px solid var(--bg); }
+.admin-note:last-child { border-bottom: none; }
+.admin-note-text { flex: 1; color: var(--text); }
+.admin-note-time { color: var(--muted); font-size: 11px; white-space: nowrap; }
+
+/* Resume dialog: shown when the selected conversation is not resumable. */
+.resume-hint { color: var(--amber); font-size: 12px; margin: 0; }

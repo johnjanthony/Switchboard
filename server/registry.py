@@ -143,6 +143,10 @@ class Registry:
 		oldest = min(r.started_at for r in self._pending.values())
 		return (now - oldest).total_seconds()
 
+	@property
+	def active_conversations_count(self) -> int:
+		return sum(1 for c in self.conversations.values() if c.state == "active")
+
 	def add(
 		self,
 		conversation_id: str,

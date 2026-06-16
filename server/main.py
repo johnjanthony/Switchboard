@@ -14,6 +14,7 @@ import uvicorn
 from mcp.server.fastmcp import FastMCP
 from starlette.responses import JSONResponse
 from starlette.requests import Request
+from starlette.staticfiles import StaticFiles
 
 import dataclasses
 
@@ -101,6 +102,41 @@ def _build_agent_status_route(handlers):
 		return JSONResponse({}, status_code=200)
 	return agent_status
 
+
+def _build_stats_route(registry: Registry, backend, loop_sups: dict):
+	"""GET /stats - the widget-facing roll-up (localhost, unauthenticated, same
+	trust model as /healthz and /away-mode). The widget polls this so it never
+	needs Firebase.
+
+	The `healthy` flag matches the dashboard's rollUpHealth exactly: a listener
+	is unhealthy iff its state is 'reconnecting' (per firebase_supervisor, that
+	is the dead-and-retrying state; 'stopped' is an intentional shutdown and
+	'starting' is transient, so neither counts); a dispatch loop is unhealthy
+	iff consecutive_failures > 0. Both surfaces test state == 'reconnecting'
+	verbatim, so /stats and the dashboard never disagree."""
+	async def stats(request: Request):
+		listeners = []
+		listener_health_fn = getattr(backend, "listener_health", None)
+		if callable(listener_health_fn):
+			try:
+				listeners = listener_health_fn()
+			except Exception:
+				listeners = []
+		listener_unhealthy = any(
+			isinstance(l, dict) and l.get("state") == "reconnecting" for l in listeners
+		)
+		loop_unhealthy = any(
+			sup.health().consecutive_failures > 0 for sup in loop_sups.values()
+		)
+		healthy = not listener_unhealthy and not loop_unhealthy
+		return JSONResponse({
+			"active_conversations": registry.active_conversations_count,
+			"pending_count": registry.pending_count,
+			"oldest_pending_age_seconds": registry.oldest_pending_age_seconds,
+			"away_mode": bool(registry.global_away_mode),
+			"healthy": healthy,
+		})
+	return stats
 
 
 def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
@@ -471,8 +507,12 @@ async def _run(config: Config) -> None:
 
 	app.add_route("/healthz", healthz, methods=["GET"])
 	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
+	app.add_route("/stats", _build_stats_route(registry, backend, loop_sups), methods=["GET"])
 	app.add_route("/agent_status", _build_agent_status_route(handlers), methods=["POST"])
 	app.add_route("/cli-session/end", _build_cli_session_end_route(registry, backend=backend, logger=logger), methods=["POST"])
+
+	dashboard_dir = _Path(__file__).resolve().parent.parent / "dashboard"
+	app.mount("/dashboard", StaticFiles(directory=str(dashboard_dir), html=True), name="dashboard")
 
 	uv_config = uvicorn.Config(
 		app,

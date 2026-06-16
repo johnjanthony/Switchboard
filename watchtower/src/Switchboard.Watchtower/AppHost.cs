@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Switchboard.Watchtower.Core;
 
 namespace Switchboard.Watchtower;
@@ -18,6 +19,9 @@ internal sealed class AppHost : IDisposable
 	readonly string _logPath;
 	volatile bool _scanning;
 	volatile bool _quotaScanning;
+	readonly System.Windows.Forms.Timer _switchboardTimer = new();
+	readonly SwitchboardStatsReader? _switchboardReader;
+	volatile bool _switchboardScanning;
 
 	static int QuotaIntervalMs(int minutes) => Math.Clamp(minutes, 1, 60) * 60_000;
 
@@ -27,6 +31,15 @@ internal sealed class AppHost : IDisposable
 		_logPath = Path.Combine(Path.GetDirectoryName(AppConfig.DefaultPath)!, "log.txt");
 		_quotaService = new QuotaService(m => LogInfo("quota", m), LogError);
 		_tray = new TrayIcon(_config.Autostart, _config.ShowQuota, _config.QuotaPollMinutes);
+
+		if (_config.Switchboard.Enabled)
+		{
+			_switchboardReader = new SwitchboardStatsReader(_config.Switchboard.StatsUrl, LogError);
+			_switchboardTimer.Interval = Math.Max(5, _config.PollIntervalSeconds) * 1000;
+			_switchboardTimer.Tick += (_, _) => PollSwitchboard();
+		}
+		_tray.OpenDashboardRequested += () => OpenDashboard();
+		_panel.OpenDashboardRequested += () => OpenDashboard();
 
 		_widget.PreferredX = _config.WidgetX;
 		_widget.PositionChanged += x => { _config.WidgetX = x; SafeSaveConfig(); };
@@ -74,6 +87,8 @@ internal sealed class AppHost : IDisposable
 		_widget.SetShowQuota(_config.ShowQuota);
 		if (_config.ShowQuota) { _quotaTimer.Start(); PollQuota(); }
 		Scan();
+		_panel.UpdateSwitchboard(_config.Switchboard.Enabled, null);
+		if (_config.Switchboard.Enabled) { _switchboardTimer.Start(); PollSwitchboard(); }
 	}
 
 	// Tooltip-style: show the panel while the cursor is over the widget (or the panel itself), hide otherwise.
@@ -192,6 +207,21 @@ internal sealed class AppHost : IDisposable
 		}, TaskScheduler.FromCurrentSynchronizationContext());
 	}
 
+	// Fire-and-forget /stats poll; result marshaled back to the UI thread. Null result == unavailable.
+	void PollSwitchboard()
+	{
+		if (_switchboardReader is null || _switchboardScanning) return;
+		_switchboardScanning = true;
+		_switchboardReader.FetchAsync(CancellationToken.None).ContinueWith(t =>
+		{
+			_switchboardScanning = false;
+			if (t.IsFaulted) { LogError("switchboard-poll", t.Exception!); return; }
+			var stats = t.Result;
+			_panel.UpdateSwitchboard(enabled: true, stats);
+			_tray.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
+		}, TaskScheduler.FromCurrentSynchronizationContext());
+	}
+
 	// Re-render the countdown at the next moment its text would change (decoupled from the poll), so
 	// "3h" -> "2h" -> ... -> "5m" -> "4m" stays live even with a 1-hour poll. Floor 1s, cap 60s.
 	void ScheduleCountdown()
@@ -229,6 +259,18 @@ internal sealed class AppHost : IDisposable
 
 	void SafeSaveConfig() { try { _config.Save(); } catch (Exception ex) { LogError("config-save", ex); } }
 
+	// Open the Operator dashboard in the default browser. conversationId, when supplied, deep-links via #conv=.
+	void OpenDashboard(string? conversationId = null)
+	{
+		try
+		{
+			string url = _config.Switchboard.DashboardUrl;
+			if (!string.IsNullOrEmpty(conversationId)) url += "#conv=" + conversationId;
+			Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+		}
+		catch (Exception ex) { LogError("switchboard-launch", ex); }
+	}
+
 	public void Dispose()
 	{
 		_timer.Dispose();
@@ -236,6 +278,7 @@ internal sealed class AppHost : IDisposable
 		_hoverTimer.Dispose();
 		_quotaTimer.Dispose();
 		_countdownTimer.Dispose();
+		_switchboardTimer.Dispose();
 		_tray.Dispose();
 		_panel.Dispose();
 		_widget.Dispose();

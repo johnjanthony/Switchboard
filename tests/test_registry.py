@@ -254,3 +254,23 @@ def test_registry_session_routing_maps():
 
 	r.open_conversation_id = "conv-1"
 	assert r.open_conversation_id == "conv-1"
+
+
+class TestActiveConversationsCount:
+	def test_empty_registry_is_zero(self):
+		r = Registry()
+		assert r.active_conversations_count == 0
+
+	def test_counts_only_active_state(self):
+		from server.registry import Conversation
+		r = Registry()
+		r.conversations["c1"] = Conversation(id="c1", title="a", state="active")
+		r.conversations["c2"] = Conversation(id="c2", title="b", state="ended")
+		r.conversations["c3"] = Conversation(id="c3", title="c", state="active")
+		assert r.active_conversations_count == 2
+
+	def test_all_ended_is_zero(self):
+		from server.registry import Conversation
+		r = Registry()
+		r.conversations["c1"] = Conversation(id="c1", title="a", state="ended")
+		assert r.active_conversations_count == 0

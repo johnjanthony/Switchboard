@@ -13,6 +13,7 @@ public sealed class AppConfig
 	public bool? LightThemeOverride { get; set; } = null;
 	public bool ShowQuota { get; set; } = true;
 	public int QuotaPollMinutes { get; set; } = 5;   // plan-usage poll cadence; 1, 5, 15, or 60
+	public SwitchboardConfig Switchboard { get; set; } = new();
 
 	public static string DefaultPath => Path.Combine(
 		Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -61,4 +62,20 @@ public sealed class AppConfig
 		Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 		File.WriteAllText(path, JsonSerializer.Serialize(this, Options));
 	}
+}
+
+/// <summary>Watchtower's Switchboard integration: the stats line, dashboard launcher, and optional tray badge.</summary>
+public sealed class SwitchboardConfig
+{
+	/// <summary>Gates the entire Switchboard UI (stats line, launcher, badge). When false the block is hidden.</summary>
+	public bool Enabled { get; set; }
+
+	/// <summary>Localhost stats endpoint the widget polls. Point at the Windows host IP for a WSL-hosted server.</summary>
+	public string StatsUrl { get; set; } = "http://localhost:9876/stats";
+
+	/// <summary>Operator dashboard URL the launcher opens; may have #conv=&lt;id&gt; appended to deep-link.</summary>
+	public string DashboardUrl { get; set; } = "http://localhost:9876/dashboard";
+
+	/// <summary>When true and pending_count is greater than zero, the tray icon shows a pending badge.</summary>
+	public bool ShowBadge { get; set; }
 }
