@@ -43,14 +43,17 @@ Switchboard reads its configuration from OS env vars. A `.env` file is loaded as
 | `SWITCHBOARD_PORT` | No | `9876` | Local port for the SSE/HTTP server. |
 | `SWITCHBOARD_TIMEOUT_SECONDS` | No | `86400` | How long `ask_human` blocks before returning `__TIMEOUT__`. |
 | `SWITCHBOARD_LOG_PATH` | No | `./logs/switchboard.jsonl` | Path to the event audit log. |
+| `SWITCHBOARD_RATE_LIMIT` | No | `30` | Max messages per minute per conversation before `ask_human` / `notify_human` / `send_document_human` are rejected. |
 | **Android & Firebase** | | | |
-| `SWITCHBOARD_ENABLE_ANDROID` | No | `false` | Set to `true` to enable the Firebase backend and Android integration. |
-| `FIREBASE_DATABASE_URL` | If enabled | | The URL of your Firebase Realtime Database. |
-| `FIREBASE_SERVICE_ACCOUNT_JSON` | If enabled | | Absolute path to your Firebase service account key JSON file. |
+| `FIREBASE_DATABASE_URL` | Yes | | The URL of your Firebase Realtime Database. |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | Yes | | Absolute path to your Firebase service account key JSON file. |
 | `FIREBASE_STORAGE_BUCKET` | No | | Hostname of your Firebase Storage bucket. |
 | **Spawn** | | | |
 | `SWITCHBOARD_WINDOWS_SPAWN_ROOT` | For spawn | | Windows root containing your project folders (e.g. `C:\Work`). Alias: `SWITCHBOARD_SPAWN_ROOT`. |
 | `SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT` | No | `work` | Segment appended to the resolved WSL home to locate the workspace root (e.g. `/home/john/work`). |
+| `SWITCHBOARD_WSL_HOME` | No | (auto-detected) | Override for the resolved WSL home path; escape hatch for the NSSM Session 0 case where the `wsl.exe -e bash` probe fails. |
+
+Firebase is mandatory. The server exits at startup with a ConfigError if `FIREBASE_DATABASE_URL` or `FIREBASE_SERVICE_ACCOUNT_JSON` is unset; there is no Android-disabled run mode.
 
 ## Wire your agent to it
 
@@ -198,7 +201,7 @@ The spawn is audit-logged to `logs/switchboard.jsonl`.
 
 ### Formatting messages
 
-`ask_human` and `notify_human` accept an optional `format` parameter. The default is `"plain"`. Pass `format="markdown"` to render the message with Markdown in the Android app — bold, italic, inline code, code blocks, and links are all supported. Use standard Markdown syntax.
+`ask_human` and `notify_human` accept an optional `format` parameter. The default is `"plain"`. Pass `format="markdown"` to render the message with Markdown in the Android app — bold, italic, inline code, code blocks, links, checklists, and tables are all supported. Use standard Markdown syntax.
 
 ## Manual smoke test
 

@@ -7,15 +7,19 @@ This file contains Gemini-specific instructions for working in the Switchboard w
 - **FOUNDATIONAL MANDATE:** You MUST read and adhere to the project-wide orientation and conventions in [`AGENTS.md`](AGENTS.md).
 - **FOUNDATIONAL MANDATE:** You MUST read and adhere to the tool usage and away mode protocol in [`skills/switchboard/SKILL.md`](skills/switchboard/SKILL.md).
 
-## CRITICAL: PreToolUse hook constraint
+## CRITICAL: Switchboard MCP tools currently do not work for Gemini
 
-Gemini CLI's `AfterAgent` hook fires after every agent turn (analogous to Claude Code's Stop hook). The away-mode check lives there.
+Under the v2 routing model, Switchboard routes every MCP call by a hook-injected `cli_session_id`. That injection is performed by Claude Code's `PreToolUse` hook (`scripts/cli-session-injector-hook.py`), which has **no Gemini CLI equivalent** (Gemini's hook system has no PreToolUse-style event that can rewrite a tool call's input).
 
-**There is no PreToolUse equivalent in Gemini CLI.** Claude Code's `PreToolUse` agent-status hook (`scripts/agent-status-hook.py`) cannot be registered for Gemini. This means:
+As a result, **Gemini agents currently cannot use ANY Switchboard MCP tool.** Every call is rejected at the MCP boundary by the `require_cli_session_id` guard (`server/gateway/handlers.py`) with:
 
-- Gemini agents do NOT send `WORKING` / `WAITING` status updates to Switchboard in real time.
-- The Android "agent is working" / "agent is waiting" status indicator will not update for Gemini sessions.
-- This is a known gap — not a bug to debug. If you're running as a Gemini agent, do not attempt to call `/agent_status` yourself; the server will handle the missing status gracefully.
+> ERROR: cli_session_id required. This call appears to come from a Claude session without the switchboard plugin's PreToolUse hook installed, or from a non-Claude agent. Switchboard tools require hook-injected session_id under the v2 routing model.
+
+This is a known, accepted limitation, not a bug to debug (recorded in `docs/superpowers/specs/2026-05-19-conversations-collab-redesign-design.md`). Gemini regains Switchboard MCP access only once an equivalent injection capability exists on the Gemini side.
+
+**What still works:** the away-mode `AfterAgent` hook (see Setup below). It fires after every agent turn (analogous to Claude Code's `Stop` hook) and queries the server over plain HTTP (`GET /away-mode`), not through the MCP boundary, so the `cli_session_id` gate does not affect it.
+
+**What does not work:** all MCP tools (`ask_human`, `notify_human`, `send_document_human`, the conversation tools, `set_away_mode`) return the rejection above, and the real-time agent-status indicator on the phone does not update for Gemini sessions (it depends on the same missing hook). Do not attempt to call `/agent_status` yourself.
 
 ## Setup
 
@@ -25,6 +29,8 @@ To wire your Gemini CLI session to the local Switchboard gateway:
 gemini mcp add switchboard http://localhost:9876/mcp --type http --trust
 gemini skills link ./skills/switchboard
 ```
+
+**Note:** registering the MCP connection succeeds, but under the current v2 routing model every Switchboard MCP tool call from Gemini is rejected (see the section above); only the `AfterAgent` away-mode hook below is functional today.
 
 The `AfterAgent` turn-end hook is installed separately. Run:
 

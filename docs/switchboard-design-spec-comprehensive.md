@@ -37,7 +37,7 @@ Local host (Windows)                              │ Cloud / Mobile
 
 **Components.**
 
-- **MCP server** (Python 3.11+, FastMCP with `stateless_http=False`). Serves the streamable HTTP transport on `127.0.0.1:9876` by default (`SWITCHBOARD_HOST` defaults to `127.0.0.1`; set to `0.0.0.0` for WSL-reachable; `SWITCHBOARD_PORT` defaults to `9876`). Plus four HTTP endpoints (`/healthz`, `/away-mode`, `/agent_status`, `/cli-session/end`) for hook callbacks and health checks.
+- **MCP server** (Python 3.11+, FastMCP with `stateless_http=False`). Serves the streamable HTTP transport on `127.0.0.1:9876` by default (`SWITCHBOARD_HOST` defaults to `127.0.0.1`; set to `0.0.0.0` for WSL-reachable; `SWITCHBOARD_PORT` defaults to `9876`). Plus five HTTP endpoints (`/healthz`, `/away-mode`, `/stats`, `/agent_status`, `/cli-session/end`) for hook callbacks and health checks.
 - **Firebase Realtime Database** — the persistence and phone-side synchronization surface. The server writes; the Android app reads + writes replies.
 - **Firebase Cloud Messaging (FCM)** — delivers push notifications. Three channels (Asks / Updates / Documents) drive separate notification priorities.
 - **Android app** (`android/app/`) and Wear OS app (`android/wear/`) — the human surface. Kotlin/Compose. Notifications, conversation list, conversation view, reply input, spawn dialog, resume dialog, combine dialog, global away pill.
@@ -100,9 +100,7 @@ The routing key is **`cli_session_id`** — a UUID assigned by Claude Code per s
 Calls missing `cli_session_id` are rejected at the MCP boundary by the `@require_cli_session_id` decorator with:
 
 ```
-ERROR: cli_session_id required. The switchboard plugin's PreToolUse hook
-either isn't installed or didn't run. Install via /plugin install
-switchboard@switchboard.
+ERROR: cli_session_id required. This call appears to come from a Claude session without the switchboard plugin's PreToolUse hook installed, or from a non-Claude agent. Switchboard tools require hook-injected session_id under the v2 routing model.
 ```
 
 The agent-supplied `cwd` is **informational** — used for display (Android conversation row, member roster) and for surface inference (`windows` if it looks like a drive path, `wsl` otherwise) — never for routing decisions. Two agents at the same physical directory or at different directories collab cleanly regardless of how they spell their cwd.
@@ -195,14 +193,17 @@ Sets `registry.global_away_mode` to `bool(value)` and mirrors to Firebase at `/g
 
 ## 5. HTTP endpoints
 
-Four routes mounted on the Starlette app:
+Five routes mounted on the Starlette app:
 
 | Route | Method | Purpose |
 |---|---|---|
 | `/healthz` | GET | Liveness + per-loop supervisor status. Used by external monitoring. |
 | `/away-mode` | GET | Returns the current global away-mode flag. Consumed by `turn-end-hook-away-mode.py` to gate turn-end. Query param `cwd` is informational only (logged). |
+| `/stats` | GET | Widget/Watchtower roll-up: active_conversations, pending_count, oldest_pending_age_seconds, away_mode, healthy. |
 | `/agent_status` | POST | Hook-driven status writes. Body: `{session_id, state, detail}`. Server resolves the session to a conversation and writes per-sender entries to `/conversations/<id>/agent_status/<sender>` (gated on global away mode; `state == "clear"` deletes). |
-| `/cli-session/end` | POST | SessionEnd-hook callback. Body: `{session_id, reason}` where reason ∈ {`logout`, `clear`, `compact`, `other`}. Server marks the matching member dormant; for `clear`/`compact` additionally sets `session_lost_permanently=True`; wakes blocked waiters with a dormancy system message; resolves any open `ask_human` futures owned by the departed member. |
+| `/cli-session/end` | POST | SessionEnd-hook callback. Body: `{session_id, reason}` where reason ∈ {`logout`, `clear`, `compact`, `other`}. Server marks the matching member dormant; for `clear`/`compact` additionally sets `session_lost_permanently=True`; wakes blocked waiters with a dormancy system message; cancels any open `ask_human` futures owned by the departed member. |
+
+A StaticFiles mount at `/dashboard` serves the Operator cockpit.
 
 The MCP transport is mounted under `/mcp` (FastMCP, streamable HTTP, stateful).
 
@@ -225,9 +226,9 @@ A separate `install-turn-end-hook.ps1` script installs the Gemini CLI variant of
 
 ## 7. Talking-stick FIFO
 
-Each conversation carries a single `wait_queue: collections.deque[QueueEntry]` plus the `open_peer_future: asyncio.Future | None` slot.
+Each conversation carries a single `wait_queue: collections.deque` plus the `open_peer_future: asyncio.Future | None` slot.
 
-**`wait_queue` entries** have `member`, `future`, `waiting_kind` (`"enter"` | `"msg_and_await"`), `block_position` (monotonic timestamp). FIFO-ordered.
+**`wait_queue` entries** are plain dicts with keys `member`, `future`, `waiting_kind` (`"enter"` | `"msg_and_await"`), `block_position` (monotonic timestamp). FIFO-ordered.
 
 **Stick holder** is the at-most-one currently non-blocked alive member.
 
@@ -289,7 +290,7 @@ Spawn launches a fresh `claude` process on either the Windows or WSL surface via
 ### 9.2 Surfaces
 
 - **Windows**: `project_path = config.windows_spawn_root / project` (e.g., `C:\Work\Switchboard`). Launcher opens `wt new-tab -- powershell.exe -EncodedCommand <b64>` running `Set-Location <path>; claude '<prompt>' --session-id <uuid> --dangerously-skip-permissions` (or `--resume <uuid>` for resume).
-- **WSL**: `project_path = <wsl_home_resolved>/<wsl_spawn_root_segment>/<project>` (e.g., `/home/john/work/Switchboard`). Launcher opens `wt new-tab -- wsl -e bash -lc "cd '<path>' && claude '<prompt>' --session-id '<uuid>' --dangerously-skip-permissions"`. The WSL home is resolved once at server startup via `wsl.exe -e bash -lc 'echo $HOME'` and cached as `registry.wsl_home_resolved`. If WSL is unavailable on the host, the cache stays `None` and WSL-targeted spawns reject with `"WSL spawn requested but WSL is not available on this host."`
+- **WSL**: `project_path = <wsl_home_resolved>/<wsl_spawn_root_segment>/<project>` (e.g., `/home/john/work/Switchboard`). The launcher writes the prompt to a one-shot file (`logs/spawn-prompt-<uuid>.txt`, deleted after read) and opens `wt new-tab -- wsl.exe -e bash -l /mnt/c/Work/Switchboard/scripts/spawn-claude-wsl.sh '<path>' <session-flag> <session-id> <prompt-file>`; the static script reads the prompt, then runs `cd '<path>' && claude '<prompt>' <session-flag> '<uuid>' --dangerously-skip-permissions`. (The inline `bash -lc` form was abandoned because wt does not preserve outer double-quoting when forwarding long quoted args, so the prompt rides in a file.) The WSL home is resolved once at server startup via `wsl.exe -e bash -lc 'echo $HOME'` and cached as `registry.wsl_home_resolved`. If WSL is unavailable on the host, the cache stays `None` and WSL-targeted spawns reject with `"WSL spawn requested but WSL is not available on this host."`
 
 The two surfaces use **independent working trees**. A "Switchboard" project on Windows lives at `C:\Work\Switchboard`; the WSL clone (if any) lives at `/home/john/work/Switchboard` — a separate filesystem, not the drvfs view of the Windows path.
 
@@ -307,7 +308,7 @@ A spawned agent's `cli_session_id` is pre-bound in `_session_to_conversation_id`
 
 ### 9.6 Session-file aging
 
-Claude Code prunes session files (`~/.claude/projects/<dir-hash>/<session_id>.jsonl`) after `cleanupPeriodDays` (default **30 days**). A conversation whose youngest dormant member's `session_ended_at` is older than that becomes non-resumable. The Android Page A row shows a `⚠️` warning indicator when any member is within 5 days of the cleanup window (`session_ended_at > now - 25 days`).
+Claude Code prunes session files (`~/.claude/projects/<dir-hash>/<session_id>.jsonl`) after `cleanupPeriodDays` (default **30 days**). A conversation whose youngest dormant member's `session_ended_at` is older than that becomes non-resumable. The Android Page A row shows a `⚠️` warning indicator when any member is within 5 days of the cleanup window (now - 30 days < session_ended_at < now - 25 days).
 
 ---
 
@@ -343,9 +344,9 @@ conversations/<conversation_id>/
     (same fields as members_active, plus left_at)
 
   messages/<push_id>/           # Firebase push keys, lexicographically time-ordered
-    seq                         (int)
+    seq                         (int -- only on server-internal dict-form messages such as force-end/combine/spawn notices; absent on question/notify/document/agent_msg/parting; the Android client does not read it)
     sender                      (str)
-    type                        "agent_msg" | "question" | "response" | "notify"
+    type                        "agent_msg" | "question" | "human" | "notify"
                                 | "document" | "parting" | "system"
     text                        (str)
     url                         (str | null)
@@ -361,11 +362,11 @@ conversations/<conversation_id>/
     opened                      (bool)
 
   pending_questions/<request_id>/
-    sender
-    msg_id
-    question_text
-    suggestions
-    created_at
+    sender                        (str)
+    questionText                  (str)
+    msgId                         (str | null)
+    suggestions                   (list[str] | null)
+    cancelled                     (bool)
 
   answers/<request_id>/         # phone -> server: John's reply to a pending ask_human
     text
@@ -389,7 +390,7 @@ global_settings/
 away_mode_commands/<push_id>/   # phone -> server
   type                          "enter_global" | "exit_global"
   issued_at                     (iso-8601)
-  decision                      "send_default" | "skip" | "cancel"   (exit_global only)
+  decision                      "send_default" | "skip"   (exit_global only; "cancel" dismisses the modal client-side without writing a command)
   default_text                  (str)                                 (exit_global, send_default only)
 
 force_end_commands/<push_id>/   # phone → server
@@ -428,7 +429,7 @@ Setting a Firebase node to `None` via `ref.set(None)` raises `ValueError('Value 
 |---|---|---|
 | `agent_msg` | `message_and_await_agent` | Speak events between agents. |
 | `question` | `ask_human` (away mode on) | Carries `request_id` and optional `suggestions`. |
-| `response` | Phone reply | Linked via `attached_to_msg_id` to the original question. |
+| `human` | Phone reply (server dispatch) | John's reply, linked via `attached_to_msg_id` to the original question. |
 | `notify` | `notify_human`, or at-desk-redirected `ask_human` | Phone-side passive notification. |
 | `document` | `send_document_human` | Carries `url`, `filename`. |
 | `parting` | `leave_conversation` | Phone renders as `[X left] <text>`. |
@@ -444,7 +445,7 @@ On startup, `server/hydration.py:hydrate_from_firebase` rebuilds the in-memory r
 2. **Conversations** — every `conversations/<id>/` node whose `meta/state == "active"` is restored. Ended conversations are skipped (they live in Firebase as history but aren't loaded into memory).
 3. **Open-pointer validation** — if `_open_conversation_id` is set but the referenced conv wasn't hydrated (Ended or missing), hydration clears the pointer in-memory AND calls `backend.set_open_conversation_id(None)` to delete the Firebase node. The system self-heals from dangling pointers without requiring manual intervention.
 4. **Session home pointers** — `cli_sessions/<session_id>/home_conversation_id`, skipping any pointer whose home isn't in the hydrated set (avoids re-binding to Ended homes).
-5. **Session-to-conversation bindings** — derived from each Active conversation's members: alive members and resumable-dormant members get re-bound, so `claude --resume <session_id>` post-restart lands in the right conversation.
+5. **Session-to-conversation bindings** — derived from each Active conversation's members: only ALIVE members are re-bound. Dormant members are deliberately left unbound (the steady-state invariant is "dormant = unbound"); resume re-binds and flips a member alive only when it actually relaunches. Re-binding dormant members at hydration previously broke phone Resume permanently after a restart (H03/M21).
 
 **Not rehydrated** by design:
 - `wait_queue` and `pending_responses` — futures die with the process. Any agent blocked at restart times out on its next MCP call or returns CancelledError.
@@ -462,12 +463,12 @@ Two main screens plus three dialogs.
 
 ### 12.1 Page A — conversation list
 
-Top app bar carries the global **away pill** (long-press to toggle on; tap to confirm off). Body is a vertical list of conversation rows — Active by default, plus Ended rows so the history is visible (Ended convs render with greyed-out menu items).
+Top app bar carries the global **away pill** (long-press to toggle in either direction; tapping it does nothing). Turning away off raises a bulk-respond modal only when pending `ask_human` questions exist; with none pending it turns off immediately. Body is a vertical list of conversation rows — Active by default, plus Ended rows so the history is visible (Ended convs render with greyed-out menu items).
 
 Each row shows: title, latest-message preview, last-activity timestamp, unread badge, pending-response badge, agent-status indicator, optional "open" marker if `conv.id == open_conversation_id`, "stale session" `⚠️` if any member is within 5 days of the 30-day session-file cleanup window.
 
 Swipe gestures (both raise a confirmation dialog before mutating):
-- **Swipe right** → End conversation. Disabled for Ended convs. Writes a `force_end_commands/<id>/` record; server-side `handle_force_end` applies session-fallback.
+- **Swipe right** → End conversation. The long-press "End conversation" menu item is hidden for Ended convs, but the swipe-right gesture still raises the End-confirm dialog (force-end is a no-op on an already-ended conversation). Writes a `force_end_commands/<id>/` record; server-side `handle_force_end` applies session-fallback.
 - **Swipe left** → Hide. Toggles `meta.hidden`. Hidden rows live behind the overflow menu's "Show hidden ($n)" toggle.
 
 Long-press menu items (gated by conversation state):
@@ -480,9 +481,9 @@ Floating action button → **Spawn dialog**.
 
 ### 12.2 Page B — conversation view
 
-Title bar shows the conversation title plus a sub-line listing alive + dormant members with their cwd labels (`Claude-Win (C:\Work\Switchboard), Claude-WSL (/home/john/work/switchboard, dormant)`). For continuations (`continued_from` set), a header chip surfaces a tap-to-load-predecessor affordance.
+Title bar shows the conversation title followed by the comma-joined member sender names in parentheses (e.g. 'Refactor (Claude-Win, Claude-WSL)'). cwd and dormant state are not shown in the title bar. (Not yet implemented on the phone: although `continued_from` is persisted server-side, the Android client currently renders no continuation header chip or tap-to-load-predecessor affordance.)
 
-Bubble feed renders messages chronologically; right-aligned for John, left for agents, system messages styled distinctly. Markdown rendering when `format == "markdown"`. Suggestion buttons under questions. Pull-down reveals timestamps; pinch zooms text scale.
+Bubble feed renders messages chronologically; right-aligned for John, left for agents, system messages styled distinctly. Markdown rendering when `format == "markdown"`. Suggestion buttons under questions. A horizontal pull (drag left/right) reveals message timestamps; pinch zooms text scale.
 
 Reply input visible when a pending `ask_human` exists in the conv; routed via `conversations/<conv_id>/answers/<request_id>/`. Suggestion-chip taps short-circuit the typing path.
 
@@ -493,7 +494,7 @@ Reply input visible when a pending `ask_human` exists in the conv; routed via `c
 - **Initial prompt** free-form text, optional.
 - **Conversation**: "Create new" (default) or "Add to existing" with a single-select picker of Active conversations.
 
-Spawn button enabled when project is non-empty and a conversation option is selected. 60-second rate limit between spawns.
+Spawn button enabled when project is non-empty and a conversation option is selected. (The server applies a `COMMAND_TTL_SECONDS` freshness gate that drops stale commands, which is not a rate limit.)
 
 ### 12.4 Resume dialog
 
@@ -506,7 +507,7 @@ Target picker. List of every Active conversation except the long-pressed source.
 ### 12.6 FCM channels
 
 Three notification channels with separate `IMPORTANCE` levels:
-- **Asks** (`IMPORTANCE_HIGH`) — `ask_human` questions; banner + sound.
+- **Questions** (`IMPORTANCE_HIGH`) — `ask_human` questions; banner + sound.
 - **Updates** (`IMPORTANCE_DEFAULT`) — `notify_human`.
 - **Documents** (`IMPORTANCE_DEFAULT`) — `send_document_human`.
 
@@ -514,7 +515,7 @@ FCM tap deep-links to Page B for the referenced conversation.
 
 ### 12.7 Wear OS surface
 
-Companion Wear app shows a conversation list (filtered to non-hidden) and supports voice-dictation replies. It does NOT read agent-status (F-88). It currently uses the legacy cwdKey `_channels` projection; the conversation-id migration is tracked under P4-1.
+Companion Wear app shows a conversation list (filtered to non-hidden) and supports voice-dictation replies. It does NOT read agent-status (F-88). It reads the same conversation-id model as the phone (shared MainViewModel.conversationRows), filtered to non-hidden conversations via partitionConversationsForWatch.
 
 ---
 
@@ -531,8 +532,8 @@ NSSM wraps the Python server as a per-user service. Scripts in `scripts/`:
 ### 13.2 Logging
 
 - `logs/switchboard.jsonl` — structured JSONL audit log. Every tool call, resolution, spawn, and surface-error event records here with `(conversation_id, sender, request_id?)` correlation.
-- `logs/sessions/<conversation_id>.log` — per-conversation human-readable transcript.
-- `logs/nssm-stdout.log` / `logs/nssm-stderr.log` — current process stdout/stderr. NSSM rotates with timestamped filenames on restart.
+- `logs/sessions/<conversation_id>_<YYYYMMDD_HHMMSS>.log` — per-conversation human-readable transcript. The timestamp suffix is the server-process start time captured once at startup, so each server restart begins a fresh transcript file per conversation.
+- `logs/nssm-stdout.log` / `logs/nssm-stderr.log` — current process stdout/stderr. NSSM rotates these to timestamped filenames when a log reaches ~5 MB (AppRotateBytes 5242880, AppRotateOnline 1), online while the service runs.
 
 ### 13.3 Plugin install
 
@@ -562,12 +563,12 @@ Gemini CLI gets a separate AfterAgent hook installed via `scripts/install-turn-e
 | `SWITCHBOARD_PORT` | No | `9876` | HTTP port. |
 | `SWITCHBOARD_TIMEOUT_SECONDS` | No | `86400` | `ask_human` and `message_and_await_agent` block timeout. |
 | `SWITCHBOARD_LOG_PATH` | No | `./logs/switchboard.jsonl` | Audit log path. |
-| `SWITCHBOARD_ENABLE_ANDROID` | No | `false` | Set `true` to enable the Firebase backend. |
-| `FIREBASE_DATABASE_URL` | If Android enabled | — | Firebase Realtime Database URL. |
-| `FIREBASE_SERVICE_ACCOUNT_JSON` | If Android enabled | — | Absolute path to service account key. |
+| `FIREBASE_DATABASE_URL` | Yes | — | Firebase Realtime Database URL. |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | Yes | — | Absolute path to service account key. |
 | `FIREBASE_STORAGE_BUCKET` | No | — | Storage bucket hostname (document delivery). |
 | `SWITCHBOARD_WINDOWS_SPAWN_ROOT` | For spawn | — | Windows project root (e.g. `C:\Work`). Alias: `SWITCHBOARD_SPAWN_ROOT`. |
 | `SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT` | No | `work` | Segment appended to resolved WSL home for WSL project paths. |
+| `SWITCHBOARD_WSL_HOME` | No | (probed via wsl.exe) | Escape hatch overriding the resolved WSL home path; first-priority source in resolve_wsl_home; used when the NSSM service runs in Session 0 where the wsl.exe probe fails. |
 | `SWITCHBOARD_RATE_LIMIT` | No | `30` | Per-conversation rate limit for `ask_human` + `notify_human` + `send_document_human` (tokens/min). |
 
 ---
