@@ -8,6 +8,14 @@ the hook payload and merges them into the tool's input via updatedInput.
 Per empirical verification (scripts/verify/test3-hook-injection): updatedInput
 REPLACES tool_input despite Claude Code docs claiming merge, so we explicitly
 carry forward every original field.
+
+NOTE: this hook's hooks.json entry MUST keep a generous timeout (>= 10s). Claude
+Code runs Windows hooks through bundled Git Bash, so the wall-clock (bash start +
+shell init + Python startup + this script) can exceed a couple of seconds. If the
+hook does not exit within its timeout, Claude Code KILLS it and SILENTLY DISCARDS
+this updatedInput, and the MCP tool then runs with un-injected args (the server
+rejects the call with "cli_session_id required"). A too-short timeout (the old
+value was 2s) is exactly the bug documented in docs/2026-06-17-child-session-hook-injection.md.
 """
 from __future__ import annotations
 import json
