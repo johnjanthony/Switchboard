@@ -294,8 +294,8 @@ def _run_dual(cli: str, away_url: str, partner_url: str, stdin: str = _DEFAULT_C
 def test_partner_blocked_away_mode_active_emits_base_block():
 	"""The /collab-partner-state endpoint is gone in the v2 redesign. When away-mode
 	is active the hook emits the base block reason regardless of partner state.
-	The reason includes the live v2 tools: ask_human, notify_human, message_and_await_agent,
-	leave_conversation, set_away_mode."""
+	The reason tells the agent to end its turn on ask_human (never on the non-blocking
+	notify_human) and mentions set_away_mode; it no longer enumerates the collab tools."""
 	with _DualRouteFakeServer({"active": True}, {"state": "blocked"}) as srv:
 		r = _run_dual("claude", srv.away_url, srv.partner_url)
 	assert r.returncode == 0
@@ -303,8 +303,7 @@ def test_partner_blocked_away_mode_active_emits_base_block():
 	assert out["decision"] == "block"
 	assert "away mode" in out["reason"].lower()
 	assert "ask_human" in out["reason"]
-	assert "message_and_await_agent" in out["reason"]
-	assert "leave_conversation" in out["reason"]
+	assert "notify_human" in out["reason"]
 	assert "set_away_mode" in out["reason"]
 	# end_collab was retired in the v2 redesign
 	assert "end_collab" not in out["reason"]
