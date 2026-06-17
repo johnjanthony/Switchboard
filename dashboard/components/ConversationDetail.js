@@ -57,12 +57,22 @@ function MessageBody({ msg }) {
 	return html`<div class="msg-body" dangerouslySetInnerHTML=${{ __html: inner }}></div>`;
 }
 
-function Transcript({ conv }) {
+function Transcript({ conv, pendingMsgIds }) {
 	const messages = (conv && conv.messages) || {};
+	// A currently-pending question already shows in its own answer box below, so
+	// suppress its transcript copy. Once answered it is no longer pending and
+	// reappears here as history.
 	const ordered = Object.entries(messages)
 		.map(([msgId, m]) => ({ msgId, m: m || {} }))
+		.filter(({ msgId }) => !pendingMsgIds.has(msgId))
 		.sort((a, b) => String(a.m.timestamp || "").localeCompare(String(b.m.timestamp || "")));
-	if (ordered.length === 0) return html`<div class="transcript-empty">No traffic on this line yet.</div>`;
+	if (ordered.length === 0) {
+		// Don't claim "no traffic" when the only message is the suppressed pending
+		// question (its answer box is rendered separately).
+		return pendingMsgIds.size === 0
+			? html`<div class="transcript-empty">No traffic on this line yet.</div>`
+			: null;
+	}
 	return html`
 		<div class="transcript">
 			${ordered.map(({ msgId, m }) => {
@@ -85,10 +95,13 @@ function Transcript({ conv }) {
 
 function AnswerBox({ convId, pending }) {
 	const [text, setText] = useState("");
-	const send = () => {
-		if (!text.trim()) return;
-		const { path, value } = answerCmd(convId, pending.requestId, text, pending.sender, fb.nowIso);
-		fb.setValue(path, value);
+	// Single send path: the Send button submits the textarea; a suggestion submits
+	// itself directly (one click, no intermediate edit step).
+	const sendText = (value) => {
+		const v = String(value == null ? "" : value).trim();
+		if (!v) return;
+		const cmd = answerCmd(convId, pending.requestId, v, pending.sender, fb.nowIso);
+		fb.setValue(cmd.path, cmd.value);
 		setText("");
 	};
 	return html`
@@ -97,13 +110,13 @@ function AnswerBox({ convId, pending }) {
 			${(pending.suggestions && pending.suggestions.length)
 				? html`<div class="suggestions">
 						${pending.suggestions.map((s, i) => html`
-							<button key=${i} class="suggestion" onClick=${() => setText(s)}>${s}</button>
+							<button key=${i} class="suggestion" onClick=${() => sendText(s)}>${s}</button>
 						`)}
 					</div>`
 				: null}
 			<textarea class="answer-input" value=${text}
 				onInput=${(e) => setText(e.target.value)} placeholder="Type your answer..."></textarea>
-			<button class="answer-send" onClick=${send}>Send to ${pending.sender}</button>
+			<button class="answer-send" onClick=${() => sendText(text)}>Send to ${pending.sender}</button>
 		</div>
 	`;
 }
@@ -214,6 +227,9 @@ export function ConversationDetail({ store }) {
 	// pendingsFlat carries camelCase questionText/suggestions. Only an active line
 	// renders answer boxes, so a stale pending is never presented as answerable.
 	const pendings = active ? state.pendingsFlat.filter((p) => p.convId === id) : [];
+	// msgIds of the still-pending questions, so the transcript can suppress their
+	// duplicate copies (they render in answer boxes instead).
+	const pendingMsgIds = new Set(pendings.map((p) => p.msgId).filter(Boolean));
 
 	return html`
 		<section class="detail">
@@ -238,7 +254,7 @@ export function ConversationDetail({ store }) {
 			</div>
 			<div class="detail-body">
 				<${Roster} conv=${conv} />
-				<${Transcript} conv=${conv} />
+				<${Transcript} conv=${conv} pendingMsgIds=${pendingMsgIds} />
 				<div class="pending-stack">
 					${pendings.map((p) => html`<${AnswerBox} key=${p.requestId} convId=${id} pending=${p} />`)}
 				</div>
