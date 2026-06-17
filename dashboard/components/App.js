@@ -2,7 +2,6 @@ import { html } from "../vendor/htm-preact.js";
 import { StatusBar } from "./StatusBar.js";
 import { ConversationList } from "./ConversationList.js";
 import { ConversationDetail } from "./ConversationDetail.js";
-import { CommandRail } from "./CommandRail.js";
 
 // Dragging the left resizer narrower than this (well past the 180px min width)
 // collapses the rail entirely instead of sticking at the min.
@@ -45,8 +44,7 @@ export function App({ store }) {
 
 	const shellClass = [
 		"shell",
-		state.ui.leftCollapsed ? "left-collapsed" : "",
-		state.ui.rightCollapsed ? "right-collapsed" : ""
+		state.ui.leftCollapsed ? "left-collapsed" : ""
 	].filter(Boolean).join(" ");
 
 	// Drag the left/center boundary to resize the conversation list. The move is
@@ -85,7 +83,6 @@ export function App({ store }) {
 			<div class=${shellClass} style=${"--left-rail-width:" + state.ui.leftWidth + "px"}>
 				<${ConversationList} store=${store} />
 				<${ConversationDetail} store=${store} />
-				<${CommandRail} store=${store} />
 				${state.ui.leftCollapsed
 					? null
 					: html`<div class="left-resizer" title="Drag to resize" onMouseDown=${startLeftResize}></div>`}

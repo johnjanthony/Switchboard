@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>Operator — Preview (mock data)</title>
+	<link rel="preconnect" href="https://fonts.googleapis.com" />
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+	<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+	<link rel="stylesheet" href="./styles.css" />
+	<link rel="stylesheet" href="./vendor/highlight-theme.css" />
+	<script type="importmap">
+	{
+		"imports": {
+			"firebase-app": "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js",
+			"firebase-auth": "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js",
+			"firebase-database": "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js",
+			"preact": "./vendor/preact.module.js",
+			"preact/hooks": "./vendor/hooks.module.js"
+		}
+	}
+	</script>
+	<style>
+		/* A small "this is a mock" ribbon so the preview is never mistaken for live. */
+		.preview-ribbon {
+			position: fixed; top: 0; right: 0; z-index: 999;
+			background: #cf8a4d; color: #1a130b; font-family: "IBM Plex Mono", monospace;
+			font-size: 11px; letter-spacing: 0.06em; padding: 3px 10px; border-bottom-left-radius: 6px;
+		}
+	</style>
+</head>
+<body>
+	<div class="preview-ribbon">PREVIEW · mock data · read-only</div>
+	<div id="app"></div>
+	<script type="module">
+		import { html, render } from "./vendor/htm-preact.js";
+		import { App } from "./components/App.js";
+
+		const now = Date.now();
+		const agoSec = (s) => Math.floor(now / 1000 - s);
+
+		const mdAgentMsg = [
+			"Wired the telemetry client to read the SP secret. Before the live check I need a vault for `AZURE_CLIENT_SECRET`.",
+			"",
+			"Resolved at startup:",
+			"",
+			"```js",
+			"const vault = \"rpdmdev.vault.azure.net\";",
+			"const cred = await keyvault.get(vault, \"AZURE_CLIENT_SECRET\");",
+			"```",
+			"",
+			"- dev vault is read-only for this SP",
+			"- prod is **off-limits** for the live check"
+		].join("\n");
+
+		const state = {
+			authed: true,
+			authError: null,
+			globalAway: false,
+			openConversationId: "dmx-build",
+			wslAvailable: true,
+			selectedConversationId: "ir2-telemetry",
+			conversations: {
+				"ir2-telemetry": {
+					meta: { title: "ir2-telemetry", state: "active", last_activity_at: agoSec(60) },
+					members: {
+						"claude": { alive: true, surface: "windows" },
+						"claude-wsl": { alive: false, surface: "wsl" }
+					},
+					agentStatus: { "claude": { state: "asking", detail: "" } },
+					messages: {
+						"m1": { sender: "claude", timestamp: "2026-06-17T14:19:02", format: "markdown", text: mdAgentMsg },
+						"m2": { sender: "john", timestamp: "2026-06-17T14:20:40", format: "markdown", text: "Use the **dev** vault for now — don't touch prod." },
+						"m3": { sender: "claude", timestamp: "2026-06-17T14:21:55", format: "markdown", text: "Understood. Asking before I run it." }
+					},
+					pending: {
+						"req-1": { sender: "claude", questionText: "Which vault should the telemetry client read credentials from?", suggestions: ["rpdmdev (dev)", "prod-kv", "skip live check"], msgId: "m3" }
+					}
+				},
+				"refactor-store": {
+					meta: { title: "refactor-store", state: "active", last_activity_at: agoSec(240) },
+					members: { "claude": { alive: true, surface: "windows" } },
+					pending: {}
+				},
+				"dmx-build": {
+					meta: { title: "dmx-build", state: "active", last_activity_at: agoSec(720) },
+					members: { "claude": { alive: true, surface: "windows" }, "claude-wsl": { alive: true, surface: "wsl" } },
+					pending: {}
+				},
+				"hygiene-cass": {
+					meta: { title: "hygiene-cass", state: "ended", last_activity_at: agoSec(7200) },
+					members: { "claude": { alive: false, session_lost_permanently: false, surface: "windows" } },
+					pending: {}
+				}
+			},
+			adminNotifications: {
+				"n1": { text: "claude (wsl) joined dmx-build", timestamp: "14:22:09" }
+			},
+			pendingsFlat: [
+				{ convId: "ir2-telemetry", requestId: "req-1", sender: "claude", questionText: "Which vault should the telemetry client read credentials from?", suggestions: ["rpdmdev (dev)", "prod-kv", "skip live check"], msgId: "m3", firstObservedMs: now - 240000 }
+			],
+			messageTimestampResolver: {},
+			health: { reachable: true, healthy: true, totalAnswered: 128 },
+			ui: { leftCollapsed: false, rightCollapsed: false, leftWidth: 300, awayOffDialogOpen: false },
+			paneErrors: {}
+		};
+
+		const mount = document.getElementById("app");
+		const draw = () => render(html`<${App} store=${store} />`, mount);
+
+		// A read-only fake store: render-time reads return mock state; the few
+		// methods reachable by clicking just mutate local UI state and redraw.
+		const store = {
+			getState: () => state,
+			subscribe: () => () => {},
+			selectConversation: (id) => { state.selectedConversationId = id; draw(); },
+			toggleLeftCollapsed: () => { state.ui.leftCollapsed = !state.ui.leftCollapsed; draw(); },
+			setLeftCollapsed: (v) => { state.ui.leftCollapsed = !!v; draw(); },
+			setLeftWidth: (px) => { state.ui.leftWidth = Math.max(180, Math.min(560, Math.round(px))); draw(); },
+			setAwayOffDialogOpen: (v) => { state.ui.awayOffDialogOpen = v; draw(); },
+			retrySelectedConversation: () => {},
+			retrySignIn: () => {}
+		};
+
+		draw();
+	</script>
+</body>
+</html>
