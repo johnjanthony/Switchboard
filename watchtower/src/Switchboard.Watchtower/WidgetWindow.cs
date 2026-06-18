@@ -10,20 +10,22 @@ namespace Switchboard.Watchtower;
 internal sealed class WidgetWindow : Form
 {
 	const int DragThreshold = 4;
-	const int BarWidth = 6;
-	const int BarGap = 3;
+	const float RingThickness = 3f;     // pen width; MUST match ContextRingLayout's thickness arg
+	const float RingGap = 0.5f;         // minimal gap between concentric rings, for separation
+	const int RingMaxCount = 3;         // cap visible rings so each gets room at this size; rest roll into "+K"
+	const int RingClusterW = 28;        // == ContextRingLayout dMax cap; horizontal room for the rings
+	const int OverflowTextRoom = 14;    // room to the right of the cluster for the "+K" indicator
 	const int GrabW = 12;          // left grab-handle strip; the ONLY drag target
 	const int PadAfterGrab = 4;
-	const int RightTextRoom = 52;
+	const int RightMargin = 8;     // small trailing gap (the max-% label is gone)
 
-	// Quota block (CodeZeno-style 5h/7d rows): label + 10-segment bar + "NN% · Xh" text.
-	const int QLabelW = 16;
+	// Quota block (5h/7d rows): a 10-segment usage bar with a thin muted pace (elapsed-time) bar beneath.
 	const int QSegW = 9, QSegGap = 1, QSegCount = 10, QSegH = 8;
 	const int QBarW = QSegCount * (QSegW + QSegGap) - QSegGap;          // 49
-	const int QBarTextGap = 4;
-	const int QTextW = 52;
-	const int QSep = 10;                                                // gap before the context bars
-	const int QuotaBlockW = QLabelW + QBarW + QBarTextGap + QTextW + QSep;
+	const int QPaceH = 2;                                               // pace (elapsed-time) bar height (skinny + calm on the widget)
+	const int QPaceGap = 2;                                             // gap between the usage bar and the pace bar
+	const int QSep = 10;                                                // gap before the context rings
+	const int QuotaBlockW = QBarW + QSep;
 	const int HeightWithQuota = 44;
 	const int HeightContextOnly = 34;
 
@@ -242,9 +244,9 @@ internal sealed class WidgetWindow : Form
 
 	void RecomputeSize()
 	{
-		int bars = Math.Max(1, _sessions.Count) * (BarWidth + BarGap);
 		int quotaW = QuotaVisible ? QuotaBlockW : 0;
-		Width = Math.Max(72, GrabW + quotaW + PadAfterGrab + bars + RightTextRoom);
+		int cluster = RingClusterW + OverflowTextRoom;   // fixed: no longer scales with session count
+		Width = Math.Max(72, GrabW + quotaW + PadAfterGrab + cluster + RightMargin);
 		Height = QuotaVisible ? HeightWithQuota : HeightContextOnly;
 	}
 
@@ -337,6 +339,28 @@ internal sealed class WidgetWindow : Form
 		SetBitmap(bmp);
 	}
 
+	// Rings-only palette: green -> true yellow -> red. The endpoints match SeverityGradient's green and
+	// red (so a near-full context reads the same bright red here and in the popup), while the yellow
+	// midpoint separates the mid/high bands that the shared orange-amber knee renders too alike at this
+	// size. Quota bars and the tray icon still use SeverityGradient directly.
+	static readonly Color RingLow = Color.FromArgb(63, 185, 80);     // green   (== SeverityGradient green)
+	static readonly Color RingMid = Color.FromArgb(240, 205, 40);    // yellow  (rings-only, for separation)
+	static readonly Color RingHigh = Color.FromArgb(248, 81, 73);    // red     (== SeverityGradient red / popup)
+	static Color RingColor(double pct)
+	{
+		double p = Math.Clamp(pct, 0, 1);
+		return p <= 0.5 ? Lerp(RingLow, RingMid, p / 0.5) : Lerp(RingMid, RingHigh, (p - 0.5) / 0.5);
+	}
+
+	static Color Lerp(Color a, Color b, double t)
+	{
+		t = Math.Clamp(t, 0, 1);
+		return Color.FromArgb(
+			(int)(a.R + (b.R - a.R) * t),
+			(int)(a.G + (b.G - a.G) * t),
+			(int)(a.B + (b.B - a.B) * t));
+	}
+
 	void DrawContent(Graphics g)
 	{
 		// Grab handle: in transparent mode a near-invisible hit strip makes the whole strip grabbable;
@@ -352,47 +376,41 @@ internal sealed class WidgetWindow : Form
 
 		if (QuotaVisible) DrawQuota(g);
 
-		// Equalizer bars (busiest-first); error sessions full-height in the warning color.
-		bool anyError = false;
-		double max = 0;
-		foreach (var s in _sessions)
+		// Context rings (busiest-first, nested fullest-outermost): each session is a crisp gradient-coloured
+		// arc, no track circle. Capped at RingMaxCount so each ring has room at taskbar size. Sort/cap/
+		// overflow live in ContextRingLayout; this just draws the result.
+		int originX = GrabW + (QuotaVisible ? QuotaBlockW : 0) + PadAfterGrab;
+		var layout = ContextRingLayout.Build(_sessions, originX, Height, thickness: RingThickness, gap: RingGap, maxRings: RingMaxCount);
+		foreach (var ring in layout.Rings)
 		{
-			anyError |= s.IsError;
-			if (!s.IsError && s.Pct >= max) max = s.Pct;
+			if (ring.SweepDegrees <= 0f) continue;
+			// Rings use the green->yellow->red palette (endpoints match the popup); error stays warning.
+			var arcColor = ring.IsError ? _palette.Warning : RingColor(ring.Pct);
+			// Transparent mode draws over an unknown taskbar background; a dark halo under the arc
+			// keeps it legible on a light taskbar. ClearType mode draws over the known dark bg.
+			if (!_clearType)
+				using (var halo = new Pen(Color.FromArgb(190, 0, 0, 0), RingThickness + 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+					g.DrawArc(halo, ring.Bounds, -90f, ring.SweepDegrees);
+			using (var arcPen = new Pen(arcColor, RingThickness) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+				g.DrawArc(arcPen, ring.Bounds, -90f, ring.SweepDegrees);   // 12 o'clock, clockwise
 		}
 
-		int x = GrabW + (QuotaVisible ? QuotaBlockW : 0) + PadAfterGrab;
-		int baseY = Height - 6;
-		int maxBarH = Math.Min(Height - 12, 24);   // keep the equalizer from dominating the taller quota layout
-		foreach (var s in _sessions)
+		// Overflow "+K": sessions that did not get a ring, at the top-right of the cluster.
+		if (layout.Overflow > 0)
 		{
-			var color = s.IsError ? _palette.Warning : SeverityGradient.For(s.Pct);
-			int h = s.IsError ? maxBarH : Math.Max(2, (int)(maxBarH * Math.Clamp(s.Pct, 0, 1)));
-			using var brush = new SolidBrush(color);
-			g.FillRectangle(brush, x, baseY - h, BarWidth, h);
-			x += BarWidth + BarGap;
+			using var ofont = new Font("Segoe UI", 7.5f, FontStyle.Bold);
+			string ktext = "+" + layout.Overflow;
+			float kx = originX + RingClusterW + 1f;
+			float ky = (Height - Math.Min(Height - 8f, 28f)) / 2f;   // top of the cluster
+			if (!_clearType)
+				using (var khalo = new SolidBrush(Color.FromArgb(190, 0, 0, 0)))
+					for (int dx = -1; dx <= 1; dx++)
+						for (int dy = -1; dy <= 1; dy++)
+							if (dx != 0 || dy != 0)
+								g.DrawString(ktext, ofont, khalo, kx + dx, ky + dy);
+			using (var kbrush = new SolidBrush(_palette.Muted))
+				g.DrawString(ktext, ofont, kbrush, kx, ky);
 		}
-
-		// Max % label.
-		var labelColor = anyError ? _palette.Warning : SeverityGradient.For(max);
-		// show the % only when at least one session is >= 50% (or on error); otherwise just the bars
-		var text = anyError ? "!" : max >= 0.50 ? $"{(int)Math.Round(max * 100)}%" : "";
-		using var font = new Font("Segoe UI", 10.5f, FontStyle.Bold);
-		var size = g.MeasureString(text, font);
-		float tx = Width - size.Width - 6;
-		float ty = (Height - size.Height) / 2;
-		// Transparent mode draws over an unknown taskbar background, so a dark halo keeps the number
-		// readable. ClearType mode draws over the known opaque theme bg and needs no halo.
-		if (!_clearType)
-			using (var halo = new SolidBrush(Color.FromArgb(190, 0, 0, 0)))
-			{
-				for (int dx = -1; dx <= 1; dx++)
-					for (int dy = -1; dy <= 1; dy++)
-						if (dx != 0 || dy != 0)
-							g.DrawString(text, font, halo, tx + dx, ty + dy);
-			}
-		using var textBrush = new SolidBrush(labelColor);
-		g.DrawString(text, font, textBrush, tx, ty);
 
 		// Switchboard pending badge: an amber dot in the top-right corner, mirroring
 		// the tray icon, when there are unanswered questions.
@@ -401,26 +419,25 @@ internal sealed class WidgetWindow : Form
 				g.FillEllipse(dot, Width - 10, 2, 8, 8);
 	}
 
-	// Two CodeZeno-style usage rows (5h on top, 7d below), left of the context equalizer.
+	// Two usage rows (5h on top, 7d below), left of the context rings.
 	void DrawQuota(Graphics g)
 	{
 		var u = _quota!.Value;
 		int rowH = Height / 2;
-		DrawQuotaRow(g, GrabW, rowH / 2, "5h", u.Session);
-		DrawQuotaRow(g, GrabW, rowH + rowH / 2, "7d", u.Weekly);
+		DrawQuotaRow(g, GrabW, rowH / 2, u.Session, QuotaPacing.SessionDuration);
+		DrawQuotaRow(g, GrabW, rowH + rowH / 2, u.Weekly, QuotaPacing.WeeklyDuration);
 	}
 
-	void DrawQuotaRow(Graphics g, int xStart, int centerY, string label, QuotaWindow w)
+	// One usage row: a 10-segment gradient bar with a thin muted pace bar (filled to the elapsed-time
+	// fraction) beneath it, mirroring the popup's ghost pace bar. No text - usage vs pace is read by
+	// comparing the two bar lengths.
+	void DrawQuotaRow(Graphics g, int xStart, int centerY, QuotaWindow w, TimeSpan duration)
 	{
-		var fillColor = SeverityGradient.For(w.Percentage / 100.0);   // bar + "NN% · Xh" label share this gradient colour
-		using var font = new Font("Segoe UI", 7.5f, FontStyle.Bold);
+		var fillColor = SeverityGradient.For(w.Percentage / 100.0);
+		int barX = xStart;
+		int stackTop = centerY - (QSegH + QPaceGap + QPaceH) / 2;
 
-		var labelSize = g.MeasureString(label, font);
-		using (var muted = new SolidBrush(_palette.Muted))
-			g.DrawString(label, font, muted, xStart, centerY - labelSize.Height / 2);
-
-		int barX = xStart + QLabelW;
-		int segY = centerY - QSegH / 2;
+		int segY = stackTop;
 		using (var track = new SolidBrush(_palette.Track))
 		using (var fill = new SolidBrush(fillColor))
 		{
@@ -434,10 +451,14 @@ internal sealed class WidgetWindow : Form
 			}
 		}
 
-		string text = QuotaFormat.Line(w.Percentage, w.ResetsAt, DateTimeOffset.Now);
-		var textSize = g.MeasureString(text, font);
-		using (var vb = new SolidBrush(fillColor))
-			g.DrawString(text, font, vb, barX + QBarW + QBarTextGap, centerY - textSize.Height / 2);
+		// Pace bar: muted track + muted fill to the elapsed-time fraction (omitted when reset unknown).
+		int paceY = stackTop + QSegH + QPaceGap;
+		var pace = QuotaPacing.Compute(w, duration, DateTimeOffset.Now);
+		using (var paceTrack = new SolidBrush(_palette.Track))
+			g.FillRectangle(paceTrack, barX, paceY, QBarW, QPaceH);
+		if (pace.ElapsedFraction is double ef)
+			using (var paceFill = new SolidBrush(_palette.Muted))
+				g.FillRectangle(paceFill, barX, paceY, Math.Max(1, (int)Math.Round(QBarW * ef)), QPaceH);
 	}
 
 	// Force background-colored pixels to alpha 1 and everything else to alpha 255 (the monitor's trick:

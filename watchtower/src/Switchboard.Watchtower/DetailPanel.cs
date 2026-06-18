@@ -261,13 +261,15 @@ internal sealed class DetailPanel : Form
 		using (var fill = new SolidBrush(color))
 			g.FillRectangle(fill, Pad, barY, (int)(barW * usage01), 8);
 
-		// ghost pace bar beneath: grey fill to the elapsed-time fraction (omitted when reset unknown)
+		// ghost pace bar beneath: fill to the elapsed-time fraction, amber when burning over pace
+		// (matching the caption tint), muted otherwise. Omitted when reset unknown.
 		int ghostY = barY + 10;
 		if (pace.ElapsedFraction is double ef)
 		{
 			using var ghostTrack = new SolidBrush(_palette.Track);
 			g.FillRectangle(ghostTrack, Pad, ghostY, barW, 3);
-			using var ghostFill = new SolidBrush(_palette.Muted);
+			var ghostColor = pace.Verdict == PaceVerdict.Over ? _palette.Warning : _palette.Muted;
+			using var ghostFill = new SolidBrush(ghostColor);
 			g.FillRectangle(ghostFill, Pad, ghostY, (int)(barW * ef), 3);
 		}
 

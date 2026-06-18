@@ -4,7 +4,7 @@ namespace Switchboard.Watchtower.Core;
 
 /// <summary>
 /// Maps a 0..1 fullness to a continuous green -> amber -> red colour (a smooth gradient rather than
-/// three discrete severity bands). Used for both the context equalizer bars and the plan-usage bars.
+/// three discrete severity bands). Used for both the context rings and the plan-usage bars.
 /// </summary>
 public static class SeverityGradient
 {
