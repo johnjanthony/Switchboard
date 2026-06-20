@@ -23,7 +23,7 @@ def _handler(tmp_path: Path):
 		port=9876,
 		timeout_seconds=60,
 		log_path=str(tmp_path / "log.jsonl"),
-		spawn_root=tmp_path,
+		windows_spawn_root=tmp_path,
 	)
 	backend = AsyncMock()
 	return SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), Registry())
@@ -97,3 +97,42 @@ async def test_zero_returncode_with_only_header_returns_false(tmp_path):
 	stdout = b" USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME\n"
 	with patch("asyncio.create_subprocess_exec", _mock_quser(stdout)):
 		assert await handler._user_has_interactive_session() is False
+
+
+@pytest.mark.asyncio
+async def test_resume_aborts_when_no_desktop_session(tmp_path):
+	"""P0-4: handle_resume must gate on the desktop-session check like
+	handle_fresh: a phone Resume with nobody logged in must abort with a
+	notice, not mint a conversation whose wt tab can never launch."""
+	from server.registry import Conversation, ConversationMember
+	handler = _handler(tmp_path)
+	registry = handler._registry
+	conv = Conversation(id="conv-src", title="Src")
+	member = ConversationMember(
+		cli_session_id="sess-dormant", sender="Claude", cwd="C:/Work/X",
+		surface="windows", joined_at=0.0, alive=False,
+	)
+	conv.members_active["Claude"] = member
+	registry.conversations["conv-src"] = conv
+
+	with patch(
+		"asyncio.create_subprocess_exec",
+		_mock_quser(stdout=b"", returncode=1),  # no users logged on
+	):
+		await handler.handle_resume({
+			"type": "resume",
+			"source_conversation_id": "conv-src",
+			"issued_at": "2026-06-11T00:00:00Z",
+		})
+
+	# No continuation conv minted, member untouched, nothing bound, no pending file
+	assert all(c.continued_from != "conv-src" for c in registry.conversations.values())
+	assert member.alive is False
+	assert "sess-dormant" not in registry.session_to_conversation_id
+	assert list(tmp_path.glob("spawn-pending-*.json")) == []
+	# Away mode must not be auto-enabled by an aborted resume
+	assert registry.global_away_mode is False
+	# Notice surfaced to the phone (same degrade behavior as handle_fresh)
+	handler._backend.send_text.assert_awaited_once()
+	notice = handler._backend.send_text.await_args.args[0]
+	assert "logged in" in notice

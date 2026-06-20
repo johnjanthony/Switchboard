@@ -52,8 +52,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import io.github.johnjanthony.switchboard.network.Channel
-import io.github.johnjanthony.switchboard.network.ChannelMessage
+import io.github.johnjanthony.switchboard.AwayModePillChip
+import io.github.johnjanthony.switchboard.network.ConversationRow
 import io.github.johnjanthony.switchboard.network.Pending
 import kotlin.math.abs
 import kotlinx.coroutines.launch
@@ -61,14 +61,10 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionViewScreen(
-	channel: Channel,
-	messages: List<Pair<String, ChannelMessage>>,
-	awayActive: Boolean,
-	isAwayOverride: Boolean,
-	globalAway: Boolean,
-	currentPending: Map<String, Pending>,
+	row: ConversationRow,
 	scrollToMessageId: String? = null,
 	onScrollConsumed: () -> Unit = {},
+	awayActive: Boolean,
 	onBack: () -> Unit,
 	onLongPressPill: () -> Unit,
 	onSubmitReply: (sender: String, text: String, requestId: String?) -> Unit,
@@ -77,9 +73,12 @@ fun SessionViewScreen(
 	onMarkMessageOpened: (msgId: String) -> Unit,
 	onShowTabInfo: () -> Unit,
 ) {
+	val messages = row.messages
+	val currentPending = row.pendingQuestions
+	val agentStatus = row.agentStatus
 	val listState = rememberLazyListState()
 	val activePending = currentPending.filterValues { !it.cancelled }
-	var selectedRequestId by remember(channel.cwdKey) { mutableStateOf<String?>(null) }
+	var selectedRequestId by remember(row.id) { mutableStateOf<String?>(null) }
 
 	val answeredSet: Set<String> = remember(messages) {
 		messages.mapNotNull { (_, m) -> m.attached_to_msg_id }
@@ -127,14 +126,15 @@ fun SessionViewScreen(
 				title = {
 					Text(
 						text = buildAnnotatedString {
-							append(channel.title ?: leafName(channel.cwdCanonical))
-							if (channel.cwdCanonical.isNotEmpty()) {
+							append(row.title)
+							val roster = row.memberRoster
+							if (roster.isNotEmpty()) {
 								withStyle(
 									style = MaterialTheme.typography.bodySmall.toSpanStyle().copy(
 										color = MaterialTheme.colorScheme.onSurfaceVariant
 									)
 								) {
-									append(" (${leafName(channel.cwdCanonical)})")
+									append(" ($roster)")
 								}
 							}
 						},
@@ -150,10 +150,8 @@ fun SessionViewScreen(
 					IconButton(onClick = onShowTabInfo) {
 						Icon(Icons.Default.Info, contentDescription = "Tab info")
 					}
-					PerCwdAwayPill(
-						awayActive = awayActive,
-						isOverride = isAwayOverride,
-						globalAway = globalAway,
+					AwayModePillChip(
+						active = awayActive,
 						onLongPress = onLongPressPill,
 					)
 				},
@@ -311,9 +309,9 @@ fun SessionViewScreen(
 							onDownloadLongClick = onLongPressDownloadFile,
 						)
 					}
-					if (channel.agentStatus?.isFresh() == true) {
+					if (agentStatus?.isFresh() == true) {
 						item(key = "agent_status_row") {
-							AgentStatusRow(status = channel.agentStatus!!)
+							AgentStatusRow(status = agentStatus)
 						}
 					}
 				}

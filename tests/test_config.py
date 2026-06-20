@@ -15,6 +15,8 @@ def _clear_env(monkeypatch):
 		"SWITCHBOARD_TIMEOUT_SECONDS",
 		"SWITCHBOARD_LOG_PATH",
 		"SWITCHBOARD_SPAWN_ROOT",
+		"SWITCHBOARD_WINDOWS_SPAWN_ROOT",
+		"SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT",
 		"SWITCHBOARD_RATE_LIMIT",
 	]:
 		monkeypatch.delenv(key, raising=False)
@@ -59,17 +61,55 @@ def test_os_env_wins_over_dotenv(monkeypatch, tmp_path):
 	assert cfg.port == 8888
 
 
-def test_spawn_root_defaults_to_none(monkeypatch, tmp_path):
+def test_windows_spawn_root_defaults_to_none(monkeypatch, tmp_path):
 	_clear_env(monkeypatch)
 	cfg = load_config(dotenv_path=tmp_path / "no.env")
-	assert cfg.spawn_root is None
+	assert cfg.windows_spawn_root is None
 
 
-def test_spawn_root_loaded_from_env(monkeypatch, tmp_path):
+def test_windows_spawn_root_loaded_from_new_env_var(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	monkeypatch.setenv("SWITCHBOARD_WINDOWS_SPAWN_ROOT", str(tmp_path))
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.windows_spawn_root == tmp_path
+
+
+def test_windows_spawn_root_backcompat_legacy_env_var(monkeypatch, tmp_path):
 	_clear_env(monkeypatch)
 	monkeypatch.setenv("SWITCHBOARD_SPAWN_ROOT", str(tmp_path))
 	cfg = load_config(dotenv_path=tmp_path / "no.env")
-	assert cfg.spawn_root == tmp_path
+	assert cfg.windows_spawn_root == tmp_path
+
+
+def test_windows_spawn_root_new_env_wins_over_legacy(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	new_path = tmp_path / "new"
+	new_path.mkdir()
+	old_path = tmp_path / "old"
+	old_path.mkdir()
+	monkeypatch.setenv("SWITCHBOARD_WINDOWS_SPAWN_ROOT", str(new_path))
+	monkeypatch.setenv("SWITCHBOARD_SPAWN_ROOT", str(old_path))
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.windows_spawn_root == new_path
+
+
+def test_wsl_spawn_root_segment_default(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.wsl_spawn_root_segment == "work"
+
+
+def test_wsl_spawn_root_segment_from_env(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	monkeypatch.setenv("SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT", "code")
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.wsl_spawn_root_segment == "code"
+
+
+def test_wsl_home_resolved_defaults_to_none(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.wsl_home_resolved is None
 
 
 def test_rate_limit_defaults_to_30(monkeypatch, tmp_path):

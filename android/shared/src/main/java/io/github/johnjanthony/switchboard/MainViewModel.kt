@@ -12,6 +12,7 @@ import android.webkit.MimeTypeMap
 import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.core.content.FileProvider
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.ChildEventListener
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
@@ -20,12 +21,13 @@ import com.google.firebase.database.ValueEventListener
 import io.github.johnjanthony.switchboard.network.BulkRespondEntry
 import io.github.johnjanthony.switchboard.network.BulkRespondPayload
 import io.github.johnjanthony.switchboard.network.BulkRespondSection
-import io.github.johnjanthony.switchboard.network.Channel
 import io.github.johnjanthony.switchboard.network.ChannelMessage
+import io.github.johnjanthony.switchboard.network.ConversationMember
+import io.github.johnjanthony.switchboard.network.ConversationRow
+import io.github.johnjanthony.switchboard.network.ConversationSummary
 import io.github.johnjanthony.switchboard.network.Pending
 import io.github.johnjanthony.switchboard.network.PendingExitToggle
 import io.github.johnjanthony.switchboard.network.AgentStatus
-import io.github.johnjanthony.switchboard.network.SpawnCollisionData
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,9 +51,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		private const val BULK_RESPOND_DEFAULT_TEXT = "I'll respond when I'm back at my desk."
 	}
 
-	// Keyed by cwdKey (Firebase form, e.g. "c:__work__switchboard")
-	private val _channels = MutableStateFlow<Map<String, Channel>>(emptyMap())
-	val channels: StateFlow<Map<String, Channel>> = _channels.asStateFlow()
+	// Primary phone-side state: conversations keyed by conv_id with per-conversation
+	// runtime state (messages, pendings, answered set) folded in.
+	private val _conversationRows = MutableStateFlow<Map<String, ConversationRow>>(emptyMap())
+	val conversationRows: StateFlow<Map<String, ConversationRow>> = _conversationRows.asStateFlow()
 
 	private val _projectMru = MutableStateFlow<List<String>>(emptyList())
 	val projectMru: StateFlow<List<String>> = _projectMru.asStateFlow()
@@ -59,48 +62,86 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _globalAway = MutableStateFlow(false)
 	val globalAway: StateFlow<Boolean> = _globalAway.asStateFlow()
 
-	// Keys are cwdKey
-	private val _cwdOverrides = MutableStateFlow<Map<String, Boolean>>(emptyMap())
-	val cwdOverrides: StateFlow<Map<String, Boolean>> = _cwdOverrides.asStateFlow()
-
-	private val _pendingCollision = MutableStateFlow<SpawnCollisionData?>(null)
-	val pendingCollision: StateFlow<SpawnCollisionData?> = _pendingCollision.asStateFlow()
-
 	private val _pendingExitToggle = MutableStateFlow<PendingExitToggle?>(null)
 	val pendingExitToggle: StateFlow<PendingExitToggle?> = _pendingExitToggle.asStateFlow()
-
-	// Set when the user swipes a channel row to "At desk" AND the channel has no
-	// pending questions — without pendings the bulk-respond modal would not pop,
-	// so we surface a plain confirm dialog instead. Value is the cwdKey awaiting
-	// confirmation, or null when no swipe is pending.
-	private val _pendingSwipeAtDeskConfirm = MutableStateFlow<String?>(null)
-	val pendingSwipeAtDeskConfirm: StateFlow<String?> = _pendingSwipeAtDeskConfirm.asStateFlow()
 
 	private val _markdownViewerContent = MutableStateFlow<Pair<String, String>?>(null) // fileName to content
 	val markdownViewerContent: StateFlow<Pair<String, String>?> = _markdownViewerContent.asStateFlow()
 
-	private val _selectedCwdKey = MutableStateFlow<String?>(null)
-	val selectedCwdKey: StateFlow<String?> = _selectedCwdKey.asStateFlow()
+	private val _selectedConversationId = MutableStateFlow<String?>(null)
+	val selectedConversationId: StateFlow<String?> = _selectedConversationId.asStateFlow()
+
+	/** Conversations dropped from the list because their node failed to parse (convId to error). */
+	private val _conversationParseFailures = MutableStateFlow<Map<String, String>>(emptyMap())
+	val conversationParseFailures: StateFlow<Map<String, String>> = _conversationParseFailures.asStateFlow()
+	private var lastParseFailureNotice: String? = null
+
+	private fun maybeToastParseFailures(failures: Map<String, String>) {
+		val notice = conversationParseFailureNotice(failures)
+		if (notice != null && notice != lastParseFailureNotice) {
+			Handler(Looper.getMainLooper()).post {
+				Toast.makeText(getApplication(), notice, Toast.LENGTH_LONG).show()
+			}
+		}
+		lastParseFailureNotice = notice
+	}
+
+	private val _activeConversations = MutableStateFlow<List<ConversationSummary>>(emptyList())
+	val activeConversations: StateFlow<List<ConversationSummary>> = _activeConversations.asStateFlow()
+
+	private val _wslAvailable = MutableStateFlow(true)
+	val wslAvailable: StateFlow<Boolean> = _wslAvailable.asStateFlow()
+
+	private val _openConversationId = MutableStateFlow<String?>(null)
+	val openConversationId: StateFlow<String?> = _openConversationId.asStateFlow()
 
 	private val _pendingDeepLinkMessageId = MutableStateFlow<String?>(null)
 	val pendingDeepLinkMessageId: StateFlow<String?> = _pendingDeepLinkMessageId.asStateFlow()
 
-	private val database = FirebaseDatabase.getInstance()
-	private val channelsRef = database.getReference("channels")
-	private val responsesRef = database.getReference("responses")
-	private val commandsRef = database.getReference("commands")
-	private val awayCommandsRef = database.getReference("away_mode_commands")
-	private val spawnCollisionsRef = database.getReference("spawn_collisions")
-	private val globalAwayRef = database.getReference("global_settings/away_mode")
+	// Maps requestId → convId so submitReplyForConversation can write to the new
+	// /conversations/<convId>/answers/<requestId> path. Populated by routeConversationMessage
+	// as questions arrive; consumed by submitReplyForConversation when answers go out.
+	private val requestIdToConvId = mutableMapOf<String, String>()
 
-	private val messageListeners = mutableMapOf<String, ChildEventListener>()
+	private val database = FirebaseDatabase.getInstance()
+	private val awayCommandsRef = database.getReference("away_mode_commands")
+	private val globalAwayRef = database.getReference("global_settings/away_mode")
+	private val conversationsRef = database.getReference("conversations")
+	private val adminNotificationsRef = database.getReference("admin_notifications")
+
+	private val conversationMessageListeners = mutableMapOf<String, ChildEventListener>()
+	private var adminListener: ChildEventListener? = null
 
 	init {
-		channelsRef.keepSynced(true)
-		setupChannelsListener()
-		setupAwayModeListener()
-		setupSpawnCollisionsListener()
 		loadProjectMru()
+		attachFirebaseListenersWhenAuthed()
+	}
+
+	private var firebaseListenersAttached = false
+
+	/**
+	 * Attach the Firebase DB listeners only once an authenticated user exists.
+	 * Attaching them in init (before the async Google sign-in completes) makes the
+	 * unauthenticated listens fail Permission denied under auth-required rules, and
+	 * Firebase cancels them with no auto-retry, leaving the UI empty. Uses an
+	 * IdTokenListener, NOT an AuthStateListener: on a saved-login restore FirebaseAuth
+	 * notifies only its id-token listeners, so an AuthStateListener can stay silent and
+	 * the DB listeners would never attach. IdTokenListener fires on sign-in, restore,
+	 * and token refresh, always with currentUser available; shouldAttachFirebaseListeners
+	 * keeps attachment idempotent across the repeated fires.
+	 */
+	private fun attachFirebaseListenersWhenAuthed() {
+		FirebaseAuth.getInstance().addIdTokenListener(FirebaseAuth.IdTokenListener { auth ->
+			if (shouldAttachFirebaseListeners(auth.currentUser != null, firebaseListenersAttached)) {
+				firebaseListenersAttached = true
+				setupAwayModeListener()
+				startOpenConversationListener()
+				startWslAvailableListener()
+				startConversationListener()
+				startConversationMessageSubscriptions()
+				setupAdminNotificationsListener()
+			}
+		})
 	}
 
 	private fun loadProjectMru() {
@@ -134,161 +175,84 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		}
 	}
 
-	fun isAwayActive(cwdKey: String): Boolean {
-		val override = _cwdOverrides.value[cwdKey]
-		return override ?: _globalAway.value
-	}
+	fun isAwayActive(cwdKey: String): Boolean = _globalAway.value
 
 	// --- Firebase listeners ---
 
-	private fun setupChannelsListener() {
-		channelsRef.addChildEventListener(object : ChildEventListener {
-			override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
-				val cwdKey = snapshot.key ?: return
-				syncChannel(cwdKey, snapshot)
+	private fun setupAdminNotificationsListener() {
+		val listener = object : ChildEventListener {
+			override fun onChildAdded(snapshot: DataSnapshot, prev: String?) {
+				val msgId = snapshot.key ?: return
+				val sender = snapshot.child("sender").getValue(String::class.java) ?: "system"
+				val text = snapshot.child("text").getValue(String::class.java) ?: ""
+				val format = snapshot.child("format").getValue(String::class.java) ?: "plain"
+				val timestamp = snapshot.child("timestamp").getValue(String::class.java) ?: ""
+				val msg = ChannelMessage(
+					sender = sender, type = "notify",
+					text = text, format = format, timestamp = timestamp,
+				)
+				// Surface via ConversationRow: synthesize a synthetic "_admin" row (R3).
+				ensureAdminRowExists()
+				appendAdminMessage(msgId, msg)
 			}
-			override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {
-				val cwdKey = snapshot.key ?: return
-				syncChannel(cwdKey, snapshot)
+			override fun onChildChanged(snapshot: DataSnapshot, prev: String?) {}
+			override fun onChildRemoved(snapshot: DataSnapshot) {}
+			override fun onChildMoved(snapshot: DataSnapshot, prev: String?) {}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "admin_notifications listener cancelled: $error")
 			}
-			override fun onChildRemoved(snapshot: DataSnapshot) {
-				val cwdKey = snapshot.key ?: return
-				removeChannel(cwdKey)
-			}
-			override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
-			override fun onCancelled(error: DatabaseError) {}
-		})
+		}
+		adminNotificationsRef.addChildEventListener(listener)
+		adminListener = listener
 	}
 
-	private fun syncChannel(cwdKey: String, snapshot: DataSnapshot) {
-		val hidden = snapshot.child("hidden").getValue(Boolean::class.java) == true
-		val title = snapshot.child("title").getValue(String::class.java)
-		val cwdCanonical = snapshot.child("cwd_canonical").getValue(String::class.java) ?: ""
-		val lastActivityAt = snapshot.child("last_activity_at").getValue(String::class.java)
-		val preview = snapshot.child("preview").getValue(String::class.java)
-		val unreadCount = snapshot.child("unread_count").getValue(Int::class.java) ?: 0
-		val awayMode = snapshot.child("away_mode").getValue(Boolean::class.java)
-		val pendingResponses = snapshot.child("pending_responses").getValue(Int::class.java) ?: 0
-		val cwd = cwdCanonical.ifBlank { fromFirebaseKey(cwdKey) }
-
-		val asSnap = snapshot.child("agent_status")
-		val agentStatus: AgentStatus? =
-			if (asSnap.exists()) {
-				val sender  = asSnap.child("sender").getValue(String::class.java)
-				val state   = asSnap.child("state").getValue(String::class.java)
-				val detail  = asSnap.child("detail").getValue(String::class.java)
-				val updated = asSnap.child("updated_at").getValue(Long::class.java) ?: 0L
-				if (sender != null && state != null && updated > 0L)
-					AgentStatus(sender, state, detail, updated)
-				else
-					null
-			} else null
-
-		val existing = _channels.value[cwdKey]
-		val updated = (existing ?: Channel(cwd = cwd, cwdKey = cwdKey)).copy(
-			cwd = cwd,
-			cwdKey = cwdKey,
-			title = title,
-			cwdCanonical = cwdCanonical,
-			hidden = hidden,
-			lastActivityAt = lastActivityAt,
-			preview = preview,
-			unreadCount = unreadCount,
-			awayMode = awayMode,
-			pendingResponses = pendingResponses,
-			agentStatus = agentStatus,
-		)
-		val newMap = _channels.value.toMutableMap()
-		newMap[cwdKey] = updated
-		_channels.value = newMap
-		recomputeCwdOverrides()
-
-		if (_selectedCwdKey.value == null && !hidden) {
-			_selectedCwdKey.value = cwdKey
-		}
-		if (hidden && _selectedCwdKey.value == cwdKey) {
-			_selectedCwdKey.value = _channels.value.entries.firstOrNull { !it.value.hidden }?.key
-		}
-
-		if (!messageListeners.containsKey(cwdKey)) {
-			val listener = object : ChildEventListener {
-				override fun onChildAdded(snap: DataSnapshot, prev: String?) {
-					val msgId = snap.key ?: return
-					try {
-						val msg = snap.getValue(ChannelMessage::class.java) ?: return
-						addMessage(cwdKey, msgId, msg)
-					} catch (e: Exception) {
-						android.util.Log.e("MainViewModel", "MALFORMED MESSAGE at channels/$cwdKey/messages/$msgId")
-						android.util.Log.e("MainViewModel", "Value Type: ${snap.value?.javaClass?.name}")
-						android.util.Log.e("MainViewModel", "Value Content: ${snap.value}")
-						android.util.Log.e("MainViewModel", "Error: ${e.message}")
-					}
-				}
-				override fun onChildChanged(snap: DataSnapshot, prev: String?) {
-					val msgId = snap.key ?: return
-					try {
-						val msg = snap.getValue(ChannelMessage::class.java) ?: return
-						addMessage(cwdKey, msgId, msg)
-					} catch (e: Exception) {
-						android.util.Log.e("MainViewModel", "MALFORMED MESSAGE (update) at channels/$cwdKey/messages/$msgId")
-						android.util.Log.e("MainViewModel", "Value Type: ${snap.value?.javaClass?.name}")
-						android.util.Log.e("MainViewModel", "Value Content: ${snap.value}")
-						android.util.Log.e("MainViewModel", "Error: ${e.message}")
-					}
-				}
-				override fun onChildRemoved(snap: DataSnapshot) {
-					val msgId = snap.key ?: return
-					removeMessage(cwdKey, msgId)
-				}
-				override fun onChildMoved(snap: DataSnapshot, prev: String?) {}
-				override fun onCancelled(error: DatabaseError) {}
-			}
-			messageListeners[cwdKey] = listener
-			snapshot.child("messages").ref.addChildEventListener(listener)
+	/** Ensure the synthetic _admin ConversationRow exists in _conversationRows (R3). */
+	private fun ensureAdminRowExists() {
+		if (!_conversationRows.value.containsKey(ADMIN_CONVERSATION_ID)) {
+			val newMap = _conversationRows.value.toMutableMap()
+			newMap[ADMIN_CONVERSATION_ID] = ConversationRow(
+				summary = ConversationSummary(
+					id = ADMIN_CONVERSATION_ID,
+					title = "Admin",
+					state = "active",
+					members = emptyList(),
+					lastActivityAt = "",
+				),
+			)
+			_conversationRows.value = newMap
 		}
 	}
 
-	private fun removeChannel(cwdKey: String) {
-		val listener = messageListeners.remove(cwdKey)
-		if (listener != null) {
-			channelsRef.child(cwdKey).child("messages").removeEventListener(listener)
-		}
-		val newMap = _channels.value.toMutableMap()
-		if (newMap.remove(cwdKey) != null) {
-			_channels.value = newMap
-			recomputeCwdOverrides()
-			if (_selectedCwdKey.value == cwdKey) {
-				_selectedCwdKey.value = newMap.entries.firstOrNull { !it.value.hidden }?.key
-			}
-		}
-	}
-
-	private fun recomputeCwdOverrides() {
-		// Derive _cwdOverrides from each channel's awayMode field. A null awayMode
-		// means "follow global"; a non-null value (true or false) is the channel's
-		// own override of the global flag. This keeps a single source of truth —
-		// `channels/{key}/away_mode` — instead of mirroring overrides into a
-		// separate Firebase node.
-		val map = mutableMapOf<String, Boolean>()
-		for ((key, ch) in _channels.value) {
-			val v = ch.awayMode
-			if (v != null) map[key] = v
-		}
-		_cwdOverrides.value = map
+	/** Append an admin message to the synthetic _admin ConversationRow. */
+	private fun appendAdminMessage(msgId: String, msg: ChannelMessage) {
+		val row = _conversationRows.value[ADMIN_CONVERSATION_ID] ?: return
+		val rawMessages = row.messages.toMutableList()
+		val idx = rawMessages.indexOfFirst { it.first == msgId }
+		if (idx >= 0) rawMessages[idx] = msgId to msg else rawMessages.add(msgId to msg)
+		val sortedRaw = rawMessages.sortedBy { it.first }
+		val displayMessages = applySpliceOrder(sortedRaw)
+		val updated = row.copy(messages = displayMessages)
+		val newMap = _conversationRows.value.toMutableMap()
+		newMap[ADMIN_CONVERSATION_ID] = updated
+		_conversationRows.value = newMap
 	}
 
 	private fun isQuestionType(type: String): Boolean {
 		return type == "question" || type == "ask_human"
 	}
 
-	private fun addMessage(cwdKey: String, msgId: String, msg: ChannelMessage) {
-		val channel = _channels.value[cwdKey] ?: return
+	/**
+	 * Merge a freshly-arrived message into the per-conversation row's runtime state,
+	 * deriving displayMessages, answeredSet, and pendingQuestions. Replaces the
+	 * legacy addMessage(cwdKey, ...) routing.
+	 */
+	private fun addMessageToConversation(convId: String, msgId: String, msg: ChannelMessage) {
+		val row = _conversationRows.value[convId] ?: return
 
-		// Maintain the raw arrival-order list. The current channel.messages may already
-		// be spliced from a prior addMessage call, so we re-derive from a sorted-by-msgId
-		// snapshot. Firebase push keys are time-ordered, so sortedBy { it.first } gives
-		// us a deterministic arrival order regardless of in-list splice state.
-		val rawMessages = channel.messages.toMutableList()
+		// Maintain raw arrival-order list. Firebase push keys are time-ordered, so
+		// sortedBy { it.first } gives deterministic arrival order regardless of in-list
+		// splice state from prior calls.
+		val rawMessages = row.messages.toMutableList()
 		val idx = rawMessages.indexOfFirst { it.first == msgId }
 		if (idx >= 0) rawMessages[idx] = msgId to msg else rawMessages.add(msgId to msg)
 		val sortedRaw = rawMessages.sortedBy { it.first }
@@ -303,21 +267,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			.filter { targetId -> sortedRaw.any { it.first == targetId } }
 			.toSet()
 
-		// pendingQuestions / pendingResponses: a question is "no longer pending"
-		// when it's cancelled, rejected, OR has a reply attached.
-		var newPending = channel.pendingQuestions.toMutableMap()
-		var newPendingResponses = channel.pendingResponses
+		// pendingQuestions: a question is "no longer pending" when it's cancelled, rejected,
+		// OR has a reply attached.
+		var newPending = row.pendingQuestions.toMutableMap()
 		if (isQuestionType(msg.type) && msg.request_id != null) {
 			val isAnsweredViaSplice = msgId in answeredSet
 			if (msg.cancelled || msg.rejected || isAnsweredViaSplice) {
 				if (newPending.containsKey(msg.request_id)) {
 					newPending.remove(msg.request_id!!)
-					newPendingResponses = (newPendingResponses - 1).coerceAtLeast(0)
 				}
 			} else {
-				if (!newPending.containsKey(msg.request_id)) {
-					newPendingResponses += 1
-				}
 				newPending[msg.request_id!!] = Pending(
 					sender = msg.sender,
 					requestId = msg.request_id!!,
@@ -335,24 +294,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			val targetRequestId = targetQuestion?.request_id
 			if (targetRequestId != null && newPending.containsKey(targetRequestId)) {
 				newPending.remove(targetRequestId)
-				newPendingResponses = (newPendingResponses - 1).coerceAtLeast(0)
 			}
 		}
 
-		val updated = channel.copy(
+		val updated = row.copy(
 			messages = displayMessages,
 			pendingQuestions = newPending,
-			pendingResponses = newPendingResponses,
 			answeredQuestionMsgIds = answeredSet,
 		)
-		val newMap = _channels.value.toMutableMap()
-		newMap[cwdKey] = updated
-		_channels.value = newMap
+		val newMap = _conversationRows.value.toMutableMap()
+		newMap[convId] = updated
+		_conversationRows.value = newMap
 
-		if (_selectedCwdKey.value == cwdKey) {
-			channelsRef.child(cwdKey).child("unread_count").setValue(0)
-		} else if (_selectedCwdKey.value == null && !channel.hidden) {
-			_selectedCwdKey.value = cwdKey
+		// Clear unread badge on the server-side counter when this is the open row.
+		if (_selectedConversationId.value == convId && !isSyntheticConversation(convId)) {
+			conversationsRef.child(convId).child("unread_count").setValue(0)
 		}
 
 		if (msg.rejected) {
@@ -362,43 +318,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		}
 	}
 
-	private fun removeMessage(cwdKey: String, msgId: String) {
-		val channel = _channels.value[cwdKey] ?: return
-		val rawMessages = channel.messages.filterNot { it.first == msgId }
-		if (rawMessages.size == channel.messages.size) return
-		val removed = channel.messages.firstOrNull { it.first == msgId }?.second
-
-		// Re-derive both display order and answered set from the trimmed raw list.
-		val sortedRaw = rawMessages.sortedBy { it.first }
-		val displayMessages = applySpliceOrder(sortedRaw)
-		val answeredSet: Set<String> = sortedRaw
-			.mapNotNull { (_, m) -> m.attached_to_msg_id }
-			.filter { targetId -> sortedRaw.any { it.first == targetId } }
-			.toSet()
-
-		val newPending = channel.pendingQuestions.toMutableMap()
-		var newPendingResponses = channel.pendingResponses
-		if (removed != null && isQuestionType(removed.type) && removed.request_id != null) {
-			if (newPending.containsKey(removed.request_id)) {
-				newPending.remove(removed.request_id)
-				newPendingResponses = (newPendingResponses - 1).coerceAtLeast(0)
-			}
-		}
-		val updated = channel.copy(
-			messages = displayMessages,
-			pendingQuestions = newPending,
-			pendingResponses = newPendingResponses,
-			answeredQuestionMsgIds = answeredSet,
-		)
-		val newMap = _channels.value.toMutableMap()
-		newMap[cwdKey] = updated
-		_channels.value = newMap
-	}
-
 	private fun setupAwayModeListener() {
-		// Per-channel away-mode lives in each channel snapshot's `away_mode` field
-		// (parsed in syncChannel + materialized via recomputeCwdOverrides). We only
-		// listen to the global flag here.
+		// Away mode is global-only. Listen to the global flag.
 		globalAwayRef.addValueEventListener(object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
 				_globalAway.value = snapshot.getValue(Boolean::class.java) == true
@@ -407,39 +328,237 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		})
 	}
 
-	private fun setupSpawnCollisionsListener() {
-		spawnCollisionsRef.addChildEventListener(object : ChildEventListener {
+	private fun startOpenConversationListener() {
+		val ref = database.getReference("global_settings/open_conversation_id")
+		ref.addValueEventListener(object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				val newId = snapshot.getValue(String::class.java)
+				val changed = _openConversationId.value != newId
+				_openConversationId.value = newId
+				if (changed) recomputeConversationOpenFlags()
+			}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "open_conversation_id listener cancelled: $error")
+			}
+		})
+	}
+
+	private fun startWslAvailableListener() {
+		val ref = database.getReference("global_settings/wsl_available")
+		ref.addValueEventListener(object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				_wslAvailable.value = snapshot.getValue(Boolean::class.java) ?: true
+			}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "wsl_available listener cancelled: $error")
+			}
+		})
+	}
+
+	private fun startConversationListener() {
+		val ref = database.getReference("conversations")
+		ref.addValueEventListener(object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				val openId = _openConversationId.value
+				val failures = mutableMapOf<String, String>()
+				val summaries = snapshot.children.mapNotNull { convNode ->
+					try {
+						val convId = convNode.key ?: return@mapNotNull null
+						val meta = convNode.child("meta")
+						val title = meta.child("title").getValue(String::class.java) ?: convId
+						val state = meta.child("state").getValue(String::class.java) ?: "active"
+						val lastActivityAt = meta.child("last_activity_at").getValue(Double::class.java)
+							?.let { java.time.Instant.ofEpochMilli((it * 1000.0).toLong()).toString() } ?: ""
+
+						// Ended conversations stay visible in the list so users can review the
+						// history and hide them manually when no longer wanted. SessionRowComposable
+						// gates state-mutating actions (Combine, End) on isActive=state=="active".
+
+						val membersNode = convNode.child("members_active")
+						val members = membersNode.children.mapNotNull { memberNode ->
+							try {
+								ConversationMember(
+									cliSessionId = memberNode.child("cli_session_id").getValue(String::class.java) ?: return@mapNotNull null,
+									sender = memberNode.child("sender").getValue(String::class.java) ?: return@mapNotNull null,
+									cwd = memberNode.child("cwd").getValue(String::class.java) ?: "",
+									surface = memberNode.child("surface").getValue(String::class.java) ?: "windows",
+									alive = memberNode.child("alive").getValue(Boolean::class.java) ?: true,
+									sessionLostPermanently = memberNode.child("session_lost_permanently").getValue(Boolean::class.java) ?: false,
+									sessionEndedAt = memberNode.child("session_ended_at").getValue(String::class.java),
+									sessionEndReason = memberNode.child("session_end_reason").getValue(String::class.java),
+									joinedAt = memberNode.child("joined_at").getValue(Double::class.java) ?: 0.0,
+									leftAt = memberNode.child("left_at").getValue(Double::class.java),
+									lastSeenSeq = memberNode.child("last_seen_seq").getValue(Int::class.java) ?: 0,
+								)
+							} catch (e: Exception) {
+								android.util.Log.w("MainViewModel", "member parse failed in ${convNode.key}: ${memberNode.key}", e)
+								null
+							}
+						}
+
+						val agentStatusNode = convNode.child("agent_status")
+						val agentStatuses = mutableMapOf<String, AgentStatus>()
+						for (asSnap in agentStatusNode.children) {
+							val asKey = asSnap.key ?: continue
+							val asState = asSnap.child("state").getValue(String::class.java) ?: continue
+							val asDetail = asSnap.child("detail").getValue(String::class.java)
+							val asUpdated = asSnap.child("updated_at").getValue(Long::class.java) ?: 0L
+							if (asUpdated > 0L) {
+								agentStatuses[asKey] = AgentStatus(asKey, asState, asDetail, asUpdated)
+							}
+						}
+
+						val pendingResponses = convNode.child("pending_responses").getValue(Int::class.java) ?: 0
+						val preview = convNode.child("meta").child("preview").getValue(String::class.java)
+						val hidden = convNode.child("meta").child("hidden").getValue(Boolean::class.java) ?: false
+						val unreadCount = convNode.child("unread_count").getValue(Int::class.java) ?: 0
+
+						ConversationSummary(
+							id = convId,
+							title = title,
+							state = state,
+							members = members,
+							lastActivityAt = lastActivityAt,
+							isOpenConversation = (convId == openId),
+							hidden = hidden,
+							unreadCount = unreadCount,
+							pendingResponses = pendingResponses,
+							preview = preview,
+							agentStatuses = agentStatuses,
+						)
+					} catch (e: Exception) {
+						val id = convNode.key ?: "?"
+						android.util.Log.e("MainViewModel", "conversation parse failed: $id", e)
+						failures[id] = e.javaClass.simpleName + ": " + (e.message ?: "")
+						null
+					}
+				}
+				_conversationParseFailures.value = failures
+				maybeToastParseFailures(failures)
+				_activeConversations.value = summaries
+				mergeSummariesIntoRows(summaries)
+			}
+
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "conversations listener cancelled: $error")
+			}
+		})
+	}
+
+	/**
+	 * Fold the latest list of active ConversationSummary objects into _conversationRows,
+	 * preserving any existing per-conv runtime state. Conversations missing from the new
+	 * summary list are dropped from _conversationRows.
+	 */
+	private fun mergeSummariesIntoRows(summaries: List<ConversationSummary>) {
+		val current = _conversationRows.value
+		val next = mutableMapOf<String, ConversationRow>()
+		val incomingIds = summaries.map { it.id }.toSet()
+		for (s in summaries) {
+			val existing = current[s.id]
+			if (existing == null) {
+				next[s.id] = ConversationRow(summary = s)
+			} else {
+				next[s.id] = existing.copy(summary = s)
+			}
+		}
+		// Carry the synthetic _admin row forward: it has no backing ConversationSummary
+		// in /conversations, so the incomingIds filter above would otherwise drop it (R3).
+		current[ADMIN_CONVERSATION_ID]?.let { next[ADMIN_CONVERSATION_ID] = it }
+		// Drop rows for conversations no longer in the active set.
+		// (Anything in `current` whose key is NOT in incomingIds is implicitly excluded.)
+		_conversationRows.value = next
+
+		// If the previously-selected conv is gone, clear the selection so the
+		// phone nav can fall back gracefully.
+		val sel = _selectedConversationId.value
+		if (sel != null && sel !in incomingIds) {
+			_selectedConversationId.value = next.values.firstOrNull { !it.hidden && it.state == "active" }?.id
+		}
+	}
+
+	/**
+	 * Subscribe to /conversations/<id>/messages for each conversation as it appears/disappears.
+	 * Messages route directly into the per-conversation row via addMessageToConversation.
+	 */
+	private fun startConversationMessageSubscriptions() {
+		conversationsRef.addChildEventListener(object : ChildEventListener {
 			override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
-				val spawnId = snapshot.key ?: return
-				val cwd = snapshot.child("cwd").getValue(String::class.java) ?: return
-				val cwdKey = snapshot.child("cwd_key").getValue(String::class.java) ?: return
-				val channelTitle = snapshot.child("channel_title").getValue(String::class.java)
-				val lastActivityAt = snapshot.child("last_activity_at").getValue(String::class.java)
-				val hidden = snapshot.child("hidden").getValue(Boolean::class.java) == true
-				_pendingCollision.value = SpawnCollisionData(spawnId, cwd, cwdKey, channelTitle, lastActivityAt, hidden)
+				val convId = snapshot.key ?: return
+				attachConversationMessageListener(convId)
 			}
 			override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {}
 			override fun onChildRemoved(snapshot: DataSnapshot) {
-				if (_pendingCollision.value?.spawnId == snapshot.key) {
-					_pendingCollision.value = null
-				}
+				val convId = snapshot.key ?: return
+				detachConversationMessageListener(convId)
 			}
 			override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
-			override fun onCancelled(error: DatabaseError) {}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "conversations child listener cancelled: $error")
+			}
 		})
+	}
+
+	private fun attachConversationMessageListener(convId: String) {
+		if (conversationMessageListeners.containsKey(convId)) return
+		val messagesRef = conversationsRef.child(convId).child("messages")
+		val listener = object : ChildEventListener {
+			override fun onChildAdded(snap: DataSnapshot, prev: String?) {
+				val msgId = snap.key ?: return
+				routeConversationMessage(convId, msgId, snap)
+			}
+			override fun onChildChanged(snap: DataSnapshot, prev: String?) {
+				val msgId = snap.key ?: return
+				routeConversationMessage(convId, msgId, snap)
+			}
+			override fun onChildRemoved(snap: DataSnapshot) {}
+			override fun onChildMoved(snap: DataSnapshot, prev: String?) {}
+			override fun onCancelled(error: DatabaseError) {}
+		}
+		conversationMessageListeners[convId] = listener
+		messagesRef.addChildEventListener(listener)
+	}
+
+	private fun detachConversationMessageListener(convId: String) {
+		val listener = conversationMessageListeners.remove(convId) ?: return
+		conversationsRef.child(convId).child("messages").removeEventListener(listener)
+	}
+
+	private fun routeConversationMessage(convId: String, msgId: String, snap: DataSnapshot) {
+		try {
+			val msg = snap.getValue(ChannelMessage::class.java) ?: return
+			// Track requestId → convId so submitReplyForConversation can write to the conversation-scoped
+			// answer path even after the row's pendingQuestions entry is gone.
+			if ((msg.type == "question" || msg.type == "ask_human") && msg.request_id != null) {
+				requestIdToConvId[msg.request_id!!] = convId
+			}
+			addMessageToConversation(convId, msgId, msg)
+		} catch (e: Exception) {
+			android.util.Log.e("MainViewModel", "MALFORMED MESSAGE at conversations/$convId/messages/$msgId: ${e.message}")
+		}
+	}
+
+	/** Re-emit the current conversations list with refreshed isOpenConversation flags. */
+	private fun recomputeConversationOpenFlags() {
+		val openId = _openConversationId.value
+		val updated = _activeConversations.value.map { it.copy(isOpenConversation = (it.id == openId)) }
+		_activeConversations.value = updated
+		mergeSummariesIntoRows(updated)
 	}
 
 	// --- Public actions ---
 
-	fun selectChannel(cwdKey: String) {
-		_selectedCwdKey.value = cwdKey
-		// Clear the server-maintained unread badge for this channel so the
-		// indicator drops on every device subscribed to this Firebase node.
-		channelsRef.child(cwdKey).child("unread_count").setValue(0)
+	/** Phone-side: select a conversation by convId. */
+	fun selectConversation(convId: String) {
+		_selectedConversationId.value = convId
+		// The synthetic _admin row has no Firebase node; never write under conversations/_admin (R3).
+		if (isSyntheticConversation(convId)) return
+		// Clear the server-maintained unread badge so the indicator drops on every device.
+		conversationsRef.child(convId).child("unread_count").setValue(0)
 	}
 
 	fun clearSelectedChannel() {
-		_selectedCwdKey.value = null
+		_selectedConversationId.value = null
 	}
 
 	fun setPendingDeepLinkMessageId(messageId: String?) {
@@ -454,179 +573,150 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		_markdownViewerContent.value = null
 	}
 
-	fun hasAnyPendingQuestions(): Boolean {
-		return _channels.value.values.any { it.pendingQuestions.isNotEmpty() }
+	/** Phone-side: mark a message opened given the convId (no bridge lookup needed). */
+	fun markMessageOpened(convId: String, msgId: String) {
+		if (isSyntheticConversation(convId)) return  // no Firebase node for _admin (R3)
+		conversationsRef.child(convId).child("messages").child(msgId).child("opened").setValue(true)
 	}
 
-	fun markMessageOpened(cwdKey: String, msgId: String) {
-		channelsRef.child(cwdKey).child("messages").child(msgId).child("opened").setValue(true)
-	}
-
-	fun submitReply(cwdKey: String, sender: String, text: String, requestId: String?) {
-		val key = requestId ?: "${cwdKey}__$sender"
-		responsesRef.child(key).setValue(mapOf(
+	/**
+	 * Phone-side: submit a reply for a specific conversation. `requestId` must be non-null —
+	 * the phone UI's ReplyInputBar only opens when an active pending question is selected,
+	 * which always carries a request_id. A null requestId here would fall through to a
+	 * /responses slot the server can't recover (slot parser expects `cwd_key`, not the
+	 * conversation_id we'd write); we don't enter that path at all.
+	 */
+	fun submitReplyForConversation(convId: String, sender: String, text: String, requestId: String) {
+		database.getReference("conversations/$convId/answers/$requestId").setValue(mapOf(
 			"text" to text,
-			"cwd_key" to cwdKey,
 			"sender" to sender,
 			"request_id" to requestId,
 			"written_at" to nowIso(),
 		))
-		// Remove from pending optimistically. Decrement pendingResponses by the
-		// number of pending entries we're dropping for this sender so the row-
-		// level pending dot clears immediately rather than after the Firebase
-		// echo round-trip. Server's atomic decrement on resolve produces the
-		// same final value.
-		val channel = _channels.value[cwdKey] ?: return
-		val droppedCount = if (requestId != null) {
-			if (channel.pendingQuestions.containsKey(requestId)) 1 else 0
-		} else {
-			channel.pendingQuestions.values.count { it.sender == sender }
-		}
-		val newPending = if (requestId != null) {
-			channel.pendingQuestions.filterKeys { it != requestId }
-		} else {
-			channel.pendingQuestions.filterValues { it.sender != sender }
-		}
-		val newPendingResponses = (channel.pendingResponses - droppedCount).coerceAtLeast(0)
-		_channels.value = _channels.value.toMutableMap().also {
-			it[cwdKey] = channel.copy(pendingQuestions = newPending, pendingResponses = newPendingResponses)
-		}
+		// Optimistically remove from pending so the row indicator clears immediately.
+		val row = _conversationRows.value[convId] ?: return
+		val newPending = row.pendingQuestions.filterKeys { it != requestId }
+		val newMap = _conversationRows.value.toMutableMap()
+		newMap[convId] = row.copy(pendingQuestions = newPending)
+		_conversationRows.value = newMap
+		requestIdToConvId.remove(requestId)
 	}
 
 	fun requestAwayModeToggle(cwdKey: String?, desired: Boolean) {
-		// "On" direction (entering away mode): no bulk-respond modal needed —
-		// fire the command immediately and let the Firebase listener carry the
-		// committed state back to the UI.
+		// Per-cwd away mode was retired. Both global and per-channel toggles operate
+		// on the global flag only. cwdKey parameter is retained for call-site compatibility
+		// but is not used for routing.
 		if (desired) {
-			if (cwdKey == null) enterGlobalAway()
-			else _channels.value[cwdKey]?.cwd?.let { enterCwdAway(it) }
+			enterGlobalAway()
 			return
 		}
-
-		// "Off" direction (exiting away mode). Per the schema-reorg spec, the
-		// modal lives on the phone. Build it locally from in-memory channel state
-		// when there are pending questions in scope; otherwise fire exit straight
-		// through. We do NOT optimistically flip _globalAway / _cwdOverrides here:
-		// (a) for the no-pending fast path the Firebase listener will reflect the
-		// committed state in well under a second, and (b) for the pending path
-		// the user may still cancel in the modal, in which case nothing should
-		// have changed.
-		if (cwdKey == null) {
-			val sections = buildBulkRespondSectionsForGlobal()
-			if (sections.isEmpty()) {
-				exitGlobalAway()
-			} else {
-				_pendingExitToggle.value = PendingExitToggle(
-					scopeCwdKey = null,
-					payload = BulkRespondPayload(
-						sections = sections,
-						defaultText = BULK_RESPOND_DEFAULT_TEXT,
-					),
-				)
-			}
+		val sections = buildBulkRespondSectionsForGlobal()
+		if (sections.isEmpty()) {
+			exitGlobalAway()
 		} else {
-			val channel = _channels.value[cwdKey] ?: return
-			val cwd = channel.cwd
-			val section = buildBulkRespondSectionForChannel(channel)
-			if (section == null) {
-				exitCwdAway(cwd)
-			} else {
-				_pendingExitToggle.value = PendingExitToggle(
-					scopeCwdKey = cwdKey,
-					payload = BulkRespondPayload(
-						sections = listOf(section),
-						defaultText = BULK_RESPOND_DEFAULT_TEXT,
-					),
-				)
-			}
+			_pendingExitToggle.value = PendingExitToggle(
+				payload = BulkRespondPayload(
+					sections = sections,
+					defaultText = BULK_RESPOND_DEFAULT_TEXT,
+				),
+			)
 		}
 	}
 
-	fun requestSwipeAtDesk(cwdKey: String) {
-		// Channel-row swipe-to-At-desk needs a confirmation gate. If the channel
-		// has pending questions, requestAwayModeToggle will surface the bulk-
-		// respond modal — that modal is itself the confirmation, so we just
-		// invoke the standard path. With no pendings the standard path commits
-		// immediately, which is too aggressive for a single accidental swipe;
-		// we route through a plain confirm dialog instead.
-		val channel = _channels.value[cwdKey] ?: return
-		val hasPendings = channel.pendingQuestions.values.any { !it.cancelled }
-		if (hasPendings) {
-			requestAwayModeToggle(cwdKey, false)
-		} else {
-			_pendingSwipeAtDeskConfirm.value = cwdKey
-		}
-	}
-
-	fun confirmSwipeAtDesk() {
-		val cwdKey = _pendingSwipeAtDeskConfirm.value ?: return
-		_pendingSwipeAtDeskConfirm.value = null
-		requestAwayModeToggle(cwdKey, false)
-	}
-
-	fun cancelSwipeAtDesk() {
-		_pendingSwipeAtDeskConfirm.value = null
-	}
-
-	private fun buildBulkRespondSectionForChannel(channel: Channel): BulkRespondSection? {
-		// Source pending questions from the channel's locally-tracked
-		// pendingQuestions map (populated as messages stream in via addMessage).
-		// We bypass channel.pendingResponses here and trust the per-question
-		// records — the count and the records can briefly drift mid-flight but
-		// the records are the structurally-richer source for the modal's list.
-		val entries = channel.pendingQuestions.values
+	private fun buildBulkRespondSectionForRow(row: ConversationRow): BulkRespondSection? {
+		// Group by conversation; label by the conversation title, falling back to the
+		// member roster when the title is blank (R4). Client-only; the server returns a
+		// flat pending list and does not build sections.
+		val entries = row.pendingQuestions.values
 			.filter { !it.cancelled }
 			.map { BulkRespondEntry(it.requestId, it.sender, it.questionText) }
 		if (entries.isEmpty()) return null
-		return BulkRespondSection(cwd = channel.cwd, entries = entries)
+		return BulkRespondSection(label = bulkRespondSectionLabel(row.title, row.memberRoster), entries = entries)
 	}
 
 	private fun buildBulkRespondSectionsForGlobal(): List<BulkRespondSection> {
-		// Aggregate sections across every channel that holds pending questions.
-		// We do NOT filter by awayMode here: the server clears all per-channel
-		// overrides on a successful global flip, so every pending IS in scope of
-		// the transition. The server's _apply_bulk_respond_decision uses
-		// registry.all_pending() with no filter; the phone matches that.
-		return _channels.value.values
-			.mapNotNull { buildBulkRespondSectionForChannel(it) }
+		// Aggregate sections across every conversation row that holds pending questions.
+		// We do NOT filter by awayMode here: the server clears all per-channel overrides
+		// on a successful global flip, so every pending IS in scope of the transition.
+		return _conversationRows.value.values
+			.mapNotNull { buildBulkRespondSectionForRow(it) }
 	}
 
-	fun hideChannel(cwdKey: String) {
-		channelsRef.child(cwdKey).child("hidden").setValue(true)
+	/** Phone-side hide by convId. */
+	fun hideConversation(convId: String) {
+		if (isSyntheticConversation(convId)) return  // _admin is not hideable; no Firebase node (R3)
+		conversationsRef.child(convId).child("meta").child("hidden").setValue(true)
 	}
 
-	fun unhideChannel(cwdKey: String) {
-		channelsRef.child(cwdKey).child("hidden").setValue(false)
-		_selectedCwdKey.value = cwdKey
-	}
-
-	fun resolveSpawnCollision(spawnId: String, action: String) {
-		spawnCollisionsRef.child(spawnId).child("decision").setValue(mapOf("action" to action))
+	/** Phone-side unhide by convId. */
+	fun unhideConversation(convId: String) {
+		conversationsRef.child(convId).child("meta").child("hidden").setValue(false)
+		_selectedConversationId.value = convId
 	}
 
 	fun submitExitToggleDecision(decision: String, defaultText: String?) {
 		val pending = _pendingExitToggle.value ?: return
 		_pendingExitToggle.value = null
-		if (pending.scopeCwdKey == null) {
-			exitGlobalAway(decision = decision, defaultText = defaultText)
-		} else {
-			val cwd = _channels.value[pending.scopeCwdKey]?.cwd ?: return
-			exitCwdAway(cwd, decision = decision, defaultText = defaultText)
-		}
+		exitGlobalAway(decision = decision, defaultText = defaultText)
 	}
 
 	fun cancelExitToggle() {
 		_pendingExitToggle.value = null
 	}
 
-	fun spawnSession(project: String, prompt: String, useClaude: Boolean, useGemini: Boolean) {
+	/**
+	 * T-027 conversation-aware spawn. Writes a structured spawn_commands record.
+	 * Also auto-enables global away mode if not already on (Task 38).
+	 * Returns true if away mode was auto-enabled (caller can show a toast).
+	 */
+	fun spawnSession(
+		surface: String,
+		project: String,
+		prompt: String,
+		targetConversationId: String?,
+	): Boolean {
 		updateProjectMru(project)
-		val sb = StringBuilder("/spawn")
-		if (useClaude) sb.append(" --claude")
-		if (useGemini) sb.append(" --gemini")
-		if (project.isNotBlank()) sb.append(" $project")
-		sb.append(" $prompt")
-		commandsRef.push().setValue(sb.toString())
+		val wasAwayOff = !_globalAway.value
+		if (wasAwayOff) {
+			enterGlobalAway()
+		}
+		val record = mutableMapOf<String, Any>(
+			"type" to "fresh",
+			"surface" to surface,
+			"project" to project,
+			"issued_at" to nowIso(),
+		)
+		if (prompt.isNotBlank()) record["prompt"] = prompt
+		if (targetConversationId != null) record["target_conversation_id"] = targetConversationId
+		database.getReference("spawn_commands").push().setValue(record)
+		return wasAwayOff
+	}
+
+	// --- Conversation command writers ---
+
+	fun endConversation(conversationId: String) {
+		database.getReference("force_end_commands").push().setValue(mapOf(
+			"conversation_id" to conversationId,
+			"issued_at" to nowIso(),
+		))
+	}
+
+	fun resumeConversation(sourceConversationId: String, newPrompt: String?) {
+		val record = mutableMapOf<String, Any>(
+			"type" to "resume",
+			"source_conversation_id" to sourceConversationId,
+			"issued_at" to nowIso(),
+		)
+		if (newPrompt != null) record["prompt"] = newPrompt
+		database.getReference("spawn_commands").push().setValue(record)
+	}
+
+	fun combineConversations(sourceConversationId: String, targetConversationId: String) {
+		database.getReference("combine_commands").push().setValue(mapOf(
+			"source_conversation_id" to sourceConversationId,
+			"target_conversation_id" to targetConversationId,
+			"issued_at" to nowIso(),
+		))
 	}
 
 	// --- Away mode command emitters ---
@@ -638,21 +728,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private fun exitGlobalAway(decision: String? = null, defaultText: String? = null) {
 		val payload = mutableMapOf<String, Any>(
 			"type" to "exit_global",
-			"issued_at" to nowIso(),
-		)
-		if (decision != null) payload["decision"] = decision
-		if (defaultText != null) payload["default_text"] = defaultText
-		awayCommandsRef.push().setValue(payload)
-	}
-
-	private fun enterCwdAway(cwd: String) {
-		awayCommandsRef.push().setValue(mapOf("type" to "enter_cwd", "cwd" to cwd, "issued_at" to nowIso()))
-	}
-
-	private fun exitCwdAway(cwd: String, decision: String? = null, defaultText: String? = null) {
-		val payload = mutableMapOf<String, Any>(
-			"type" to "exit_cwd",
-			"cwd" to cwd,
 			"issued_at" to nowIso(),
 		)
 		if (decision != null) payload["decision"] = decision
@@ -754,17 +829,4 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	private fun nowIso(): String = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
-
-	private fun fromFirebaseKey(key: String): String {
-		val result = StringBuilder()
-		var i = 0
-		while (i < key.length) {
-			when {
-				key.startsWith("____", i) -> { result.append('_'); i += 4 }
-				key.startsWith("__", i) -> { result.append('/'); i += 2 }
-				else -> { result.append(key[i]); i++ }
-			}
-		}
-		return result.toString()
-	}
 }

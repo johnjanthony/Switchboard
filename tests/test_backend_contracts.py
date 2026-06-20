@@ -1,5 +1,5 @@
 """Contract tests for the trait surfaces (Backend, MessageWriter, ResponsePoller,
-AwayModeMirror, ChannelLifecycle, InjectPort).
+AwayModeMirror, ChannelLifecycle).
 """
 
 import asyncio
@@ -13,7 +13,6 @@ from server.messenger import (
 	ResponsePoller,
 	AwayModeMirror,
 	ChannelLifecycle,
-	InjectPort,
 	IncomingResponse,
 )
 
@@ -24,11 +23,8 @@ def test_incoming_response_is_simple_dataclass():
 	assert r.text == "yes"
 
 
-class _StubBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle, InjectPort, Backend):
+class _StubBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle, Backend):
 	"""Minimal concrete subclass implementing only the abstract methods."""
-
-	async def write_channel_message(self, *a, **k):
-		return None, None
 
 	async def send_timeout_followup(self, *a, **k):
 		return None
@@ -37,10 +33,6 @@ class _StubBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecyc
 		return None
 
 	async def poll_responses(self):
-		if False:
-			yield None
-
-	async def poll_commands(self):
 		if False:
 			yield None
 
@@ -61,12 +53,15 @@ class TestBackendContract:
 
 
 class TestMessageWriterContract:
-	"""Contract tests for MessageWriter (write_channel_message, send_*_followup,
+	"""Contract tests for MessageWriter (send_timeout_followup,
 	send_resolution_confirmation, send_text, send_spawn_ack, send_stale_reply_notice,
-	mark_question_cancelled)."""
+	mark_question_cancelled).
+
+	write_channel_message has been retired; write_conversation_message is the
+	canonical write method and lives on ConversationStore."""
 
 	def test_required_abstracts_declared(self):
-		expected = {"write_channel_message", "send_timeout_followup", "send_resolution_confirmation"}
+		expected = {"send_timeout_followup", "send_resolution_confirmation"}
 		declared = {
 			name
 			for name, member in inspect.getmembers(MessageWriter)
@@ -83,21 +78,25 @@ class TestMessageWriterContract:
 		):
 			assert hasattr(MessageWriter, method_name), f"Missing: {method_name}"
 
-	def test_write_channel_message_accepts_rejected_kwarg(self):
-		"""FirebaseBackend.send_stale_reply_notice writes via write_channel_message
-		with rejected=True so the Android client can render the system message as a
-		transient toast. Lock the kwarg in on the trait so future overrides can't
-		silently drop it."""
-		sig = inspect.signature(MessageWriter.write_channel_message)
+	def test_write_conversation_message_in_conversation_store(self):
+		"""write_conversation_message is declared on ConversationStore (not MessageWriter)."""
+		from server.messenger import ConversationStore
+		assert hasattr(ConversationStore, "write_conversation_message")
+
+	def test_write_conversation_message_accepts_rejected_kwarg(self):
+		"""write_conversation_message must accept rejected=True so stale-reply notices
+		can be rendered as transient toasts on Android."""
+		from server.messenger import ConversationStore
+		sig = inspect.signature(ConversationStore.write_conversation_message)
 		assert "rejected" in sig.parameters
 
 	def test_mark_question_cancelled_signature(self):
 		sig = inspect.signature(MessageWriter.mark_question_cancelled)
-		assert list(sig.parameters) == ["self", "cwd", "request_id"]
+		assert list(sig.parameters) == ["self", "conversation_id", "request_id"]
 
 	def test_send_stale_reply_notice_signature(self):
 		sig = inspect.signature(MessageWriter.send_stale_reply_notice)
-		assert list(sig.parameters) == ["self", "cwd", "sender"]
+		assert list(sig.parameters) == ["self", "conversation_id", "sender"]
 
 	@pytest.mark.asyncio
 	async def test_mark_question_cancelled_default_is_noop(self):
@@ -112,11 +111,11 @@ class TestMessageWriterContract:
 
 
 class TestResponsePollerContract:
-	"""Contract tests for ResponsePoller (poll_responses, poll_commands,
+	"""Contract tests for ResponsePoller (poll_responses,
 	poll_away_mode_commands, delete_response_slot, reset_all_pending_responses)."""
 
 	def test_required_abstracts_declared(self):
-		expected = {"poll_responses", "poll_commands"}
+		expected = {"poll_responses"}
 		declared = {
 			name
 			for name, member in inspect.getmembers(ResponsePoller)
@@ -134,14 +133,14 @@ class TestResponsePollerContract:
 
 
 class TestAwayModeMirrorContract:
-	"""Contract tests for AwayModeMirror (write_away_mode_mirror,
-	load_away_mode_snapshot, start_away_mode_listeners, reset_all_away_mode,
-	delete_legacy_away_mode_node)."""
+	"""Contract tests for AwayModeMirror (load_away_mode_snapshot,
+	start_away_mode_listeners, reset_all_away_mode, delete_legacy_away_mode_node).
+	The legacy per-cwd mirror was retired in the conversations redesign — the
+	global flag is the only away-mode signal."""
 
 	def test_methods_exist(self):
 		# AwayModeMirror has no @abstractmethod; all are no-op defaults.
 		for method_name in (
-			"write_away_mode_mirror",
 			"load_away_mode_snapshot",
 			"start_away_mode_listeners",
 			"reset_all_away_mode",
@@ -149,66 +148,17 @@ class TestAwayModeMirrorContract:
 		):
 			assert hasattr(AwayModeMirror, method_name), f"Missing: {method_name}"
 
-	def test_write_away_mode_mirror_signature(self):
-		sig = inspect.signature(AwayModeMirror.write_away_mode_mirror)
-		assert list(sig.parameters) == ["self", "cwd", "active"]
-
-	@pytest.mark.asyncio
-	async def test_write_away_mode_mirror_default_is_noop(self):
-		backend = _StubBackend()
-		await backend.write_away_mode_mirror(None, True)
-		await backend.write_away_mode_mirror("c:/work/proj", False)
-		await backend.write_away_mode_mirror(None, False)
-
 
 class TestChannelLifecycleContract:
-	"""Contract tests for ChannelLifecycle (write_session_meta, read_channel_meta,
-	has_messages, wipe_channel, set_channel_hidden, write_spawn_collision_prompt,
-	clear_spawn_collision_prompt, poll_spawn_collision_decision)."""
+	"""Contract tests for ChannelLifecycle (set_conversation_hidden).
+	The legacy cwd-keyed channel meta read was retired — Page A now reads
+	/conversations/<id>/meta directly."""
 
 	def test_methods_exist(self):
-		# No @abstractmethod; mix of no-ops, returns-default, raises NotImplementedError.
+		# No @abstractmethod; the surviving method is a no-op default.
 		for method_name in (
-			"write_session_meta",
-			"read_channel_meta",
-			"has_messages",
-			"wipe_channel",
-			"set_channel_hidden",
-			"write_spawn_collision_prompt",
-			"clear_spawn_collision_prompt",
-			"poll_spawn_collision_decision",
+			"set_conversation_hidden",
 		):
 			assert hasattr(ChannelLifecycle, method_name), f"Missing: {method_name}"
 
-	def test_poll_spawn_collision_decision_signature(self):
-		"""poll_spawn_collision_decision accepts a spawn_id and (by default)
-		raises NotImplementedError so callers know to opt in via FirebaseBackend."""
-		sig = inspect.signature(ChannelLifecycle.poll_spawn_collision_decision)
-		assert list(sig.parameters) == ["self", "spawn_id"]
 
-		async def _run():
-			class _Stub(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle, InjectPort, Backend):
-				async def write_channel_message(self, *a, **kw): return None, None
-				async def send_timeout_followup(self, *a, **kw): pass
-				async def send_resolution_confirmation(self, *a, **kw): pass
-				async def poll_responses(self):
-					if False:
-						yield
-				async def poll_commands(self):
-					if False:
-						yield
-				async def aclose(self): pass
-
-			stub = _Stub()
-			await stub.poll_spawn_collision_decision("any-spawn-id")
-
-		with pytest.raises(NotImplementedError):
-			asyncio.run(_run())
-
-
-class TestInjectPortContract:
-	"""Contract tests for InjectPort (start_inject_listener, poll_inject_messages)."""
-
-	def test_methods_exist(self):
-		for method_name in ("start_inject_listener", "poll_inject_messages"):
-			assert hasattr(InjectPort, method_name), f"Missing: {method_name}"

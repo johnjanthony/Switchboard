@@ -1,3 +1,5 @@
+import time
+
 import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
@@ -5,7 +7,7 @@ from starlette.testclient import TestClient
 from server.config import Config
 from server.gateway import build_tool_handlers
 from server.logging_jsonl import JsonlLogger
-from server.registry import Registry
+from server.registry import Conversation, ConversationMember, Registry
 from tests.test_gateway_notify_human import RecordingBackend
 
 
@@ -31,49 +33,24 @@ def _build_app(handlers):
 	return app
 
 
-def test_post_agent_status_returns_200_and_calls_backend(cfg, logger, tmp_path):
-	from server.canonicalization import canonicalize_cwd
+def _make_active_registry(conv_id="conv-xyz", session_id="s-1", sender="Claude", cwd="C:/Work/X"):
+	"""Return a Registry with one active conversation and a bound session."""
 	registry = Registry()
-	backend = RecordingBackend()
-	handlers = build_tool_handlers(cfg, registry, backend, logger)
-	# Handler is gated on away-mode — enable it for the test cwd
-	registry.update_cwd_override_cache(canonicalize_cwd(str(tmp_path)), True)
-	app = _build_app(handlers)
-
-	with TestClient(app) as client:
-		resp = client.post("/agent_status", json={
-			"cwd": str(tmp_path),
-			"state": "tool:Bash",
-			"detail": "npm test",
-		})
-		assert resp.status_code == 200
-
-	assert len(backend.agent_status_writes) == 1
-	_, sender, state, detail = backend.agent_status_writes[0]
-	assert state == "tool:Bash"
-	assert detail == "npm test"
-	assert sender == "Claude"  # cold-start fallback
-
-
-def test_post_agent_status_returns_200_when_at_desk_no_backend_call(cfg, logger, tmp_path):
-	"""HTTP layer always returns 200, but the handler gate skips the write
-	when the cwd is not in away-mode."""
-	registry = Registry()
-	backend = RecordingBackend()
-	handlers = build_tool_handlers(cfg, registry, backend, logger)
-	app = _build_app(handlers)
-	# Away mode NOT enabled — registry default is at-desk
-
-	with TestClient(app) as client:
-		resp = client.post("/agent_status", json={
-			"cwd": str(tmp_path),
-			"state": "tool:Bash",
-			"detail": "npm test",
-		})
-		assert resp.status_code == 200
-
-	# Hook contract: 200 even though nothing was written
-	assert backend.agent_status_writes == []
+	registry.global_away_mode = True
+	conv = Conversation(id=conv_id, title="test")
+	conv.created_at = time.time()
+	conv.last_activity_at = conv.created_at
+	m = ConversationMember(
+		cli_session_id=session_id,
+		sender=sender,
+		cwd=cwd,
+		surface="windows",
+		joined_at=time.time(),
+	)
+	conv.members_active[sender] = m
+	registry.conversations[conv_id] = conv
+	registry.bind_session(session_id, conv_id)
+	return registry
 
 
 def test_post_agent_status_returns_200_on_malformed_body(cfg, logger, tmp_path):
@@ -96,6 +73,99 @@ def test_post_agent_status_returns_200_on_missing_fields(cfg, logger, tmp_path):
 
 	with TestClient(app) as client:
 		# Missing 'state'
-		resp = client.post("/agent_status", json={"cwd": str(tmp_path)})
+		resp = client.post("/agent_status", json={"session_id": "s-1"})
 		assert resp.status_code == 200
+	assert backend.agent_status_writes == []
+
+
+def test_handle_agent_status_writes_to_conversations_path(cfg, logger):
+	"""A call with a valid session_id writes to /conversations/<conv_id>/agent_status/<sender>."""
+	registry = _make_active_registry(conv_id="conv-xyz", session_id="s-1", sender="Claude")
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	app = _build_app(handlers)
+
+	with TestClient(app) as client:
+		resp = client.post("/agent_status", json={
+			"state": "thinking",
+			"detail": None,
+			"session_id": "s-1",
+		})
+		assert resp.status_code == 200
+
+	assert backend.agent_status_writes == [("conv-xyz", "Claude", "thinking", None)]
+
+
+def test_handle_agent_status_clear_writes_conv_path(cfg, logger):
+	"""state='clear' is passed through with the conv_id as the first argument."""
+	registry = _make_active_registry(conv_id="conv-xyz", session_id="s-1", sender="Claude")
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	app = _build_app(handlers)
+
+	with TestClient(app) as client:
+		resp = client.post("/agent_status", json={
+			"state": "clear",
+			"detail": None,
+			"session_id": "s-1",
+		})
+		assert resp.status_code == 200
+
+	assert backend.agent_status_writes == [("conv-xyz", "Claude", "clear", None)]
+
+
+def test_handle_agent_status_drops_write_when_no_session_id(cfg, logger):
+	"""Without session_id the write is dropped — nowhere to route the status."""
+	registry = _make_active_registry()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	app = _build_app(handlers)
+
+	with TestClient(app) as client:
+		resp = client.post("/agent_status", json={
+			"state": "thinking",
+			"detail": None,
+			# no session_id
+		})
+		assert resp.status_code == 200
+
+	assert backend.agent_status_writes == []
+
+
+def test_handle_agent_status_drops_write_when_session_unbound(cfg, logger):
+	"""An unbound session_id (not mapped to any conversation) drops the write."""
+	registry = Registry()
+	registry.global_away_mode = True
+	# No conversation, no binding for "s-orphan"
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	app = _build_app(handlers)
+
+	with TestClient(app) as client:
+		resp = client.post("/agent_status", json={
+			"state": "thinking",
+			"detail": None,
+			"session_id": "s-orphan",
+		})
+		assert resp.status_code == 200
+
+	assert backend.agent_status_writes == []
+
+
+def test_handle_agent_status_drops_write_when_away_mode_off(cfg, logger):
+	"""Writes are dropped when away mode is off regardless of session binding."""
+	registry = _make_active_registry()
+	registry.global_away_mode = False
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	app = _build_app(handlers)
+
+	with TestClient(app) as client:
+		resp = client.post("/agent_status", json={
+			"state": "thinking",
+			"detail": None,
+			"session_id": "s-1",
+		})
+		assert resp.status_code == 200
+
 	assert backend.agent_status_writes == []

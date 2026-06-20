@@ -16,8 +16,8 @@ While the root documentation covers the high-level flow, this directory contains
 
 ### Key Resources
 - **[MainActivity.kt](app/src/main/java/io/github/johnjanthony/switchboard/MainActivity.kt)**: Core UI and navigation.
-- **[MainViewModel.kt](app/src/main/java/io/github/johnjanthony/switchboard/MainViewModel.kt)**: Firebase synchronization logic.
+- **[MainViewModel.kt](../shared/src/main/java/io/github/johnjanthony/switchboard/MainViewModel.kt)**: Firebase synchronization logic. (Lives in the shared module consumed by both the app and wear targets.)
 - **[install-client.ps1](../scripts/install-client.ps1)**: The recommended script for building and deploying the app from the command line.
 
 ### Manual Wifi Pairing
-If you need to manually pair your device over Wifi, refer to the **Troubleshooting** section in the [main README.md](../README.md#troubleshooting--manual-wi-fi-pairing).
+If you need to manually pair your device over Wifi, refer to the **Troubleshooting** section in the [main README.md](../README.md#troubleshooting--manual-wifi-pairing).

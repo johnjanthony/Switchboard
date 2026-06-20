@@ -6,18 +6,19 @@ Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task an
 
 ## Features
 
-- **cwd-as-channel routing**: Each agent's working directory IS its channel, with `sender` distinguishing agents that share a cwd (collab sessions). No manual channel_id wiring.
+- **Session-id routing**: Each agent session is identified by a `cli_session_id` injected automatically by the PreToolUse hook. Agents only pass `sender` and tool arguments.
+- **Conversations**: Messages, members, and state persist in Firebase as named conversations (Active / Ended). At most one is "open" — joinable by any new agent via `enter_conversation`.
 - **Asynchronous updates**: Send non-blocking notifications or deliver documents directly to your phone.
 - **In-line replies**: View your responses directly in the chat history for full context.
-- **Two-tier away mode**: Global flag plus per-channel overrides. Toggle from the phone (long-press the pill) or via the `enter_away_mode` / `exit_away_mode` MCP tools.
-- **Activity indicators**: Prominent high-visibility tab borders and tints for unseen activity or pending questions.
-- **Session spawning**: Launch fresh agent sessions on your desktop directly from your phone.
-- **Bring-your-own sessions**: Pair two already-running agents into a collab channel without spawning — both agents share the same cwd, distinct senders.
+- **Global away mode**: Single server-wide flag. Toggle from the phone's top-bar pill or via the `set_away_mode` MCP tool.
+- **Activity indicators**: Prominent high-visibility indicators for unseen activity or pending questions.
+- **Session spawning**: Launch fresh agent sessions on your desktop directly from your phone — choose surface (Windows / WSL), project, optional prompt, and whether to create a new conversation or add to an existing one.
+- **Conversation composition**: Open + enter, resume dormant sessions, or combine two conversations into one — all from the phone's long-press menu.
 - **Rich Markdown**: Full support for bold, italic, code blocks, checklists, and tables.
 
 ## Design & Architecture
 
-For a deep dive into Switchboard's design, architecture, and operational principles, see the [Comprehensive Design Specification](docs/switchboard-design-spec-comprehensive.md).
+For an agent-oriented project tour, see [`AGENTS.md`](AGENTS.md). The current design is documented in [`docs/switchboard-design-spec-comprehensive.md`](docs/switchboard-design-spec-comprehensive.md) — covers the Conversation primitive, session-id routing, MCP tool surface, hook plumbing, Firebase schema, spawn (fresh / resume / combine), away mode, hydration, and the Android UI surface.
 
 ## Install
 
@@ -42,11 +43,17 @@ Switchboard reads its configuration from OS env vars. A `.env` file is loaded as
 | `SWITCHBOARD_PORT` | No | `9876` | Local port for the SSE/HTTP server. |
 | `SWITCHBOARD_TIMEOUT_SECONDS` | No | `86400` | How long `ask_human` blocks before returning `__TIMEOUT__`. |
 | `SWITCHBOARD_LOG_PATH` | No | `./logs/switchboard.jsonl` | Path to the event audit log. |
+| `SWITCHBOARD_RATE_LIMIT` | No | `30` | Max messages per minute per conversation before `ask_human` / `notify_human` / `send_document_human` are rejected. |
 | **Android & Firebase** | | | |
-| `SWITCHBOARD_ENABLE_ANDROID` | No | `false` | Set to `true` to enable the Firebase backend and Android integration. |
-| `FIREBASE_DATABASE_URL` | If enabled | | The URL of your Firebase Realtime Database. |
-| `FIREBASE_SERVICE_ACCOUNT_JSON` | If enabled | | Absolute path to your Firebase service account key JSON file. |
+| `FIREBASE_DATABASE_URL` | Yes | | The URL of your Firebase Realtime Database. |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | Yes | | Absolute path to your Firebase service account key JSON file. |
 | `FIREBASE_STORAGE_BUCKET` | No | | Hostname of your Firebase Storage bucket. |
+| **Spawn** | | | |
+| `SWITCHBOARD_WINDOWS_SPAWN_ROOT` | For spawn | | Windows root containing your project folders (e.g. `C:\Work`). Alias: `SWITCHBOARD_SPAWN_ROOT`. |
+| `SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT` | No | `work` | Segment appended to the resolved WSL home to locate the workspace root (e.g. `/home/john/work`). |
+| `SWITCHBOARD_WSL_HOME` | No | (auto-detected) | Override for the resolved WSL home path; escape hatch for the NSSM Session 0 case where the `wsl.exe -e bash` probe fails. |
+
+Firebase is mandatory. The server exits at startup with a ConfigError if `FIREBASE_DATABASE_URL` or `FIREBASE_SERVICE_ACCOUNT_JSON` is unset; there is no Android-disabled run mode.
 
 ## Wire your agent to it
 
@@ -71,8 +78,6 @@ Switchboard ships as a Claude Code plugin. From any Claude Code session:
 The plugin install wires the skill and the Claude turn-end + agent-status hooks. The MCP server connection is bootstrapped per host by a parallel chezmoi dotfiles effort (Windows uses `localhost:9876`; WSL uses the Windows host IP, resolvable from `/etc/resolv.conf` or `ip route show default | awk '{print $3}'`). If you are not using chezmoi, run `claude mcp add switchboard --scope user --transport http <resolved-url>` per host.
 
 WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` and a firewall inbound rule for TCP 9876 from the WSL subnet.
-
-If you previously installed via `claude mcp add` + `install-turn-end-hook.ps1 -Claude` + a `~/.claude/skills/switchboard` symlink, see [`CLAUDE.md`](CLAUDE.md)'s "Migrating from the pre-plugin setup" for cleanup steps before installing the plugin.
 
 ## Android App
 
@@ -140,48 +145,63 @@ Prompt for Authorization: Keep an eye on your watch face when you first click Ru
 
 Away mode activates when you tell your agent you're stepping away — any phrasing like *"I'm stepping away"* is sufficient. The agent immediately routes all output through `ask_human` or `notify_human`.
 
-- **`ask_human(question, cwd, sender, title?, format?, suggestions?)`** — blocks until you reply.
-- **`notify_human(message, cwd, sender, title?, format?)`** — fire-and-forget status update.
-- **`send_document_human(path, cwd, sender, title?, caption?)`** — delivers a file to your phone.
-- **`message_and_await_agent(cwd, sender, title?, message?)`** — collab session relay (sends to your partner, blocks until they reply).
-- **`end_collab(cwd, sender, message?, hand_off_to_human?)`** — terminate a collab session and optionally hand off to John.
-- **`enter_away_mode(cwd)` / `exit_away_mode(cwd)`** — flip THIS cwd's per-channel override.
+**Human-facing tools:**
+
+- **`ask_human(question, sender, title?, format?, suggestions?)`** — blocks until you reply.
+- **`notify_human(message, sender, title?, format?)`** — fire-and-forget status update.
+- **`send_document_human(path, sender, title?, caption?)`** — delivers a file to your phone.
+- **`set_away_mode(value)`** — toggle the global away-mode flag (agents use this; John can also toggle the phone pill).
+
+**Multi-agent (conversation) tools:**
+
+- **`message_and_await_agent(sender, message, title?)`** — speak to peers in your conversation and block for the next reply.
+- **`open_conversation(sender, title?)`** — promote your conversation to the global "open" singleton so other agents can join via `enter_conversation`.
+- **`enter_conversation(sender)`** — join the open conversation (or queue for the next intro in your current one) and block until a peer speaks.
+- **`combine_conversations(source_id, target_id)`** — merge two conversations; dormant members of `source_id` are migrated and auto-resumed.
+- **`lookup_conversation_ids(cwd_filter?, sender_contains?, title_contains?)`** — find conversation IDs to feed `combine_conversations`.
+- **`leave_conversation(sender, parting_message)`** — leave the conversation with a final summary; session falls back to its home conversation (away on) or terminal output (away off).
 
 To exit away mode, reply *"I'm back"*. The agent will provide a **Welcome Back Summary** of what was accomplished while you were away and then resume normal terminal output.
 
 ### Replying to messages
 
-Switchboard correlates your reply to the waiting `ask_human` call via the Android app's reply input at the bottom of the channel tab. Type your answer and tap Send. If the question included suggestion buttons, tap one to reply instantly without typing.
+Switchboard correlates your reply to the waiting `ask_human` call via the Android app's reply input at the bottom of the conversation tab. Type your answer and tap Send. If the question included suggestion buttons, tap one to reply instantly without typing.
 
-### Bring-your-own collab sessions
+### Conversation composition
 
-Two already-running agents can be paired into a collab channel without spawning. Give both agents the same `cwd` (working directory) and tell them to call `message_and_await_agent`. The first agent to call creates the session; the second joins. Call order doesn't matter — the gateway buffers the first message until both agents are enrolled.
+Multiple agents can share a conversation without spawning. Open one with `open_conversation(sender, title?)`, then have additional agents join via `enter_conversation(sender)`. Agents in the same conversation communicate through `message_and_await_agent`.
 
-Each agent uses its own display name as `sender` (e.g. `"Claude"`, `"Gemini"`), which is naturally unique across different agent types. BYO sessions do not enter away mode unless you explicitly step away.
+You can also merge two existing conversations with `combine_conversations(source_id, target_id)` — dormant members of the source are migrated into the target and revived. All three flows are also available from the phone's long-press menu on any conversation row.
 
 ### Spawning a new agent session
 
-With `SWITCHBOARD_SPAWN_ROOT` configured, you can launch a fresh agent session directly from the Android app. Tap the **spawn** button in the app, choose a project, and enter a prompt.
+With a spawn root configured, you can launch a fresh agent session directly from the Android app. Tap the **+** (spawn) button in the app and fill out the dialog:
 
-- **Backend selection:** Choose between **Claude** or **Gemini** using the checkboxes.
-- **Collab mode:** Enable both to launch a heterogeneous collaborative session — Switchboard opens two terminal tabs that communicate with each other through the gateway.
+- **Surface:** Windows or WSL.
+- **Project:** Pick from projects under your configured spawn root for that surface.
+- **Prompt:** Optional starting prompt for the agent.
+- **Conversation:** Create a new conversation, or add the spawned agent into an existing one.
+
+Spawn auto-enables global away mode if it is currently off; the phone shows a confirmation toast. Claude is the only supported spawn target.
 
 **Prerequisites:**
 
-- Set `SWITCHBOARD_SPAWN_ROOT` in `.env` and restart the service.
+- Set the spawn root env vars in `.env` and restart the service:
+  - `SWITCHBOARD_WINDOWS_SPAWN_ROOT` — Windows root path containing your project folders (e.g. `C:\Work`). Alias: `SWITCHBOARD_SPAWN_ROOT`.
+  - `SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT` — segment appended to the resolved WSL home (default `work`, giving e.g. `/home/john/work`).
 - Register the `SwitchboardSpawn` scheduled task (one-time, elevated PowerShell):
 
   ```powershell
   .\scripts\register-spawn-task.ps1
   ```
 
-- The task fires in your interactive desktop session so `claude` and `gemini` are reachable.
+- The task fires in your interactive desktop session so `claude` is reachable. The WSL surface additionally requires WSL to be installed and reachable from the same desktop session.
 
-A 60-second rate limit prevents accidental double-spawns. The spawn is audit-logged to `logs/switchboard.jsonl`.
+The spawn is audit-logged to `logs/switchboard.jsonl`.
 
 ### Formatting messages
 
-`ask_human` and `notify_human` accept an optional `format` parameter. The default is `"plain"`. Pass `format="markdown"` to render the message with Markdown in the Android app — bold, italic, inline code, code blocks, and links are all supported. Use standard Markdown syntax.
+`ask_human` and `notify_human` accept an optional `format` parameter. The default is `"plain"`. Pass `format="markdown"` to render the message with Markdown in the Android app — bold, italic, inline code, code blocks, links, checklists, and tables are all supported. Use standard Markdown syntax.
 
 ## Manual smoke test
 
@@ -189,7 +209,7 @@ With the server running, the Android app installed, and an agent wired up:
 
 1. Open a Claude Code session and spawn an agent via the Android app (or say *"I'm stepping away"* to an existing session).
 2. Ask the agent to do something that should trigger a question, e.g. *"Delete the oldest file in `logs/`."*
-3. Watch your phone: you should receive a push notification and see the question appear in the channel tab.
+3. Watch your phone: you should receive a push notification and see the question appear in the conversation tab.
 4. Type your answer in the reply field at the bottom and tap Send (or tap a suggestion button if provided).
 5. The agent's `ask_human` tool call unblocks with your reply text.
 6. Check `logs/switchboard.jsonl` — you should see `request_created` and `request_resolved` events.
@@ -205,3 +225,5 @@ All unit tests are offline; no credentials required.
 ## Project layout
 
 See [`CLAUDE.md`](CLAUDE.md) for the agent-oriented project tour, or design spec §11 for the canonical tree.
+
+The repo is a monorepo of components: `server/` (the Python MCP), `android/` (the Android + Wear client), and `watchtower/` (the Windows client — Switchboard Watchtower, a .NET 9 taskbar widget).
