@@ -46,7 +46,7 @@ fun BulkRespondDialog(
 				payload.sections.forEach { section ->
 					stickyHeader {
 						Text(
-							text = leafName(section.cwd),
+							text = section.label,
 							style = MaterialTheme.typography.titleSmall,
 							modifier = Modifier
 								.fillMaxWidth()

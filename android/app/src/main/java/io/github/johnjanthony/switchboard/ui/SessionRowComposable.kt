@@ -1,4 +1,4 @@
-﻿package io.github.johnjanthony.switchboard.ui
+package io.github.johnjanthony.switchboard.ui
 
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
@@ -8,6 +8,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,9 +20,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -31,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -48,38 +52,82 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import io.github.johnjanthony.switchboard.network.Channel
+import io.github.johnjanthony.switchboard.network.ConversationRow
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun SessionRow(
-	channel: Channel,
+	row: ConversationRow,
 	awayActive: Boolean,
 	onClick: () -> Unit,
 	onHide: () -> Unit,
 	onUnhide: () -> Unit,
-	onExitAway: () -> Unit,
+	onResumeClick: (conversationId: String) -> Unit = {},
+	onCombineClick: (conversationId: String) -> Unit = {},
+	onEndClick: (conversationId: String) -> Unit = {},
 ) {
 	var contextMenuOpen by remember { mutableStateOf(false) }
+	var showHideConfirm by remember { mutableStateOf(false) }
+	var showEndConfirm by remember { mutableStateOf(false) }
+
+	val isOpenConversation = row.isOpenConversation
+	val isResumable = row.isResumable
+	val isActive = row.state == "active"
+	val staleWarning = row.staleSessionWarning
+	val agentStatus = row.agentStatus
+	val displayTitle = row.title
+	val roster = row.memberRoster
+
+	if (showHideConfirm) {
+		AlertDialog(
+			onDismissRequest = { showHideConfirm = false },
+			title = { Text("Hide conversation?") },
+			text = { Text("Hide '$displayTitle'? You can unhide it later from the menu.") },
+			confirmButton = {
+				TextButton(onClick = { onHide(); showHideConfirm = false }) { Text("Hide") }
+			},
+			dismissButton = {
+				TextButton(onClick = { showHideConfirm = false }) { Text("Cancel") }
+			},
+		)
+	}
+
+	if (showEndConfirm) {
+		AlertDialog(
+			onDismissRequest = { showEndConfirm = false },
+			title = { Text("End conversation?") },
+			text = {
+				Text(
+					"End conversation '$displayTitle'? Members will fall back to their home conversation " +
+					"(if away mode is on) or to terminal output (if off).",
+				)
+			},
+			confirmButton = {
+				TextButton(onClick = { onEndClick(row.id); showEndConfirm = false }) { Text("End") }
+			},
+			dismissButton = {
+				TextButton(onClick = { showEndConfirm = false }) { Text("Cancel") }
+			},
+		)
+	}
 
 	val swipeState = rememberSwipeToDismissBoxState(
 		confirmValueChange = { value ->
 			when (value) {
 				SwipeToDismissBoxValue.StartToEnd -> {
-					onExitAway()
-					false // Snap back
+					showEndConfirm = true
+					false
 				}
 				SwipeToDismissBoxValue.EndToStart -> {
-					onHide()
-					false // Snap back — we don't want the red overlay stuck if it's shown in "Show Hidden"
+					showHideConfirm = true
+					false
 				}
 				else -> false
 			}
 		}
 	)
 
-	// K6: Reset swipe state if hidden status changes (e.g. user toggles "Show Hidden")
-	LaunchedEffect(channel.hidden) {
+	LaunchedEffect(row.hidden) {
 		if (swipeState.currentValue != SwipeToDismissBoxValue.Settled) {
 			swipeState.reset()
 		}
@@ -90,8 +138,8 @@ fun SessionRow(
 		backgroundContent = {
 			val direction = swipeState.dismissDirection
 			val color = when (direction) {
-				SwipeToDismissBoxValue.StartToEnd -> Color(0xFF4CAF50) // Green for At Desk
-				SwipeToDismissBoxValue.EndToStart -> Color(0xFFF44336) // Red for Hide
+				SwipeToDismissBoxValue.StartToEnd -> Color(0xFFF44336)
+				SwipeToDismissBoxValue.EndToStart -> Color(0xFF9E9E9E)
 				else -> Color.Transparent
 			}
 			val alignment = when (direction) {
@@ -113,25 +161,38 @@ fun SessionRow(
 				contentAlignment = alignment
 			) {
 				if (icon != null) {
-					Icon(
-						imageVector = icon,
-						contentDescription = null,
-						tint = Color.White
-					)
+					Icon(imageVector = icon, contentDescription = null, tint = Color.White)
 				}
 			}
 		}
 	) {
-		Box(modifier = Modifier.background(MaterialTheme.colorScheme.surface)) {
+		val rowModifier = if (isOpenConversation) {
+			Modifier
+				.background(MaterialTheme.colorScheme.surface)
+				.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(0.dp))
+		} else {
+			Modifier.background(MaterialTheme.colorScheme.surface)
+		}
+
+		Box(modifier = rowModifier) {
 			Row(
 				modifier = Modifier
 					.fillMaxWidth()
 					.combinedClickable(onClick = onClick, onLongClick = { contextMenuOpen = true })
-					.alpha(if (channel.hidden) 0.5f else 1f)
+					.alpha(if (row.hidden) 0.5f else 1f)
 					.padding(horizontal = 16.dp, vertical = 12.dp),
 				verticalAlignment = Alignment.CenterVertically,
 			) {
-				val isStatusFresh = channel.agentStatus?.isFresh() == true
+				if (isOpenConversation) {
+					Text(
+						"open",
+						style = MaterialTheme.typography.labelSmall,
+						color = MaterialTheme.colorScheme.primary,
+						modifier = Modifier.padding(end = 6.dp),
+					)
+				}
+
+				val isStatusFresh = agentStatus?.isFresh() == true
 				Box(
 					modifier = Modifier
 						.size(width = 14.dp, height = 14.dp)
@@ -169,23 +230,23 @@ fun SessionRow(
 					Text(
 						text = buildAnnotatedString {
 							withStyle(style = MaterialTheme.typography.titleMedium.toSpanStyle()) {
-								append(channel.title ?: leafName(channel.cwdCanonical))
+								append(displayTitle)
 							}
-							if (channel.cwdCanonical.isNotEmpty()) {
+							if (roster.isNotEmpty()) {
 								withStyle(
 									style = MaterialTheme.typography.bodySmall.toSpanStyle().copy(
 										color = MaterialTheme.colorScheme.onSurfaceVariant,
-										fontStyle = if (channel.hidden) FontStyle.Italic else FontStyle.Normal,
+										fontStyle = if (row.hidden) FontStyle.Italic else FontStyle.Normal,
 									)
 								) {
-									append(" (${leafName(channel.cwdCanonical)})")
+									append(" ($roster)")
 								}
 							}
 						},
 						maxLines = 1,
 						overflow = TextOverflow.Ellipsis,
 					)
-					val preview = channel.preview
+					val preview = row.preview
 					if (!preview.isNullOrBlank()) {
 						Text(
 							text = preview,
@@ -197,11 +258,21 @@ fun SessionRow(
 					}
 				}
 				Column(horizontalAlignment = Alignment.End) {
-					Text(
-						text = formatRelativeTime(channel.lastActivityAt),
-						style = MaterialTheme.typography.labelSmall,
-						color = MaterialTheme.colorScheme.onSurfaceVariant,
-					)
+					Row(verticalAlignment = Alignment.CenterVertically) {
+						if (staleWarning) {
+							Text(
+								"⚠",
+								style = MaterialTheme.typography.labelSmall,
+								color = MaterialTheme.colorScheme.error,
+							)
+							Spacer(Modifier.width(4.dp))
+						}
+						Text(
+							text = formatRelativeTime(row.lastActivityAt),
+							style = MaterialTheme.typography.labelSmall,
+							color = MaterialTheme.colorScheme.onSurfaceVariant,
+						)
+					}
 					Row(verticalAlignment = Alignment.CenterVertically) {
 						if (awayActive) {
 							Text(
@@ -210,21 +281,32 @@ fun SessionRow(
 							)
 							Spacer(Modifier.width(6.dp))
 						}
-						if (channel.hidden) {
+						if (row.hidden) {
 							Text(
 								"hidden", style = MaterialTheme.typography.labelSmall,
 								color = MaterialTheme.colorScheme.outline
 							)
 							Spacer(Modifier.width(6.dp))
 						}
-						if (channel.displayCount > 0) {
-							Badge { Text(channel.displayCount.toString()) }
+						if (row.displayCount > 0) {
+							Badge { Text(row.displayCount.toString()) }
 						}
 					}
 				}
 			}
 			DropdownMenu(expanded = contextMenuOpen, onDismissRequest = { contextMenuOpen = false }) {
-				if (channel.hidden) {
+				DropdownMenuItem(
+					text = { Text("Resume") },
+					enabled = isResumable,
+					onClick = { onResumeClick(row.id); contextMenuOpen = false },
+				)
+				if (isActive) {
+					DropdownMenuItem(
+						text = { Text("Combine into…") },
+						onClick = { onCombineClick(row.id); contextMenuOpen = false },
+					)
+				}
+				if (row.hidden) {
 					DropdownMenuItem(
 						text = { Text("Unhide channel") },
 						onClick = { onUnhide(); contextMenuOpen = false },
@@ -232,11 +314,70 @@ fun SessionRow(
 				} else {
 					DropdownMenuItem(
 						text = { Text("Hide channel") },
-						onClick = { onHide(); contextMenuOpen = false },
+						onClick = { showHideConfirm = true; contextMenuOpen = false },
+					)
+				}
+				if (isActive) {
+					DropdownMenuItem(
+						text = { Text("End conversation") },
+						onClick = { showEndConfirm = true; contextMenuOpen = false },
 					)
 				}
 			}
 		}
+	}
+}
+
+/**
+ * Static row for the synthetic `_admin` pseudo-conversation (admin_notifications surface).
+ * Lives outside the conversation model and renders as a passive notification banner -
+ * no swipe-to-hide, no resume/combine/end menu. Clicking opens the legacy session screen
+ * (admin route) to view notifications.
+ */
+@Composable
+fun AdminRow(
+	row: ConversationRow,
+	onClick: () -> Unit,
+) {
+	Box(
+		modifier = Modifier
+			.fillMaxWidth()
+			.background(MaterialTheme.colorScheme.surface)
+	) {
+		Row(
+			modifier = Modifier
+				.fillMaxWidth()
+				.padding(horizontal = 16.dp, vertical = 12.dp),
+			verticalAlignment = Alignment.CenterVertically,
+		) {
+			Column(modifier = Modifier.weight(1f)) {
+				Text(
+					text = row.title,
+					style = MaterialTheme.typography.titleMedium,
+					maxLines = 1,
+					overflow = TextOverflow.Ellipsis,
+				)
+				val preview = row.preview
+				if (!preview.isNullOrBlank()) {
+					Text(
+						text = preview,
+						style = MaterialTheme.typography.bodySmall,
+						color = MaterialTheme.colorScheme.onSurfaceVariant,
+						maxLines = 1,
+						overflow = TextOverflow.Ellipsis,
+					)
+				}
+			}
+			if (row.displayCount > 0) {
+				Badge { Text(row.displayCount.toString()) }
+			}
+		}
+		// Click target overlay so the row still feels clickable when tapped.
+		Box(
+			modifier = Modifier
+				.fillMaxSize()
+				.combinedClickable(onClick = onClick, onLongClick = onClick)
+		)
 	}
 }
 

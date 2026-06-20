@@ -1,4 +1,4 @@
-﻿package io.github.johnjanthony.switchboard.ui
+package io.github.johnjanthony.switchboard.ui
 
 fun formatRelativeTime(iso: String?): String {
 	if (iso.isNullOrBlank()) return ""

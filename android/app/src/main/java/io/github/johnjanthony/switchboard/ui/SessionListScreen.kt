@@ -1,4 +1,4 @@
-﻿package io.github.johnjanthony.switchboard.ui
+package io.github.johnjanthony.switchboard.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,24 +29,27 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import io.github.johnjanthony.switchboard.AwayModePillChip
-import io.github.johnjanthony.switchboard.network.Channel
+import io.github.johnjanthony.switchboard.network.ConversationRow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionListScreen(
-	channels: List<Channel>,
-	hiddenChannels: List<Channel>,
+	rows: List<ConversationRow>,
+	hiddenRows: List<ConversationRow>,
+	adminRow: ConversationRow?,
 	showHidden: Boolean,
 	globalAway: Boolean,
-	cwdOverrides: Map<String, Boolean>,
-	onSessionClick: (Channel) -> Unit,
+	onSessionClick: (ConversationRow) -> Unit,
+	onAdminClick: (ConversationRow) -> Unit,
 	onToggleShowHidden: () -> Unit,
 	onEnterGlobalAway: () -> Unit,
 	onExitGlobalAway: () -> Unit,
-	onHideChannel: (Channel) -> Unit,
-	onUnhideChannel: (Channel) -> Unit,
-	onAwayToggle: (Channel) -> Unit,
+	onHideConversation: (ConversationRow) -> Unit,
+	onUnhideConversation: (ConversationRow) -> Unit,
 	onSpawnClick: () -> Unit,
+	onResumeClick: (conversationId: String) -> Unit = {},
+	onCombineClick: (conversationId: String) -> Unit = {},
+	onEndClick: (conversationId: String) -> Unit = {},
 ) {
 	var menuExpanded by remember { mutableStateOf(false) }
 
@@ -67,7 +70,7 @@ fun SessionListScreen(
 					}
 					DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
 						HiddenChannelsToggleMenuItem(
-							hiddenCount = hiddenChannels.size,
+							hiddenCount = hiddenRows.size,
 							showHidden = showHidden,
 							onToggle = { onToggleShowHidden(); menuExpanded = false },
 						)
@@ -76,8 +79,9 @@ fun SessionListScreen(
 			)
 		},
 	) { padding ->
-		val displayed = if (showHidden) (channels + hiddenChannels) else channels
-		if (displayed.isEmpty()) {
+		val displayed = if (showHidden) (rows + hiddenRows) else rows
+		val nothingToShow = displayed.isEmpty() && adminRow == null
+		if (nothingToShow) {
 			Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
 				Column(
 					horizontalAlignment = Alignment.CenterHorizontally,
@@ -91,15 +95,27 @@ fun SessionListScreen(
 			}
 		} else {
 			LazyColumn(modifier = Modifier.fillMaxSize().padding(padding)) {
-				items(displayed, key = { it.cwdKey }) { channel ->
-					val awayActive = cwdOverrides[channel.cwdKey] ?: globalAway
+				// Admin row stays at the top: it's a system-broadcast pseudo-conversation
+				// rendered as a synthetic ConversationRow with id "_admin" (R3).
+				if (adminRow != null) {
+					item(key = "_admin_row") {
+						AdminRow(
+							row = adminRow,
+							onClick = { onAdminClick(adminRow) },
+						)
+						Divider()
+					}
+				}
+				items(displayed, key = { it.id }) { row ->
 					SessionRow(
-						channel = channel,
-						awayActive = awayActive,
-						onClick = { onSessionClick(channel) },
-						onHide = { onHideChannel(channel) },
-						onUnhide = { onUnhideChannel(channel) },
-						onExitAway = { onAwayToggle(channel) },
+						row = row,
+						awayActive = globalAway,
+						onClick = { onSessionClick(row) },
+						onHide = { onHideConversation(row) },
+						onUnhide = { onUnhideConversation(row) },
+						onResumeClick = onResumeClick,
+						onCombineClick = onCombineClick,
+						onEndClick = onEndClick,
 					)
 					Divider()
 				}

@@ -41,7 +41,8 @@ def _start_server():
 def _run_hook(stdin_payload: dict, port: int, env_overrides: dict | None = None):
 	import os
 	env = dict(os.environ)
-	env["SWITCHBOARD_AGENT_STATUS_URL"] = f"http://127.0.0.1:{port}/agent_status"
+	# The hook reads SWITCHBOARD_BASE_URL and appends /agent_status itself.
+	env["SWITCHBOARD_BASE_URL"] = f"http://127.0.0.1:{port}"
 	if env_overrides:
 		env.update(env_overrides)
 	result = subprocess.run(
@@ -59,7 +60,7 @@ def test_user_prompt_submit_sends_thinking():
 	try:
 		_run_hook({
 			"hook_event_name": "UserPromptSubmit",
-			"cwd": "c:/work/foo",
+			"session_id": "s-1",
 			"prompt": "hi",
 		}, port)
 	finally:
@@ -67,7 +68,8 @@ def test_user_prompt_submit_sends_thinking():
 	assert len(_Capture.posts) == 1
 	body = _Capture.posts[0]
 	assert body["state"] == "thinking"
-	assert body["cwd"] == "c:/work/foo"
+	assert body["session_id"] == "s-1"
+	assert "cwd" not in body
 
 
 def test_pre_tool_use_for_bash_includes_command_detail():
@@ -75,7 +77,7 @@ def test_pre_tool_use_for_bash_includes_command_detail():
 	try:
 		_run_hook({
 			"hook_event_name": "PreToolUse",
-			"cwd": "c:/work/foo",
+			"session_id": "s-1",
 			"tool_name": "Bash",
 			"tool_input": {"command": "npm test --watch"},
 		}, port)
@@ -91,7 +93,7 @@ def test_pre_tool_use_for_edit_includes_filename_detail():
 	try:
 		_run_hook({
 			"hook_event_name": "PreToolUse",
-			"cwd": "c:/work/foo",
+			"session_id": "s-1",
 			"tool_name": "Edit",
 			"tool_input": {"file_path": "/c/Work/switchboard/server/main.py"},
 		}, port)
@@ -107,7 +109,7 @@ def test_pre_tool_use_for_ask_human_sends_clear():
 	try:
 		_run_hook({
 			"hook_event_name": "PreToolUse",
-			"cwd": "c:/work/foo",
+			"session_id": "s-1",
 			"tool_name": "mcp__switchboard__ask_human",
 			"tool_input": {"question": "?"},
 		}, port)
@@ -123,7 +125,7 @@ def test_pre_tool_use_for_message_and_await_agent_sends_waiting():
 	try:
 		_run_hook({
 			"hook_event_name": "PreToolUse",
-			"cwd": "c:/work/foo",
+			"session_id": "s-1",
 			"tool_name": "mcp__switchboard__message_and_await_agent",
 			"tool_input": {},
 		}, port)
@@ -138,7 +140,7 @@ def test_post_tool_use_sends_thinking():
 	try:
 		_run_hook({
 			"hook_event_name": "PostToolUse",
-			"cwd": "c:/work/foo",
+			"session_id": "s-1",
 			"tool_name": "Bash",
 			"tool_input": {"command": "ls"},
 			"tool_response": {},
@@ -154,7 +156,7 @@ def test_stop_sends_clear():
 	try:
 		_run_hook({
 			"hook_event_name": "Stop",
-			"cwd": "c:/work/foo",
+			"session_id": "s-1",
 		}, port)
 	finally:
 		srv.shutdown()
@@ -166,10 +168,10 @@ def test_connection_refused_exits_zero(tmp_path):
 	# Point at a port nothing is listening on
 	import os
 	env = dict(os.environ)
-	env["SWITCHBOARD_AGENT_STATUS_URL"] = "http://127.0.0.1:1/agent_status"
+	env["SWITCHBOARD_BASE_URL"] = "http://127.0.0.1:1"
 	result = subprocess.run(
 		[sys.executable, str(HOOK)],
-		input=json.dumps({"hook_event_name": "Stop", "cwd": "c:/work/foo"}).encode("utf-8"),
+		input=json.dumps({"hook_event_name": "Stop", "session_id": "s-1"}).encode("utf-8"),
 		capture_output=True,
 		env=env,
 		timeout=5,
@@ -180,7 +182,7 @@ def test_connection_refused_exits_zero(tmp_path):
 def test_malformed_stdin_exits_zero():
 	import os
 	env = dict(os.environ)
-	env["SWITCHBOARD_AGENT_STATUS_URL"] = "http://127.0.0.1:1/agent_status"
+	env["SWITCHBOARD_BASE_URL"] = "http://127.0.0.1:1"
 	result = subprocess.run(
 		[sys.executable, str(HOOK)],
 		input=b"not json at all",
@@ -191,10 +193,10 @@ def test_malformed_stdin_exits_zero():
 	assert result.returncode == 0
 
 
-def test_missing_cwd_exits_zero_no_post():
+def test_missing_session_id_exits_zero_no_post():
 	srv, port = _start_server()
 	try:
-		_run_hook({"hook_event_name": "Stop"}, port)  # no cwd
+		_run_hook({"hook_event_name": "Stop"}, port)  # no session_id
 	finally:
 		srv.shutdown()
 	assert _Capture.posts == []

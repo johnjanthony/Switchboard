@@ -24,20 +24,37 @@ def _make_loop_supervisor(backend, logger, name):
 
 
 def make_registry_with_loopback() -> Registry:
-	"""Build a Registry whose away-mode callback loops straight back into
-	update_*_cache. Mimics what the Firebase listener will do in production
-	(Task 8) — every set_* write fires the callback, which in real life hits
-	Firebase and bounces back via the listener; here we collapse that round-trip
-	for tests so set_* calls remain observable through the in-memory cache.
+	"""Build a Registry for use in tests.
 
-	Use this anywhere a test calls Registry.set_global_away / set_cwd_override /
-	remove_cwd_override (directly or via a handler) and then asserts the cache
-	state via global_away() / cwd_overrides() / is_away_mode_active()."""
+	The per-cwd override loopback (set_away_mode_callback / update_cwd_override_cache)
+	was removed in the conversations redesign (Task 4). Returns a Registry with
+	global_away_mode=True so tests that exercise the blocking ask_human path
+	don't trip the at-desk redirect (which short-circuits ask_human into a
+	notify when John is at his desk). Tests that need at-desk behavior should
+	construct ``Registry()`` directly or set ``r.global_away_mode = False``."""
+	# global_away_mode=True avoids the at-desk redirect in blocking-path tests
+	# (ask_human short-circuits to a notify when away mode is off).
 	r = Registry()
-	def _loopback(cwd, active):
-		if cwd is None:
-			r.update_global_away_cache(bool(active))
-		else:
-			r.update_cwd_override_cache(cwd, active)
-	r.set_away_mode_callback(_loopback)
+	r.global_away_mode = True
 	return r
+
+
+def make_active_conversation(
+	conversation_id: str = "conv-1",
+	member_session_id: str = "s-1",
+	sender: str = "Claude",
+	cwd: str = "C:/Work/X",
+	surface: str = "windows",
+):
+	"""Factory: returns a Conversation with one alive member."""
+	from server.registry import Conversation, ConversationMember
+	conv = Conversation(id=conversation_id, title="test")
+	member = ConversationMember(
+		cli_session_id=member_session_id,
+		sender=sender,
+		cwd=cwd,
+		surface=surface,
+		joined_at=0.0,
+	)
+	conv.members_active[sender] = member
+	return conv

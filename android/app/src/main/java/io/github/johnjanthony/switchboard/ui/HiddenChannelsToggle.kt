@@ -1,4 +1,4 @@
-﻿package io.github.johnjanthony.switchboard.ui
+package io.github.johnjanthony.switchboard.ui
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check

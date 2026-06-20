@@ -15,7 +15,8 @@ import sys
 import urllib.error
 import urllib.request
 
-DEFAULT_URL = "http://127.0.0.1:9876/agent_status"
+DEFAULT_BASE_URL = "http://127.0.0.1:9876"
+AGENT_STATUS_PATH = "/agent_status"
 TIMEOUT_SECONDS = 1.0
 
 # Special-case tool names: switchboard's MCP tools are namespaced as
@@ -72,8 +73,11 @@ def _post(url: str, body: dict) -> None:
 
 
 def main() -> int:
+	# Read raw bytes; json.loads handles UTF-8. See cli-session-injector-hook
+	# for why we can't use sys.stdin.read() on Windows (cp1252 + surrogateescape
+	# mangles UTF-8 multi-byte sequences).
 	try:
-		raw = sys.stdin.read()
+		raw = sys.stdin.buffer.read()
 	except Exception:
 		return 0
 	try:
@@ -81,8 +85,8 @@ def main() -> int:
 	except Exception:
 		return 0
 
-	cwd = payload.get("cwd") or ""
-	if not cwd:
+	session_id = payload.get("session_id") or ""
+	if not session_id:
 		return 0
 
 	event = payload.get("hook_event_name", "")
@@ -109,8 +113,9 @@ def main() -> int:
 	else:
 		return 0  # unknown event
 
-	url = os.environ.get("SWITCHBOARD_AGENT_STATUS_URL", DEFAULT_URL)
-	body = {"cwd": cwd, "state": state}
+	base_url = os.environ.get("SWITCHBOARD_BASE_URL", DEFAULT_BASE_URL)
+	url = base_url + AGENT_STATUS_PATH
+	body = {"session_id": session_id, "state": state}
 	if detail is not None:
 		body["detail"] = detail
 	try:

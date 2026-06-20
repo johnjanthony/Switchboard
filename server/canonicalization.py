@@ -1,8 +1,12 @@
-"""Path canonicalization for cwd-as-channel routing.
+"""Path canonicalization — display-only since the conversations redesign.
 
-Every cwd ingress (MCP tool calls, hook queries, phone reply paths,
-spawn submissions) is normalized via canonicalize_cwd. Firebase keys
-are derived via to_firebase_key.
+Routing keys are session_id / conversation_id; cwd is informational. The
+canonicalize_cwd function still normalizes raw cwd strings into a stable
+display form (so Page B shows a consistent label regardless of how the
+agent passed the path: Windows / Git-Bash / POSIX / WSL `/mnt/<letter>/...`
+all map to the same canonical form). to_firebase_key derives Firebase-safe
+keys; the only surviving caller is the legacy response-slot parser in
+firebase.py (to_firebase_key / from_firebase_key for legacy composite slots).
 """
 
 from __future__ import annotations
@@ -17,22 +21,26 @@ class CanonicalizationError(ValueError):
 
 
 _GIT_BASH_PREFIX = re.compile(r"^/([a-zA-Z])/(.*)$")
+_WSL_MOUNT_PREFIX = re.compile(r"^/mnt/([a-z])/(.*)$")
 
 
 def canonicalize_cwd(raw: str) -> str:
-	"""Normalize raw cwd to the canonical form used as a routing key.
+	"""Normalize raw cwd to the canonical display form used as a display label and Firebase key.
 
 	Accepts both Windows-style paths (drive letter + colon, with backslash or
-	forward-slash separators, plus Git-Bash-style /c/...) and POSIX-style
-	paths (absolute, starting with /). Both forms become opaque routing keys;
-	they are NOT mapped to each other. Cross-environment collab requires
-	both agents to pass the same string — by convention the Windows-style
-	form when sharing across OS boundaries — but that's a caller-side
-	convention, not enforced here.
+	forward-slash separators, plus Git-Bash-style /c/... and WSL-mount
+	/mnt/c/...) and POSIX-style paths (absolute, starting with /). The WSL
+	mount form is rewritten to its Windows equivalent so a WSL agent at
+	/mnt/c/Work and a Windows agent at C:/Work produce the same display label
+	(their cwds are the same physical directory). Other POSIX paths become
+	distinct labels from Windows ones; cross-environment collab across
+	separate filesystems requires both agents to pass the same string - by
+	convention the Windows-style form - but that's a caller-side convention,
+	not enforced here.
 
 	Rules (Windows path):
 	1. Reject empty / non-absolute / syntactically invalid paths.
-	2. Convert Git-Bash-style /c/... to c:/...
+	2. Convert WSL-mount /mnt/c/... and Git-Bash-style /c/... to c:/...
 	3. Backslashes -> forward slashes.
 	4. Lowercase drive letter (Windows is case-insensitive).
 	5. Resolve . and .. segments.
@@ -49,6 +57,10 @@ def canonicalize_cwd(raw: str) -> str:
 	"""
 	if not raw or not isinstance(raw, str):
 		raise CanonicalizationError(f"cwd must be a non-empty string, got: {raw!r}")
+
+	wsl = _WSL_MOUNT_PREFIX.match(raw)
+	if wsl:
+		raw = f"{wsl.group(1)}:/{wsl.group(2)}"
 
 	gb = _GIT_BASH_PREFIX.match(raw)
 	if gb:

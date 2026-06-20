@@ -1,6 +1,6 @@
-"""Firebase hidden-aware message dispatch tests.
+"""Firebase conversation-aware message dispatch tests.
 
-Exercises the new cwd-based write_channel_message in FirebaseBackend via
+Exercises write_conversation_message in FirebaseBackend via
 an in-test subclass that stubs out the Firebase admin-SDK calls.
 """
 
@@ -42,9 +42,8 @@ class _FakeBackend(FirebaseBackend):
 
 
 # Patch asyncio.to_thread calls via subclass overrides so no real Firebase hits.
-# The new write_channel_message calls asyncio.to_thread for every DB write.
-# We intercept by overriding write_channel_message at the DB-call level using
-# a thin wrapper that replaces db.reference with in-memory dict writes.
+# write_conversation_message calls asyncio.to_thread for every DB write.
+# We intercept by overriding write_conversation_message at the DB-call level.
 
 class _PatchedBackend(_FakeBackend):
 	"""Records all DB reference writes without hitting Firebase."""
@@ -54,13 +53,30 @@ class _PatchedBackend(_FakeBackend):
 		self._ref_sets: list[tuple[str, object]] = []
 		self._ref_updates: list[tuple[str, dict]] = []
 
-	async def write_channel_message(self, cwd, sender, message_type, content, **kwargs):
-		from server.canonicalization import to_firebase_key
-		from datetime import datetime, timezone
-		key = to_firebase_key(cwd)
+	async def write_conversation_message(
+		self,
+		conv_id,
+		sender_or_message,
+		message_type=None,
+		text=None,
+		*,
+		request_id=None,
+		url=None,
+		format="plain",
+		suggestions=None,
+		filename=None,
+		title=None,
+		rejected=False,
+		attached_to_msg_id=None,
+	):
+		# Legacy dict form not expected in these tests; only expanded form.
+		if isinstance(sender_or_message, dict):
+			return "fake_msg_id"
 
-		effective_url = kwargs.get("url")
-		effective_filename = kwargs.get("filename")
+		sender = sender_or_message
+
+		effective_url = url
+		effective_filename = filename
 		if message_type == "document" and effective_url and not (
 			effective_url.startswith("http://") or effective_url.startswith("https://")
 		):
@@ -68,24 +84,21 @@ class _PatchedBackend(_FakeBackend):
 			try:
 				effective_url = await self._upload_file(Path(effective_url))
 				if effective_filename is None:
-					effective_filename = Path(kwargs.get("url", "")).name
+					effective_filename = Path(url).name
 			except Exception:
 				pass
 
+		from datetime import datetime, timezone
 		now = datetime.now(timezone.utc).isoformat()
-		title = kwargs.get("title")
-		request_id = kwargs.get("request_id")
-		format_ = kwargs.get("format", "plain")
-		suggestions = kwargs.get("suggestions")
-
 		msg_id = "fake_msg_id"
 		payload = {
 			"type": message_type,
 			"sender": sender,
-			"text": content,
-			"format": format_,
+			"text": text,
+			"format": format,
 			"timestamp": now,
 			"cancelled": False,
+			"rejected": rejected,
 		}
 		if title is not None:
 			payload["title"] = title[:80]
@@ -97,36 +110,36 @@ class _PatchedBackend(_FakeBackend):
 			payload["filename"] = effective_filename
 		if suggestions:
 			payload["suggestions"] = list(suggestions)
+		if attached_to_msg_id:
+			payload["attached_to_msg_id"] = attached_to_msg_id
 
 		if message_type == "question":
-			self._ref_sets.append((f"channels/{key}/hidden", False))
+			self._ref_sets.append((f"conversations/{conv_id}/meta/hidden", False))
 
-		self._ref_sets.append((f"channels/{key}/messages/{msg_id}", payload))
-		self._ref_sets.append((f"channels/{key}/cwd_canonical", cwd))
+		self._ref_sets.append((f"conversations/{conv_id}/messages/{msg_id}", payload))
 
 		if title:
-			self._ref_sets.append((f"channels/{key}/title", title[:80]))
+			self._ref_sets.append((f"conversations/{conv_id}/meta/title", title[:80]))
 
-		preview = content[:120].replace("\n", " ").strip()
-		self._ref_updates.append((f"channels/{key}", {
-			'last_activity_at': now,
-			'preview': preview,
+		preview = text[:120].replace("\n", " ").strip() if text else ""
+		self._ref_updates.append((f"conversations/{conv_id}/meta", {
+			"last_activity_at": now,
+			"preview": preview,
 		}))
 
 		if message_type != "human":
-			fcm_data: dict = {"channel_key": key, "sb_message_type": message_type}
+			fcm_data: dict = {"conv_id": conv_id, "sb_message_type": message_type}
 			if message_type == "question" and request_id is not None:
 				fcm_data["request_id"] = request_id
 			try:
-				await self._send_fcm(key, message_type, sender, content, fcm_data)
+				await self._send_fcm(conv_id, message_type, sender, text, fcm_data)
 			except Exception:
 				pass
 
-		return (cwd, sender), msg_id
+		return (conv_id, sender), msg_id
 
-	def hidden_set_for(self, cwd: str) -> bool | None:
-		key = to_firebase_key(cwd)
-		path = f"channels/{key}/hidden"
+	def hidden_set_for(self, conv_id: str) -> bool | None:
+		path = f"conversations/{conv_id}/meta/hidden"
 		for p, v in reversed(self._ref_sets):
 			if p == path:
 				return v
@@ -134,83 +147,77 @@ class _PatchedBackend(_FakeBackend):
 
 
 @pytest.mark.asyncio
-async def test_question_auto_unhides_channel():
+async def test_question_auto_unhides_conversation():
 	backend = _PatchedBackend()
-	await backend.write_channel_message("c:/work/proj", "Claude", "question", "Proceed?", request_id="req-1")
-	assert backend.hidden_set_for("c:/work/proj") is False
+	await backend.write_conversation_message("conv-proj-1", "Claude", "question", "Proceed?", request_id="req-1")
+	assert backend.hidden_set_for("conv-proj-1") is False
 
 
 @pytest.mark.asyncio
-async def test_notify_does_not_unhide_channel():
+async def test_notify_does_not_unhide_conversation():
 	backend = _PatchedBackend()
-	await backend.write_channel_message("c:/work/proj", "Claude", "notify", "status update")
-	assert backend.hidden_set_for("c:/work/proj") is None
+	await backend.write_conversation_message("conv-proj-1", "Claude", "notify", "status update")
+	assert backend.hidden_set_for("conv-proj-1") is None
 
 
 @pytest.mark.asyncio
-async def test_document_does_not_unhide_channel():
+async def test_document_does_not_unhide_conversation():
 	backend = _PatchedBackend()
-	await backend.write_channel_message("c:/work/proj", "Claude", "document", "report.txt", url="https://example/r")
-	assert backend.hidden_set_for("c:/work/proj") is None
+	await backend.write_conversation_message("conv-proj-1", "Claude", "document", "report.txt", url="https://example/r")
+	assert backend.hidden_set_for("conv-proj-1") is None
 
 
 @pytest.mark.asyncio
 async def test_question_sends_fcm():
 	backend = _PatchedBackend()
-	await backend.write_channel_message("c:/work/proj", "Claude", "question", "Proceed?", request_id="req-1")
-	key = to_firebase_key("c:/work/proj")
-	assert f"{key}:question" in backend._fcm_sent
+	await backend.write_conversation_message("conv-proj-1", "Claude", "question", "Proceed?", request_id="req-1")
+	assert "conv-proj-1:question" in backend._fcm_sent
 
 
 @pytest.mark.asyncio
 async def test_notify_sends_fcm():
 	backend = _PatchedBackend()
-	await backend.write_channel_message("c:/work/proj", "Claude", "notify", "status")
-	key = to_firebase_key("c:/work/proj")
-	assert f"{key}:notify" in backend._fcm_sent
+	await backend.write_conversation_message("conv-proj-1", "Claude", "notify", "status")
+	assert "conv-proj-1:notify" in backend._fcm_sent
 
 
 @pytest.mark.asyncio
 async def test_human_message_skips_fcm():
 	backend = _PatchedBackend()
-	await backend.write_channel_message("c:/work/proj", "Human", "human", "reply text")
+	await backend.write_conversation_message("conv-proj-1", "Human", "human", "reply text")
 	assert backend._fcm_sent == []
 
 
 @pytest.mark.asyncio
 async def test_per_message_title_written():
 	backend = _PatchedBackend()
-	await backend.write_channel_message("c:/work/proj", "Claude", "notify", "hi", title="My Session")
-	key = to_firebase_key("c:/work/proj")
-	msg_writes = [(p, v) for p, v in backend._ref_sets if p == f"channels/{key}/messages/fake_msg_id"]
+	await backend.write_conversation_message("conv-proj-1", "Claude", "notify", "hi", title="My Session")
+	msg_writes = [(p, v) for p, v in backend._ref_sets if p == "conversations/conv-proj-1/messages/fake_msg_id"]
 	assert msg_writes
 	assert msg_writes[0][1]["title"] == "My Session"
 
 
 @pytest.mark.asyncio
-async def test_channel_level_title_written_when_nonempty():
+async def test_conversation_level_title_written_when_nonempty():
 	backend = _PatchedBackend()
-	await backend.write_channel_message("c:/work/proj", "Claude", "notify", "hi", title="My Session")
-	key = to_firebase_key("c:/work/proj")
-	title_writes = [v for p, v in backend._ref_sets if p == f"channels/{key}/title"]
+	await backend.write_conversation_message("conv-proj-1", "Claude", "notify", "hi", title="My Session")
+	title_writes = [v for p, v in backend._ref_sets if p == "conversations/conv-proj-1/meta/title"]
 	assert title_writes == ["My Session"]
 
 
 @pytest.mark.asyncio
-async def test_channel_level_title_not_written_when_none():
+async def test_conversation_level_title_not_written_when_none():
 	backend = _PatchedBackend()
-	await backend.write_channel_message("c:/work/proj", "Claude", "notify", "hi")
-	key = to_firebase_key("c:/work/proj")
-	title_writes = [v for p, v in backend._ref_sets if p == f"channels/{key}/title"]
+	await backend.write_conversation_message("conv-proj-1", "Claude", "notify", "hi")
+	title_writes = [v for p, v in backend._ref_sets if p == "conversations/conv-proj-1/meta/title"]
 	assert title_writes == []
 
 
 @pytest.mark.asyncio
 async def test_last_activity_and_preview_written():
 	backend = _PatchedBackend()
-	await backend.write_channel_message("c:/work/proj", "Claude", "notify", "hello world")
-	key = to_firebase_key("c:/work/proj")
-	updates = [v for p, v in backend._ref_updates if p == f"channels/{key}"]
+	await backend.write_conversation_message("conv-proj-1", "Claude", "notify", "hello world")
+	updates = [v for p, v in backend._ref_updates if p == "conversations/conv-proj-1/meta"]
 	assert updates
 	assert updates[-1]["preview"] == "hello world"
 	assert "last_activity_at" in updates[-1]
@@ -220,17 +227,16 @@ async def test_last_activity_and_preview_written():
 async def test_title_truncated_to_80_chars():
 	backend = _PatchedBackend()
 	long_title = "x" * 100
-	await backend.write_channel_message("c:/work/proj", "Claude", "notify", "msg", title=long_title)
-	key = to_firebase_key("c:/work/proj")
-	title_writes = [v for p, v in backend._ref_sets if p == f"channels/{key}/title"]
+	await backend.write_conversation_message("conv-proj-1", "Claude", "notify", "msg", title=long_title)
+	title_writes = [v for p, v in backend._ref_sets if p == "conversations/conv-proj-1/meta/title"]
 	assert title_writes[0] == "x" * 80
 
 
 @pytest.mark.asyncio
-async def test_correlation_is_cwd_sender_tuple():
+async def test_correlation_is_conv_id_sender_tuple():
 	backend = _PatchedBackend()
-	corr, msg_id = await backend.write_channel_message("c:/work/proj", "Claude", "question", "q?", request_id="r1")
-	assert corr == ("c:/work/proj", "Claude")
+	corr, msg_id = await backend.write_conversation_message("conv-proj-1", "Claude", "question", "q?", request_id="r1")
+	assert corr == ("conv-proj-1", "Claude")
 	assert msg_id == "fake_msg_id"
 
 
@@ -242,14 +248,14 @@ class _MarkCancelledBackend(_FakeBackend):
 		self._messages: dict[str, dict] = {}
 		self._cancelled_msg_ids: list[str] = []
 
-	async def _add_message(self, key: str, msg_id: str, payload: dict) -> None:
-		self._messages[f"{key}/{msg_id}"] = payload
+	async def _add_message(self, conv_id: str, msg_id: str, payload: dict) -> None:
+		self._messages[f"{conv_id}/{msg_id}"] = payload
 
 	async def mark_question_cancelled(self, cwd: str, request_id: str) -> None:
-		from server.canonicalization import to_firebase_key
-		key = to_firebase_key(cwd)
+		# cwd is conv_id in the new model
+		conv_id = cwd
 		for k, payload in self._messages.items():
-			if k.startswith(key + "/") and payload.get("request_id") == request_id:
+			if k.startswith(conv_id + "/") and payload.get("request_id") == request_id:
 				msg_id = k.split("/")[-1]
 				payload["cancelled"] = True
 				self._cancelled_msg_ids.append(msg_id)
@@ -259,49 +265,17 @@ class _MarkCancelledBackend(_FakeBackend):
 @pytest.mark.asyncio
 async def test_mark_question_cancelled_sets_flag():
 	backend = _MarkCancelledBackend()
-	key = to_firebase_key("c:/work/proj")
-	await backend._add_message(key, "msg001", {"type": "question", "request_id": "abc123", "cancelled": False})
-	await backend.mark_question_cancelled("c:/work/proj", "abc123")
+	await backend._add_message("conv-proj-1", "msg001", {"type": "question", "request_id": "abc123", "cancelled": False})
+	await backend.mark_question_cancelled("conv-proj-1", "abc123")
 	assert "msg001" in backend._cancelled_msg_ids
-	assert backend._messages[f"{key}/msg001"]["cancelled"] is True
+	assert backend._messages["conv-proj-1/msg001"]["cancelled"] is True
 
 
 @pytest.mark.asyncio
 async def test_mark_question_cancelled_noop_when_not_found():
 	backend = _MarkCancelledBackend()
-	key = to_firebase_key("c:/work/proj")
-	await backend._add_message(key, "msg001", {"type": "question", "request_id": "abc123", "cancelled": False})
-	await backend.mark_question_cancelled("c:/work/proj", "nonexistent")
+	await backend._add_message("conv-proj-1", "msg001", {"type": "question", "request_id": "abc123", "cancelled": False})
+	await backend.mark_question_cancelled("conv-proj-1", "nonexistent")
 	assert backend._cancelled_msg_ids == []
 
 
-class _MirrorFakeBackend(FirebaseBackend):
-	def __init__(self) -> None:
-		self._mirror_writes: list[tuple[str | None, bool]] = []
-		self._loop = asyncio.get_running_loop()
-		self._logger = None
-		self._storage_bucket = None
-
-	async def write_away_mode_mirror(self, cwd: str | None, active: bool) -> None:
-		self._mirror_writes.append((cwd, active))
-
-
-@pytest.mark.asyncio
-async def test_write_away_mode_mirror_global():
-	backend = _MirrorFakeBackend()
-	await backend.write_away_mode_mirror(None, True)
-	assert backend._mirror_writes == [(None, True)]
-
-
-@pytest.mark.asyncio
-async def test_write_away_mode_mirror_per_cwd():
-	backend = _MirrorFakeBackend()
-	await backend.write_away_mode_mirror("c:/work/proj", False)
-	assert backend._mirror_writes == [("c:/work/proj", False)]
-
-
-@pytest.mark.asyncio
-async def test_write_away_mode_mirror_accepts_false_global():
-	backend = _MirrorFakeBackend()
-	await backend.write_away_mode_mirror(None, False)
-	assert backend._mirror_writes[0] == (None, False)

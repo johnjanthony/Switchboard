@@ -15,11 +15,15 @@ _DEFAULT_CWD_PAYLOAD = json.dumps({"cwd": "c:/work/switchboard"})
 
 
 def _run(cli: str, stdin: str = _DEFAULT_CWD_PAYLOAD, url_env: str | None = None) -> subprocess.CompletedProcess:
+	"""url_env may be either a full away-mode URL (e.g. http://host:port/away-mode)
+	or a bare base URL. The hook reads SWITCHBOARD_BASE_URL and appends /away-mode,
+	so this helper strips a trailing /away-mode if present."""
 	env = None
 	if url_env is not None:
 		import os
 		env = os.environ.copy()
-		env["SWITCHBOARD_URL"] = url_env
+		base = url_env[:-len("/away-mode")] if url_env.endswith("/away-mode") else url_env
+		env["SWITCHBOARD_BASE_URL"] = base
 	return subprocess.run(
 		[sys.executable, str(SCRIPT), "--cli", cli],
 		input=stdin,
@@ -272,7 +276,10 @@ class _DualRouteFakeServer:
 def _run_dual(cli: str, away_url: str, partner_url: str, stdin: str = _DEFAULT_CWD_PAYLOAD) -> subprocess.CompletedProcess:
 	import os
 	env = os.environ.copy()
-	env["SWITCHBOARD_URL"] = away_url
+	# The hook reads SWITCHBOARD_BASE_URL and appends /away-mode itself; strip
+	# the trailing path so the base resolves correctly.
+	base = away_url[:-len("/away-mode")] if away_url.endswith("/away-mode") else away_url
+	env["SWITCHBOARD_BASE_URL"] = base
 	env["SWITCHBOARD_PARTNER_STATE_URL"] = partner_url
 	return subprocess.run(
 		[sys.executable, str(SCRIPT), "--cli", cli],
@@ -284,41 +291,46 @@ def _run_dual(cli: str, away_url: str, partner_url: str, stdin: str = _DEFAULT_C
 	)
 
 
-def test_partner_blocked_appends_to_block_reason_when_away_mode_active():
-	"""When away-mode is active AND a partner is blocked, the block reason
-	gains a partner-blocked clause naming both message_and_await_agent and
-	end_collab as recovery options."""
+def test_partner_blocked_away_mode_active_emits_base_block():
+	"""The /collab-partner-state endpoint is gone in the v2 redesign. When away-mode
+	is active the hook emits the base block reason regardless of partner state.
+	The reason tells the agent to end its turn on ask_human (never on the non-blocking
+	notify_human) and mentions set_away_mode; it no longer enumerates the collab tools."""
 	with _DualRouteFakeServer({"active": True}, {"state": "blocked"}) as srv:
 		r = _run_dual("claude", srv.away_url, srv.partner_url)
 	assert r.returncode == 0
 	out = json.loads(r.stdout)
 	assert out["decision"] == "block"
-	# Both base away-mode reason AND the partner-blocked clause.
 	assert "away mode" in out["reason"].lower()
-	assert "collab partner" in out["reason"].lower()
-	assert "message_and_await_agent" in out["reason"]
-	assert "end_collab" in out["reason"]
+	assert "ask_human" in out["reason"]
+	assert "notify_human" in out["reason"]
+	assert "set_away_mode" in out["reason"]
+	# end_collab was retired in the v2 redesign
+	assert "end_collab" not in out["reason"]
 
 
-def test_partner_live_does_not_append_partner_clause():
-	"""Away-mode active but partner is live — base reason only, no partner clause."""
+def test_partner_live_away_mode_active_emits_base_block():
+	"""Away-mode active regardless of partner state — base block reason only."""
 	with _DualRouteFakeServer({"active": True}, {"state": "live"}) as srv:
 		r = _run_dual("claude", srv.away_url, srv.partner_url)
 	assert r.returncode == 0
 	out = json.loads(r.stdout)
 	assert out["decision"] == "block"
 	assert "away mode" in out["reason"].lower()
-	assert "collab partner" not in out["reason"].lower()
+	# No separate partner-blocked clause (that feature was retired)
+	assert "end_collab" not in out["reason"]
+	assert "partner is blocked" not in out["reason"].lower()
 
 
-def test_no_session_does_not_append_partner_clause():
-	"""Away-mode active, no session at this cwd — base reason only."""
+def test_no_session_away_mode_active_emits_base_block():
+	"""Away-mode active, any partner state — base block reason only."""
 	with _DualRouteFakeServer({"active": True}, {"state": "none"}) as srv:
 		r = _run_dual("claude", srv.away_url, srv.partner_url)
 	assert r.returncode == 0
 	out = json.loads(r.stdout)
 	assert out["decision"] == "block"
-	assert "collab partner" not in out["reason"].lower()
+	assert "away mode" in out["reason"].lower()
+	assert "end_collab" not in out["reason"]
 
 
 def test_partner_state_check_skipped_when_away_mode_inactive():
@@ -334,26 +346,27 @@ def test_partner_state_check_skipped_when_away_mode_inactive():
 	assert len(partner_queries) == 0, f"partner-state should not be queried; got {partner_queries}"
 
 
-def test_gemini_partner_blocked_emits_deny_with_partner_clause():
-	"""Gemini variant: deny + continue=True, with partner-blocked clause appended."""
+def test_gemini_away_mode_active_emits_deny():
+	"""Gemini variant: deny + continue=True, with v2 tool instructions."""
 	with _DualRouteFakeServer({"active": True}, {"state": "blocked"}) as srv:
 		r = _run_dual("gemini", srv.away_url, srv.partner_url)
 	assert r.returncode == 0
 	out = json.loads(r.stdout)
 	assert out["decision"] == "deny"
 	assert out["continue"] is True
-	assert "collab partner" in out["reason"].lower()
+	assert "away mode" in out["reason"].lower()
+	assert "ask_human" in out["reason"]
 
 
-def test_partner_state_route_failure_falls_back_to_base_reason():
-	"""If the partner-state endpoint is unreachable but away-mode is active,
-	the hook still emits the base block (fail-open on the partner check) so
-	non-collab away-mode workflows aren't broken by an upgrade boundary."""
+def test_away_mode_active_emits_block_regardless_of_partner_state_route():
+	"""The partner-state endpoint is retired; hook emits the base block when
+	away-mode is active, regardless of whether a partner route responds."""
 	with _DualRouteFakeServer({"active": True}, partner_payload=None) as srv:  # 404 on partner route
 		r = _run_dual("claude", srv.away_url, srv.partner_url)
 	assert r.returncode == 0
 	out = json.loads(r.stdout)
 	assert out["decision"] == "block"
 	assert "away mode" in out["reason"].lower()
-	# No partner clause when partner check failed.
-	assert "collab partner" not in out["reason"].lower()
+	# No partner clause
+	assert "end_collab" not in out["reason"]
+	assert "partner is blocked" not in out["reason"].lower()
