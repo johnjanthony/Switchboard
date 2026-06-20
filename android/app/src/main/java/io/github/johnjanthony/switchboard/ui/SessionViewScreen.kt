@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -65,6 +66,8 @@ fun SessionViewScreen(
 	scrollToMessageId: String? = null,
 	onScrollConsumed: () -> Unit = {},
 	awayActive: Boolean,
+	predecessorTitle: String? = null,
+	onOpenPredecessor: () -> Unit = {},
 	onBack: () -> Unit,
 	onLongPressPill: () -> Unit,
 	onSubmitReply: (sender: String, text: String, requestId: String?) -> Unit,
@@ -122,40 +125,45 @@ fun SessionViewScreen(
 
 	Scaffold(
 		topBar = {
-			TopAppBar(
-				title = {
-					Text(
-						text = buildAnnotatedString {
-							append(row.title)
-							val roster = row.memberRoster
-							if (roster.isNotEmpty()) {
-								withStyle(
-									style = MaterialTheme.typography.bodySmall.toSpanStyle().copy(
-										color = MaterialTheme.colorScheme.onSurfaceVariant
-									)
-								) {
-									append(" ($roster)")
+			Column {
+				TopAppBar(
+					title = {
+						Text(
+							text = buildAnnotatedString {
+								append(row.title)
+								val roster = row.memberRoster
+								if (roster.isNotEmpty()) {
+									withStyle(
+										style = MaterialTheme.typography.bodySmall.toSpanStyle().copy(
+											color = MaterialTheme.colorScheme.onSurfaceVariant
+										)
+									) {
+										append(" ($roster)")
+									}
 								}
-							}
-						},
-						maxLines = 1, overflow = TextOverflow.Ellipsis,
-					)
-				},
-				navigationIcon = {
-					IconButton(onClick = onBack) {
-						Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-					}
-				},
-				actions = {
-					IconButton(onClick = onShowTabInfo) {
-						Icon(Icons.Default.Info, contentDescription = "Tab info")
-					}
-					AwayModePillChip(
-						active = awayActive,
-						onLongPress = onLongPressPill,
-					)
-				},
-			)
+							},
+							maxLines = 1, overflow = TextOverflow.Ellipsis,
+						)
+					},
+					navigationIcon = {
+						IconButton(onClick = onBack) {
+							Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+						}
+					},
+					actions = {
+						IconButton(onClick = onShowTabInfo) {
+							Icon(Icons.Default.Info, contentDescription = "Tab info")
+						}
+						AwayModePillChip(
+							active = awayActive,
+							onLongPress = onLongPressPill,
+						)
+					},
+				)
+				if (predecessorTitle != null) {
+					PredecessorBanner(title = predecessorTitle, onClick = onOpenPredecessor)
+				}
+			}
 		},
 		bottomBar = {
 			val selected = activePending[selectedRequestId]
@@ -316,6 +324,34 @@ fun SessionViewScreen(
 					}
 				}
 			}
+		}
+	}
+}
+
+// Slim tappable banner shown directly under the app bar when this conversation was
+// continued from a predecessor (meta.continued_from resolves to a loaded row). Tapping
+// it navigates one hop back to that predecessor; multi-hop chains walk back one at a time.
+@Composable
+private fun PredecessorBanner(title: String, onClick: () -> Unit) {
+	Surface(onClick = onClick, tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+		Row(
+			modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+			verticalAlignment = Alignment.CenterVertically,
+		) {
+			Icon(
+				Icons.Default.ArrowBack,
+				contentDescription = null,
+				modifier = Modifier.size(16.dp),
+				tint = MaterialTheme.colorScheme.onSurfaceVariant,
+			)
+			Spacer(Modifier.width(8.dp))
+			Text(
+				text = "Continued from \"$title\"",
+				style = MaterialTheme.typography.bodySmall,
+				color = MaterialTheme.colorScheme.onSurfaceVariant,
+				maxLines = 1,
+				overflow = TextOverflow.Ellipsis,
+			)
 		}
 	}
 }

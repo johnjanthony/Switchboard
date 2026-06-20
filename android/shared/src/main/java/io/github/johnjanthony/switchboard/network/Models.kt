@@ -91,6 +91,7 @@ data class ConversationSummary(
 	val unreadCount: Int = 0,
 	val pendingResponses: Int = 0,
 	val preview: String? = null,
+	val continuedFrom: String? = null,  // conv_id this conversation was resumed from, if any
 	val agentStatuses: Map<String, AgentStatus> = emptyMap(),  // keyed by sender
 ) {
 	/** True if at least one member can be resumed (dormant, not permanently lost, has a session ID). */
@@ -144,6 +145,7 @@ data class ConversationRow(
 	val isOpenConversation: Boolean get() = summary.isOpenConversation
 	val hidden: Boolean get() = summary.hidden
 	val preview: String? get() = summary.preview
+	val continuedFrom: String? get() = summary.continuedFrom
 	val lastActivityAt: String get() = summary.lastActivityAt
 	/** Freshest live agent status across all members, or null if none qualify. */
 	val agentStatus: AgentStatus?

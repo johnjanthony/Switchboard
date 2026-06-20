@@ -350,6 +350,18 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .line-action:disabled { opacity: 0.4; cursor: not-allowed; }
 .line-action.danger:hover:not(:disabled) { border-color: var(--lamp-red); color: var(--lamp-red); }
 
+/* Predecessor banner — a patch cord back to the line this one continued from. */
+.predecessor-banner {
+	display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 10px;
+	background: var(--well); color: var(--label-dim);
+	border: 1px solid var(--rule); border-radius: var(--radius);
+	padding: 6px 12px; cursor: pointer; text-align: left;
+	font-family: var(--font-body); font-size: 12.5px;
+}
+.predecessor-banner:hover { border-color: var(--cord); color: var(--label); background: var(--panel-hi); }
+.predecessor-arrow { color: var(--cord); font-size: 13px; line-height: 1; }
+.predecessor-title { color: var(--label); font-weight: 600; }
+
 .detail-body { padding: 16px 18px; }
 .detail-empty, .roster-empty, .transcript-empty {
 	color: var(--label-dim); padding: 18px; font-family: var(--font-mono); font-size: 13px;

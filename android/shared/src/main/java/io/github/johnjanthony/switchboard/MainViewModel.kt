@@ -411,6 +411,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 						val pendingResponses = convNode.child("pending_responses").getValue(Int::class.java) ?: 0
 						val preview = convNode.child("meta").child("preview").getValue(String::class.java)
 						val hidden = convNode.child("meta").child("hidden").getValue(Boolean::class.java) ?: false
+						val continuedFrom = convNode.child("meta").child("continued_from").getValue(String::class.java)
 						val unreadCount = convNode.child("unread_count").getValue(Int::class.java) ?: 0
 
 						ConversationSummary(
@@ -424,6 +425,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 							unreadCount = unreadCount,
 							pendingResponses = pendingResponses,
 							preview = preview,
+							continuedFrom = continuedFrom,
 							agentStatuses = agentStatuses,
 						)
 					} catch (e: Exception) {

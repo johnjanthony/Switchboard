@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { memberState, isActive, pendingCountFor, globalPendingCount, oldestPendingAgeSeconds } from './derive.js';
+import { memberState, isActive, pendingCountFor, globalPendingCount, oldestPendingAgeSeconds, predecessorTitle } from './derive.js';
 
 test('memberState: alive member is alive', () => {
 	assert.equal(memberState({ alive: true, session_lost_permanently: false }), 'alive');
@@ -85,4 +85,21 @@ test('oldestPendingAgeSeconds: returns the largest age across pendings', () => {
 
 test('oldestPendingAgeSeconds: null when no pendings', () => {
 	assert.equal(oldestPendingAgeSeconds([], {}, Date.now()), null);
+});
+
+test('predecessorTitle: no continued_from pointer yields null', () => {
+	const current = { meta: { state: 'active' } };
+	assert.equal(predecessorTitle(current, { 'conv-2': current }), null);
+});
+
+test('predecessorTitle: predecessor present yields its title', () => {
+	const predecessor = { meta: { title: 'Original work', state: 'ended' } };
+	const current = { meta: { state: 'active', continued_from: 'conv-1' } };
+	const convs = { 'conv-1': predecessor, 'conv-2': current };
+	assert.equal(predecessorTitle(current, convs), 'Original work');
+});
+
+test('predecessorTitle: predecessor absent from map yields null so banner hides', () => {
+	const current = { meta: { state: 'active', continued_from: 'conv-gone' } };
+	assert.equal(predecessorTitle(current, { 'conv-2': current }), null);
 });

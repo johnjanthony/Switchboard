@@ -43,6 +43,20 @@ export function globalPendingCount(convs) {
 	return total;
 }
 
+// Resolve the title of a conversation's predecessor (the one it was continued
+// from), or null when there is nothing to show: no continued_from pointer, or the
+// pointer targets a conversation absent from [conversations] (aged out / not yet
+// loaded). The caller hides the "Continued from" banner rather than render a dead
+// affordance. Mirrors ConversationPolicy.predecessorTitle on the phone.
+export function predecessorTitle(conv, conversations) {
+	const predecessorId = conv && conv.meta ? conv.meta.continued_from : null;
+	if (!predecessorId || !conversations) {
+		return null;
+	}
+	const predecessor = conversations[predecessorId];
+	return predecessor && predecessor.meta ? (predecessor.meta.title || null) : null;
+}
+
 export function oldestPendingAgeSeconds(pendingsFlat, messageTimestampResolver, nowMs) {
 	if (!pendingsFlat || pendingsFlat.length === 0) {
 		return null;

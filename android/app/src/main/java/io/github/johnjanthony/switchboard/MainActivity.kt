@@ -208,6 +208,10 @@ private fun SwitchboardNavHost(
 				scrollToMessageId = deepLinkMessageId.value,
 				onScrollConsumed = { deepLinkMessageId.value = null },
 				awayActive = awayActive,
+				predecessorTitle = predecessorTitle(row, conversationRows),
+				onOpenPredecessor = {
+					row.continuedFrom?.let { navController.navigate("session/$it") { launchSingleTop = true } }
+				},
 				onBack = { navController.popBackStack() },
 				onLongPressPill = { viewModel.requestAwayModeToggle(null, !awayActive) },
 				onSubmitReply = { sender, text, requestId ->

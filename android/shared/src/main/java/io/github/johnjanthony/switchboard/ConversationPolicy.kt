@@ -64,6 +64,18 @@ fun bulkRespondSectionLabel(title: String, memberRoster: String): String =
 	title.ifBlank { memberRoster }
 
 /**
+ * Resolve the display title of a conversation's predecessor (the conversation it
+ * was continued from), or null when there is nothing to show. Returns null if
+ * [row] has no continued_from pointer, or the pointer targets a conversation that
+ * is absent from [rows] (aged out, hidden-and-pruned, or not yet hydrated): the
+ * caller hides the "Continued from" banner rather than render a dead affordance.
+ */
+fun predecessorTitle(row: ConversationRow, rows: Map<String, ConversationRow>): String? {
+	val predecessorId = row.continuedFrom ?: return null
+	return rows[predecessorId]?.title
+}
+
+/**
  * Whether the Firebase DB listeners should be attached now. They must be attached
  * only once an authenticated user exists: attaching them before the async Google
  * sign-in completes makes the unauthenticated listens fail Permission denied under

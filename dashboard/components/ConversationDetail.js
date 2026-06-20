@@ -1,6 +1,6 @@
 import { html, useState } from "../vendor/htm-preact.js";
 import * as fb from "../firebase.js";
-import { memberState, isActive } from "../derive.js";
+import { memberState, isActive, predecessorTitle } from "../derive.js";
 import { renderMarkdown } from "../markdown.js";
 import { answerCmd, resumeCmd, combineCmd, forceEndCmd } from "../commands.js";
 import { PaneBanner } from "./PaneBanner.js";
@@ -201,6 +201,18 @@ function DropDialog({ convId, onClose }) {
 	`;
 }
 
+// Slim tappable banner shown under the title row when this line was continued from
+// a predecessor (meta.continued_from resolves to a loaded conversation). Clicking it
+// selects the predecessor in the center pane; multi-hop chains walk back one at a time.
+function PredecessorBanner({ title, onOpen }) {
+	return html`
+		<button class="predecessor-banner" onClick=${onOpen} title="Open the predecessor line">
+			<span class="predecessor-arrow">↩</span>
+			<span>Continued from "<span class="predecessor-title">${title}</span>"</span>
+		</button>
+	`;
+}
+
 export function ConversationDetail({ store }) {
 	const state = store.getState();
 	const id = state.selectedConversationId;
@@ -220,6 +232,8 @@ export function ConversationDetail({ store }) {
 
 	const meta = conv && conv.meta;
 	const active = isActive(meta);
+	const predTitle = predecessorTitle(conv, state.conversations);
+	const predecessorId = meta ? meta.continued_from : null;
 	const members = (conv && conv.members) || {};
 	const memberList = Object.values(members);
 	const restorable = memberList.length > 0 && memberList.every((m) => memberState(m) === "dormant");
@@ -248,6 +262,7 @@ export function ConversationDetail({ store }) {
 							onClick=${() => setDialog("drop")}>Drop line</button>
 					</div>
 				</div>
+				${predTitle ? html`<${PredecessorBanner} title=${predTitle} onOpen=${() => store.selectConversation(predecessorId)} />` : null}
 				${dialog === "restore" ? html`<${RestoreDialog} conv=${conv} convId=${id} onClose=${close} />` : null}
 				${dialog === "patch" ? html`<${PatchDialog} store=${store} convId=${id} onClose=${close} />` : null}
 				${dialog === "drop" ? html`<${DropDialog} convId=${id} onClose=${close} />` : null}
