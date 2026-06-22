@@ -222,6 +222,7 @@ class Registry:
 		self._pending.pop(key, None)
 		if not record.future.done():
 			record.future.set_result(text)
+		self.total_answered += 1
 		self._record_resolved(conversation_id, record.request_id)
 		self._fire_pending_mirror(conversation_id, -1)
 		return record.request_id

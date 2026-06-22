@@ -753,8 +753,13 @@ class FirebaseBackend(
 				if self._logger:
 					await self._logger.info(f"firebase_upload_success: {effective_url}")
 			except Exception as exc:
+				# Fail loudly: do NOT fall through writing the local filesystem
+				# path as the message url (the phone can't fetch it, and the
+				# agent would be told "ok"). Re-raise so send_document_human's
+				# try/except returns an ERROR string to the agent.
 				if self._logger:
 					await self._logger.surface_error(f"firebase_upload_failed: {exc}")
+				raise
 
 		now = datetime.now(timezone.utc).isoformat()
 		payload = {

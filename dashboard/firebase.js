@@ -15,7 +15,6 @@ import {
 	ref as fbRef,
 	push as fbPush,
 	set as fbSet,
-	update as fbUpdate,
 	onValue as fbOnValue,
 	onChildAdded as fbOnChildAdded,
 	onChildChanged as fbOnChildChanged,
@@ -67,10 +66,6 @@ export function pushValue(path, value) {
 
 export function setValue(path, value) {
 	return fbSet(fbRef(database, path), value);
-}
-
-export function updateValue(path, value) {
-	return fbUpdate(fbRef(database, path), value);
 }
 
 export function nowIso() {

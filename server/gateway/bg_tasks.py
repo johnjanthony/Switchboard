@@ -26,19 +26,48 @@ satisfies the running-loop requirement.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Coroutine
 
 
 _BG_TASKS: set[asyncio.Task] = set()
+
+_log = logging.getLogger(__name__)
+
+
+def _on_task_done(task: asyncio.Task) -> None:
+	"""Done-callback: drop the strong ref, and log any exception. These tasks are
+	fire-and-forget (mostly Firebase writes), so a failure here previously
+	vanished with no trace; logging it makes a failed background write visible."""
+	_BG_TASKS.discard(task)
+	if task.cancelled():
+		return
+	exc = task.exception()
+	if exc is not None:
+		_log.error("background task %s failed: %r", task.get_name(), exc, exc_info=exc)
 
 
 def _spawn_bg(coro: Coroutine, *, label: str) -> asyncio.Task:
 	"""Schedule `coro` as a background task tracked in `_BG_TASKS`.
 
 	Returns the created Task. The task is removed from `_BG_TASKS` when it
-	completes. Raises `RuntimeError` if no event loop is running (same as
+	completes; any exception it raised is logged (not swallowed silently).
+	Raises `RuntimeError` if no event loop is running (same as
 	`asyncio.create_task`)."""
 	task = asyncio.create_task(coro, name=label)
 	_BG_TASKS.add(task)
-	task.add_done_callback(_BG_TASKS.discard)
+	task.add_done_callback(_on_task_done)
 	return task
+
+
+async def drain_bg_tasks(timeout: float = 5.0) -> int:
+	"""Wait up to `timeout` seconds for outstanding background tasks to finish so
+	their fire-and-forget writes flush before the loop closes on shutdown.
+
+	Returns the number still pending after the timeout (0 on a clean drain).
+	Never raises: per-task exceptions are handled by the done-callback."""
+	pending = [t for t in _BG_TASKS if not t.done()]
+	if not pending:
+		return 0
+	_, still_pending = await asyncio.wait(pending, timeout=timeout)
+	return len(still_pending)

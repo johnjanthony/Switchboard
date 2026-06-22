@@ -70,6 +70,50 @@ def _assume_logged_in(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_invoke_spawn_launcher_raises_on_failure_even_with_logger(tmp_path):
+	"""B4: a launcher (schtasks) failure must propagate even when a logger is
+	present, so the caller can surface it to the phone rather than treating the
+	spawn as complete. It used to log-and-return when a logger was passed."""
+	from server.spawn import invoke_spawn_launcher
+
+	proc = AsyncMock()
+	proc.returncode = 1
+	proc.communicate = AsyncMock(return_value=(b"", b"ERROR: task not found"))
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+
+	with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+		with pytest.raises(Exception):
+			await invoke_spawn_launcher(logger)
+
+
+@pytest.mark.asyncio
+async def test_handle_fresh_launcher_failure_notifies_phone(tmp_path):
+	"""B4: when the launcher fails, handle_fresh must surface a phone-visible
+	notice (like the quser gate) instead of swallowing it and leaving John in
+	away mode with a phantom conversation and no signal."""
+	from server.spawn import SpawnHandler
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	registry = Registry()
+
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock(side_effect=RuntimeError("schtasks exit 1"))):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		# Must not propagate the launcher error to the dispatcher.
+		await handler.handle_fresh({
+			"type": "fresh",
+			"surface": "windows",
+			"project": "myproject",
+			"issued_at": "2026-05-25T00:00:00Z",
+		})
+
+	backend.send_text.assert_awaited()
+	notice = backend.send_text.await_args.args[0].lower()
+	assert "spawn" in notice or "launch" in notice
+
+
+@pytest.mark.asyncio
 async def test_handle_fresh_windows_writes_pending_file(tmp_path):
 	"""handle_fresh with surface=windows writes spawn-pending file with correct fields
 	and pre-binds the cli_session_id in the registry."""

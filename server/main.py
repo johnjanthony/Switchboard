@@ -591,6 +591,12 @@ async def _run(config: Config) -> None:
 			await away_mode_task
 		with contextlib.suppress(asyncio.CancelledError):
 			await session_end_markers_task
+		# Flush outstanding fire-and-forget background writes (member removals,
+		# answer-history writes, pending-question cleanups, etc.) before the loop
+		# closes, so a clean shutdown doesn't drop them. Bounded so a stuck write
+		# can't hang shutdown.
+		from server.gateway.bg_tasks import drain_bg_tasks
+		await drain_bg_tasks(timeout=5.0)
 		await backend.aclose()
 
 

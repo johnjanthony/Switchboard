@@ -837,6 +837,13 @@ def build_tool_handlers(
 		"""Flip the global away_mode flag. Persisted to Firebase under /global_settings/away_mode."""
 		if not isinstance(value, bool):
 			return "ERROR: value must be a boolean"
+		# Flip the in-memory flag FIRST (synchronous, before any await). The
+		# bulk-resolve below has await points; if the flag were still True across
+		# them, a concurrently-arriving ask_human would pass the at-desk gate and
+		# register a new pending the snapshot does not cover, stranding it until
+		# the 24h timeout. Flipping first makes any such call take the at-desk
+		# redirect instead. Firebase persistence still happens after.
+		registry.global_away_mode = value
 		resolved = 0
 		if value is False:
 			pendings = registry.all_pending()
@@ -858,7 +865,6 @@ def build_tool_handlers(
 					resolved = before - registry.pending_count
 				except Exception as exc:
 					await logger.surface_error(f"set_away_mode_bulk_resolve_failed: {exc}")
-		registry.global_away_mode = value
 		try:
 			if hasattr(backend, "set_global_away_mode"):
 				await backend.set_global_away_mode(value)

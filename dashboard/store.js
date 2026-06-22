@@ -3,7 +3,7 @@
 // never assign onto the store or guard its methods with "?".
 //
 // deps: { fb, paths, storage, nowMs }
-//   fb      - the firebase.js wrapper (onAuth/signIn/on*/pushValue/setValue/updateValue/nowIso)
+//   fb      - the firebase.js wrapper (onAuth/signIn/on*/pushValue/setValue/nowIso)
 //   paths   - the schema.js path builders
 //   storage - localStorage-like { getItem, setItem }
 //   nowMs   - () => epoch ms, used to stamp pendingsFlat firstObservedMs

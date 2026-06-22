@@ -14,7 +14,7 @@ function makeFakeStorage(initial = {}) {
 }
 
 function makeFakeFb() {
-	const calls = { onValue: [], onChildAdded: [], onChildChanged: [], onChildRemoved: [], pushed: [], set: [], updated: [], unsubs: [] };
+	const calls = { onValue: [], onChildAdded: [], onChildChanged: [], onChildRemoved: [], pushed: [], set: [], unsubs: [] };
 	function recorder(kind) {
 		return (path, cb, errCb) => {
 			const entry = { path, cb, errCb };
@@ -34,7 +34,6 @@ function makeFakeFb() {
 		onChildRemoved: recorder('onChildRemoved'),
 		pushValue: (path, value) => { calls.pushed.push({ path, value }); return Promise.resolve(); },
 		setValue: (path, value) => { calls.set.push({ path, value }); return Promise.resolve(); },
-		updateValue: (path, value) => { calls.updated.push({ path, value }); return Promise.resolve(); },
 		nowIso: () => '2026-06-15T12:00:00.000Z',
 	};
 }
