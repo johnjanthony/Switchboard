@@ -109,7 +109,6 @@ fun SessionListScreen(
 				items(displayed, key = { it.id }) { row ->
 					SessionRow(
 						row = row,
-						awayActive = globalAway,
 						onClick = { onSessionClick(row) },
 						onHide = { onHideConversation(row) },
 						onUnhide = { onUnhideConversation(row) },

@@ -20,12 +20,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Badge
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -45,7 +43,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
@@ -54,11 +54,54 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import io.github.johnjanthony.switchboard.network.ConversationRow
 
+// Status lamp: one object, three states. Waiting (coral, pulsing) outranks live (jade,
+// steady); a line with neither sits as a hollow idle bead. Mirrors the conversation feed.
+@Composable
+private fun StatusLamp(color: Color, pulsing: Boolean) {
+	if (!pulsing) {
+		Box(modifier = Modifier.size(9.dp).background(color, CircleShape))
+		return
+	}
+	val transition = rememberInfiniteTransition(label = "statusLamp")
+	val a by transition.animateFloat(
+		initialValue = 0.5f, targetValue = 1f,
+		animationSpec = infiniteRepeatable(tween(1400, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+		label = "alpha",
+	)
+	val s by transition.animateFloat(
+		initialValue = 0.85f, targetValue = 1.12f,
+		animationSpec = infiniteRepeatable(tween(1400, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+		label = "scale",
+	)
+	Box(modifier = Modifier.size(9.dp).scale(s).alpha(a).background(color, CircleShape))
+}
+
+@Composable
+private fun StatusLampIdle() {
+	Box(modifier = Modifier.size(9.dp).border(1.5.dp, MaterialTheme.colorScheme.outline, CircleShape))
+}
+
+// Brass-outlined count token (unread / pending), quieter than a filled badge.
+@Composable
+private fun CountChip(count: Int) {
+	Box(
+		modifier = Modifier
+			.border(1.5.dp, MaterialTheme.colorScheme.primary, CircleShape)
+			.padding(horizontal = 6.dp, vertical = 1.dp),
+		contentAlignment = Alignment.Center,
+	) {
+		Text(
+			text = count.toString(),
+			style = MaterialTheme.typography.labelSmall,
+			color = MaterialTheme.colorScheme.primary,
+		)
+	}
+}
+
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun SessionRow(
 	row: ConversationRow,
-	awayActive: Boolean,
 	onClick: () -> Unit,
 	onHide: () -> Unit,
 	onUnhide: () -> Unit,
@@ -137,9 +180,10 @@ fun SessionRow(
 		state = swipeState,
 		backgroundContent = {
 			val direction = swipeState.dismissDirection
+			// End is destructive (loud red); hide is benign (quiet neutral).
 			val color = when (direction) {
-				SwipeToDismissBoxValue.StartToEnd -> Color(0xFFF44336)
-				SwipeToDismissBoxValue.EndToStart -> Color(0xFF9E9E9E)
+				SwipeToDismissBoxValue.StartToEnd -> MaterialTheme.colorScheme.error
+				SwipeToDismissBoxValue.EndToStart -> MaterialTheme.colorScheme.surfaceVariant
 				else -> Color.Transparent
 			}
 			val alignment = when (direction) {
@@ -161,18 +205,22 @@ fun SessionRow(
 				contentAlignment = alignment
 			) {
 				if (icon != null) {
-					Icon(imageVector = icon, contentDescription = null, tint = Color.White)
+					Icon(imageVector = icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface)
 				}
 			}
 		}
 	) {
-		val rowModifier = if (isOpenConversation) {
-			Modifier
-				.background(MaterialTheme.colorScheme.surface)
-				.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(0.dp))
-		} else {
-			Modifier.background(MaterialTheme.colorScheme.surface)
-		}
+		// The open (patched) line carries a brass left rail instead of a full border.
+		val railColor = MaterialTheme.colorScheme.primary
+		val rowModifier = Modifier
+			.background(MaterialTheme.colorScheme.surface)
+			.let {
+				if (isOpenConversation) {
+					it.drawBehind { drawRect(color = railColor, size = Size(3.dp.toPx(), size.height)) }
+				} else {
+					it
+				}
+			}
 
 		Box(modifier = rowModifier) {
 			Row(
@@ -192,38 +240,18 @@ fun SessionRow(
 					)
 				}
 
-				val isStatusFresh = agentStatus?.isFresh() == true
+				val hasPending = row.summary.pendingResponses > 0
+				val isLive = agentStatus?.isFresh() == true
 				Box(
 					modifier = Modifier
 						.size(width = 14.dp, height = 14.dp)
 						.padding(end = 6.dp),
 					contentAlignment = Alignment.CenterStart,
 				) {
-					if (isStatusFresh) {
-						val transition = rememberInfiniteTransition(label = "channelListActiveDot")
-						val a by transition.animateFloat(
-							initialValue = 0.5f, targetValue = 1f,
-							animationSpec = infiniteRepeatable(
-								animation = tween(durationMillis = 1600, easing = FastOutSlowInEasing),
-								repeatMode = RepeatMode.Reverse,
-							),
-							label = "alpha",
-						)
-						val scl by transition.animateFloat(
-							initialValue = 0.92f, targetValue = 1.05f,
-							animationSpec = infiniteRepeatable(
-								animation = tween(durationMillis = 1600, easing = FastOutSlowInEasing),
-								repeatMode = RepeatMode.Reverse,
-							),
-							label = "scale",
-						)
-						Box(
-							modifier = Modifier
-								.size(8.dp)
-								.scale(scl)
-								.alpha(a)
-								.background(MaterialTheme.colorScheme.primary, CircleShape),
-						)
+					when {
+						hasPending -> StatusLamp(MaterialTheme.colorScheme.tertiary, pulsing = true)
+						isLive -> StatusLamp(MaterialTheme.colorScheme.secondary, pulsing = false)
+						else -> StatusLampIdle()
 					}
 				}
 				Column(modifier = Modifier.weight(1f)) {
@@ -274,13 +302,6 @@ fun SessionRow(
 						)
 					}
 					Row(verticalAlignment = Alignment.CenterVertically) {
-						if (awayActive) {
-							Text(
-								"AWAY", style = MaterialTheme.typography.labelSmall,
-								color = MaterialTheme.colorScheme.tertiary
-							)
-							Spacer(Modifier.width(6.dp))
-						}
 						if (row.hidden) {
 							Text(
 								"hidden", style = MaterialTheme.typography.labelSmall,
@@ -289,7 +310,7 @@ fun SessionRow(
 							Spacer(Modifier.width(6.dp))
 						}
 						if (row.displayCount > 0) {
-							Badge { Text(row.displayCount.toString()) }
+							CountChip(row.displayCount)
 						}
 					}
 				}
@@ -369,7 +390,7 @@ fun AdminRow(
 				}
 			}
 			if (row.displayCount > 0) {
-				Badge { Text(row.displayCount.toString()) }
+				CountChip(row.displayCount)
 			}
 		}
 		// Click target overlay so the row still feels clickable when tapped.

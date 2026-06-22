@@ -14,8 +14,10 @@ import io.noties.markwon.syntax.SyntaxHighlight
 
 class SwitchboardSyntaxHighlight : SyntaxHighlight {
 	override fun highlight(info: String?, code: String): CharSequence {
-		val language = languageFor(info)
 		val span = SpannableString(code)
+		// Only highlight fences with a recognized language. Plain/unknown fences (prose, commit
+		// messages) render as plain monospace, not mis-colored generic highlighting.
+		val language = languageFor(info) ?: return span
 		val results = try {
 			Highlights.Builder()
 				.code(code)
@@ -45,9 +47,9 @@ class SwitchboardSyntaxHighlight : SyntaxHighlight {
 		return span
 	}
 
-	private fun languageFor(info: String?): SyntaxLanguage {
-		val tag = info?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return SyntaxLanguage.DEFAULT
-		return ALIASES[tag] ?: SyntaxLanguage.DEFAULT
+	private fun languageFor(info: String?): SyntaxLanguage? {
+		val tag = info?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
+		return ALIASES[tag]
 	}
 
 	companion object {

@@ -15,6 +15,15 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material3.Icon
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -318,9 +327,10 @@ private fun SwitchboardNavHost(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AwayModePillChip(active: Boolean, onLongPress: () -> Unit) {
-	val bg = if (active) MaterialTheme.colorScheme.error else Color.Transparent
-	val borderColor = if (active) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-	val textColor = if (active) Color.White else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+	val brass = MaterialTheme.colorScheme.primary
+	val bg = if (active) brass.copy(alpha = 0.13f) else Color.Transparent
+	val borderColor = if (active) brass.copy(alpha = 0.34f) else MaterialTheme.colorScheme.outline
+	val contentColor = if (active) brass else MaterialTheme.colorScheme.onSurfaceVariant
 	val label = if (active) "AWAY" else "AT DESK"
 
 	androidx.compose.foundation.layout.Box(
@@ -334,7 +344,18 @@ fun AwayModePillChip(active: Boolean, onLongPress: () -> Unit) {
 			)
 			.padding(horizontal = 10.dp, vertical = 4.dp)
 	) {
-		Text(label, style = MaterialTheme.typography.labelSmall, color = textColor)
+		Row(verticalAlignment = Alignment.CenterVertically) {
+			if (active) {
+				Icon(
+					imageVector = Icons.Filled.DarkMode,
+					contentDescription = null,
+					tint = brass,
+					modifier = Modifier.size(12.dp),
+				)
+				Spacer(Modifier.width(5.dp))
+			}
+			Text(label, style = MaterialTheme.typography.labelSmall, color = contentColor)
+		}
 	}
 }
 
@@ -351,6 +372,7 @@ fun MarkdownText(
 	if (format == "markdown") {
 		val textColor = color.toArgb()
 		AndroidView(
+			modifier = Modifier.fillMaxWidth(),
 			factory = { ctx ->
 				// Subclass TextView to swallow a known Android framework bug: long-press
 				// on selectable text inside a Markwon table cell can call startDragAndDrop
@@ -396,6 +418,8 @@ fun MarkdownText(
 				// Apply fontScale BEFORE markwon.setMarkdown so RelativeSizeSpan-based
 				// header/code sizing scales with the base.
 				view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f * fontScale)
+				val codePadPx = (12 * view.resources.displayMetrics.density).toInt()
+				val codeRadiusPx = 8f * view.resources.displayMetrics.density
 				val markwon = io.noties.markwon.Markwon.builder(view.context)
 					.usePlugin(io.noties.markwon.html.HtmlPlugin.create())
 					.usePlugin(io.noties.markwon.ext.tables.TablePlugin.create(view.context))
@@ -403,6 +427,28 @@ fun MarkdownText(
 					.usePlugin(io.noties.markwon.ext.strikethrough.StrikethroughPlugin.create())
 					.usePlugin(io.noties.markwon.simple.ext.SimpleExtPlugin.create())
 					.usePlugin(io.github.johnjanthony.switchboard.ui.SwitchboardSyntaxHighlightPlugin())
+					.usePlugin(object : io.noties.markwon.AbstractMarkwonPlugin() {
+						override fun configureSpansFactory(builder: io.noties.markwon.MarkwonSpansFactory.Builder) {
+							val codeBlockFactory = io.noties.markwon.SpanFactory { config, _ ->
+								io.github.johnjanthony.switchboard.ui.RoundedCodeBlockSpan(
+									config.theme(),
+									0xFF0E1014.toInt(),
+									codeRadiusPx,
+								)
+							}
+							builder.setFactory(org.commonmark.node.FencedCodeBlock::class.java, codeBlockFactory)
+							builder.setFactory(org.commonmark.node.IndentedCodeBlock::class.java, codeBlockFactory)
+						}
+					})
+					.usePlugin(object : io.noties.markwon.AbstractMarkwonPlugin() {
+						override fun configureTheme(builder: io.noties.markwon.core.MarkwonTheme.Builder) {
+							// Code fences + inline code sit in a near-black well (Well #0E1014), matching Operator.
+							builder.codeBlockBackgroundColor(0xFF0E1014.toInt())
+							builder.codeBackgroundColor(0xFF0E1014.toInt())
+							// Span the full content width of the bubble (no extra side inset).
+							builder.codeBlockMargin(codePadPx)
+						}
+					})
 					.usePlugin(object : io.noties.markwon.AbstractMarkwonPlugin() {
 						override fun configureConfiguration(builder: io.noties.markwon.MarkwonConfiguration.Builder) {
 							builder.linkResolver(object : io.noties.markwon.LinkResolver {

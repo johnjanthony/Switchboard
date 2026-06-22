@@ -1,6 +1,5 @@
 package io.github.johnjanthony.switchboard.ui
 
-import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
@@ -37,17 +36,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,8 +50,6 @@ import androidx.compose.ui.unit.dp
 import io.github.johnjanthony.switchboard.AwayModePillChip
 import io.github.johnjanthony.switchboard.network.ConversationRow
 import io.github.johnjanthony.switchboard.network.Pending
-import kotlin.math.abs
-import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -89,13 +81,8 @@ fun SessionViewScreen(
 			.toSet()
 	}
 
-	val timestampOpacity = remember { Animatable(0f) }
-	val coroutineScope = rememberCoroutineScope()
-	val density = LocalDensity.current
 	val context = androidx.compose.ui.platform.LocalContext.current
 	var feedFontScale by remember { androidx.compose.runtime.mutableFloatStateOf(context.feedFontScale()) }
-	val fullThresholdPx = with(density) { 80.dp.toPx() }
-	val axisCommitThresholdPx = with(density) { 10.dp.toPx() }
 
 	// Auto-select if there is exactly one pending question
 	androidx.compose.runtime.LaunchedEffect(activePending.size) {
@@ -114,7 +101,7 @@ fun SessionViewScreen(
 				listState.scrollToItem(idx)
 				onScrollConsumed()
 			}
-			// If not yet in the list (still syncing), wait — recomposition with a larger
+			// If not yet in the list (still syncing), wait - recomposition with a larger
 			// messages.size will retry. Don't fall through to scroll-to-bottom.
 			return@LaunchedEffect
 		}
@@ -201,56 +188,11 @@ fun SessionViewScreen(
 				.fillMaxSize()
 				.padding(padding)
 				.pointerInput(Unit) {
-					awaitEachGesture {
-						val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-						var horizontalClaimed = false
-
-						while (true) {
-							val event = awaitPointerEvent(pass = PointerEventPass.Initial)
-							if (event.changes.size > 1) {
-								// Multi-pointer event: this is a pinch, not a horizontal pull.
-								// Yield to the pinch pointerInput below.
-								break
-							}
-							val change = event.changes.firstOrNull { it.id == down.id } ?: break
-							if (change.changedToUp()) break
-							val dx = change.position.x - down.position.x
-							val dy = change.position.y - down.position.y
-
-							if (!horizontalClaimed) {
-								// Wait for unambiguous axis decision.
-								if (abs(dx) > axisCommitThresholdPx || abs(dy) > axisCommitThresholdPx) {
-									if (abs(dx) > abs(dy)) {
-										horizontalClaimed = true
-										change.consume()
-									} else {
-										// Vertical wins; let LazyColumn scroll. Stop tracking this gesture.
-										break
-									}
-								}
-							}
-							if (horizontalClaimed) {
-								change.consume()
-								val target = (abs(dx) / fullThresholdPx).coerceIn(0f, 1f)
-								// snapTo must be launched: awaitEachGesture's scope is
-								// @RestrictsSuspension and won't allow direct calls to non-member
-								// suspend funs.
-								coroutineScope.launch { timestampOpacity.snapTo(target) }
-							}
-						}
-						// Animate timestamps back to 0 on any loop exit (release, cancel, vertical
-						// yield). animateTo from 0 to 0 is a no-op, so unconditional dispatch is safe.
-						// Launched (not awaited) so the next gesture can start without waiting for the
-						// fade-out animation to finish.
-						coroutineScope.launch { timestampOpacity.animateTo(0f) }
-					}
-				}
-				.pointerInput(Unit) {
-					// We don't bail on consumed events here: the embedded TextView (markdown
-					// bubbles with isSelectable=true) consumes single-finger touches for
-					// selection mode setup. A consume-gate would prevent multi-finger pinch
-					// from ever engaging on selectable bubbles. We only consume ourselves
-					// when zoom != 1f, which fires only on real pinches.
+					// Pinch to scale the feed font. We don't bail on consumed events here: the
+					// embedded TextView (markdown bubbles with isSelectable=true) consumes
+					// single-finger touches for selection mode setup. A consume-gate would
+					// prevent multi-finger pinch from ever engaging on selectable bubbles. We
+					// only consume ourselves when zoom != 1f, which fires only on real pinches.
 					awaitEachGesture {
 						awaitFirstDown(requireUnconsumed = false)
 						var didPinch = false
@@ -302,7 +244,6 @@ fun SessionViewScreen(
 						MessageBubble(
 							message = msg,
 							isAnswered = msgId in answeredSet,
-							timestampOpacity = timestampOpacity.value,
 							isSelected = msg.request_id != null && msg.request_id == selectedRequestId,
 							fontScale = feedFontScale,
 							onClick = {
