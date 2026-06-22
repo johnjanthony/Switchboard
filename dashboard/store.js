@@ -49,6 +49,20 @@ export function createStore(deps) {
 		notify();
 	}
 
+	function setGlobalReadError(err) {
+		// A denied global RTDB read (e.g. signed in with an unauthorized Google
+		// account, or a rules change revoking access mid-session) would
+		// otherwise silently blank the dashboard: the SDK detaches the listener
+		// and no data ever arrives. Drop back to the sign-in gate with an
+		// explanatory error so the operator can switch to the authorized account
+		// instead of staring at an empty screen (M4).
+		const detail = err && err.message ? `: ${err.message}` : '';
+		state.authed = false;
+		state.user = null;
+		state.authError = `Database access denied${detail}. Sign in with the authorized Google account.`;
+		notify();
+	}
+
 	function retrySignIn() {
 		state.authError = null;
 		notify();
@@ -173,10 +187,14 @@ export function createStore(deps) {
 		if (id === null || id === undefined) {
 			return;
 		}
+		// The synchronous try/catch only guards the attach; a permission-denied
+		// arrives asynchronously on the error callback, so route that to the
+		// detail pane too (M4) — otherwise a denied read leaves the pane blank.
+		const onDetailError = (err) => setPaneError('detail', String(err && err.message ? err.message : err));
 		try {
-			selectionUnsubs.push(fb.onValue(paths.messages(id), (val) => mergeConversationMessages(id, val || {})));
-			selectionUnsubs.push(fb.onValue(paths.membersActive(id), (val) => mergeConversationMembers(id, val || {})));
-			selectionUnsubs.push(fb.onValue(paths.agentStatus(id), (val) => mergeConversationAgentStatus(id, val || {})));
+			selectionUnsubs.push(fb.onValue(paths.messages(id), (val) => mergeConversationMessages(id, val || {}), onDetailError));
+			selectionUnsubs.push(fb.onValue(paths.membersActive(id), (val) => mergeConversationMembers(id, val || {}), onDetailError));
+			selectionUnsubs.push(fb.onValue(paths.agentStatus(id), (val) => mergeConversationAgentStatus(id, val || {}), onDetailError));
 		} catch (err) {
 			setPaneError('detail', String(err && err.message ? err.message : err));
 		}
@@ -188,24 +206,28 @@ export function createStore(deps) {
 	}
 
 	function startGlobalListeners() {
+		// A denied read on any global listener means this account cannot read the
+		// database at all; surface it (back to the sign-in gate) rather than
+		// silently blanking the dashboard (M4).
+		const onReadError = (err) => setGlobalReadError(err);
 		fb.onChildAdded(paths.conversations(), (val, key) => {
 			if (val && val.meta) {
 				upsertConversationMeta(key, val.meta);
 			}
-		});
+		}, onReadError);
 		fb.onChildChanged(paths.conversations(), (val, key) => {
 			if (val && val.meta) {
 				upsertConversationMeta(key, val.meta);
 			}
-		});
+		}, onReadError);
 		fb.onChildRemoved(paths.conversations(), (_val, key) => {
 			removeConversation(key);
-		});
-		fb.onValue(paths.globalAway(), (val) => setGlobalAway(!!val));
-		fb.onValue(paths.openConversationId(), (val) => setOpenConversationId(val || null));
-		fb.onValue(paths.wslAvailable(), (val) => setWslAvailable(!!val));
-		fb.onChildAdded(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val));
-		fb.onChildChanged(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val));
+		}, onReadError);
+		fb.onValue(paths.globalAway(), (val) => setGlobalAway(!!val), onReadError);
+		fb.onValue(paths.openConversationId(), (val) => setOpenConversationId(val || null), onReadError);
+		fb.onValue(paths.wslAvailable(), (val) => setWslAvailable(!!val), onReadError);
+		fb.onChildAdded(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError);
+		fb.onChildChanged(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError);
 	}
 
 	// --- private helpers -------------------------------------------------
@@ -226,7 +248,11 @@ export function createStore(deps) {
 			const conv = state.conversations[id];
 			const active = !!conv && !!conv.meta && conv.meta.state === 'active';
 			if (active && !pendingUnsubsByConv.has(id)) {
-				const unsub = fb.onValue(paths.pendingQuestions(id), (val) => mergeConversationPending(id, val || {}));
+				const unsub = fb.onValue(
+					paths.pendingQuestions(id),
+					(val) => mergeConversationPending(id, val || {}),
+					(err) => setGlobalReadError(err),
+				);
 				pendingUnsubsByConv.set(id, unsub);
 			} else if (!active && pendingUnsubsByConv.has(id)) {
 				detachPendingListener(id);
@@ -305,6 +331,7 @@ export function createStore(deps) {
 		startGlobalListeners,
 		setAuthed,
 		setAuthError,
+		setGlobalReadError,
 		retrySignIn,
 		setGlobalAway,
 		setOpenConversationId,

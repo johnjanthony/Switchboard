@@ -41,20 +41,24 @@ export function onAuth(cb) {
 	return fbOnAuthStateChanged(auth, cb);
 }
 
-export function onValue(path, cb) {
-	return fbOnValue(fbRef(database, path), (snapshot) => cb(snapshot.val(), snapshot.key));
+// The optional errCb is the SDK's cancel/error callback (fired on e.g. a
+// permission-denied read). Without it the SDK silently drops the error and
+// detaches the listener, which blanks the dashboard; callers route it to a
+// visible surface (M4).
+export function onValue(path, cb, errCb) {
+	return fbOnValue(fbRef(database, path), (snapshot) => cb(snapshot.val(), snapshot.key), errCb);
 }
 
-export function onChildAdded(path, cb) {
-	return fbOnChildAdded(fbRef(database, path), (snapshot) => cb(snapshot.val(), snapshot.key));
+export function onChildAdded(path, cb, errCb) {
+	return fbOnChildAdded(fbRef(database, path), (snapshot) => cb(snapshot.val(), snapshot.key), errCb);
 }
 
-export function onChildChanged(path, cb) {
-	return fbOnChildChanged(fbRef(database, path), (snapshot) => cb(snapshot.val(), snapshot.key));
+export function onChildChanged(path, cb, errCb) {
+	return fbOnChildChanged(fbRef(database, path), (snapshot) => cb(snapshot.val(), snapshot.key), errCb);
 }
 
-export function onChildRemoved(path, cb) {
-	return fbOnChildRemoved(fbRef(database, path), (snapshot) => cb(snapshot.val(), snapshot.key));
+export function onChildRemoved(path, cb, errCb) {
+	return fbOnChildRemoved(fbRef(database, path), (snapshot) => cb(snapshot.val(), snapshot.key), errCb);
 }
 
 export function pushValue(path, value) {

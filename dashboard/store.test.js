@@ -16,8 +16,8 @@ function makeFakeStorage(initial = {}) {
 function makeFakeFb() {
 	const calls = { onValue: [], onChildAdded: [], onChildChanged: [], onChildRemoved: [], pushed: [], set: [], updated: [], unsubs: [] };
 	function recorder(kind) {
-		return (path, cb) => {
-			const entry = { path, cb };
+		return (path, cb, errCb) => {
+			const entry = { path, cb, errCb };
 			calls[kind].push(entry);
 			const unsub = () => { calls.unsubs.push({ kind, path }); };
 			entry.unsub = unsub;
@@ -249,6 +249,38 @@ test('startGlobalListeners wires conversation/global/admin listeners', () => {
 	assert.ok(valuePaths.includes('global_settings/away_mode'));
 	assert.ok(valuePaths.includes('global_settings/open_conversation_id'));
 	assert.ok(valuePaths.includes('global_settings/wsl_available'));
+});
+
+test('a denied global read routes back to the sign-in gate with an error (M4)', () => {
+	// A wrong/unauthorized Google account yields an authed session where every
+	// RTDB read is denied. Without an error callback the listeners silently
+	// detach and the dashboard blanks. The global listeners must register an
+	// error callback that drops back to the sign-in gate with a message.
+	const { store, fb } = makeStore();
+	store.setAuthed(true, { email: 'wrong@example.com' });
+	store.startGlobalListeners();
+
+	const entry = fb.calls.onChildAdded.find((e) => e.path === 'conversations');
+	assert.ok(entry, 'conversations listener attached');
+	assert.equal(typeof entry.errCb, 'function', 'global listener must register an error callback');
+
+	entry.errCb(new Error('PERMISSION_DENIED'));
+	const s = store.getState();
+	assert.equal(s.authed, false, 'a denied global read returns to the sign-in gate');
+	assert.ok(s.authError && s.authError.length > 0, 'an explanatory auth error is set');
+});
+
+test('a denied conversation read surfaces a detail pane error (M4)', () => {
+	const { store, fb } = makeStore();
+	store.upsertConversationMeta('c1', { state: 'active' });
+	store.selectConversation('c1');
+
+	const entry = fb.calls.onValue.find((e) => e.path === 'conversations/c1/messages');
+	assert.ok(entry, 'selection listener attached');
+	assert.equal(typeof entry.errCb, 'function', 'selection listener must register an error callback');
+
+	entry.errCb(new Error('PERMISSION_DENIED'));
+	assert.ok(store.getState().paneErrors.detail, 'the detail pane error is set on a denied read');
 });
 
 test('an active conversation meta attaches a pending_questions listener', () => {

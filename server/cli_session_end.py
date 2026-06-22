@@ -111,7 +111,17 @@ async def handle_session_end(
 	# Cancel any pending ask_human futures owned by this departed member —
 	# their answer can never arrive (the agent's session is gone), so freeing
 	# the future immediately avoids a 24h _TIMEOUT wait if the agent ever
-	# reconnects mid-block.
+	# reconnects mid-block. Match by routing identity (cli_session_id), not by
+	# sender string: ask_human keys the pending by the RAW agent-supplied
+	# sender, which differs from the member's disambiguated sender on a
+	# same-name collision (e.g. pending 'Claude' vs member 'Claude 2'), so a
+	# sender-string compare would silently miss the cancellation (M2). Fall
+	# back to the sender match for any legacy pending with no recorded session.
 	for pending in registry.pending_for_conversation(conversation_id):
-		if pending.sender == target.sender:
-			registry.remove(conversation_id, pending.sender)
+		owned = (
+			pending.cli_session_id == session_id
+			if pending.cli_session_id is not None
+			else pending.sender == target.sender
+		)
+		if owned:
+			registry.remove(conversation_id, pending.sender, request_id=pending.request_id)

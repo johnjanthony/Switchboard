@@ -101,15 +101,25 @@ async def dispatch_responses(
 						record = registry.get((conversation_id, sender))
 						req_id = registry.resolve(conversation_id, sender, response.text, request_id=response.request_id)
 						if req_id is None:
-							await logger.surface_error(f"unknown_correlation: conversation_id={conversation_id} sender={sender}")
-							try:
-								await backend.send_stale_reply_notice(conversation_id, sender)
-							except Exception as exc:
-								await logger.surface_error(f"stale_reply_notice_failed: {exc}")
-							# Drop the orphan from `responses/` so the listener doesn't
-							# re-fire it on every server restart. We've already logged
-							# and surfaced the stale notice; the response can't be
-							# routed and there's no point keeping it around.
+							# No live pending for this correlation. Distinguish a
+							# benign replay of an answer we already delivered/ended
+							# (the answers-listener reconnect snapshot can re-enqueue
+							# an answer whose fire-and-forget slot delete had not yet
+							# committed) from a genuinely unknown correlation. Only
+							# the latter gets the phone-visible "reply withdrawn"
+							# notice; firing it for a delivered reply is a false,
+							# alarming message (M3). Either way the orphan slot is
+							# dropped so it cannot re-fire on the next restart.
+							if registry.was_recently_resolved(conversation_id, response.request_id):
+								await logger.info(
+									f"replayed_answer_ignored: conversation_id={conversation_id} request_id={response.request_id}"
+								)
+							else:
+								await logger.surface_error(f"unknown_correlation: conversation_id={conversation_id} sender={sender}")
+								try:
+									await backend.send_stale_reply_notice(conversation_id, sender)
+								except Exception as exc:
+									await logger.surface_error(f"stale_reply_notice_failed: {exc}")
 							if response.slot:
 								try:
 									await backend.delete_response_slot(response.slot)

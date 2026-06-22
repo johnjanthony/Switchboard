@@ -268,6 +268,50 @@ async def test_redelivered_command_is_dispatched_once(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_spawn_command_deleted_before_handler_runs(monkeypatch):
+	"""M1: spawn is the one non-idempotent command handler — it mints a fresh
+	conversation and launches a process every time it runs. With the default
+	at-least-once delivery (delete scheduled AFTER dispatch), a crash between
+	dispatch and the fire-and-forget delete replays the command from the next
+	restart snapshot and double-spawns. So the spawn listener must delete the
+	command (and await the delete) BEFORE running the handler."""
+	from datetime import datetime, timezone
+
+	loop = asyncio.get_running_loop()
+	be = _make_backend(monkeypatch, loop)
+
+	from server import firebase as fb_module
+	order: list[tuple] = []
+
+	def _ref(path):
+		m = MagicMock()
+		m.delete.side_effect = lambda p=path: order.append(("delete", p))
+		return m
+
+	fb_module.db.reference.side_effect = _ref
+
+	import server.firebase_supervisor as sup_mod
+	_FakeSupervised.instances.clear()
+	monkeypatch.setattr(sup_mod, "SupervisedListener", _FakeSupervised)
+
+	async def _handler(cmd, ack=None):
+		order.append(("handler", cmd.get("type")))
+
+	await be.start_spawn_command_listener(_handler)
+	sup = _FakeSupervised.instances[0]
+	assert sup.path == "spawn_commands"
+
+	cmd = {"type": "fresh", "project": "X", "issued_at": datetime.now(timezone.utc).isoformat()}
+	sup.callback(_Event("put", "/-Nspawn1", cmd))
+	await asyncio.sleep(0.05)  # drain call_soon_threadsafe + to_thread
+
+	assert ("delete", "spawn_commands/-Nspawn1") in order, "spawn command must be deleted"
+	assert ("handler", "fresh") in order, "handler must run"
+	assert order.index(("delete", "spawn_commands/-Nspawn1")) < order.index(("handler", "fresh")), \
+		"delete must commit before the handler launches (at-most-once for non-idempotent spawn)"
+
+
+@pytest.mark.asyncio
 async def test_listener_callback_never_calls_run_in_executor(monkeypatch):
 	"""M32: the listener callback runs on the Firebase SDK thread;
 	loop.run_in_executor is not thread-safe from there. Every loop-affined

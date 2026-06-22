@@ -855,7 +855,7 @@ class FirebaseBackend(
 			lambda: _spawn_bg(asyncio.to_thread(_delete), label=f"fb_command_delete:{node}/{cmd_id}"),
 		)
 
-	def _start_command_listener(self, node: str, handler) -> None:
+	def _start_command_listener(self, node: str, handler, *, delete_before_dispatch: bool = False) -> None:
 		"""Shared listener for the /<node> command queues (combine_commands,
 		force_end_commands, spawn_commands).
 
@@ -866,11 +866,20 @@ class FirebaseBackend(
 		  older than COMMAND_TTL_SECONDS are deleted WITH a phone-visible
 		  notice, never executed and never silently dropped (decided
 		  2026-06-11). Missing/unparseable stamps fail open (dispatch).
-		- Delivery is at-least-once: the delete is scheduled after dispatch,
+		- Delivery is at-least-once for idempotent handlers (combine/force_end,
+		  which consume Ended state): the delete is scheduled after dispatch,
 		  so a crash in between re-delivers on the next snapshot; a per-run
 		  processed-id set dedupes redeliveries within this process. A
 		  deduped redelivery is not re-deleted; if its original delete
 		  failed it lingers until the next restart's TTL pass.
+		- delete_before_dispatch=True switches to at-most-once for a
+		  NON-idempotent handler (spawn mints a conversation and launches a
+		  process every run, so a replay double-spawns). The command is
+		  deleted and the delete is awaited BEFORE the handler runs, so a
+		  crash cannot replay it from the next restart snapshot. A lost spawn
+		  (crash after the delete commits but before the launcher fires) is
+		  the safer failure mode — John re-taps when nothing appears, versus a
+		  confusing duplicate agent in a phantom conversation.
 		- Runs on the Firebase SDK listener thread: every loop-affined call
 		  is bridged via call_soon_threadsafe (M32).
 		"""
@@ -895,13 +904,25 @@ class FirebaseBackend(
 				self._loop.call_soon_threadsafe(
 					lambda c=coro: _spawn_bg(c, label=f"fb_stale_command_notice:{node}/{cmd_id}"),
 				)
-			else:
-				# Route via _spawn_bg so a hanging or raising handler shows up
-				# in logs and the task isn't GC-eligible mid-execution.
-				coro = handler(cmd)
+				self._schedule_command_delete(node, cmd_id)
+				return
+			if delete_before_dispatch:
+				# At-most-once for the non-idempotent spawn handler: delete the
+				# command and await that delete, THEN run the handler, so a
+				# crash cannot replay the command and double-launch.
+				async def _delete_then_handle(c=cmd, cid=cmd_id):
+					await asyncio.to_thread(lambda: db.reference(f"{node}/{cid}").delete())
+					await handler(c)
 				self._loop.call_soon_threadsafe(
-					lambda c=coro: _spawn_bg(c, label=f"fb_command:{node}/{cmd_id}"),
+					lambda: _spawn_bg(_delete_then_handle(), label=f"fb_command:{node}/{cmd_id}"),
 				)
+				return
+			# Route via _spawn_bg so a hanging or raising handler shows up
+			# in logs and the task isn't GC-eligible mid-execution.
+			coro = handler(cmd)
+			self._loop.call_soon_threadsafe(
+				lambda c=coro: _spawn_bg(c, label=f"fb_command:{node}/{cmd_id}"),
+			)
 			self._schedule_command_delete(node, cmd_id)
 
 		def _on_event(event):
@@ -1021,5 +1042,9 @@ class FirebaseBackend(
 
 	async def start_spawn_command_listener(self, handler) -> None:
 		"""Listen for entries under /spawn_commands; dispatch handler(cmd_dict)
-		for each queued or new entry (initial snapshot included; TTL-gated)."""
-		self._start_command_listener("spawn_commands", handler)
+		for each queued or new entry (initial snapshot included; TTL-gated).
+
+		delete_before_dispatch=True: spawn is non-idempotent (mints a
+		conversation + launches a process), so the command is deleted before
+		the handler runs to make replay-after-crash impossible (at-most-once)."""
+		self._start_command_listener("spawn_commands", handler, delete_before_dispatch=True)

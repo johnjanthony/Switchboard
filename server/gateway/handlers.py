@@ -212,7 +212,8 @@ def build_tool_handlers(
 				request_id=request_id, format=format, suggestions=suggestions, title=title,
 			)
 			future, prior_request_id = registry.add(
-				conversation_id=conversation_id, sender=sender, request_id=request_id, msg_id=msg_id, return_superseded=True,
+				conversation_id=conversation_id, sender=sender, request_id=request_id, msg_id=msg_id,
+				return_superseded=True, cli_session_id=cli_session_id,
 			)
 			if prior_request_id is not None:
 				await _safe_mark_cancelled(backend, conversation_id, prior_request_id, logger)

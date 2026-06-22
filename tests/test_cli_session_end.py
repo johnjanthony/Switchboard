@@ -102,6 +102,43 @@ async def test_session_end_wakes_blocked_peer():
 
 
 @pytest.mark.asyncio
+async def test_session_end_cancels_pending_when_sender_was_disambiguated():
+	"""M2: ask_human keys a pending by the raw agent-supplied sender, but a
+	member can be stored under a DISAMBIGUATED sender (e.g. 'Claude 2' on a
+	same-name collision). The session-end cleanup must cancel the departing
+	member's pending by routing identity (cli_session_id), not by comparing the
+	disambiguated member.sender against the raw pending key — otherwise the
+	pending is orphaned and blocks until the 24h timeout."""
+	import asyncio
+	from server.registry import Conversation, ConversationMember
+	registry = Registry()
+	conv = Conversation(id="conv-1", title="disambig test")
+	# Member stored under a DISAMBIGUATED sender, bound to session s-1.
+	m = ConversationMember(
+		cli_session_id="s-1", sender="Claude 2", cwd="C:/X",
+		surface="windows", joined_at=0.0,
+	)
+	conv.members_active["Claude 2"] = m
+	registry.conversations["conv-1"] = conv
+	registry.bind_session("s-1", "conv-1")
+
+	# ask_human keyed the pending by the RAW sender 'Claude' (what the agent
+	# passed), carrying the owning session's id for routing-identity matching.
+	future, _ = registry.add(
+		conversation_id="conv-1", sender="Claude", request_id="req-1",
+		cli_session_id="s-1", return_superseded=True,
+	)
+	assert registry.pending_count == 1
+
+	await handle_session_end(
+		registry=registry, session_id="s-1", reason="logout", now=_fixed_now,
+	)
+
+	assert registry.pending_count == 0, "departing member's pending must be cancelled by session identity"
+	assert future.cancelled() or (future.done() and isinstance(future.exception(), asyncio.CancelledError))
+
+
+@pytest.mark.asyncio
 async def test_session_end_cancels_dormant_members_pending_ask_human():
 	"""Per Fix Pack 1 / Bug #4: when a session ends, any ask_human pending
 	request owned by that session's member is cancelled (its future will never
