@@ -22,6 +22,11 @@ internal sealed class AppHost : IDisposable
 	readonly System.Windows.Forms.Timer _switchboardTimer = new();
 	readonly SwitchboardStatsReader? _switchboardReader;
 	volatile bool _switchboardScanning;
+	readonly System.Windows.Forms.Timer _claudeStatusTimer = new();
+	readonly ClaudeStatusReader _claudeStatusReader;
+	readonly ClaudeStatusWatch _claudeStatusWatch;
+	volatile bool _claudeStatusScanning;
+	readonly System.Windows.Forms.Timer _claudePulseTimer = new();   // drives the status-dot pulse animation
 
 	static int QuotaIntervalMs(int minutes) => Math.Clamp(minutes, 1, 60) * 60_000;
 
@@ -38,6 +43,14 @@ internal sealed class AppHost : IDisposable
 			_switchboardTimer.Interval = Math.Max(2, _config.Switchboard.PollSeconds) * 1000;
 			_switchboardTimer.Tick += (_, _) => PollSwitchboard();
 		}
+		_claudeStatusReader = new ClaudeStatusReader(_config.ClaudeStatus.SummaryUrl, LogError);
+		_claudeStatusWatch = new ClaudeStatusWatch(_config.ClaudeStatus.MaxWatchMinutes);
+		_claudeStatusTimer.Interval = Math.Max(10, _config.ClaudeStatus.WatchIntervalSeconds) * 1000;
+		_claudeStatusTimer.Tick += (_, _) => PollClaudeStatus();
+		_claudePulseTimer.Interval = 70;
+		_claudePulseTimer.Tick += (_, _) => _widget.TickClaudePulse();
+		_tray.ClaudeStatusActionRequested += OnClaudeStatusAction;
+		_panel.ClaudeStatusButtonClicked += OnClaudeStatusAction;
 		_tray.OpenDashboardRequested += () => OpenDashboard();
 		_panel.OpenDashboardRequested += () => OpenDashboard();
 
@@ -89,6 +102,7 @@ internal sealed class AppHost : IDisposable
 		Scan();
 		_panel.UpdateSwitchboard(_config.Switchboard.Enabled, null);
 		if (_config.Switchboard.Enabled) { _switchboardTimer.Start(); PollSwitchboard(); }
+		RefreshClaudeStatusSurfaces();
 	}
 
 	// Tooltip-style: show the panel while the cursor is over the widget (or the panel itself), hide otherwise.
@@ -223,6 +237,57 @@ internal sealed class AppHost : IDisposable
 		}, TaskScheduler.FromCurrentSynchronizationContext());
 	}
 
+	// The popup button / tray item: while Idle it kicks off a one-shot check; otherwise it acknowledges
+	// (Stop watching / Clear), returning the watch to Idle and hiding the dot.
+	void OnClaudeStatusAction()
+	{
+		if (_claudeStatusWatch.State == ClaudeWatchState.Idle)
+		{
+			CheckClaudeStatusNow();
+		}
+		else
+		{
+			ApplyWatchAction(_claudeStatusWatch.Acknowledge());
+			RefreshClaudeStatusSurfaces();
+		}
+	}
+
+	void CheckClaudeStatusNow() => PollClaudeStatus();
+
+	// Fire-and-forget fetch; result marshaled back to the UI thread and fed into the watch state machine.
+	void PollClaudeStatus()
+	{
+		if (_claudeStatusScanning) return;
+		_claudeStatusScanning = true;
+		_claudeStatusReader.FetchAsync(CancellationToken.None).ContinueWith(t =>
+		{
+			_claudeStatusScanning = false;
+			if (t.IsFaulted) { LogError("claude-status-poll", t.Exception!); return; }
+			ApplyWatchAction(_claudeStatusWatch.ApplyFetch(t.Result, DateTime.UtcNow));
+			RefreshClaudeStatusSurfaces();
+			var v = _claudeStatusWatch.Snapshot();
+			LogInfo("claude-status", $"level={v.DotLevel} state={_claudeStatusWatch.State} dot={v.DotVisible}");
+		}, TaskScheduler.FromCurrentSynchronizationContext());
+	}
+
+	void ApplyWatchAction(WatchAction action)
+	{
+		switch (action)
+		{
+			case WatchAction.StartPolling: _claudeStatusTimer.Start(); break;
+			case WatchAction.StopPolling: _claudeStatusTimer.Stop(); break;
+		}
+	}
+
+	void RefreshClaudeStatusSurfaces()
+	{
+		var v = _claudeStatusWatch.Snapshot();
+		_panel.UpdateClaudeStatus(v);
+		_widget.SetClaudeStatus(v.DotVisible, v.DotLevel);
+		_tray.SetClaudeStatusButton(v.Button);
+		if (_widget.ClaudePulsing) _claudePulseTimer.Start(); else _claudePulseTimer.Stop();
+	}
+
 	// Re-render the countdown at the next moment its text would change (decoupled from the poll), so
 	// "3h" -> "2h" -> ... -> "5m" -> "4m" stays live even with a 1-hour poll. Floor 1s, cap 60s.
 	void ScheduleCountdown()
@@ -280,6 +345,8 @@ internal sealed class AppHost : IDisposable
 		_quotaTimer.Dispose();
 		_countdownTimer.Dispose();
 		_switchboardTimer.Dispose();
+		_claudeStatusTimer.Dispose();
+		_claudePulseTimer.Dispose();
 		_tray.Dispose();
 		_panel.Dispose();
 		_widget.Dispose();

@@ -39,4 +39,15 @@ internal sealed class Palette
 		Severity.Amber => Color.FromArgb(210, 153, 34),
 		_ => Color.FromArgb(63, 185, 80),
 	};
+
+	// Status-page dot colors. Green/yellow/red endpoints match the widget rings palette;
+	// major gets a distinct orange so partial vs full outage read differently; unknown is muted grey.
+	public static Color ForClaudeStatus(ClaudeStatusLevel level) => level switch
+	{
+		ClaudeStatusLevel.Operational => Color.FromArgb(63, 185, 80),
+		ClaudeStatusLevel.Minor => Color.FromArgb(240, 205, 40),
+		ClaudeStatusLevel.Major => Color.FromArgb(235, 140, 50),
+		ClaudeStatusLevel.Critical => Color.FromArgb(248, 81, 73),
+		_ => Color.FromArgb(154, 160, 166),
+	};
 }

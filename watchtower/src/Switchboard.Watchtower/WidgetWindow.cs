@@ -37,6 +37,10 @@ internal sealed class WidgetWindow : Form
 	bool _showQuota = true;   // user preference; the block also requires _quota to have a value
 	bool _showBadge;          // Switchboard ShowBadge preference
 	bool _hasPending;         // Switchboard has unanswered questions -> draw the amber badge
+	bool _claudeDotVisible;
+	ClaudeStatusLevel _claudeLevel = ClaudeStatusLevel.Operational;
+	bool _claudePulse;        // animate the status dot (active incident) vs hold steady (resolved)
+	float _claudePhase;       // 0..1 pulse phase, advanced by the host's pulse timer
 
 	bool QuotaVisible => _showQuota && _quota.HasValue;
 	public QuotaUsage? Quota => _quota;
@@ -235,6 +239,29 @@ internal sealed class WidgetWindow : Form
 		Render();
 	}
 
+	// Show/hide the sticky Claude status dot (centered in the ring cluster). Visible whenever the watch
+	// is not Idle; color reflects the latest known status; pulses while an incident is active.
+	public void SetClaudeStatus(bool visible, ClaudeStatusLevel level)
+	{
+		bool pulse = visible && level is ClaudeStatusLevel.Minor or ClaudeStatusLevel.Major or ClaudeStatusLevel.Critical;
+		if (_claudeDotVisible == visible && _claudeLevel == level && _claudePulse == pulse) return;
+		_claudeDotVisible = visible;
+		_claudeLevel = level;
+		_claudePulse = pulse;
+		Render();
+	}
+
+	// True while the status dot should animate; the host runs a timer that calls TickClaudePulse.
+	public bool ClaudePulsing => _claudePulse;
+
+	// Advance the pulse one frame and repaint. No-op when not pulsing.
+	public void TickClaudePulse()
+	{
+		if (!_claudePulse) return;
+		_claudePhase = (_claudePhase + 0.048f) % 1f;
+		Render();
+	}
+
 	// Re-render only (no reposition): the countdown text is recomputed from the stored reset times at
 	// paint time, so the host can tick this faster than the poll without refetching.
 	public void RefreshQuotaCountdown()
@@ -417,6 +444,28 @@ internal sealed class WidgetWindow : Form
 		if (_showBadge && _hasPending)
 			using (var dot = new SolidBrush(Color.FromArgb(210, 153, 34)))
 				g.FillEllipse(dot, Width - 10, 2, 8, 8);
+
+		// Claude service-status dot: centered in the context ring cluster. Pulses while an incident
+		// is active (Watching); steady once resolved (sticky until acknowledged). A thin dark outline
+		// separates it from a ring arc of a similar color.
+		if (_claudeDotVisible)
+		{
+			float dMax = Math.Min(Height - 8f, 28f);
+			float penInset = RingThickness / 2f + 1f;
+			float od = dMax - 2f * penInset;
+			float clusterTop = (Height - dMax) / 2f;
+			float ccx = originX + penInset + od / 2f;
+			float ccy = clusterTop + penInset + od / 2f;
+
+			float r = 3.3f;
+			if (_claudePulse)
+				r = 3.3f + 0.9f * (float)Math.Sin(_claudePhase * 2.0 * Math.PI);
+
+			using (var cdot = new SolidBrush(Palette.ForClaudeStatus(_claudeLevel)))
+				g.FillEllipse(cdot, ccx - r, ccy - r, r * 2f, r * 2f);
+			using (var outline = new Pen(Color.FromArgb(200, 0, 0, 0), 1.25f))
+				g.DrawEllipse(outline, ccx - r, ccy - r, r * 2f, r * 2f);
+		}
 	}
 
 	// Two usage rows (5h on top, 7d below), left of the context rings.

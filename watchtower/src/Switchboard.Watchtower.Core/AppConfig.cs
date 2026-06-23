@@ -14,6 +14,7 @@ public sealed class AppConfig
 	public bool ShowQuota { get; set; } = true;
 	public int QuotaPollMinutes { get; set; } = 5;   // plan-usage poll cadence; 1, 5, 15, or 60
 	public SwitchboardConfig Switchboard { get; set; } = new();
+	public ClaudeStatusConfig ClaudeStatus { get; set; } = new();
 
 	public static string DefaultPath => Path.Combine(
 		Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -81,4 +82,17 @@ public sealed class SwitchboardConfig
 
 	/// <summary>How often (seconds) to poll /stats. Decoupled from the 60s session-scan cadence so the pending badge updates near-instantly. Floored at 2s.</summary>
 	public int PollSeconds { get; set; } = 4;
+}
+
+/// <summary>Watchtower's Claude service-status indicator: the status-page URL and the manual watch-loop cadence/cap.</summary>
+public sealed class ClaudeStatusConfig
+{
+	/// <summary>The Claude status page summary endpoint the widget fetches on a manual check.</summary>
+	public string SummaryUrl { get; set; } = "https://status.claude.com/api/v2/summary.json";
+
+	/// <summary>How often (seconds) the watch loop re-polls while an incident is active. Floored at 10s by the host.</summary>
+	public int WatchIntervalSeconds { get; set; } = 60;
+
+	/// <summary>Safety cap (minutes): the watch loop stops polling after this long even if still degraded.</summary>
+	public int MaxWatchMinutes { get; set; } = 180;
 }

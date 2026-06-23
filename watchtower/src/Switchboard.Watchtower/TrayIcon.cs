@@ -13,6 +13,7 @@ internal sealed class TrayIcon : IDisposable
 	readonly ToolStripMenuItem _autostartItem;
 	readonly ToolStripMenuItem _clearTypeItem;
 	readonly ToolStripMenuItem _showQuotaItem;
+	readonly ToolStripMenuItem _claudeStatusItem;
 	readonly List<ToolStripMenuItem> _intervalItems = new();
 	IntPtr _hicon;
 	Icon? _ownedIcon;
@@ -24,6 +25,7 @@ internal sealed class TrayIcon : IDisposable
 	bool _lastLight;
 
 	public event Action? RefreshRequested;
+	public event Action? ClaudeStatusActionRequested;
 	public event Action<bool>? AutostartToggled;
 	public event Action<bool>? RenderModeToggled;    // true = opaque ClearType, false = true transparency
 	public event Action<bool>? QuotaShowToggled;     // show/hide the plan-usage block
@@ -35,6 +37,8 @@ internal sealed class TrayIcon : IDisposable
 	{
 		var menu = new ContextMenuStrip();
 		menu.Items.Add("Refresh now", null, (_, _) => RefreshRequested?.Invoke());
+		_claudeStatusItem = new ToolStripMenuItem("Check Claude status", null, (_, _) => ClaudeStatusActionRequested?.Invoke());
+		menu.Items.Add(_claudeStatusItem);
 		_autostartItem = new ToolStripMenuItem("Start with Windows", null, (_, _) =>
 		{
 			_autostartItem!.Checked = !_autostartItem.Checked;
@@ -158,6 +162,17 @@ internal sealed class TrayIcon : IDisposable
 		_showBadge = showBadge;
 		_hasPending = hasPending;
 		SetGauge(_lastPct, _lastAnyError, _lastSeverity, _lastLight);
+	}
+
+	// Mirror the popup button's contextual label.
+	public void SetClaudeStatusButton(ClaudeStatusButton button)
+	{
+		_claudeStatusItem.Text = button switch
+		{
+			ClaudeStatusButton.StopWatching => "Stop watching Claude status",
+			ClaudeStatusButton.Clear => "Clear Claude status",
+			_ => "Check Claude status",
+		};
 	}
 
 	public void Dispose()
