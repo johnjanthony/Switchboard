@@ -420,7 +420,36 @@ class FirebaseBackend(
 
 		await asyncio.to_thread(lambda: messaging.send(msg))
 
-	async def _upload_file(self, local_path: Path) -> str:
+	async def read_document(self, conv_id: str, msg_id: str) -> tuple[bytes, str]:
+		"""Return (bytes, filename) for a document message, downloading the blob via
+		the Admin SDK. Raises LookupError if the message is missing, is not a
+		document, or has no resolvable storage path. Raises ValueError if the blob
+		exceeds _MAX_DOCUMENT_BYTES (guard fires before download)."""
+		from server.gateway.document import _blob_path_from_url, _MAX_DOCUMENT_BYTES
+
+		msg = await asyncio.to_thread(
+			lambda: db.reference(f"conversations/{conv_id}/messages/{msg_id}").get()
+		)
+		if not isinstance(msg, dict) or msg.get("type") != "document":
+			raise LookupError(f"no document message at {conv_id}/{msg_id}")
+
+		filename = msg.get("filename") or "document"
+		blob_path = msg.get("storage_path") or _blob_path_from_url(msg.get("url"))
+		if not blob_path:
+			raise LookupError(f"document message has no resolvable blob path: {conv_id}/{msg_id}")
+
+		def _download():
+			bucket = storage.bucket(self._storage_bucket)
+			blob = bucket.blob(blob_path)
+			blob.reload()  # populate metadata (size) before downloading
+			if blob.size is not None and blob.size > _MAX_DOCUMENT_BYTES:
+				raise ValueError(f"document exceeds max size ({blob.size} bytes, max {_MAX_DOCUMENT_BYTES})")
+			return blob.download_as_bytes()
+
+		data = await asyncio.to_thread(_download)
+		return data, filename
+
+	async def _upload_file(self, local_path: Path) -> tuple[str, str]:
 		if not self._storage_bucket:
 			raise ValueError("Firebase Storage not configured (missing SWITCHBOARD_FIREBASE_STORAGE_BUCKET)")
 
@@ -429,7 +458,8 @@ class FirebaseBackend(
 			blob_name = f"documents/{_uuid.uuid4().hex}/{local_path.name}"
 			blob = bucket.blob(blob_name)
 			blob.upload_from_filename(str(local_path))
-			return blob.generate_signed_url(version="v4", expiration=7 * 24 * 60 * 60)
+			url = blob.generate_signed_url(version="v4", expiration=7 * 24 * 60 * 60)
+			return url, blob_name
 
 		return await asyncio.to_thread(_do_upload)
 
@@ -743,11 +773,12 @@ class FirebaseBackend(
 		# Document upload: if url is a local path, upload to Firebase Storage first
 		effective_url = url
 		effective_filename = filename
+		storage_path = None
 		if message_type == "document" and url and not (url.startswith("http://") or url.startswith("https://")):
 			try:
 				from pathlib import Path as _Path
 				path = _Path(url)
-				effective_url = await self._upload_file(path)
+				effective_url, storage_path = await self._upload_file(path)
 				if effective_filename is None:
 					effective_filename = path.name
 				if self._logger:
@@ -779,6 +810,8 @@ class FirebaseBackend(
 			payload["url"] = effective_url
 		if effective_filename is not None:
 			payload["filename"] = effective_filename
+		if storage_path is not None:
+			payload["storage_path"] = storage_path
 		if suggestions is not None:
 			payload["suggestions"] = list(suggestions)
 		if attached_to_msg_id is not None:

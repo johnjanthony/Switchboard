@@ -139,6 +139,36 @@ def _build_stats_route(registry: Registry, backend, loop_sups: dict):
 	return stats
 
 
+def _build_document_route(backend):
+	"""GET /document?conv=&msg=[&download=1] — same-origin proxy that streams a
+	document message's bytes so the Operator preview page can render content
+	without a cross-origin fetch. Localhost-trust, same model as /stats: it only
+	serves blobs referenced by an existing document message."""
+	from server.gateway.document import guess_content_type
+	from starlette.responses import Response
+	from urllib.parse import quote
+
+	async def document(request: Request):
+		conv = request.query_params.get("conv")
+		msg = request.query_params.get("msg")
+		if not conv or not msg:
+			return Response("missing conv/msg", status_code=400)
+		try:
+			data, filename = await backend.read_document(conv, msg)
+		except LookupError:
+			return Response("not found", status_code=404)
+		except Exception:
+			return Response("download failed", status_code=502)
+		disposition = "attachment" if request.query_params.get("download") else "inline"
+		return Response(
+			data,
+			media_type=guess_content_type(filename),
+			headers={"Content-Disposition": f'{disposition}; filename="{quote(filename)}"'},
+		)
+
+	return document
+
+
 def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 	# Stateful HTTP: session-scoped transport so per-tool-call cancel
 	# notifications can find the in-flight responder. The cost is that an MCP
@@ -508,6 +538,7 @@ async def _run(config: Config) -> None:
 	app.add_route("/healthz", healthz, methods=["GET"])
 	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
 	app.add_route("/stats", _build_stats_route(registry, backend, loop_sups), methods=["GET"])
+	app.add_route("/document", _build_document_route(backend), methods=["GET"])
 	app.add_route("/agent_status", _build_agent_status_route(handlers), methods=["POST"])
 	app.add_route("/cli-session/end", _build_cli_session_end_route(registry, backend=backend, logger=logger), methods=["POST"])
 

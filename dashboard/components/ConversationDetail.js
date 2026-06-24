@@ -2,6 +2,7 @@ import { html, useState } from "../vendor/htm-preact.js";
 import * as fb from "../firebase.js";
 import { memberState, isActive, predecessorTitle } from "../derive.js";
 import { renderMarkdown } from "../markdown.js";
+import { documentPillHtml } from "../document.js";
 import { answerCmd, resumeCmd, combineCmd, forceEndCmd } from "../commands.js";
 import { PaneBanner } from "./PaneBanner.js";
 
@@ -50,14 +51,17 @@ function Roster({ conv }) {
 	`;
 }
 
-function MessageBody({ msg }) {
-	const inner = msg.format === "markdown"
+function MessageBody({ msg, convId, msgId }) {
+	const body = msg.format === "markdown"
 		? renderMarkdown(msg.text)
 		: `<p>${escapePlain(msg.text).replace(/\n/g, "<br />")}</p>`;
+	// A document message carries the caption in text (rendered above) plus a url +
+	// filename; append the pill linking to the preview page.
+	const inner = body + documentPillHtml(msg, convId, msgId);
 	return html`<div class="msg-body" dangerouslySetInnerHTML=${{ __html: inner }}></div>`;
 }
 
-function Transcript({ conv, pendingMsgIds }) {
+function Transcript({ conv, convId, pendingMsgIds }) {
 	const messages = (conv && conv.messages) || {};
 	// A currently-pending question already shows in its own answer box below, so
 	// suppress its transcript copy. Once answered it is no longer pending and
@@ -85,7 +89,7 @@ function Transcript({ conv, pendingMsgIds }) {
 							<span class="msg-sender">${m.sender}</span>
 							<span class="msg-time">${fmtMsgTime(m.timestamp)}</span>
 						</div>
-						<div class="msg-bubble"><${MessageBody} msg=${m} /></div>
+						<div class="msg-bubble"><${MessageBody} msg=${m} convId=${convId} msgId=${msgId} /></div>
 					</div>
 				`;
 			})}
@@ -269,7 +273,7 @@ export function ConversationDetail({ store }) {
 			</div>
 			<div class="detail-body">
 				<${Roster} conv=${conv} />
-				<${Transcript} conv=${conv} pendingMsgIds=${pendingMsgIds} />
+				<${Transcript} conv=${conv} convId=${id} pendingMsgIds=${pendingMsgIds} />
 				<div class="pending-stack">
 					${pendings.map((p) => html`<${AnswerBox} key=${p.requestId} convId=${id} pending=${p} />`)}
 				</div>
