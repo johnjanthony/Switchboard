@@ -58,8 +58,6 @@ function main() {
 		}
 	});
 
-	fb.signIn();
-
 	pollHealth(store);
 	setInterval(() => pollHealth(store), 5000);
 }
