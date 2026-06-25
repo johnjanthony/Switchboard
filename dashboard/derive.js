@@ -77,3 +77,34 @@ export function oldestPendingAgeSeconds(pendingsFlat, messageTimestampResolver, 
 	}
 	return oldestAge;
 }
+
+// Join a conversation member to its live context ring, if Watchtower is tracking
+// that session. Rings are keyed by Claude Code session_id, which equals the
+// member's cli_session_id. Returns the ring object or null.
+export function ringForMember(member, rings) {
+	if (!member || !rings) {
+		return null;
+	}
+	const sid = member.cli_session_id;
+	if (!sid) {
+		return null;
+	}
+	return rings[sid] || null;
+}
+
+// Severity bucket for a context-fill fraction (0..1), matching Watchtower's
+// SeverityClassifier.For: red above 0.80, amber from 0.50, else green; cold when
+// there is no usable number.
+export function ringSeverity(pct) {
+	const p = Number(pct);
+	if (pct == null || Number.isNaN(p)) {
+		return 'cold';
+	}
+	if (p > 0.80) {
+		return 'red';
+	}
+	if (p >= 0.50) {
+		return 'amber';
+	}
+	return 'green';
+}

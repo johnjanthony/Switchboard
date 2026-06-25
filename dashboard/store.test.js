@@ -57,6 +57,7 @@ test('initialState shape is exactly the contract', () => {
 		wslAvailable: false,
 		conversations: {},
 		adminNotifications: {},
+		widget: { rings: {}, quota: null, pushedAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
 		messageTimestampResolver: {},
@@ -64,6 +65,17 @@ test('initialState shape is exactly the contract', () => {
 		ui: { leftCollapsed: false, rightCollapsed: false, leftWidth: 280, awayOffDialogOpen: false },
 		paneErrors: {},
 	});
+});
+
+test('widget rings listener updates state.widget.rings', () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const entry = fb.calls.onValue.find((e) => e.path === paths.widgetRings());
+	assert.ok(entry, 'widget/rings listener attached');
+	entry.cb({ s1: { pct: 0.4 } });
+	assert.deepEqual(store.getState().widget.rings, { s1: { pct: 0.4 } });
+	entry.cb(null);
+	assert.deepEqual(store.getState().widget.rings, {});
 });
 
 test('initialState reads and clamps leftWidth from storage', () => {

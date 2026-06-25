@@ -84,6 +84,21 @@ export function createStore(deps) {
 		notify();
 	}
 
+	function setWidgetRings(map) {
+		state.widget = { ...state.widget, rings: map || {} };
+		notify();
+	}
+
+	function setWidgetQuota(quota) {
+		state.widget = { ...state.widget, quota: quota || null };
+		notify();
+	}
+
+	function setWidgetPushedAt(ts) {
+		state.widget = { ...state.widget, pushedAt: ts || null };
+		notify();
+	}
+
 	function upsertConversationMeta(id, meta) {
 		const conv = state.conversations[id] || {};
 		state.conversations[id] = { ...conv, meta };
@@ -226,6 +241,9 @@ export function createStore(deps) {
 		fb.onValue(paths.globalAway(), (val) => setGlobalAway(!!val), onReadError);
 		fb.onValue(paths.openConversationId(), (val) => setOpenConversationId(val || null), onReadError);
 		fb.onValue(paths.wslAvailable(), (val) => setWslAvailable(!!val), onReadError);
+		fb.onValue(paths.widgetRings(), (val) => setWidgetRings(val || {}), onReadError);
+		fb.onValue(paths.widgetQuota(), (val) => setWidgetQuota(val || null), onReadError);
+		fb.onValue(paths.widgetPushedAt(), (val) => setWidgetPushedAt(val || null), onReadError);
 		fb.onChildAdded(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError);
 		fb.onChildChanged(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError);
 	}
@@ -336,6 +354,9 @@ export function createStore(deps) {
 		setGlobalAway,
 		setOpenConversationId,
 		setWslAvailable,
+		setWidgetRings,
+		setWidgetQuota,
+		setWidgetPushedAt,
 		upsertConversationMeta,
 		removeConversation,
 		upsertAdminNotification,
@@ -384,6 +405,7 @@ function initialState(storage) {
 		wslAvailable: false,
 		conversations: {},
 		adminNotifications: {},
+		widget: { rings: {}, quota: null, pushedAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
 		messageTimestampResolver: {},

@@ -42,3 +42,15 @@ export function wslAvailable() {
 export function adminNotifications() {
 	return 'admin_notifications';
 }
+
+export function widgetRings() {
+	return 'widget/rings';
+}
+
+export function widgetQuota() {
+	return 'widget/quota';
+}
+
+export function widgetPushedAt() {
+	return 'widget/pushed_at';
+}

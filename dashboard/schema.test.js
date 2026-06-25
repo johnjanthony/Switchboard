@@ -37,3 +37,15 @@ test('wslAvailable() targets global_settings/wsl_available', () => {
 test('adminNotifications() is the admin_notifications root', () => {
 	assert.equal(schema.adminNotifications(), 'admin_notifications');
 });
+
+test('widgetRings() targets widget/rings', () => {
+	assert.equal(schema.widgetRings(), 'widget/rings');
+});
+
+test('widgetQuota() targets widget/quota', () => {
+	assert.equal(schema.widgetQuota(), 'widget/quota');
+});
+
+test('widgetPushedAt() targets widget/pushed_at', () => {
+	assert.equal(schema.widgetPushedAt(), 'widget/pushed_at');
+});

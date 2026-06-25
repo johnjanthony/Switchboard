@@ -1,6 +1,6 @@
 import { html, useState } from "../vendor/htm-preact.js";
 import * as fb from "../firebase.js";
-import { memberState, isActive, predecessorTitle } from "../derive.js";
+import { memberState, isActive, predecessorTitle, ringForMember, ringSeverity } from "../derive.js";
 import { renderMarkdown } from "../markdown.js";
 import { documentPillHtml } from "../document.js";
 import { answerCmd, resumeCmd, combineCmd, forceEndCmd } from "../commands.js";
@@ -27,7 +27,7 @@ function fmtMsgTime(ts) {
 	return Number.isNaN(d.getTime()) ? String(ts) : d.toLocaleTimeString();
 }
 
-function Roster({ conv }) {
+function Roster({ conv, rings }) {
 	const members = (conv && conv.members) || {};
 	const agentStatus = (conv && conv.agentStatus) || {};
 	const entries = Object.entries(members);
@@ -36,10 +36,13 @@ function Roster({ conv }) {
 		<div class="roster">
 			${entries.map(([sender, m]) => {
 				const status = agentStatus[sender];
+				const ring = ringForMember(m, rings);
+				const pct = ring ? Math.round((Number(ring.pct) || 0) * 100) : null;
 				return html`
 					<div class="member" key=${sender}>
 						<span class=${MEMBER_LAMP[memberState(m)] || "lamp lamp-cold"}></span>
 						<span class="member-name">${sender}</span>
+						${ring ? html`<span class=${"ctx-pct ctx-" + ringSeverity(ring.pct)} title=${"Context window " + pct + "% full"}>${pct}%</span>` : null}
 						<span class="member-surface">${m.surface || ""}</span>
 						${status
 							? html`<span class="member-status">${status.state}${status.detail ? ": " + status.detail : ""}</span>`
@@ -272,7 +275,7 @@ export function ConversationDetail({ store }) {
 				${dialog === "drop" ? html`<${DropDialog} convId=${id} onClose=${close} />` : null}
 			</div>
 			<div class="detail-body">
-				<${Roster} conv=${conv} />
+				<${Roster} conv=${conv} rings=${state.widget.rings} />
 				<${Transcript} conv=${conv} convId=${id} pendingMsgIds=${pendingMsgIds} />
 				<div class="pending-stack">
 					${pendings.map((p) => html`<${AnswerBox} key=${p.requestId} convId=${id} pending=${p} />`)}

@@ -37,6 +37,7 @@ from server.registry import Registry
 from server.rate_limiter import RateLimiter
 from server.firebase import FirebaseBackend
 from server.firebase_supervisor import LoopSupervisor
+from server.widget_snapshot import WidgetSnapshotStore
 
 
 def _build_away_mode_route(registry: Registry):
@@ -137,6 +138,46 @@ def _build_stats_route(registry: Registry, backend, loop_sups: dict):
 			"healthy": healthy,
 		})
 	return stats
+
+
+def _build_widget_snapshot_route(store, backend, logger):
+	"""POST /widget-snapshot - Watchtower pushes its rings + quota snapshot here
+	(localhost trust, same model as /stats and /agent_status). The store diffs
+	against the last push so RTDB is written only on change; pushed_at is always
+	written so readers can show staleness."""
+	_RING_FIELDS = ("pct", "model", "status", "context_tokens", "window", "is_error")
+
+	async def widget_snapshot(request: Request):
+		try:
+			body = await request.json()
+		except Exception:
+			return JSONResponse({"error": "invalid json"}, status_code=400)
+		if not isinstance(body, dict):
+			return JSONResponse({"error": "expected object"}, status_code=400)
+		rings_list = body.get("rings")
+		if not isinstance(rings_list, list):
+			return JSONResponse({"error": "rings must be a list"}, status_code=400)
+		quota = body.get("quota")
+		pushed_at = body.get("pushed_at") or ""
+
+		rings_map: dict = {}
+		for r in rings_list:
+			if isinstance(r, dict) and isinstance(r.get("session_id"), str):
+				rings_map[r["session_id"]] = {k: r.get(k) for k in _RING_FIELDS}
+
+		rings_changed, quota_changed = store.apply(rings_map, quota, pushed_at)
+		try:
+			if rings_changed:
+				await backend.write_widget_rings(rings_map)
+			if quota_changed:
+				await backend.write_widget_quota(quota)
+			await backend.write_widget_pushed_at(pushed_at)
+		except Exception as exc:
+			await logger.surface_error(f"widget_snapshot_write_error: {exc}")
+			return JSONResponse({"error": "write failed"}, status_code=502)
+		return JSONResponse({"ok": True, "rings_changed": rings_changed, "quota_changed": quota_changed})
+
+	return widget_snapshot
 
 
 def _build_document_route(backend):
@@ -535,7 +576,9 @@ async def _run(config: Config) -> None:
 			"dispatch_loops": dispatch_loops,
 		})
 
+	widget_store = WidgetSnapshotStore()
 	app.add_route("/healthz", healthz, methods=["GET"])
+	app.add_route("/widget-snapshot", _build_widget_snapshot_route(widget_store, backend, logger), methods=["POST"])
 	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
 	app.add_route("/stats", _build_stats_route(registry, backend, loop_sups), methods=["GET"])
 	app.add_route("/document", _build_document_route(backend), methods=["GET"])

@@ -622,6 +622,24 @@ class FirebaseBackend(
 		ref = db.reference("global_settings/wsl_available")
 		await asyncio.to_thread(ref.set, bool(available))
 
+	async def write_widget_rings(self, rings: dict) -> None:
+		"""Publish the per-session context rings map (keyed by Claude Code session_id).
+		Always fanned out; an empty map clears the node."""
+		await asyncio.to_thread(lambda: db.reference("widget/rings").set(rings or {}))
+
+	async def write_widget_quota(self, quota: dict | None) -> None:
+		"""Publish plan quota. firebase_admin rejects set(None), so a None quota
+		clears the node via delete()."""
+		ref = db.reference("widget/quota")
+		if quota is None:
+			await asyncio.to_thread(ref.delete)
+		else:
+			await asyncio.to_thread(lambda: ref.set(quota))
+
+	async def write_widget_pushed_at(self, ts: str) -> None:
+		"""Publish the last-push timestamp (staleness signal for readers)."""
+		await asyncio.to_thread(lambda: db.reference("widget/pushed_at").set(ts))
+
 	async def set_session_home(self, session_id: str, conv_id: str | None) -> None:
 		"""Persist a cli session's home-conversation pointer.
 

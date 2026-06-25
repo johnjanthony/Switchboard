@@ -377,6 +377,11 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .member-surface { font-family: var(--font-mono); font-size: 11px; color: var(--label-faint); }
 .member-status { font-family: var(--font-mono); font-size: 11px; color: var(--cord-hi); }
 .member-status.idle { color: var(--label-faint); }
+.ctx-pct { font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; padding: 0 5px; border-radius: 8px; border: 1px solid currentColor; }
+.ctx-green { color: var(--lamp-green); }
+.ctx-amber { color: var(--lamp-amber); }
+.ctx-red { color: var(--lamp-red); }
+.ctx-cold { color: var(--label-faint); }
 
 /* ---- Transcript: metadata OUTSIDE the bubble ---- */
 .transcript { display: flex; flex-direction: column; gap: 16px; }
