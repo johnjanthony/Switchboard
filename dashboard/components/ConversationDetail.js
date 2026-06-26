@@ -270,12 +270,12 @@ export function ConversationDetail({ store }) {
 					</div>
 				</div>
 				${predTitle ? html`<${PredecessorBanner} title=${predTitle} onOpen=${() => store.selectConversation(predecessorId)} />` : null}
+				<${Roster} conv=${conv} rings=${state.widget.rings} />
 				${dialog === "restore" ? html`<${RestoreDialog} conv=${conv} convId=${id} onClose=${close} />` : null}
 				${dialog === "patch" ? html`<${PatchDialog} store=${store} convId=${id} onClose=${close} />` : null}
 				${dialog === "drop" ? html`<${DropDialog} convId=${id} onClose=${close} />` : null}
 			</div>
 			<div class="detail-body">
-				<${Roster} conv=${conv} rings=${state.widget.rings} />
 				<${Transcript} conv=${conv} convId=${id} pendingMsgIds=${pendingMsgIds} />
 				<div class="pending-stack">
 					${pendings.map((p) => html`<${AnswerBox} key=${p.requestId} convId=${id} pending=${p} />`)}

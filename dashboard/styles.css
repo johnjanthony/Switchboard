@@ -367,10 +367,10 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 	color: var(--label-dim); padding: 18px; font-family: var(--font-mono); font-size: 13px;
 }
 
-/* Roster — who is on the line. */
+/* Roster — who is on the line. Lives in the sticky header (always visible); the
+   header's own border-bottom separates it from the scrolling transcript. */
 .roster {
-	display: flex; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 18px;
-	padding-bottom: 14px; border-bottom: 1px solid var(--rule-soft);
+	display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 12px;
 }
 .member { display: flex; align-items: center; gap: 8px; }
 .member-name { font-family: var(--font-legend); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; font-size: 12px; color: var(--label); }
