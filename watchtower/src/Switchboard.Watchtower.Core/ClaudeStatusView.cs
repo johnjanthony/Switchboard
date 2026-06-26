@@ -2,6 +2,20 @@ using System.Text.Json;
 
 namespace Switchboard.Watchtower.Core;
 
+public enum ClaudeStatusLevel { Operational, Minor, Major, Critical, Unknown }
+
+public enum ClaudeStatusButton { CheckNow, StopWatching, Clear }
+
+// The view the display surfaces render (dot + popup + tray item). Pure data.
+public sealed record ClaudeStatusView(
+	bool DotVisible,
+	ClaudeStatusLevel DotLevel,
+	bool HasData,
+	string Description,
+	IReadOnlyList<string> IncidentNames,
+	DateTime? FetchedAtUtc,
+	ClaudeStatusButton Button);
+
 // Parses the server's published widget/status view (GET /widget-status) into the
 // ClaudeStatusView the display surfaces already render. The watch state machine
 // lives on the server now (Phase 1b); Watchtower only renders + triggers.

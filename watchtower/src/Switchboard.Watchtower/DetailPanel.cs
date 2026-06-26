@@ -143,8 +143,8 @@ internal sealed class DetailPanel : Form
 		Invalidate();
 	}
 
-	// Latest Claude status-page view (from ClaudeStatusWatch.Snapshot). Always shown: the button is
-	// the entry point for a manual check even before any data exists.
+	// Latest Claude status view (published by the server, parsed via ClaudeServerStatus.ParseView).
+	// Always shown: the button is the entry point for a manual check even before any data exists.
 	public void UpdateClaudeStatus(ClaudeStatusView view)
 	{
 		_claudeStatus = view;
