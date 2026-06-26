@@ -440,6 +440,44 @@ async def dispatch_away_mode_commands(registry, backend, logger, supervisor):
 			await supervisor.record_crash(exc)
 
 
+async def dispatch_status_request_commands(service, backend, logger, supervisor):
+	"""Watch /widget-status_request for phone-initiated Claude-status checks.
+
+	Command shape (Android-emitted): {type: "check"|"stop", issued_at: "<ISO>"}.
+	check -> service.check() (fetch + maybe start the watch loop); stop -> service.stop()
+	(acknowledge). The service publishes widget/status as usual, which the phone reads.
+	Stale commands are dropped with a log line - a status check is transient and
+	idempotent, so no phone-visible notice is warranted (unlike away-mode toggles)."""
+	while True:
+		try:
+			async for cmd in backend.poll_status_request_commands():
+				supervisor.record_success()
+				try:
+					cmd_type = cmd.get("type")
+					age = command_age_seconds(cmd.get("issued_at"))
+					if age is not None and age > COMMAND_TTL_SECONDS:
+						await logger.surface_error(
+							f"status_request_command_stale_dropped: type={cmd_type} issued_at={cmd.get('issued_at')}"
+						)
+						continue
+					if cmd_type == "check":
+						await service.check()
+						await logger.info("status_request_check")
+					elif cmd_type == "stop":
+						await service.stop()
+						await logger.info("status_request_stop")
+					else:
+						await logger.surface_error(f"status_request_command_unknown_type: {cmd_type}")
+				except asyncio.CancelledError:
+					raise
+				except Exception as exc:
+					await logger.surface_error(f"status_request_command_iteration_error: {exc}")
+		except asyncio.CancelledError:
+			raise
+		except Exception as exc:
+			await supervisor.record_crash(exc)
+
+
 # dispatch_inject_queue was retired when Android dropped inject_queue writes.
 # The legacy CollabSession BYO flow that consumed these no longer exists.
 # registry.get_session() was deleted with that cleanup. The inject-listener

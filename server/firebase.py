@@ -87,6 +87,8 @@ class FirebaseBackend(
 		self._supervised: dict[str, SupervisedListener] = {}
 		self._away_mode_cmd_queue: asyncio.Queue[dict] = asyncio.Queue()
 		self._away_mode_processed: set[str] = set()
+		self._status_request_queue: asyncio.Queue[dict] = asyncio.Queue()
+		self._status_request_processed: set[str] = set()
 
 	def _on_response(self, event):
 		if event.event_type == 'put' and event.data:
@@ -550,6 +552,41 @@ class FirebaseBackend(
 			sup.start()
 		while True:
 			yield await self._away_mode_cmd_queue.get()
+
+	def _on_status_request_command(self, event):
+		if event.event_type != 'put' or not event.data:
+			return
+		path = event.path.strip('/')
+		data = event.data
+		if not path and isinstance(data, dict):
+			for cmd_id, entry in data.items():
+				if isinstance(entry, dict) and 'type' in entry:
+					self._loop.call_soon_threadsafe(self._enqueue_status_request_cmd, cmd_id, entry)
+		elif path and isinstance(data, dict) and 'type' in data:
+			self._loop.call_soon_threadsafe(self._enqueue_status_request_cmd, path, data)
+
+	def _enqueue_status_request_cmd(self, cmd_id: str, entry: dict):
+		if cmd_id in self._status_request_processed:
+			return
+		self._status_request_processed.add(cmd_id)
+		_spawn_bg(self._status_request_queue.put(entry), label=f"status_request_cmd_enqueue:{cmd_id}")
+		self._schedule_command_delete("widget/status_request", cmd_id)
+
+	async def poll_status_request_commands(self) -> AsyncIterator[dict]:
+		from server.firebase_supervisor import SupervisedListener
+		if "status_request" not in self._supervised:
+			err = self._logger.surface_error if self._logger else _no_op_async_logger
+			sup = SupervisedListener(
+				name="status_request",
+				path="widget/status_request",
+				callback=self._on_status_request_command,
+				error_logger=err,
+				loop=self._loop,
+			)
+			self._supervised["status_request"] = sup
+			sup.start()
+		while True:
+			yield await self._status_request_queue.get()
 
 	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
 		from server.firebase_supervisor import SupervisedListener

@@ -29,6 +29,7 @@ from server.gateway.dispatch import (
 	dispatch_spawn_commands,
 	dispatch_away_mode_commands,
 	dispatch_session_end_markers,
+	dispatch_status_request_commands,
 )
 from server.gateway.bg_tasks import _spawn_bg
 from server.hydration import hydrate_from_firebase
@@ -561,6 +562,7 @@ async def _run(config: Config) -> None:
 		"dispatch_spawn_commands": LoopSupervisor("dispatch_spawn_commands", backend, logger.surface_error),
 		"dispatch_away_mode_commands": LoopSupervisor("dispatch_away_mode_commands", backend, logger.surface_error),
 		"dispatch_session_end_markers": LoopSupervisor("dispatch_session_end_markers", backend, logger.surface_error),
+		"dispatch_status_request_commands": LoopSupervisor("dispatch_status_request_commands", backend, logger.surface_error),
 	}
 	mcp = _build_fastmcp(handlers, config.host)
 
@@ -647,6 +649,12 @@ async def _run(config: Config) -> None:
 		dispatch_away_mode_commands(registry, backend, logger, loop_sups["dispatch_away_mode_commands"])
 	)
 
+	status_request_task = asyncio.create_task(
+		dispatch_status_request_commands(
+			claude_status_service, backend, logger, loop_sups["dispatch_status_request_commands"]
+		)
+	)
+
 	session_end_markers_task = asyncio.create_task(
 		dispatch_session_end_markers(
 			registry, backend, logger, loop_sups["dispatch_session_end_markers"],
@@ -677,6 +685,7 @@ async def _run(config: Config) -> None:
 		spawn_task.cancel()
 		away_mode_task.cancel()
 		session_end_markers_task.cancel()
+		status_request_task.cancel()
 		with contextlib.suppress(asyncio.CancelledError):
 			await dispatch_task
 		with contextlib.suppress(asyncio.CancelledError):
@@ -689,6 +698,8 @@ async def _run(config: Config) -> None:
 			await away_mode_task
 		with contextlib.suppress(asyncio.CancelledError):
 			await session_end_markers_task
+		with contextlib.suppress(asyncio.CancelledError):
+			await status_request_task
 		# Flush outstanding fire-and-forget background writes (member removals,
 		# answer-history writes, pending-question cleanups, etc.) before the loop
 		# closes, so a clean shutdown doesn't drop them. Bounded so a stuck write
