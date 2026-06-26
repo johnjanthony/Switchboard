@@ -22,6 +22,9 @@ internal sealed class AppHost : IDisposable
 	readonly System.Windows.Forms.Timer _switchboardTimer = new();
 	readonly SwitchboardStatsReader? _switchboardReader;
 	volatile bool _switchboardScanning;
+	readonly WidgetSnapshotPusher? _snapshotPusher;
+	IReadOnlyList<SessionModel> _lastSessions = Array.Empty<SessionModel>();
+	QuotaUsage? _lastQuota;
 	readonly System.Windows.Forms.Timer _claudeStatusTimer = new();
 	readonly ClaudeStatusReader _claudeStatusReader;
 	readonly ClaudeStatusWatch _claudeStatusWatch;
@@ -40,6 +43,7 @@ internal sealed class AppHost : IDisposable
 		if (_config.Switchboard.Enabled)
 		{
 			_switchboardReader = new SwitchboardStatsReader(_config.Switchboard.StatsUrl, LogError);
+			_snapshotPusher = new WidgetSnapshotPusher(_config.Switchboard.SnapshotUrl, LogError);
 			_switchboardTimer.Interval = Math.Max(2, _config.Switchboard.PollSeconds) * 1000;
 			_switchboardTimer.Tick += (_, _) => PollSwitchboard();
 		}
@@ -184,6 +188,9 @@ internal sealed class AppHost : IDisposable
 			if (!s.IsError && s.Pct >= max) { max = s.Pct; maxSev = s.Severity; }
 		}
 		_tray.SetGauge(max, anyError, maxSev, light);
+
+		_lastSessions = sessions;
+		PushSnapshot();
 	}
 
 	void LogError(string source, Exception ex)
@@ -212,6 +219,8 @@ internal sealed class AppHost : IDisposable
 				_widget.UpdateQuota(u);
 				_panel.UpdateQuota(u);
 				ScheduleCountdown();
+				_lastQuota = u;
+				PushSnapshot();
 				LogInfo("quota", $"ok 5h={u.Session.Percentage:0}% 7d={u.Weekly.Percentage:0}%");
 			}
 			else
@@ -235,6 +244,19 @@ internal sealed class AppHost : IDisposable
 			_tray.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
 			_widget.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
 		}, TaskScheduler.FromCurrentSynchronizationContext());
+	}
+
+	// Fire-and-forget push of the latest rings + quota to the server's ingest. The
+	// server diffs and only writes RTDB on change, so pushing on every scan/quota
+	// tick is cheap. Null pusher == Switchboard integration disabled.
+	void PushSnapshot()
+	{
+		if (_snapshotPusher is null) return;
+		var payload = WidgetSnapshotBuilder.Build(_lastSessions, _lastQuota, DateTimeOffset.Now);
+		_snapshotPusher.PushAsync(payload, CancellationToken.None).ContinueWith(t =>
+		{
+			if (t.IsFaulted) LogError("widget-snapshot-push", t.Exception!);
+		}, TaskScheduler.Default);
 	}
 
 	// The popup button / tray item: while Idle it kicks off a one-shot check; otherwise it acknowledges

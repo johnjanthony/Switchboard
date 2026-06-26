@@ -74,6 +74,9 @@ public sealed class SwitchboardConfig
 	/// <summary>Localhost stats endpoint the widget polls. Point at the Windows host IP for a WSL-hosted server.</summary>
 	public string StatsUrl { get; set; } = "http://localhost:9876/stats";
 
+	/// <summary>Localhost ingest endpoint Watchtower POSTs its rings + quota snapshot to. Point at the Windows host IP for a WSL-hosted server.</summary>
+	public string SnapshotUrl { get; set; } = "http://localhost:9876/widget-snapshot";
+
 	/// <summary>Operator dashboard URL the launcher opens; may have #conv=&lt;id&gt; appended to deep-link.</summary>
 	public string DashboardUrl { get; set; } = "http://localhost:9876/dashboard";
 

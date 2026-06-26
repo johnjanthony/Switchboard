@@ -33,7 +33,7 @@ public static class SessionAggregator
 			DateTime mtime;
 			try { mtime = File.GetLastWriteTimeUtc(path); } catch { mtime = nowUtc; }
 			var label = Path.GetFileName(Path.GetDirectoryName(path) ?? "") is { Length: > 0 } d ? d : "(error)";
-			list.Add(new SessionModel(label, distro, 0, ModelWindowMap.DefaultWindow, null, SessionStatus.Idle, mtime, IsError: true));
+			list.Add(new SessionModel(label, distro, 0, ModelWindowMap.DefaultWindow, null, SessionStatus.Idle, mtime, IsError: true, SessionId: Path.GetFileNameWithoutExtension(path)));
 		}
 	}
 }
