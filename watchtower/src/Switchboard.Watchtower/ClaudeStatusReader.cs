@@ -23,17 +23,37 @@ internal sealed class ClaudeStatusReader
 
 	// Returns the current server view, or a hidden idle view when the server is
 	// unreachable / returns non-success / the body does not parse.
+	//
+	// One retry on a transport-level HttpRequestException: the server's keep-alive
+	// timeout equals this client's poll interval, so a pooled connection is sometimes
+	// closed by the server right as we reuse it, surfacing as a connection reset. The
+	// retry opens a fresh connection and almost always succeeds; a real outage still
+	// fails twice and collapses to the hidden idle view.
 	public async Task<ClaudeStatusView> GetViewAsync(CancellationToken ct)
 	{
 		try
 		{
-			using var resp = await Http.GetAsync(_statusUrl, ct).ConfigureAwait(false);
-			if (!resp.IsSuccessStatusCode) return ClaudeServerStatus.ParseView("");
-			var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-			return ClaudeServerStatus.ParseView(json);
+			return await GetViewOnceAsync(ct).ConfigureAwait(false);
 		}
 		catch (OperationCanceledException) { throw; }
+		catch (HttpRequestException)
+		{
+			try
+			{
+				return await GetViewOnceAsync(ct).ConfigureAwait(false);
+			}
+			catch (OperationCanceledException) { throw; }
+			catch (Exception ex) { _error?.Invoke("claude-status-get", ex); return ClaudeServerStatus.ParseView(""); }
+		}
 		catch (Exception ex) { _error?.Invoke("claude-status-get", ex); return ClaudeServerStatus.ParseView(""); }
+	}
+
+	async Task<ClaudeStatusView> GetViewOnceAsync(CancellationToken ct)
+	{
+		using var resp = await Http.GetAsync(_statusUrl, ct).ConfigureAwait(false);
+		if (!resp.IsSuccessStatusCode) return ClaudeServerStatus.ParseView("");
+		var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+		return ClaudeServerStatus.ParseView(json);
 	}
 
 	// Fire the check/stop action; the next GET poll reflects the result.
