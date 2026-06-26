@@ -120,6 +120,10 @@ private fun SwitchboardNavHost(
 	val projectMru by viewModel.projectMru.collectAsState()
 	val activeConversations by viewModel.activeConversations.collectAsState()
 	val wslAvailable by viewModel.wslAvailable.collectAsState()
+	val widgetRings by viewModel.widgetRings.collectAsState()
+	val widgetQuota by viewModel.widgetQuota.collectAsState()
+	val widgetStatus by viewModel.widgetStatus.collectAsState()
+	val widgetPushedAt by viewModel.widgetPushedAt.collectAsState()
 	var showHidden by remember { mutableStateOf(false) }
 	var showSpawnDialog by remember { mutableStateOf(false) }
 	// T-027 dialogs
@@ -182,6 +186,12 @@ private fun SwitchboardNavHost(
 				onResumeClick = { convId -> resumeConversationId = convId },
 				onCombineClick = { convId -> combineConversationId = convId },
 				onEndClick = { convId -> viewModel.endConversation(convId) },
+				rings = widgetRings,
+				quota = widgetQuota,
+				claudeStatus = widgetStatus,
+				pushedAt = widgetPushedAt,
+				onCheckStatus = { viewModel.requestClaudeStatusCheck() },
+				onStopStatus = { viewModel.stopClaudeStatusWatch() },
 			)
 		}
 		composable(
@@ -239,6 +249,7 @@ private fun SwitchboardNavHost(
 				TabInfoPopover(
 					row = row,
 					awayActive = awayActive,
+					rings = widgetRings,
 					onDismiss = { infoOpen = false },
 					onToggleHidden = {
 						if (row.hidden) viewModel.unhideConversation(convId)

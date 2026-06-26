@@ -158,3 +158,43 @@ data class ConversationRow(
 	val state: String get() = summary.state
 	val members: List<ConversationMember> get() = summary.members
 }
+
+// --- Watchtower widget hub (T-180): rings / quota / status read from widget/* ---
+// Mirrors ChannelMessage's @PropertyName style so Firebase getValue(Class) maps the
+// server's snake_case nodes. Every field is defaulted so the no-arg constructor
+// getValue requires exists. @IgnoreExtraProperties drops fields we do not render
+// yet (e.g. status.incidents) instead of throwing.
+
+@IgnoreExtraProperties
+data class WidgetRing(
+	@get:PropertyName("pct") @set:PropertyName("pct") var pct: Double = 0.0,
+	@get:PropertyName("model") @set:PropertyName("model") var model: String = "",
+	@get:PropertyName("status") @set:PropertyName("status") var status: String = "",
+	@get:PropertyName("context_tokens") @set:PropertyName("context_tokens") var contextTokens: Long = 0L,
+	@get:PropertyName("window") @set:PropertyName("window") var window: Long = 0L,
+	@get:PropertyName("is_error") @set:PropertyName("is_error") var isError: Boolean = false,
+)
+
+@IgnoreExtraProperties
+data class WidgetQuotaWindow(
+	@get:PropertyName("pct") @set:PropertyName("pct") var pct: Double = 0.0,
+	@get:PropertyName("resets_at") @set:PropertyName("resets_at") var resetsAt: String = "",
+)
+
+@IgnoreExtraProperties
+data class WidgetQuota(
+	@get:PropertyName("session") @set:PropertyName("session") var session: WidgetQuotaWindow? = null,
+	@get:PropertyName("weekly") @set:PropertyName("weekly") var weekly: WidgetQuotaWindow? = null,
+	@get:PropertyName("polled_at") @set:PropertyName("polled_at") var polledAt: String = "",
+)
+
+@IgnoreExtraProperties
+data class WidgetStatus(
+	@get:PropertyName("level") @set:PropertyName("level") var level: String = "unknown",
+	@get:PropertyName("description") @set:PropertyName("description") var description: String = "",
+	@get:PropertyName("watch_state") @set:PropertyName("watch_state") var watchState: String = "idle",
+	@get:PropertyName("dot_visible") @set:PropertyName("dot_visible") var dotVisible: Boolean = false,
+	@get:PropertyName("has_data") @set:PropertyName("has_data") var hasData: Boolean = false,
+	@get:PropertyName("button") @set:PropertyName("button") var button: String = "check",
+	@get:PropertyName("fetched_at") @set:PropertyName("fetched_at") var fetchedAt: String = "",
+)

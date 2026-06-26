@@ -53,6 +53,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import io.github.johnjanthony.switchboard.network.ConversationRow
+import io.github.johnjanthony.switchboard.network.WidgetRing
 
 // Status lamp: one object, three states. Waiting (coral, pulsing) outranks live (jade,
 // steady); a line with neither sits as a hollow idle bead. Mirrors the conversation feed.
@@ -108,6 +109,7 @@ fun SessionRow(
 	onResumeClick: (conversationId: String) -> Unit = {},
 	onCombineClick: (conversationId: String) -> Unit = {},
 	onEndClick: (conversationId: String) -> Unit = {},
+	contextRing: WidgetRing? = null,
 ) {
 	var contextMenuOpen by remember { mutableStateOf(false) }
 	var showHideConfirm by remember { mutableStateOf(false) }
@@ -286,6 +288,9 @@ fun SessionRow(
 					}
 				}
 				Column(horizontalAlignment = Alignment.End) {
+					if (contextRing != null) {
+						ContextBadge(pct = contextRing.pct, modifier = Modifier.padding(bottom = 2.dp))
+					}
 					Row(verticalAlignment = Alignment.CenterVertically) {
 						if (staleWarning) {
 							Text(
