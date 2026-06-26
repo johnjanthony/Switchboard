@@ -57,7 +57,7 @@ test('initialState shape is exactly the contract', () => {
 		wslAvailable: false,
 		conversations: {},
 		adminNotifications: {},
-		widget: { rings: {}, quota: null, pushedAt: null },
+		widget: { rings: {}, quota: null, status: null, pushedAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
 		messageTimestampResolver: {},
@@ -76,6 +76,17 @@ test('widget rings listener updates state.widget.rings', () => {
 	assert.deepEqual(store.getState().widget.rings, { s1: { pct: 0.4 } });
 	entry.cb(null);
 	assert.deepEqual(store.getState().widget.rings, {});
+});
+
+test('widget status listener updates state.widget.status', () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const entry = fb.calls.onValue.find((e) => e.path === paths.widgetStatus());
+	assert.ok(entry, 'widget/status listener attached');
+	entry.cb({ watch_state: 'watching', level: 'major', button: 'stop' });
+	assert.deepEqual(store.getState().widget.status, { watch_state: 'watching', level: 'major', button: 'stop' });
+	entry.cb(null);
+	assert.equal(store.getState().widget.status, null);
 });
 
 test('initialState reads and clamps leftWidth from storage', () => {

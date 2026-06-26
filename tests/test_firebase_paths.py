@@ -412,3 +412,14 @@ async def test_write_widget_pushed_at_sets_string(backend):
 	calls = [str(c) for c in mock_db.reference.call_args_list]
 	assert any("widget/pushed_at" in c for c in calls)
 	mock_db.reference.return_value.set.assert_called_with("2026-06-25T12:00:00+00:00")
+
+
+@pytest.mark.asyncio
+async def test_write_widget_status_sets_widget_status(backend):
+	be, mock_db = backend
+	payload = {"level": "major", "watch_state": "watching", "button": "stop",
+			   "description": "Partial outage", "incidents": ["X"], "fetched_at": "2026-06-25T12:00:00+00:00"}
+	await be.write_widget_status(payload)
+	calls = [str(c) for c in mock_db.reference.call_args_list]
+	assert any("widget/status" in c for c in calls)
+	mock_db.reference.return_value.set.assert_called_with(payload)

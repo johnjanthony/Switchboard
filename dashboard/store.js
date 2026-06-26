@@ -94,6 +94,11 @@ export function createStore(deps) {
 		notify();
 	}
 
+	function setWidgetStatus(status) {
+		state.widget = { ...state.widget, status: status || null };
+		notify();
+	}
+
 	function setWidgetPushedAt(ts) {
 		state.widget = { ...state.widget, pushedAt: ts || null };
 		notify();
@@ -243,6 +248,7 @@ export function createStore(deps) {
 		fb.onValue(paths.wslAvailable(), (val) => setWslAvailable(!!val), onReadError);
 		fb.onValue(paths.widgetRings(), (val) => setWidgetRings(val || {}), onReadError);
 		fb.onValue(paths.widgetQuota(), (val) => setWidgetQuota(val || null), onReadError);
+		fb.onValue(paths.widgetStatus(), (val) => setWidgetStatus(val || null), onReadError);
 		fb.onValue(paths.widgetPushedAt(), (val) => setWidgetPushedAt(val || null), onReadError);
 		fb.onChildAdded(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError);
 		fb.onChildChanged(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError);
@@ -356,6 +362,7 @@ export function createStore(deps) {
 		setWslAvailable,
 		setWidgetRings,
 		setWidgetQuota,
+		setWidgetStatus,
 		setWidgetPushedAt,
 		upsertConversationMeta,
 		removeConversation,
@@ -405,7 +412,7 @@ function initialState(storage) {
 		wslAvailable: false,
 		conversations: {},
 		adminNotifications: {},
-		widget: { rings: {}, quota: null, pushedAt: null },
+		widget: { rings: {}, quota: null, status: null, pushedAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
 		messageTimestampResolver: {},

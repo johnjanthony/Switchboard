@@ -38,6 +38,7 @@ from server.rate_limiter import RateLimiter
 from server.firebase import FirebaseBackend
 from server.firebase_supervisor import LoopSupervisor
 from server.widget_snapshot import WidgetSnapshotStore
+from server.claude_status import ClaudeStatusService
 
 
 def _build_away_mode_route(registry: Registry):
@@ -178,6 +179,25 @@ def _build_widget_snapshot_route(store, backend, logger):
 		return JSONResponse({"ok": True, "rings_changed": rings_changed, "quota_changed": quota_changed})
 
 	return widget_snapshot
+
+
+def _build_widget_status_route(service):
+	"""POST /widget-status {action: check|stop} - the same-origin control surface
+	Operator (and later Watchtower) use to drive the server-owned status watch.
+	Localhost trust, like /widget-snapshot. Returns the current view."""
+	async def widget_status(request: Request):
+		try:
+			body = await request.json()
+		except Exception:
+			body = {}
+		action = request.query_params.get("action") or (body.get("action") if isinstance(body, dict) else None)
+		if action == "check":
+			return JSONResponse(await service.check())
+		if action == "stop":
+			return JSONResponse(await service.stop())
+		return JSONResponse({"error": "unknown action"}, status_code=400)
+
+	return widget_status
 
 
 def _build_document_route(backend):
@@ -577,8 +597,10 @@ async def _run(config: Config) -> None:
 		})
 
 	widget_store = WidgetSnapshotStore()
+	claude_status_service = ClaudeStatusService(publish=backend.write_widget_status)
 	app.add_route("/healthz", healthz, methods=["GET"])
 	app.add_route("/widget-snapshot", _build_widget_snapshot_route(widget_store, backend, logger), methods=["POST"])
+	app.add_route("/widget-status", _build_widget_status_route(claude_status_service), methods=["POST"])
 	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
 	app.add_route("/stats", _build_stats_route(registry, backend, loop_sups), methods=["GET"])
 	app.add_route("/document", _build_document_route(backend), methods=["GET"])

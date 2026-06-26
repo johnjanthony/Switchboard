@@ -640,6 +640,11 @@ class FirebaseBackend(
 		"""Publish the last-push timestamp (staleness signal for readers)."""
 		await asyncio.to_thread(lambda: db.reference("widget/pushed_at").set(ts))
 
+	async def write_widget_status(self, status: dict) -> None:
+		"""Publish the Claude service-status view (level, description, incidents,
+		fetched_at, watch_state, button) for all surfaces to render."""
+		await asyncio.to_thread(lambda: db.reference("widget/status").set(status))
+
 	async def set_session_home(self, session_id: str, conv_id: str | None) -> None:
 		"""Persist a cli session's home-conversation pointer.
 

@@ -54,3 +54,7 @@ export function widgetQuota() {
 export function widgetPushedAt() {
 	return 'widget/pushed_at';
 }
+
+export function widgetStatus() {
+	return 'widget/status';
+}

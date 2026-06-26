@@ -2,6 +2,7 @@ import { html, useState } from "../vendor/htm-preact.js";
 import * as fb from "../firebase.js";
 import { isActive, globalPendingCount, oldestPendingAgeSeconds } from "../derive.js";
 import { awayOnCmd, awayOffCmd, spawnFreshCmd } from "../commands.js";
+import { requestStatus, statusDotClass } from "../statusControl.js";
 
 function push(cmd) {
 	fb.pushValue(cmd.path, cmd.value);
@@ -106,6 +107,31 @@ function AwayOffDialog({ store, onClose }) {
 	`;
 }
 
+function QuotaReadout({ quota }) {
+	if (!quota) return null;
+	const pct = (w) => (w && w.pct != null ? Math.round(Number(w.pct) * 100) + "%" : "-");
+	return html`
+		<span class="quota-readout" title="Plan usage (5h / 7d)">
+			<span class="count">5h <b>${pct(quota.session)}</b></span>
+			<span class="count">7d <b>${pct(quota.weekly)}</b></span>
+		</span>
+	`;
+}
+
+function ClaudeStatusControl({ status }) {
+	const s = status || { watch_state: "idle", button: "check", level: "operational", description: "", incidents: [] };
+	const label = s.button === "stop" ? "Stop" : s.button === "clear" ? "Clear" : "Check";
+	const action = s.button === "check" ? "check" : "stop";
+	const title = (s.description || "Claude status") + ((s.incidents && s.incidents.length) ? " - " + s.incidents.join("; ") : "");
+	return html`
+		<span class="claude-status" title=${title}>
+			${s.watch_state !== "idle" ? html`<span class=${statusDotClass(s.level)}></span>` : null}
+			<span class="claude-status-label">Claude</span>
+			<button class="claude-status-btn" onClick=${() => requestStatus(action)}>${label}</button>
+		</span>
+	`;
+}
+
 export function StatusBar({ store }) {
 	const state = store.getState();
 	const convs = state.conversations;
@@ -148,6 +174,8 @@ export function StatusBar({ store }) {
 						: null}
 					<span class=${"wsl-indicator " + (state.wslAvailable ? "wsl-on" : "wsl-off")}
 						title="WSL availability">WSL ${state.wslAvailable ? "on" : "off"}</span>
+					<${QuotaReadout} quota=${state.widget.quota} />
+					<${ClaudeStatusControl} status=${state.widget.status} />
 				</span>
 				<button class="open-line-btn" onClick=${() => setSpawnOpen(true)}>Open line</button>
 			</div>
