@@ -30,6 +30,28 @@ class _FakeService:
 		self.calls.append("stop")
 		return {"watch_state": "idle", "button": "check", "level": "operational"}
 
+	def view(self):
+		return getattr(self, "viewed", {"watch_state": "idle", "button": "check", "level": "operational"})
+
+
+@pytest.mark.asyncio
+async def test_get_returns_current_view_without_action():
+	svc = _FakeService()
+	svc.viewed = {"watch_state": "idle", "button": "check", "level": "operational"}
+	route = _build_widget_status_route(svc)
+	# A GET must not call check()/stop(); it returns the cached view.
+	from starlette.requests import Request
+
+	async def receive():
+		return {"type": "http.request", "body": b"", "more_body": False}
+
+	scope = {"type": "http", "method": "GET", "headers": [], "query_string": b""}
+	resp = await route(Request(scope, receive))
+	out = json.loads(resp.body)
+	assert resp.status_code == 200
+	assert out["watch_state"] == "idle"
+	assert svc.calls == []
+
 
 @pytest.mark.asyncio
 async def test_check_action_invokes_service_check():

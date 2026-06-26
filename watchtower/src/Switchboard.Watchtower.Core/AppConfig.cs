@@ -87,15 +87,14 @@ public sealed class SwitchboardConfig
 	public int PollSeconds { get; set; } = 4;
 }
 
-/// <summary>Watchtower's Claude service-status indicator: the status-page URL and the manual watch-loop cadence/cap.</summary>
+/// <summary>Watchtower's Claude service-status indicator: now a thin client of the server's
+/// /widget-status (the watch loop + fetch live on the server). StatusUrl is the server endpoint;
+/// PollSeconds is how often the dot re-syncs from the server.</summary>
 public sealed class ClaudeStatusConfig
 {
-	/// <summary>The Claude status page summary endpoint the widget fetches on a manual check.</summary>
-	public string SummaryUrl { get; set; } = "https://status.claude.com/api/v2/summary.json";
+	/// <summary>The server's status endpoint Watchtower GETs (view) and POSTs (check/stop) against.</summary>
+	public string StatusUrl { get; set; } = "http://localhost:9876/widget-status";
 
-	/// <summary>How often (seconds) the watch loop re-polls while an incident is active. Floored at 10s by the host.</summary>
-	public int WatchIntervalSeconds { get; set; } = 60;
-
-	/// <summary>Safety cap (minutes): the watch loop stops polling after this long even if still degraded.</summary>
-	public int MaxWatchMinutes { get; set; } = 180;
+	/// <summary>How often (seconds) to re-sync the dot from the server view. Floored at 2s by the host.</summary>
+	public int PollSeconds { get; set; } = 5;
 }

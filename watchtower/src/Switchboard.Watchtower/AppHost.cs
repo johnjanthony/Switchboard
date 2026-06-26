@@ -25,11 +25,11 @@ internal sealed class AppHost : IDisposable
 	readonly WidgetSnapshotPusher? _snapshotPusher;
 	IReadOnlyList<SessionModel> _lastSessions = Array.Empty<SessionModel>();
 	QuotaUsage? _lastQuota;
-	readonly System.Windows.Forms.Timer _claudeStatusTimer = new();
+	readonly System.Windows.Forms.Timer _claudeStatusTimer = new();   // steady GET-poll of the server view
 	readonly ClaudeStatusReader _claudeStatusReader;
-	readonly ClaudeStatusWatch _claudeStatusWatch;
 	volatile bool _claudeStatusScanning;
-	readonly System.Windows.Forms.Timer _claudePulseTimer = new();   // drives the status-dot pulse animation
+	ClaudeStatusView _claudeStatusView;                               // latest server view (drives the surfaces)
+	readonly System.Windows.Forms.Timer _claudePulseTimer = new();
 
 	static int QuotaIntervalMs(int minutes) => Math.Clamp(minutes, 1, 60) * 60_000;
 
@@ -47,9 +47,9 @@ internal sealed class AppHost : IDisposable
 			_switchboardTimer.Interval = Math.Max(2, _config.Switchboard.PollSeconds) * 1000;
 			_switchboardTimer.Tick += (_, _) => PollSwitchboard();
 		}
-		_claudeStatusReader = new ClaudeStatusReader(_config.ClaudeStatus.SummaryUrl, LogError);
-		_claudeStatusWatch = new ClaudeStatusWatch(_config.ClaudeStatus.MaxWatchMinutes);
-		_claudeStatusTimer.Interval = Math.Max(10, _config.ClaudeStatus.WatchIntervalSeconds) * 1000;
+		_claudeStatusReader = new ClaudeStatusReader(_config.ClaudeStatus.StatusUrl, LogError);
+		_claudeStatusView = ClaudeServerStatus.ParseView("");   // hidden idle until the first poll
+		_claudeStatusTimer.Interval = Math.Max(2, _config.ClaudeStatus.PollSeconds) * 1000;
 		_claudeStatusTimer.Tick += (_, _) => PollClaudeStatus();
 		_claudePulseTimer.Interval = 70;
 		_claudePulseTimer.Tick += (_, _) => _widget.TickClaudePulse();
@@ -106,7 +106,8 @@ internal sealed class AppHost : IDisposable
 		Scan();
 		_panel.UpdateSwitchboard(_config.Switchboard.Enabled, null);
 		if (_config.Switchboard.Enabled) { _switchboardTimer.Start(); PollSwitchboard(); }
-		RefreshClaudeStatusSurfaces();
+		_claudeStatusTimer.Start();
+		PollClaudeStatus();
 	}
 
 	// Tooltip-style: show the panel while the cursor is over the widget (or the panel itself), hide otherwise.
@@ -259,51 +260,35 @@ internal sealed class AppHost : IDisposable
 		}, TaskScheduler.Default);
 	}
 
-	// The popup button / tray item: while Idle it kicks off a one-shot check; otherwise it acknowledges
-	// (Stop watching / Clear), returning the watch to Idle and hiding the dot.
+	// The popup button / tray item posts an action to the server: from a hidden/idle
+	// view the button is "Check"; otherwise it is Stop/Clear (both acknowledge).
 	void OnClaudeStatusAction()
 	{
-		if (_claudeStatusWatch.State == ClaudeWatchState.Idle)
+		string action = _claudeStatusView.Button == ClaudeStatusButton.CheckNow ? "check" : "stop";
+		_claudeStatusReader.PostActionAsync(action, CancellationToken.None).ContinueWith(t =>
 		{
-			CheckClaudeStatusNow();
-		}
-		else
-		{
-			ApplyWatchAction(_claudeStatusWatch.Acknowledge());
-			RefreshClaudeStatusSurfaces();
-		}
+			if (t.IsFaulted) LogError("claude-status-action", t.Exception!);
+			PollClaudeStatus();   // re-sync the dot from the server right after the action
+		}, TaskScheduler.FromCurrentSynchronizationContext());
 	}
 
-	void CheckClaudeStatusNow() => PollClaudeStatus();
-
-	// Fire-and-forget fetch; result marshaled back to the UI thread and fed into the watch state machine.
+	// Fire-and-forget GET of the server view; result marshaled back to the UI thread.
 	void PollClaudeStatus()
 	{
 		if (_claudeStatusScanning) return;
 		_claudeStatusScanning = true;
-		_claudeStatusReader.FetchAsync(CancellationToken.None).ContinueWith(t =>
+		_claudeStatusReader.GetViewAsync(CancellationToken.None).ContinueWith(t =>
 		{
 			_claudeStatusScanning = false;
 			if (t.IsFaulted) { LogError("claude-status-poll", t.Exception!); return; }
-			ApplyWatchAction(_claudeStatusWatch.ApplyFetch(t.Result, DateTime.UtcNow));
+			_claudeStatusView = t.Result;
 			RefreshClaudeStatusSurfaces();
-			var v = _claudeStatusWatch.Snapshot();
-			LogInfo("claude-status", $"level={v.DotLevel} state={_claudeStatusWatch.State} dot={v.DotVisible}");
 		}, TaskScheduler.FromCurrentSynchronizationContext());
-	}
-
-	void ApplyWatchAction(WatchAction action)
-	{
-		switch (action)
-		{
-			case WatchAction.StartPolling: _claudeStatusTimer.Start(); break;
-			case WatchAction.StopPolling: _claudeStatusTimer.Stop(); break;
-		}
 	}
 
 	void RefreshClaudeStatusSurfaces()
 	{
-		var v = _claudeStatusWatch.Snapshot();
+		var v = _claudeStatusView;
 		_panel.UpdateClaudeStatus(v);
 		_widget.SetClaudeStatus(v.DotVisible, v.DotLevel);
 		_tray.SetClaudeStatusButton(v.Button);

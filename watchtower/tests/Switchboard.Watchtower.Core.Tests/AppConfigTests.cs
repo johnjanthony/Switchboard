@@ -76,9 +76,8 @@ public class AppConfigTests
 	{
 		var cfg = new AppConfig();
 		Assert.NotNull(cfg.ClaudeStatus);
-		Assert.Equal("https://status.claude.com/api/v2/summary.json", cfg.ClaudeStatus.SummaryUrl);
-		Assert.Equal(60, cfg.ClaudeStatus.WatchIntervalSeconds);
-		Assert.Equal(180, cfg.ClaudeStatus.MaxWatchMinutes);
+		Assert.Equal("http://localhost:9876/widget-status", cfg.ClaudeStatus.StatusUrl);
+		Assert.Equal(5, cfg.ClaudeStatus.PollSeconds);
 	}
 
 	[Fact]
@@ -89,8 +88,8 @@ public class AppConfigTests
 		{
 			File.WriteAllText(path, "{\"PollIntervalSeconds\":60}");
 			var cfg = AppConfig.LoadFrom(path);
-			Assert.Equal("https://status.claude.com/api/v2/summary.json", cfg.ClaudeStatus.SummaryUrl);
-			Assert.Equal(60, cfg.ClaudeStatus.WatchIntervalSeconds);
+			Assert.Equal("http://localhost:9876/widget-status", cfg.ClaudeStatus.StatusUrl);
+			Assert.Equal(5, cfg.ClaudeStatus.PollSeconds);
 		}
 		finally { if (File.Exists(path)) File.Delete(path); }
 	}

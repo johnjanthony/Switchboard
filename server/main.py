@@ -186,6 +186,8 @@ def _build_widget_status_route(service):
 	Operator (and later Watchtower) use to drive the server-owned status watch.
 	Localhost trust, like /widget-snapshot. Returns the current view."""
 	async def widget_status(request: Request):
+		if request.method == "GET":
+			return JSONResponse(service.view())
 		try:
 			body = await request.json()
 		except Exception:
@@ -600,7 +602,7 @@ async def _run(config: Config) -> None:
 	claude_status_service = ClaudeStatusService(publish=backend.write_widget_status)
 	app.add_route("/healthz", healthz, methods=["GET"])
 	app.add_route("/widget-snapshot", _build_widget_snapshot_route(widget_store, backend, logger), methods=["POST"])
-	app.add_route("/widget-status", _build_widget_status_route(claude_status_service), methods=["POST"])
+	app.add_route("/widget-status", _build_widget_status_route(claude_status_service), methods=["GET", "POST"])
 	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
 	app.add_route("/stats", _build_stats_route(registry, backend, loop_sups), methods=["GET"])
 	app.add_route("/document", _build_document_route(backend), methods=["GET"])
