@@ -2,7 +2,12 @@
 
 > A human-in-the-loop input gateway for AI agents (Claude, Gemini, etc.).
 
-Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task and ask John a question via a native Android app. Designed for away-from-desk workflows where you want your agents to continue working unsupervised until they hit a decision that genuinely requires human input.
+Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task and ask you a question via a native Android app. Designed for away-from-desk workflows where you want your agents to continue working unsupervised until they hit a decision that genuinely requires human input.
+
+<!-- Screenshots: capture the Android app and the Operator web cockpit (highest impact),
+     save them under docs/media/, and embed them here, for example:
+     ![Switchboard Android app](docs/media/android-app.png)
+     ![Operator web cockpit](docs/media/operator-cockpit.png) -->
 
 ## Features
 
@@ -17,6 +22,37 @@ Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task an
 - **Rich Markdown**: Full support for bold, italic, code blocks, checklists, and tables.
 
 ## Design & Architecture
+
+Switchboard is one Python process fronting a single Firebase Realtime Database, with four surfaces reading and writing that shared hub. Agents speak MCP to the server; the server is the only writer of authoritative state; the human-facing clients render and command it.
+
+```text
+            AI agents (Claude Code, Gemini CLI, ...)
+                          |  MCP over HTTP
+                          v
+           +--------------------------------+
+           |   Switchboard MCP server       |   Python . asyncio
+           |   gateway + /dashboard +       |
+           |   /stats + /healthz            |
+           +---------------+----------------+
+                           |  Firebase Admin SDK
+                           v
+              +---------------------------+
+              |  Firebase Realtime DB     |   one shared hub:
+              |  + Cloud Messaging (FCM)  |   conversations, away mode, commands
+              +-------------+-------------+
+                            |  direct RTDB reads/writes + push
+          +-----------------+------------------+
+          v                 v                  v
+   Android + Wear OS     Operator           Watchtower
+   Kotlin / Compose      Preact web         .NET 9 / WinForms
+   (phone + watch)       cockpit            taskbar widget
+```
+
+The model is built around **away mode** (a single global flag: when set, agents route every prompt to the phone instead of the terminal) and **conversations** (the persistence + routing unit; multiple agents can share one conversation, and while pending in-flight questions do not survive a restart, conversation state itself rehydrates from Firebase).
+
+**Built with:** Python (asyncio), the [Model Context Protocol](https://modelcontextprotocol.io), Firebase (Realtime Database + Cloud Messaging), Kotlin / Jetpack Compose (Android + Wear OS), Preact (web), and .NET 9 / WinForms (Windows).
+
+Switchboard was architected and built by John Anthony, directing a multi-agent workflow of off-the-shelf coding agents (Claude Code, Gemini CLI) coordinated, fittingly, through Switchboard itself.
 
 For an agent-oriented project tour, see [`CLAUDE.md`](CLAUDE.md). The current design is documented in [`docs/switchboard-design-spec-comprehensive.md`](docs/switchboard-design-spec-comprehensive.md) — covers the Conversation primitive, session-id routing, MCP tool surface, hook plumbing, Firebase schema, spawn (fresh / resume / combine), away mode, hydration, and the Android UI surface.
 
@@ -154,7 +190,7 @@ Away mode activates when you tell your agent you're stepping away — any phrasi
 - **`ask_human(question, sender, title?, format?, suggestions?)`** — blocks until you reply.
 - **`notify_human(message, sender, title?, format?)`** — fire-and-forget status update.
 - **`send_document_human(path, sender, title?, caption?)`** — delivers a file to your phone.
-- **`set_away_mode(value)`** — toggle the global away-mode flag (agents use this; John can also toggle the phone pill).
+- **`set_away_mode(value)`** — toggle the global away-mode flag (agents use this; you can also toggle the phone pill).
 
 **Multi-agent (conversation) tools:**
 
