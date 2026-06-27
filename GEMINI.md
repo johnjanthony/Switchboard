@@ -4,7 +4,7 @@ This file contains Gemini-specific instructions for working in the Switchboard w
 
 ## Mandates
 
-- **FOUNDATIONAL MANDATE:** You MUST read and adhere to the project-wide orientation and conventions in [`AGENTS.md`](AGENTS.md).
+- **FOUNDATIONAL MANDATE:** You MUST read and adhere to the project-wide orientation and conventions in [`CLAUDE.md`](CLAUDE.md).
 - **FOUNDATIONAL MANDATE:** You MUST read and adhere to the tool usage and away mode protocol in [`skills/switchboard/SKILL.md`](skills/switchboard/SKILL.md).
 
 ## CRITICAL: Switchboard MCP tools currently do not work for Gemini
