@@ -47,7 +47,7 @@ The live rules are not in the repo (no `database.rules.json`, no `firebase.json`
 
 1. John opens the Firebase Console for project `jja-switchboard` and captures the current Realtime Database rules.
 2. Commit them into the repo as `database.rules.json` + a `firebase.json` so the security model stops being invisible.
-3. Tighten read and write to John's identity rather than any signed-in Google account, e.g. a top-level guard `".read"` / `".write"` keyed on `auth.token.email === 'johnjanthony@users.noreply.github.com'` (or `auth.uid`). This matters more because the dashboard also writes command trees.
+3. Tighten read and write to John's identity rather than any signed-in Google account, e.g. a top-level guard `".read"` / `".write"` keyed on `auth.token.email === 'you@example.com'` (or `auth.uid`). This matters more because the dashboard also writes command trees.
 4. Add the dashboard's serving origin (`localhost`) to Console -> Authentication -> Authorized domains, or `signInWithPopup` is rejected.
 
 **Done means:** (a) `database.rules.json` + `firebase.json` committed and syntactically valid; (b) a rules-simulator (or emulator) run confirms John's identity can read and write the dashboard paths and a foreign identity is denied; (c) Authorized domains updated. This task gates the dashboard's read/write feasibility and is done first.
