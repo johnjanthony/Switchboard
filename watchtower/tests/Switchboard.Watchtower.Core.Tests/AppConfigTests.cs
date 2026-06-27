@@ -70,4 +70,27 @@ public class AppConfigTests
 		}
 		finally { if (File.Exists(path)) File.Delete(path); }
 	}
+
+	[Fact]
+	public void ClaudeStatus_config_has_sensible_defaults()
+	{
+		var cfg = new AppConfig();
+		Assert.NotNull(cfg.ClaudeStatus);
+		Assert.Equal("http://localhost:9876/widget-status", cfg.ClaudeStatus.StatusUrl);
+		Assert.Equal(5, cfg.ClaudeStatus.PollSeconds);
+	}
+
+	[Fact]
+	public void ClaudeStatus_config_absent_block_loads_defaults()
+	{
+		var path = Path.Combine(Path.GetTempPath(), "wt-claudestatus-" + Guid.NewGuid().ToString("N") + ".json");
+		try
+		{
+			File.WriteAllText(path, "{\"PollIntervalSeconds\":60}");
+			var cfg = AppConfig.LoadFrom(path);
+			Assert.Equal("http://localhost:9876/widget-status", cfg.ClaudeStatus.StatusUrl);
+			Assert.Equal(5, cfg.ClaudeStatus.PollSeconds);
+		}
+		finally { if (File.Exists(path)) File.Delete(path); }
+	}
 }

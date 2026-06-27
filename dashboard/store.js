@@ -3,7 +3,7 @@
 // never assign onto the store or guard its methods with "?".
 //
 // deps: { fb, paths, storage, nowMs }
-//   fb      - the firebase.js wrapper (onAuth/signIn/on*/pushValue/setValue/updateValue/nowIso)
+//   fb      - the firebase.js wrapper (onAuth/signIn/on*/pushValue/setValue/nowIso)
 //   paths   - the schema.js path builders
 //   storage - localStorage-like { getItem, setItem }
 //   nowMs   - () => epoch ms, used to stamp pendingsFlat firstObservedMs
@@ -49,6 +49,20 @@ export function createStore(deps) {
 		notify();
 	}
 
+	function setGlobalReadError(err) {
+		// A denied global RTDB read (e.g. signed in with an unauthorized Google
+		// account, or a rules change revoking access mid-session) would
+		// otherwise silently blank the dashboard: the SDK detaches the listener
+		// and no data ever arrives. Drop back to the sign-in gate with an
+		// explanatory error so the operator can switch to the authorized account
+		// instead of staring at an empty screen (M4).
+		const detail = err && err.message ? `: ${err.message}` : '';
+		state.authed = false;
+		state.user = null;
+		state.authError = `Database access denied${detail}. Sign in with the authorized Google account.`;
+		notify();
+	}
+
 	function retrySignIn() {
 		state.authError = null;
 		notify();
@@ -67,6 +81,26 @@ export function createStore(deps) {
 
 	function setWslAvailable(value) {
 		state.wslAvailable = value;
+		notify();
+	}
+
+	function setWidgetRings(map) {
+		state.widget = { ...state.widget, rings: map || {} };
+		notify();
+	}
+
+	function setWidgetQuota(quota) {
+		state.widget = { ...state.widget, quota: quota || null };
+		notify();
+	}
+
+	function setWidgetStatus(status) {
+		state.widget = { ...state.widget, status: status || null };
+		notify();
+	}
+
+	function setWidgetPushedAt(ts) {
+		state.widget = { ...state.widget, pushedAt: ts || null };
 		notify();
 	}
 
@@ -173,10 +207,14 @@ export function createStore(deps) {
 		if (id === null || id === undefined) {
 			return;
 		}
+		// The synchronous try/catch only guards the attach; a permission-denied
+		// arrives asynchronously on the error callback, so route that to the
+		// detail pane too (M4) — otherwise a denied read leaves the pane blank.
+		const onDetailError = (err) => setPaneError('detail', String(err && err.message ? err.message : err));
 		try {
-			selectionUnsubs.push(fb.onValue(paths.messages(id), (val) => mergeConversationMessages(id, val || {})));
-			selectionUnsubs.push(fb.onValue(paths.membersActive(id), (val) => mergeConversationMembers(id, val || {})));
-			selectionUnsubs.push(fb.onValue(paths.agentStatus(id), (val) => mergeConversationAgentStatus(id, val || {})));
+			selectionUnsubs.push(fb.onValue(paths.messages(id), (val) => mergeConversationMessages(id, val || {}), onDetailError));
+			selectionUnsubs.push(fb.onValue(paths.membersActive(id), (val) => mergeConversationMembers(id, val || {}), onDetailError));
+			selectionUnsubs.push(fb.onValue(paths.agentStatus(id), (val) => mergeConversationAgentStatus(id, val || {}), onDetailError));
 		} catch (err) {
 			setPaneError('detail', String(err && err.message ? err.message : err));
 		}
@@ -188,24 +226,32 @@ export function createStore(deps) {
 	}
 
 	function startGlobalListeners() {
+		// A denied read on any global listener means this account cannot read the
+		// database at all; surface it (back to the sign-in gate) rather than
+		// silently blanking the dashboard (M4).
+		const onReadError = (err) => setGlobalReadError(err);
 		fb.onChildAdded(paths.conversations(), (val, key) => {
 			if (val && val.meta) {
 				upsertConversationMeta(key, val.meta);
 			}
-		});
+		}, onReadError);
 		fb.onChildChanged(paths.conversations(), (val, key) => {
 			if (val && val.meta) {
 				upsertConversationMeta(key, val.meta);
 			}
-		});
+		}, onReadError);
 		fb.onChildRemoved(paths.conversations(), (_val, key) => {
 			removeConversation(key);
-		});
-		fb.onValue(paths.globalAway(), (val) => setGlobalAway(!!val));
-		fb.onValue(paths.openConversationId(), (val) => setOpenConversationId(val || null));
-		fb.onValue(paths.wslAvailable(), (val) => setWslAvailable(!!val));
-		fb.onChildAdded(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val));
-		fb.onChildChanged(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val));
+		}, onReadError);
+		fb.onValue(paths.globalAway(), (val) => setGlobalAway(!!val), onReadError);
+		fb.onValue(paths.openConversationId(), (val) => setOpenConversationId(val || null), onReadError);
+		fb.onValue(paths.wslAvailable(), (val) => setWslAvailable(!!val), onReadError);
+		fb.onValue(paths.widgetRings(), (val) => setWidgetRings(val || {}), onReadError);
+		fb.onValue(paths.widgetQuota(), (val) => setWidgetQuota(val || null), onReadError);
+		fb.onValue(paths.widgetStatus(), (val) => setWidgetStatus(val || null), onReadError);
+		fb.onValue(paths.widgetPushedAt(), (val) => setWidgetPushedAt(val || null), onReadError);
+		fb.onChildAdded(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError);
+		fb.onChildChanged(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError);
 	}
 
 	// --- private helpers -------------------------------------------------
@@ -226,7 +272,11 @@ export function createStore(deps) {
 			const conv = state.conversations[id];
 			const active = !!conv && !!conv.meta && conv.meta.state === 'active';
 			if (active && !pendingUnsubsByConv.has(id)) {
-				const unsub = fb.onValue(paths.pendingQuestions(id), (val) => mergeConversationPending(id, val || {}));
+				const unsub = fb.onValue(
+					paths.pendingQuestions(id),
+					(val) => mergeConversationPending(id, val || {}),
+					(err) => setGlobalReadError(err),
+				);
 				pendingUnsubsByConv.set(id, unsub);
 			} else if (!active && pendingUnsubsByConv.has(id)) {
 				detachPendingListener(id);
@@ -305,10 +355,15 @@ export function createStore(deps) {
 		startGlobalListeners,
 		setAuthed,
 		setAuthError,
+		setGlobalReadError,
 		retrySignIn,
 		setGlobalAway,
 		setOpenConversationId,
 		setWslAvailable,
+		setWidgetRings,
+		setWidgetQuota,
+		setWidgetStatus,
+		setWidgetPushedAt,
 		upsertConversationMeta,
 		removeConversation,
 		upsertAdminNotification,
@@ -357,6 +412,7 @@ function initialState(storage) {
 		wslAvailable: false,
 		conversations: {},
 		adminNotifications: {},
+		widget: { rings: {}, quota: null, status: null, pushedAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
 		messageTimestampResolver: {},

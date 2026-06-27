@@ -3,7 +3,9 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import asyncio
+import mimetypes
 from pathlib import Path
+from urllib.parse import urlparse, unquote
 
 _MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
 _DENYLIST_EXACT = frozenset({".env", "service-account.json"})
@@ -50,3 +52,42 @@ def _validate_path(path_str: str, cwd: Path | None = None) -> Path:
 			)
 
 	return resolved
+
+# mimetypes is incomplete/peculiar across platforms; pin the types we care about.
+_CONTENT_TYPE_OVERRIDES = {
+	".md": "text/markdown",
+	".markdown": "text/markdown",
+	".log": "text/plain",
+	".yml": "text/yaml",
+	".yaml": "text/yaml",
+	".ts": "text/plain",
+	".tsx": "text/plain",
+	".kt": "text/plain",
+	".kts": "text/plain",
+	".toml": "text/plain",
+}
+
+
+def guess_content_type(filename: str) -> str:
+	"""Best-effort MIME type for a filename. Falls back to octet-stream."""
+	ext = Path(filename).suffix.lower()
+	if ext in _CONTENT_TYPE_OVERRIDES:
+		return _CONTENT_TYPE_OVERRIDES[ext]
+	guessed, _ = mimetypes.guess_type(filename)
+	return guessed or "application/octet-stream"
+
+
+def _blob_path_from_url(url: str | None) -> str | None:
+	"""Parse the storage blob path (documents/<uuid>/<file>) out of a stored GCS
+	v4 signed URL of the form https://storage.googleapis.com/<bucket>/<object>?...
+
+	This lets a document message written before the storage_path field existed
+	still be downloaded via the Admin SDK, immune to signed-url expiry."""
+	if not url:
+		return None
+	path = unquote(urlparse(url).path).lstrip("/")
+	parts = path.split("/", 1)  # ["<bucket>", "documents/<uuid>/<file>"]
+	if len(parts) != 2:
+		return None
+	rest = parts[1]
+	return rest if rest.startswith("documents/") else None

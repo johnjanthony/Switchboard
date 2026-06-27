@@ -22,6 +22,14 @@ internal sealed class AppHost : IDisposable
 	readonly System.Windows.Forms.Timer _switchboardTimer = new();
 	readonly SwitchboardStatsReader? _switchboardReader;
 	volatile bool _switchboardScanning;
+	readonly WidgetSnapshotPusher? _snapshotPusher;
+	IReadOnlyList<SessionModel> _lastSessions = Array.Empty<SessionModel>();
+	QuotaUsage? _lastQuota;
+	readonly System.Windows.Forms.Timer _claudeStatusTimer = new();   // steady GET-poll of the server view
+	readonly ClaudeStatusReader _claudeStatusReader;
+	volatile bool _claudeStatusScanning;
+	ClaudeStatusView _claudeStatusView;                               // latest server view (drives the surfaces)
+	readonly System.Windows.Forms.Timer _claudePulseTimer = new();
 
 	static int QuotaIntervalMs(int minutes) => Math.Clamp(minutes, 1, 60) * 60_000;
 
@@ -35,9 +43,18 @@ internal sealed class AppHost : IDisposable
 		if (_config.Switchboard.Enabled)
 		{
 			_switchboardReader = new SwitchboardStatsReader(_config.Switchboard.StatsUrl, LogError);
+			_snapshotPusher = new WidgetSnapshotPusher(_config.Switchboard.SnapshotUrl, LogError);
 			_switchboardTimer.Interval = Math.Max(2, _config.Switchboard.PollSeconds) * 1000;
 			_switchboardTimer.Tick += (_, _) => PollSwitchboard();
 		}
+		_claudeStatusReader = new ClaudeStatusReader(_config.ClaudeStatus.StatusUrl, LogError);
+		_claudeStatusView = ClaudeServerStatus.ParseView("");   // hidden idle until the first poll
+		_claudeStatusTimer.Interval = Math.Max(2, _config.ClaudeStatus.PollSeconds) * 1000;
+		_claudeStatusTimer.Tick += (_, _) => PollClaudeStatus();
+		_claudePulseTimer.Interval = 70;
+		_claudePulseTimer.Tick += (_, _) => _widget.TickClaudePulse();
+		_tray.ClaudeStatusActionRequested += OnClaudeStatusAction;
+		_panel.ClaudeStatusButtonClicked += OnClaudeStatusAction;
 		_tray.OpenDashboardRequested += () => OpenDashboard();
 		_panel.OpenDashboardRequested += () => OpenDashboard();
 
@@ -89,6 +106,8 @@ internal sealed class AppHost : IDisposable
 		Scan();
 		_panel.UpdateSwitchboard(_config.Switchboard.Enabled, null);
 		if (_config.Switchboard.Enabled) { _switchboardTimer.Start(); PollSwitchboard(); }
+		_claudeStatusTimer.Start();
+		PollClaudeStatus();
 	}
 
 	// Tooltip-style: show the panel while the cursor is over the widget (or the panel itself), hide otherwise.
@@ -170,6 +189,9 @@ internal sealed class AppHost : IDisposable
 			if (!s.IsError && s.Pct >= max) { max = s.Pct; maxSev = s.Severity; }
 		}
 		_tray.SetGauge(max, anyError, maxSev, light);
+
+		_lastSessions = sessions;
+		PushSnapshot();
 	}
 
 	void LogError(string source, Exception ex)
@@ -198,6 +220,8 @@ internal sealed class AppHost : IDisposable
 				_widget.UpdateQuota(u);
 				_panel.UpdateQuota(u);
 				ScheduleCountdown();
+				_lastQuota = u;
+				PushSnapshot();
 				LogInfo("quota", $"ok 5h={u.Session.Percentage:0}% 7d={u.Weekly.Percentage:0}%");
 			}
 			else
@@ -221,6 +245,54 @@ internal sealed class AppHost : IDisposable
 			_tray.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
 			_widget.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
 		}, TaskScheduler.FromCurrentSynchronizationContext());
+	}
+
+	// Fire-and-forget push of the latest rings + quota to the server's ingest. The
+	// server diffs and only writes RTDB on change, so pushing on every scan/quota
+	// tick is cheap. Null pusher == Switchboard integration disabled.
+	void PushSnapshot()
+	{
+		if (_snapshotPusher is null) return;
+		var payload = WidgetSnapshotBuilder.Build(_lastSessions, _lastQuota, DateTimeOffset.Now);
+		_snapshotPusher.PushAsync(payload, CancellationToken.None).ContinueWith(t =>
+		{
+			if (t.IsFaulted) LogError("widget-snapshot-push", t.Exception!);
+		}, TaskScheduler.Default);
+	}
+
+	// The popup button / tray item posts an action to the server: from a hidden/idle
+	// view the button is "Check"; otherwise it is Stop/Clear (both acknowledge).
+	void OnClaudeStatusAction()
+	{
+		string action = _claudeStatusView.Button == ClaudeStatusButton.CheckNow ? "check" : "stop";
+		_claudeStatusReader.PostActionAsync(action, CancellationToken.None).ContinueWith(t =>
+		{
+			if (t.IsFaulted) LogError("claude-status-action", t.Exception!);
+			PollClaudeStatus();   // re-sync the dot from the server right after the action
+		}, TaskScheduler.FromCurrentSynchronizationContext());
+	}
+
+	// Fire-and-forget GET of the server view; result marshaled back to the UI thread.
+	void PollClaudeStatus()
+	{
+		if (_claudeStatusScanning) return;
+		_claudeStatusScanning = true;
+		_claudeStatusReader.GetViewAsync(CancellationToken.None).ContinueWith(t =>
+		{
+			_claudeStatusScanning = false;
+			if (t.IsFaulted) { LogError("claude-status-poll", t.Exception!); return; }
+			_claudeStatusView = t.Result;
+			RefreshClaudeStatusSurfaces();
+		}, TaskScheduler.FromCurrentSynchronizationContext());
+	}
+
+	void RefreshClaudeStatusSurfaces()
+	{
+		var v = _claudeStatusView;
+		_panel.UpdateClaudeStatus(v);
+		_widget.SetClaudeStatus(v.DotVisible, v.DotLevel);
+		_tray.SetClaudeStatusButton(v.Button);
+		if (_widget.ClaudePulsing) _claudePulseTimer.Start(); else _claudePulseTimer.Stop();
 	}
 
 	// Re-render the countdown at the next moment its text would change (decoupled from the poll), so
@@ -280,6 +352,8 @@ internal sealed class AppHost : IDisposable
 		_quotaTimer.Dispose();
 		_countdownTimer.Dispose();
 		_switchboardTimer.Dispose();
+		_claudeStatusTimer.Dispose();
+		_claudePulseTimer.Dispose();
 		_tray.Dispose();
 		_panel.Dispose();
 		_widget.Dispose();

@@ -28,6 +28,9 @@ import io.github.johnjanthony.switchboard.network.ConversationSummary
 import io.github.johnjanthony.switchboard.network.Pending
 import io.github.johnjanthony.switchboard.network.PendingExitToggle
 import io.github.johnjanthony.switchboard.network.AgentStatus
+import io.github.johnjanthony.switchboard.network.WidgetQuota
+import io.github.johnjanthony.switchboard.network.WidgetRing
+import io.github.johnjanthony.switchboard.network.WidgetStatus
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -92,6 +95,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _wslAvailable = MutableStateFlow(true)
 	val wslAvailable: StateFlow<Boolean> = _wslAvailable.asStateFlow()
 
+	private val _widgetRings = MutableStateFlow<Map<String, WidgetRing>>(emptyMap())
+	val widgetRings: StateFlow<Map<String, WidgetRing>> = _widgetRings.asStateFlow()
+
+	private val _widgetQuota = MutableStateFlow<WidgetQuota?>(null)
+	val widgetQuota: StateFlow<WidgetQuota?> = _widgetQuota.asStateFlow()
+
+	private val _widgetStatus = MutableStateFlow<WidgetStatus?>(null)
+	val widgetStatus: StateFlow<WidgetStatus?> = _widgetStatus.asStateFlow()
+
+	private val _widgetPushedAt = MutableStateFlow<String?>(null)
+	val widgetPushedAt: StateFlow<String?> = _widgetPushedAt.asStateFlow()
+
 	private val _openConversationId = MutableStateFlow<String?>(null)
 	val openConversationId: StateFlow<String?> = _openConversationId.asStateFlow()
 
@@ -140,6 +155,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 				startConversationListener()
 				startConversationMessageSubscriptions()
 				setupAdminNotificationsListener()
+				startWidgetListeners()
 			}
 		})
 	}
@@ -355,6 +371,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		})
 	}
 
+	/**
+	 * Listen to the widget hub the server fans out from Watchtower: per-session context
+	 * rings, plan quota, Anthropic service status, and the push-staleness timestamp. Rings
+	 * are a map keyed by Claude Code session_id; a per-child parse failure is logged and
+	 * skipped rather than dropping the whole map.
+	 */
+	private fun startWidgetListeners() {
+		database.getReference("widget/rings").addValueEventListener(object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				val map = mutableMapOf<String, WidgetRing>()
+				for (child in snapshot.children) {
+					val sessionId = child.key ?: continue
+					try {
+						child.getValue(WidgetRing::class.java)?.let { map[sessionId] = it }
+					} catch (e: Exception) {
+						android.util.Log.w("MainViewModel", "widget ring parse failed: $sessionId", e)
+					}
+				}
+				_widgetRings.value = map
+			}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "widget/rings listener cancelled: $error")
+			}
+		})
+		database.getReference("widget/quota").addValueEventListener(object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				_widgetQuota.value = try {
+					snapshot.getValue(WidgetQuota::class.java)
+				} catch (e: Exception) {
+					android.util.Log.w("MainViewModel", "widget/quota parse failed", e)
+					null
+				}
+			}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "widget/quota listener cancelled: $error")
+			}
+		})
+		database.getReference("widget/status").addValueEventListener(object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				_widgetStatus.value = try {
+					snapshot.getValue(WidgetStatus::class.java)
+				} catch (e: Exception) {
+					android.util.Log.w("MainViewModel", "widget/status parse failed", e)
+					null
+				}
+			}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "widget/status listener cancelled: $error")
+			}
+		})
+		database.getReference("widget/pushed_at").addValueEventListener(object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				_widgetPushedAt.value = snapshot.getValue(String::class.java)
+			}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "widget/pushed_at listener cancelled: $error")
+			}
+		})
+	}
+
 	private fun startConversationListener() {
 		val ref = database.getReference("conversations")
 		ref.addValueEventListener(object : ValueEventListener {
@@ -411,6 +487,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 						val pendingResponses = convNode.child("pending_responses").getValue(Int::class.java) ?: 0
 						val preview = convNode.child("meta").child("preview").getValue(String::class.java)
 						val hidden = convNode.child("meta").child("hidden").getValue(Boolean::class.java) ?: false
+						val continuedFrom = convNode.child("meta").child("continued_from").getValue(String::class.java)
 						val unreadCount = convNode.child("unread_count").getValue(Int::class.java) ?: 0
 
 						ConversationSummary(
@@ -424,6 +501,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 							unreadCount = unreadCount,
 							pendingResponses = pendingResponses,
 							preview = preview,
+							continuedFrom = continuedFrom,
 							agentStatuses = agentStatuses,
 						)
 					} catch (e: Exception) {
@@ -717,6 +795,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			"target_conversation_id" to targetConversationId,
 			"issued_at" to nowIso(),
 		))
+	}
+
+	// --- Claude-status request (phone -> server command queue) ---
+
+	/**
+	 * Trigger a fresh Anthropic status check. Pushes a command the server's status_request
+	 * dispatcher (Plan 2a) routes into ClaudeStatusService.check(); the server publishes the
+	 * result to widget/status, which this view-model reads back. Mirrors the away_mode_commands
+	 * push pattern. This is the phone's trigger path - NOT an HTTP call.
+	 */
+	fun requestClaudeStatusCheck() {
+		database.getReference("widget/status_request").push().setValue(
+			mapOf("type" to "check", "issued_at" to nowIso())
+		)
+	}
+
+	/** Stop the server's status watch loop (acknowledge), via the same command queue. */
+	fun stopClaudeStatusWatch() {
+		database.getReference("widget/status_request").push().setValue(
+			mapOf("type" to "stop", "issued_at" to nowIso())
+		)
 	}
 
 	// --- Away mode command emitters ---

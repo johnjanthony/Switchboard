@@ -29,7 +29,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import io.github.johnjanthony.switchboard.AwayModePillChip
+import io.github.johnjanthony.switchboard.listRowContextRing
 import io.github.johnjanthony.switchboard.network.ConversationRow
+import io.github.johnjanthony.switchboard.network.WidgetQuota
+import io.github.johnjanthony.switchboard.network.WidgetRing
+import io.github.johnjanthony.switchboard.network.WidgetStatus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,6 +54,12 @@ fun SessionListScreen(
 	onResumeClick: (conversationId: String) -> Unit = {},
 	onCombineClick: (conversationId: String) -> Unit = {},
 	onEndClick: (conversationId: String) -> Unit = {},
+	rings: Map<String, WidgetRing> = emptyMap(),
+	quota: WidgetQuota? = null,
+	claudeStatus: WidgetStatus? = null,
+	pushedAt: String? = null,
+	onCheckStatus: () -> Unit = {},
+	onStopStatus: () -> Unit = {},
 ) {
 	var menuExpanded by remember { mutableStateOf(false) }
 
@@ -79,10 +89,18 @@ fun SessionListScreen(
 			)
 		},
 	) { padding ->
+		Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+		WidgetStatusHeader(
+			quota = quota,
+			status = claudeStatus,
+			pushedAt = pushedAt,
+			onCheck = onCheckStatus,
+			onStop = onStopStatus,
+		)
 		val displayed = if (showHidden) (rows + hiddenRows) else rows
 		val nothingToShow = displayed.isEmpty() && adminRow == null
 		if (nothingToShow) {
-			Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+			Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
 				Column(
 					horizontalAlignment = Alignment.CenterHorizontally,
 					verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -94,7 +112,7 @@ fun SessionListScreen(
 				}
 			}
 		} else {
-			LazyColumn(modifier = Modifier.fillMaxSize().padding(padding)) {
+			LazyColumn(modifier = Modifier.fillMaxSize()) {
 				// Admin row stays at the top: it's a system-broadcast pseudo-conversation
 				// rendered as a synthetic ConversationRow with id "_admin" (R3).
 				if (adminRow != null) {
@@ -109,17 +127,18 @@ fun SessionListScreen(
 				items(displayed, key = { it.id }) { row ->
 					SessionRow(
 						row = row,
-						awayActive = globalAway,
 						onClick = { onSessionClick(row) },
 						onHide = { onHideConversation(row) },
 						onUnhide = { onUnhideConversation(row) },
 						onResumeClick = onResumeClick,
 						onCombineClick = onCombineClick,
 						onEndClick = onEndClick,
+						contextRing = listRowContextRing(row.members, rings),
 					)
 					Divider()
 				}
 			}
+		}
 		}
 	}
 }

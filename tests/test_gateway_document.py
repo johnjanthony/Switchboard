@@ -313,3 +313,32 @@ async def test_send_document_human_title_passthrough(cfg, logger, tmp_path):
 	# channel_messages[-1] is the document write — find it by message_type.
 	doc_msg = next(m for m in backend.channel_messages if m["message_type"] == "document")
 	assert doc_msg["title"] == "My Session"
+
+
+# ── content-type + blob-path helpers ──────────────────────────────────────────
+
+from server.gateway.document import guess_content_type, _blob_path_from_url
+
+
+def test_guess_content_type_markdown():
+	assert guess_content_type("report.md") == "text/markdown"
+	assert guess_content_type("a.markdown") == "text/markdown"
+
+
+def test_guess_content_type_known_and_unknown():
+	assert guess_content_type("data.json") == "application/json"
+	assert guess_content_type("pic.png") == "image/png"
+	assert guess_content_type("doc.pdf") == "application/pdf"
+	assert guess_content_type("mystery.xyzzy") == "application/octet-stream"
+	assert guess_content_type("server.log") == "text/plain"
+
+
+def test_blob_path_from_signed_url():
+	url = "https://storage.googleapis.com/my-bucket/documents/abc123/report.md?X-Goog-Signature=deadbeef"
+	assert _blob_path_from_url(url) == "documents/abc123/report.md"
+
+
+def test_blob_path_from_url_handles_encoded_and_missing():
+	assert _blob_path_from_url("https://storage.googleapis.com/b/documents/x/a%20b.md?sig=1") == "documents/x/a b.md"
+	assert _blob_path_from_url(None) is None
+	assert _blob_path_from_url("https://example.com/not-a-doc/file.md") is None

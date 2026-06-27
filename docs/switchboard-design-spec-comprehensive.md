@@ -481,7 +481,7 @@ Floating action button → **Spawn dialog**.
 
 ### 12.2 Page B — conversation view
 
-Title bar shows the conversation title followed by the comma-joined member sender names in parentheses (e.g. 'Refactor (Claude-Win, Claude-WSL)'). cwd and dormant state are not shown in the title bar. (Not yet implemented on the phone: although `continued_from` is persisted server-side, the Android client currently renders no continuation header chip or tap-to-load-predecessor affordance.)
+Title bar shows the conversation title followed by the comma-joined member sender names in parentheses (e.g. 'Refactor (Claude-Win, Claude-WSL)'). cwd and dormant state are not shown in the title bar. When `continued_from` is set and the predecessor conversation is loaded, a slim tappable banner renders directly under the title bar reading `Continued from "<predecessor title>"`; tapping it navigates to the predecessor (multi-hop chains walk back one hop at a time). The banner is hidden when the predecessor is absent from the loaded set (aged out / not yet hydrated), so it never shows a dead affordance. The Operator dashboard surfaces the same affordance in its conversation-detail pane. (T-161; predecessor-title resolution is the shared pure helper, mirrored as `ConversationPolicy.predecessorTitle` on Android and `derive.predecessorTitle` in Operator.)
 
 Bubble feed renders messages chronologically; right-aligned for John, left for agents, system messages styled distinctly. Markdown rendering when `format == "markdown"`. Suggestion buttons under questions. A horizontal pull (drag left/right) reveals message timestamps; pinch zooms text scale.
 

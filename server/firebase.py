@@ -87,6 +87,8 @@ class FirebaseBackend(
 		self._supervised: dict[str, SupervisedListener] = {}
 		self._away_mode_cmd_queue: asyncio.Queue[dict] = asyncio.Queue()
 		self._away_mode_processed: set[str] = set()
+		self._status_request_queue: asyncio.Queue[dict] = asyncio.Queue()
+		self._status_request_processed: set[str] = set()
 
 	def _on_response(self, event):
 		if event.event_type == 'put' and event.data:
@@ -420,7 +422,36 @@ class FirebaseBackend(
 
 		await asyncio.to_thread(lambda: messaging.send(msg))
 
-	async def _upload_file(self, local_path: Path) -> str:
+	async def read_document(self, conv_id: str, msg_id: str) -> tuple[bytes, str]:
+		"""Return (bytes, filename) for a document message, downloading the blob via
+		the Admin SDK. Raises LookupError if the message is missing, is not a
+		document, or has no resolvable storage path. Raises ValueError if the blob
+		exceeds _MAX_DOCUMENT_BYTES (guard fires before download)."""
+		from server.gateway.document import _blob_path_from_url, _MAX_DOCUMENT_BYTES
+
+		msg = await asyncio.to_thread(
+			lambda: db.reference(f"conversations/{conv_id}/messages/{msg_id}").get()
+		)
+		if not isinstance(msg, dict) or msg.get("type") != "document":
+			raise LookupError(f"no document message at {conv_id}/{msg_id}")
+
+		filename = msg.get("filename") or "document"
+		blob_path = msg.get("storage_path") or _blob_path_from_url(msg.get("url"))
+		if not blob_path:
+			raise LookupError(f"document message has no resolvable blob path: {conv_id}/{msg_id}")
+
+		def _download():
+			bucket = storage.bucket(self._storage_bucket)
+			blob = bucket.blob(blob_path)
+			blob.reload()  # populate metadata (size) before downloading
+			if blob.size is not None and blob.size > _MAX_DOCUMENT_BYTES:
+				raise ValueError(f"document exceeds max size ({blob.size} bytes, max {_MAX_DOCUMENT_BYTES})")
+			return blob.download_as_bytes()
+
+		data = await asyncio.to_thread(_download)
+		return data, filename
+
+	async def _upload_file(self, local_path: Path) -> tuple[str, str]:
 		if not self._storage_bucket:
 			raise ValueError("Firebase Storage not configured (missing SWITCHBOARD_FIREBASE_STORAGE_BUCKET)")
 
@@ -429,7 +460,8 @@ class FirebaseBackend(
 			blob_name = f"documents/{_uuid.uuid4().hex}/{local_path.name}"
 			blob = bucket.blob(blob_name)
 			blob.upload_from_filename(str(local_path))
-			return blob.generate_signed_url(version="v4", expiration=7 * 24 * 60 * 60)
+			url = blob.generate_signed_url(version="v4", expiration=7 * 24 * 60 * 60)
+			return url, blob_name
 
 		return await asyncio.to_thread(_do_upload)
 
@@ -521,6 +553,41 @@ class FirebaseBackend(
 		while True:
 			yield await self._away_mode_cmd_queue.get()
 
+	def _on_status_request_command(self, event):
+		if event.event_type != 'put' or not event.data:
+			return
+		path = event.path.strip('/')
+		data = event.data
+		if not path and isinstance(data, dict):
+			for cmd_id, entry in data.items():
+				if isinstance(entry, dict) and 'type' in entry:
+					self._loop.call_soon_threadsafe(self._enqueue_status_request_cmd, cmd_id, entry)
+		elif path and isinstance(data, dict) and 'type' in data:
+			self._loop.call_soon_threadsafe(self._enqueue_status_request_cmd, path, data)
+
+	def _enqueue_status_request_cmd(self, cmd_id: str, entry: dict):
+		if cmd_id in self._status_request_processed:
+			return
+		self._status_request_processed.add(cmd_id)
+		_spawn_bg(self._status_request_queue.put(entry), label=f"status_request_cmd_enqueue:{cmd_id}")
+		self._schedule_command_delete("widget/status_request", cmd_id)
+
+	async def poll_status_request_commands(self) -> AsyncIterator[dict]:
+		from server.firebase_supervisor import SupervisedListener
+		if "status_request" not in self._supervised:
+			err = self._logger.surface_error if self._logger else _no_op_async_logger
+			sup = SupervisedListener(
+				name="status_request",
+				path="widget/status_request",
+				callback=self._on_status_request_command,
+				error_logger=err,
+				loop=self._loop,
+			)
+			self._supervised["status_request"] = sup
+			sup.start()
+		while True:
+			yield await self._status_request_queue.get()
+
 	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
 		from server.firebase_supervisor import SupervisedListener
 		if "responses" not in self._supervised:
@@ -591,6 +658,29 @@ class FirebaseBackend(
 		"""Write whether WSL is detected on this host to /global_settings/wsl_available."""
 		ref = db.reference("global_settings/wsl_available")
 		await asyncio.to_thread(ref.set, bool(available))
+
+	async def write_widget_rings(self, rings: dict) -> None:
+		"""Publish the per-session context rings map (keyed by Claude Code session_id).
+		Always fanned out; an empty map clears the node."""
+		await asyncio.to_thread(lambda: db.reference("widget/rings").set(rings or {}))
+
+	async def write_widget_quota(self, quota: dict | None) -> None:
+		"""Publish plan quota. firebase_admin rejects set(None), so a None quota
+		clears the node via delete()."""
+		ref = db.reference("widget/quota")
+		if quota is None:
+			await asyncio.to_thread(ref.delete)
+		else:
+			await asyncio.to_thread(lambda: ref.set(quota))
+
+	async def write_widget_pushed_at(self, ts: str) -> None:
+		"""Publish the last-push timestamp (staleness signal for readers)."""
+		await asyncio.to_thread(lambda: db.reference("widget/pushed_at").set(ts))
+
+	async def write_widget_status(self, status: dict) -> None:
+		"""Publish the Claude service-status view (level, description, incidents,
+		fetched_at, watch_state, button) for all surfaces to render."""
+		await asyncio.to_thread(lambda: db.reference("widget/status").set(status))
 
 	async def set_session_home(self, session_id: str, conv_id: str | None) -> None:
 		"""Persist a cli session's home-conversation pointer.
@@ -743,18 +833,24 @@ class FirebaseBackend(
 		# Document upload: if url is a local path, upload to Firebase Storage first
 		effective_url = url
 		effective_filename = filename
+		storage_path = None
 		if message_type == "document" and url and not (url.startswith("http://") or url.startswith("https://")):
 			try:
 				from pathlib import Path as _Path
 				path = _Path(url)
-				effective_url = await self._upload_file(path)
+				effective_url, storage_path = await self._upload_file(path)
 				if effective_filename is None:
 					effective_filename = path.name
 				if self._logger:
 					await self._logger.info(f"firebase_upload_success: {effective_url}")
 			except Exception as exc:
+				# Fail loudly: do NOT fall through writing the local filesystem
+				# path as the message url (the phone can't fetch it, and the
+				# agent would be told "ok"). Re-raise so send_document_human's
+				# try/except returns an ERROR string to the agent.
 				if self._logger:
 					await self._logger.surface_error(f"firebase_upload_failed: {exc}")
+				raise
 
 		now = datetime.now(timezone.utc).isoformat()
 		payload = {
@@ -774,6 +870,8 @@ class FirebaseBackend(
 			payload["url"] = effective_url
 		if effective_filename is not None:
 			payload["filename"] = effective_filename
+		if storage_path is not None:
+			payload["storage_path"] = storage_path
 		if suggestions is not None:
 			payload["suggestions"] = list(suggestions)
 		if attached_to_msg_id is not None:
@@ -855,7 +953,7 @@ class FirebaseBackend(
 			lambda: _spawn_bg(asyncio.to_thread(_delete), label=f"fb_command_delete:{node}/{cmd_id}"),
 		)
 
-	def _start_command_listener(self, node: str, handler) -> None:
+	def _start_command_listener(self, node: str, handler, *, delete_before_dispatch: bool = False) -> None:
 		"""Shared listener for the /<node> command queues (combine_commands,
 		force_end_commands, spawn_commands).
 
@@ -866,11 +964,20 @@ class FirebaseBackend(
 		  older than COMMAND_TTL_SECONDS are deleted WITH a phone-visible
 		  notice, never executed and never silently dropped (decided
 		  2026-06-11). Missing/unparseable stamps fail open (dispatch).
-		- Delivery is at-least-once: the delete is scheduled after dispatch,
+		- Delivery is at-least-once for idempotent handlers (combine/force_end,
+		  which consume Ended state): the delete is scheduled after dispatch,
 		  so a crash in between re-delivers on the next snapshot; a per-run
 		  processed-id set dedupes redeliveries within this process. A
 		  deduped redelivery is not re-deleted; if its original delete
 		  failed it lingers until the next restart's TTL pass.
+		- delete_before_dispatch=True switches to at-most-once for a
+		  NON-idempotent handler (spawn mints a conversation and launches a
+		  process every run, so a replay double-spawns). The command is
+		  deleted and the delete is awaited BEFORE the handler runs, so a
+		  crash cannot replay it from the next restart snapshot. A lost spawn
+		  (crash after the delete commits but before the launcher fires) is
+		  the safer failure mode — John re-taps when nothing appears, versus a
+		  confusing duplicate agent in a phantom conversation.
 		- Runs on the Firebase SDK listener thread: every loop-affined call
 		  is bridged via call_soon_threadsafe (M32).
 		"""
@@ -895,13 +1002,25 @@ class FirebaseBackend(
 				self._loop.call_soon_threadsafe(
 					lambda c=coro: _spawn_bg(c, label=f"fb_stale_command_notice:{node}/{cmd_id}"),
 				)
-			else:
-				# Route via _spawn_bg so a hanging or raising handler shows up
-				# in logs and the task isn't GC-eligible mid-execution.
-				coro = handler(cmd)
+				self._schedule_command_delete(node, cmd_id)
+				return
+			if delete_before_dispatch:
+				# At-most-once for the non-idempotent spawn handler: delete the
+				# command and await that delete, THEN run the handler, so a
+				# crash cannot replay the command and double-launch.
+				async def _delete_then_handle(c=cmd, cid=cmd_id):
+					await asyncio.to_thread(lambda: db.reference(f"{node}/{cid}").delete())
+					await handler(c)
 				self._loop.call_soon_threadsafe(
-					lambda c=coro: _spawn_bg(c, label=f"fb_command:{node}/{cmd_id}"),
+					lambda: _spawn_bg(_delete_then_handle(), label=f"fb_command:{node}/{cmd_id}"),
 				)
+				return
+			# Route via _spawn_bg so a hanging or raising handler shows up
+			# in logs and the task isn't GC-eligible mid-execution.
+			coro = handler(cmd)
+			self._loop.call_soon_threadsafe(
+				lambda c=coro: _spawn_bg(c, label=f"fb_command:{node}/{cmd_id}"),
+			)
 			self._schedule_command_delete(node, cmd_id)
 
 		def _on_event(event):
@@ -1021,5 +1140,9 @@ class FirebaseBackend(
 
 	async def start_spawn_command_listener(self, handler) -> None:
 		"""Listen for entries under /spawn_commands; dispatch handler(cmd_dict)
-		for each queued or new entry (initial snapshot included; TTL-gated)."""
-		self._start_command_listener("spawn_commands", handler)
+		for each queued or new entry (initial snapshot included; TTL-gated).
+
+		delete_before_dispatch=True: spawn is non-idempotent (mints a
+		conversation + launches a process), so the command is deleted before
+		the handler runs to make replay-after-crash impossible (at-most-once)."""
+		self._start_command_listener("spawn_commands", handler, delete_before_dispatch=True)

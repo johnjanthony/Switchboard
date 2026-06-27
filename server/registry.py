@@ -20,6 +20,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal
 
+# Cap on the recently-resolved memory (see Registry._recently_resolved). Bounds
+# the set in a long-running process; far larger than any realistic in-flight
+# replay window, and entries are human-paced (one per answered/ended question).
+_RECENTLY_RESOLVED_MAX = 512
+
 
 @dataclass
 class PendingRequest:
@@ -29,6 +34,11 @@ class PendingRequest:
 	future: asyncio.Future[str]
 	started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 	msg_id: str | None = None
+	# Routing identity of the asking session. The pending is keyed by the RAW
+	# agent-supplied sender, which can differ from the member's disambiguated
+	# sender; carrying the cli_session_id lets cleanup paths (session-end)
+	# match a pending to its owning member by identity rather than by name.
+	cli_session_id: str | None = None
 
 
 @dataclass
@@ -87,6 +97,13 @@ class Registry:
 		self._open_conversation_id: str | None = None
 		self.conversations: dict[str, "Conversation"] = {}
 		self._session_create_locks: dict[str, asyncio.Lock] = {}
+		# Bounded memory of recently terminally-handled (conversation_id,
+		# request_id) pairs. Lets dispatch distinguish a benign replay of an
+		# already-delivered/ended answer (e.g. the answers-listener reconnect
+		# snapshot re-enqueueing an answer whose fire-and-forget slot delete had
+		# not yet committed) from a genuinely unknown correlation, so the former
+		# does not trigger a false "reply withdrawn" notice to John (M3).
+		self._recently_resolved: "collections.OrderedDict[tuple[str, str], None]" = collections.OrderedDict()
 
 	def session_create_lock(self, cli_session_id: str) -> asyncio.Lock:
 		"""Returns (creating if needed) the per-session lock for the auto-create-on-first-call path.
@@ -154,6 +171,7 @@ class Registry:
 		request_id: str,
 		msg_id: str | None = None,
 		return_superseded: bool = False,
+		cli_session_id: str | None = None,
 	) -> asyncio.Future | tuple[asyncio.Future, str | None]:
 		"""Add a pending request. If (conversation_id, sender) is already occupied,
 		the prior PendingRequest is superseded: its future is cancelled, the entry
@@ -177,6 +195,7 @@ class Registry:
 			request_id=request_id,
 			future=future,
 			msg_id=msg_id,
+			cli_session_id=cli_session_id,
 		)
 		self._fire_pending_mirror(conversation_id, +1)
 		if return_superseded:
@@ -203,8 +222,29 @@ class Registry:
 		self._pending.pop(key, None)
 		if not record.future.done():
 			record.future.set_result(text)
+		self.total_answered += 1
+		self._record_resolved(conversation_id, record.request_id)
 		self._fire_pending_mirror(conversation_id, -1)
 		return record.request_id
+
+	def _record_resolved(self, conversation_id: str, request_id: str | None) -> None:
+		"""Remember a terminally-handled (conversation_id, request_id) so a later
+		replay of its answer is recognized as benign rather than treated as an
+		unknown correlation (M3). Bounded LRU eviction."""
+		if request_id is None:
+			return
+		key = (conversation_id, request_id)
+		self._recently_resolved.pop(key, None)
+		self._recently_resolved[key] = None
+		while len(self._recently_resolved) > _RECENTLY_RESOLVED_MAX:
+			self._recently_resolved.popitem(last=False)
+
+	def was_recently_resolved(self, conversation_id: str, request_id: str | None) -> bool:
+		"""True if (conversation_id, request_id) was resolved/ended recently (so a
+		replayed answer for it is a benign duplicate, not an unknown correlation)."""
+		if request_id is None:
+			return False
+		return (conversation_id, request_id) in self._recently_resolved
 
 	def remove(self, conversation_id: str, sender: str, request_id: str | None = None) -> str | None:
 		"""Remove the pending entry for (conversation_id, sender). Cancels the future if
@@ -272,6 +312,7 @@ class Registry:
 			resolved_request_ids.append(record.request_id)
 			if not record.future.done():
 				record.future.set_result(result_text)
+			self._record_resolved(record.conversation_id, record.request_id)
 		if resolved_request_ids:
 			self._fire_pending_mirror(conversation_id, -len(resolved_request_ids))
 		return resolved_request_ids

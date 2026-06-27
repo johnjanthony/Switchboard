@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { memberState, isActive, pendingCountFor, globalPendingCount, oldestPendingAgeSeconds } from './derive.js';
+import { memberState, isActive, pendingCountFor, globalPendingCount, oldestPendingAgeSeconds, predecessorTitle, ringForMember, ringSeverity } from './derive.js';
 
 test('memberState: alive member is alive', () => {
 	assert.equal(memberState({ alive: true, session_lost_permanently: false }), 'alive');
@@ -85,4 +85,44 @@ test('oldestPendingAgeSeconds: returns the largest age across pendings', () => {
 
 test('oldestPendingAgeSeconds: null when no pendings', () => {
 	assert.equal(oldestPendingAgeSeconds([], {}, Date.now()), null);
+});
+
+test('predecessorTitle: no continued_from pointer yields null', () => {
+	const current = { meta: { state: 'active' } };
+	assert.equal(predecessorTitle(current, { 'conv-2': current }), null);
+});
+
+test('predecessorTitle: predecessor present yields its title', () => {
+	const predecessor = { meta: { title: 'Original work', state: 'ended' } };
+	const current = { meta: { state: 'active', continued_from: 'conv-1' } };
+	const convs = { 'conv-1': predecessor, 'conv-2': current };
+	assert.equal(predecessorTitle(current, convs), 'Original work');
+});
+
+test('predecessorTitle: predecessor absent from map yields null so banner hides', () => {
+	const current = { meta: { state: 'active', continued_from: 'conv-gone' } };
+	assert.equal(predecessorTitle(current, { 'conv-2': current }), null);
+});
+
+test('ringForMember: matches by cli_session_id', () => {
+	const rings = { 's1': { pct: 0.4 }, 's2': { pct: 0.9 } };
+	assert.deepEqual(ringForMember({ cli_session_id: 's2' }, rings), { pct: 0.9 });
+});
+
+test('ringForMember: no match returns null', () => {
+	assert.equal(ringForMember({ cli_session_id: 'nope' }, { s1: { pct: 0.4 } }), null);
+});
+
+test('ringForMember: missing member or rings returns null', () => {
+	assert.equal(ringForMember(null, { s1: {} }), null);
+	assert.equal(ringForMember({ cli_session_id: 's1' }, null), null);
+	assert.equal(ringForMember({}, { s1: {} }), null);
+});
+
+test('ringSeverity: matches Watchtower thresholds', () => {
+	assert.equal(ringSeverity(0.85), 'red');   // > 0.80
+	assert.equal(ringSeverity(0.80), 'amber');  // >= 0.50, not > 0.80
+	assert.equal(ringSeverity(0.50), 'amber');
+	assert.equal(ringSeverity(0.49), 'green');
+	assert.equal(ringSeverity(null), 'cold');
 });

@@ -658,7 +658,21 @@ async def _perform_combine(
 	# runs (H08/H09: state used to say "resumed" with no process behind it).
 	if combine_resume_count:
 		from server import spawn as _spawn_mod
-		await _spawn_mod.invoke_spawn_launcher(logger)
+		try:
+			await _spawn_mod.invoke_spawn_launcher(logger)
+		except Exception as exc:
+			# The combine itself already committed (members moved); only the
+			# dormant-member relaunch failed. Surface it to the phone instead of
+			# failing the combine or leaving members "alive" with no process (B4).
+			# invoke_spawn_launcher already logged the failure.
+			if backend is not None and hasattr(backend, "send_text"):
+				try:
+					await backend.send_text(
+						f"Combined conversations, but relaunching dormant member(s) failed: {exc}. "
+						"Resume them from the phone."
+					)
+				except Exception:
+					pass
 	# Wake one waiter in target so any blocked agent sees the merge marker
 	async with target.lock:
 		_wake_one_from(target)

@@ -1,5 +1,6 @@
 package io.github.johnjanthony.switchboard.ui
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,13 +14,17 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.github.johnjanthony.switchboard.ringForMember
 import io.github.johnjanthony.switchboard.network.ConversationRow
+import io.github.johnjanthony.switchboard.network.WidgetRing
 
 @Composable
 fun TabInfoPopover(
 	row: ConversationRow,
 	awayActive: Boolean,
+	rings: Map<String, WidgetRing>,
 	onDismiss: () -> Unit,
 	onToggleHidden: () -> Unit,
 	onToggleAway: () -> Unit,
@@ -29,10 +34,33 @@ fun TabInfoPopover(
 		title = { Text(row.title) },
 		text = {
 			Column {
-				val roster = row.memberRoster
-				if (roster.isNotEmpty()) {
-					Text(roster, style = MaterialTheme.typography.bodySmall,
-						color = MaterialTheme.colorScheme.onSurfaceVariant)
+				val members = row.members
+				if (members.isEmpty()) {
+					val roster = row.memberRoster
+					if (roster.isNotEmpty()) {
+						Text(roster, style = MaterialTheme.typography.bodySmall,
+							color = MaterialTheme.colorScheme.onSurfaceVariant)
+					}
+				} else {
+					members.forEach { member ->
+						Row(
+							modifier = Modifier.fillMaxWidth(),
+							verticalAlignment = Alignment.CenterVertically,
+							horizontalArrangement = Arrangement.SpaceBetween,
+						) {
+							Text(
+								member.sender,
+								style = MaterialTheme.typography.bodyMedium,
+								maxLines = 1,
+								overflow = TextOverflow.Ellipsis,
+								modifier = Modifier.weight(1f),
+							)
+							val ring = ringForMember(member, rings)
+							if (ring != null) {
+								ContextBadge(pct = ring.pct)
+							}
+						}
+					}
 				}
 				Spacer(Modifier.height(12.dp))
 				Row(verticalAlignment = Alignment.CenterVertically) {

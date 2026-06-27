@@ -101,15 +101,25 @@ async def dispatch_responses(
 						record = registry.get((conversation_id, sender))
 						req_id = registry.resolve(conversation_id, sender, response.text, request_id=response.request_id)
 						if req_id is None:
-							await logger.surface_error(f"unknown_correlation: conversation_id={conversation_id} sender={sender}")
-							try:
-								await backend.send_stale_reply_notice(conversation_id, sender)
-							except Exception as exc:
-								await logger.surface_error(f"stale_reply_notice_failed: {exc}")
-							# Drop the orphan from `responses/` so the listener doesn't
-							# re-fire it on every server restart. We've already logged
-							# and surfaced the stale notice; the response can't be
-							# routed and there's no point keeping it around.
+							# No live pending for this correlation. Distinguish a
+							# benign replay of an answer we already delivered/ended
+							# (the answers-listener reconnect snapshot can re-enqueue
+							# an answer whose fire-and-forget slot delete had not yet
+							# committed) from a genuinely unknown correlation. Only
+							# the latter gets the phone-visible "reply withdrawn"
+							# notice; firing it for a delivered reply is a false,
+							# alarming message (M3). Either way the orphan slot is
+							# dropped so it cannot re-fire on the next restart.
+							if registry.was_recently_resolved(conversation_id, response.request_id):
+								await logger.info(
+									f"replayed_answer_ignored: conversation_id={conversation_id} request_id={response.request_id}"
+								)
+							else:
+								await logger.surface_error(f"unknown_correlation: conversation_id={conversation_id} sender={sender}")
+								try:
+									await backend.send_stale_reply_notice(conversation_id, sender)
+								except Exception as exc:
+									await logger.surface_error(f"stale_reply_notice_failed: {exc}")
 							if response.slot:
 								try:
 									await backend.delete_response_slot(response.slot)
@@ -424,6 +434,44 @@ async def dispatch_away_mode_commands(registry, backend, logger, supervisor):
 				except Exception as exc:
 					await logger.surface_error(f"away_mode_command_iteration_error: {exc}")
 
+		except asyncio.CancelledError:
+			raise
+		except Exception as exc:
+			await supervisor.record_crash(exc)
+
+
+async def dispatch_status_request_commands(service, backend, logger, supervisor):
+	"""Watch /widget-status_request for phone-initiated Claude-status checks.
+
+	Command shape (Android-emitted): {type: "check"|"stop", issued_at: "<ISO>"}.
+	check -> service.check() (fetch + maybe start the watch loop); stop -> service.stop()
+	(acknowledge). The service publishes widget/status as usual, which the phone reads.
+	Stale commands are dropped with a log line - a status check is transient and
+	idempotent, so no phone-visible notice is warranted (unlike away-mode toggles)."""
+	while True:
+		try:
+			async for cmd in backend.poll_status_request_commands():
+				supervisor.record_success()
+				try:
+					cmd_type = cmd.get("type")
+					age = command_age_seconds(cmd.get("issued_at"))
+					if age is not None and age > COMMAND_TTL_SECONDS:
+						await logger.surface_error(
+							f"status_request_command_stale_dropped: type={cmd_type} issued_at={cmd.get('issued_at')}"
+						)
+						continue
+					if cmd_type == "check":
+						await service.check()
+						await logger.info("status_request_check")
+					elif cmd_type == "stop":
+						await service.stop()
+						await logger.info("status_request_stop")
+					else:
+						await logger.surface_error(f"status_request_command_unknown_type: {cmd_type}")
+				except asyncio.CancelledError:
+					raise
+				except Exception as exc:
+					await logger.surface_error(f"status_request_command_iteration_error: {exc}")
 		except asyncio.CancelledError:
 			raise
 		except Exception as exc:

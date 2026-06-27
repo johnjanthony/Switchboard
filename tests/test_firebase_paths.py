@@ -365,3 +365,61 @@ async def test_write_admin_notification_payload_shape(backend):
 	assert payload["text"] == "Startup error detected"
 	assert payload["format"] == "markdown"
 	assert "timestamp" in payload
+
+
+# ---------------------------------------------------------------------------
+# T-180: widget hub writers
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_write_widget_rings_sets_widget_rings(backend):
+	be, mock_db = backend
+	await be.write_widget_rings({"s1": {"pct": 0.4}})
+	calls = [str(c) for c in mock_db.reference.call_args_list]
+	assert any("widget/rings" in c for c in calls)
+	mock_db.reference.return_value.set.assert_called_with({"s1": {"pct": 0.4}})
+
+
+@pytest.mark.asyncio
+async def test_write_widget_rings_empty_sets_empty_map(backend):
+	be, mock_db = backend
+	await be.write_widget_rings({})
+	mock_db.reference.return_value.set.assert_called_with({})
+
+
+@pytest.mark.asyncio
+async def test_write_widget_quota_sets_value(backend):
+	be, mock_db = backend
+	await be.write_widget_quota({"session": {"pct": 0.5}})
+	calls = [str(c) for c in mock_db.reference.call_args_list]
+	assert any("widget/quota" in c for c in calls)
+	mock_db.reference.return_value.set.assert_called_with({"session": {"pct": 0.5}})
+
+
+@pytest.mark.asyncio
+async def test_write_widget_quota_none_deletes(backend):
+	# firebase_admin rejects set(None); clearing must use delete().
+	be, mock_db = backend
+	await be.write_widget_quota(None)
+	mock_db.reference.return_value.delete.assert_called_once()
+	mock_db.reference.return_value.set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_write_widget_pushed_at_sets_string(backend):
+	be, mock_db = backend
+	await be.write_widget_pushed_at("2026-06-25T12:00:00+00:00")
+	calls = [str(c) for c in mock_db.reference.call_args_list]
+	assert any("widget/pushed_at" in c for c in calls)
+	mock_db.reference.return_value.set.assert_called_with("2026-06-25T12:00:00+00:00")
+
+
+@pytest.mark.asyncio
+async def test_write_widget_status_sets_widget_status(backend):
+	be, mock_db = backend
+	payload = {"level": "major", "watch_state": "watching", "button": "stop",
+			   "description": "Partial outage", "incidents": ["X"], "fetched_at": "2026-06-25T12:00:00+00:00"}
+	await be.write_widget_status(payload)
+	calls = [str(c) for c in mock_db.reference.call_args_list]
+	assert any("widget/status" in c for c in calls)
+	mock_db.reference.return_value.set.assert_called_with(payload)

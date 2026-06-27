@@ -17,6 +17,7 @@ internal sealed class DetailPanel : Form
 	const int PanelMargin = 6;   // horizontal inset of a group panel from the popup edge
 	const int PanelRadius = 6;
 	const int SwitchboardRowH = 24;
+	const int ClaudeStatusRowH = 40;   // status line + incident line
 
 	IReadOnlyList<SessionModel> _sessions = Array.Empty<SessionModel>();
 	Palette _palette = new(light: false);
@@ -27,7 +28,11 @@ internal sealed class DetailPanel : Form
 	SwitchboardStats? _switchboardStats;   // latest /stats; null means unavailable when enabled
 	readonly Button _openDashboard;
 
+	ClaudeStatusView? _claudeStatus;
+	readonly Button _claudeButton;
+
 	public event Action? OpenDashboardRequested;
+	public event Action? ClaudeStatusButtonClicked;
 
 	public DetailPanel()
 	{
@@ -56,6 +61,22 @@ internal sealed class DetailPanel : Form
 		_openDashboard.SizeChanged += (_, _) => ApplyButtonRegion();
 		_openDashboard.Click += (_, _) => OpenDashboardRequested?.Invoke();
 		Controls.Add(_openDashboard);
+
+		_claudeButton = new Button
+		{
+			Text = "Check Claude status",
+			FlatStyle = FlatStyle.Flat,
+			AutoSize = false,
+			Height = 26,
+			Visible = true,
+			TabStop = false,
+			Cursor = Cursors.Hand,
+			Font = new Font("Segoe UI", 8.5f),
+		};
+		_claudeButton.FlatAppearance.BorderSize = 0;
+		_claudeButton.SizeChanged += (_, _) => ApplyClaudeButtonRegion();
+		_claudeButton.Click += (_, _) => ClaudeStatusButtonClicked?.Invoke();
+		Controls.Add(_claudeButton);
 	}
 
 	void ApplyButtonRegion()
@@ -64,6 +85,15 @@ internal sealed class DetailPanel : Form
 		using var path = RoundedRect(_openDashboard.Width, _openDashboard.Height, 7);
 		var old = _openDashboard.Region;
 		_openDashboard.Region = new Region(path);
+		old?.Dispose();
+	}
+
+	void ApplyClaudeButtonRegion()
+	{
+		if (_claudeButton.Width <= 0 || _claudeButton.Height <= 0) return;
+		using var path = RoundedRect(_claudeButton.Width, _claudeButton.Height, 7);
+		var old = _claudeButton.Region;
+		_claudeButton.Region = new Region(path);
 		old?.Dispose();
 	}
 
@@ -113,12 +143,28 @@ internal sealed class DetailPanel : Form
 		Invalidate();
 	}
 
+	// Latest Claude status view (published by the server, parsed via ClaudeServerStatus.ParseView).
+	// Always shown: the button is the entry point for a manual check even before any data exists.
+	public void UpdateClaudeStatus(ClaudeStatusView view)
+	{
+		_claudeStatus = view;
+		_claudeButton.Text = view.Button switch
+		{
+			ClaudeStatusButton.StopWatching => "Stop watching",
+			ClaudeStatusButton.Clear => "Clear",
+			_ => "Check Claude status",
+		};
+		RecomputeHeight();
+		Invalidate();
+	}
+
 	void RecomputeHeight()
 	{
 		int quotaH = _quota.HasValue ? 2 * QuotaWindowRowH + 2 * GroupVPad + GroupGap : 0;
 		int ctxH = Math.Max(1, _sessions.Count) * RowH + 2 * GroupVPad;
 		int sbH = _switchboardEnabled ? SwitchboardRowH + _openDashboard.Height + 2 * GroupVPad + GroupGap : 0;
-		Height = Pad + quotaH + ctxH + sbH + Pad;
+		int csH = ClaudeStatusRowH + _claudeButton.Height + 2 * GroupVPad + GroupGap;
+		Height = Pad + quotaH + ctxH + sbH + csH + Pad;
 	}
 
 	public void ShowAbove(Rectangle widgetScreenBounds)
@@ -231,6 +277,53 @@ internal sealed class DetailPanel : Form
 			_openDashboard.FlatAppearance.MouseDownBackColor = _palette.Surface;
 			y = sbTop + sbH;
 		}
+
+		// Group 4: Claude service status (always shown; the button drives the manual check loop).
+		{
+			// Compute the top from a reliable base: the switchboard block (when drawn) already set y to its
+			// absolute bottom; otherwise the context group's bottom is ctxTop + ctxH (y drifts short of it).
+			int prevBottom = _switchboardEnabled ? y : ctxTop + ctxH;
+			int csTop = prevBottom + GroupGap;
+			int csH = ClaudeStatusRowH + _claudeButton.Height + 2 * GroupVPad;
+			DrawGroupPanel(g, csTop, csH);
+			int inner = csTop + GroupVPad;
+
+			var view = _claudeStatus;
+			var level = view?.DotLevel ?? ClaudeStatusLevel.Unknown;
+			Color dotColor = view is { HasData: true } || view is { DotVisible: true }
+				? Palette.ForClaudeStatus(level)
+				: _palette.Muted;
+			using (var dot = new SolidBrush(dotColor)) g.FillEllipse(dot, Pad, inner + 3, 8, 8);
+
+			string headline = view is null || !view.HasData
+				? "Claude status: not checked"
+				: $"Claude: {(view.Description.Length > 0 ? view.Description : level.ToString())}";
+			g.DrawString(Ellipsize(g, headline, label, Width - (Pad + 16) - Pad), label, textBrush, Pad + 16, inner);
+
+			// "checked N ago" sits on line 2 (right) so it never collides with a long headline.
+			string ago = view is { FetchedAtUtc: DateTime fetched }
+				? "checked " + RelativeTime.Ago(fetched, DateTime.UtcNow)
+				: "";
+			float agoW = ago.Length > 0 ? g.MeasureString(ago, small).Width : 0f;
+			if (ago.Length > 0)
+				g.DrawString(ago, small, mutedBrush, Width - Pad - agoW, inner + 18);
+
+			string second = view is { IncidentNames.Count: > 0 }
+				? string.Join("; ", view.IncidentNames)
+				: "";
+			if (second.Length > 0)
+			{
+				float avail = Width - (Pad + 16) - agoW - 8f;
+				g.DrawString(Ellipsize(g, second, small, avail), small, mutedBrush, Pad + 16, inner + 18);
+			}
+
+			_claudeButton.Location = new Point(Pad, csTop + GroupVPad + ClaudeStatusRowH);
+			_claudeButton.Width = Width - 2 * Pad;
+			_claudeButton.BackColor = _palette.Track;
+			_claudeButton.ForeColor = _palette.Text;
+			_claudeButton.FlatAppearance.MouseOverBackColor = ControlPaint.Light(_palette.Track, 0.2f);
+			_claudeButton.FlatAppearance.MouseDownBackColor = _palette.Surface;
+		}
 	}
 
 	int DrawQuotaWindow(Graphics g, int y, string name, QuotaWindow w, TimeSpan duration, Font label, Font small)
@@ -310,6 +403,19 @@ internal sealed class DetailPanel : Form
 		path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
 		path.CloseFigure();
 		g.FillPath(brush, path);
+	}
+
+	// Trim text to fit maxWidth, appending an ellipsis. Returns the input unchanged when it already fits.
+	static string Ellipsize(Graphics g, string text, Font font, float maxWidth)
+	{
+		if (maxWidth <= 0 || g.MeasureString(text, font).Width <= maxWidth) return text;
+		const string ell = "...";
+		for (int len = text.Length - 1; len > 0; len--)
+		{
+			string candidate = text.Substring(0, len) + ell;
+			if (g.MeasureString(candidate, font).Width <= maxWidth) return candidate;
+		}
+		return ell;
 	}
 
 	static string ShortModel(string? model)

@@ -38,6 +38,20 @@ class TestPendingByKey:
 			assert isinstance(fut, asyncio.Future)
 		asyncio.run(run())
 
+	def test_resolve_increments_total_answered(self):
+		"""A successful resolve bumps total_answered (surfaced on /healthz and the
+		Operator dashboard, which otherwise reads a permanently-zero counter)."""
+		async def run():
+			r = Registry()
+			assert r.total_answered == 0
+			r.add(conversation_id="conv-1", sender="Claude", request_id="r1")
+			r.resolve("conv-1", "Claude", "the answer", request_id="r1")
+			assert r.total_answered == 1
+			# A no-op resolve (no pending / request_id mismatch) does not bump it.
+			r.resolve("conv-1", "Claude", "stale", request_id="r1")
+			assert r.total_answered == 1
+		asyncio.run(run())
+
 	def test_supersede_returns_none_when_slot_was_empty(self):
 		async def run():
 			r = Registry()

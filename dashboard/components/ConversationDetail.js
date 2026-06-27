@@ -1,7 +1,8 @@
 import { html, useState } from "../vendor/htm-preact.js";
 import * as fb from "../firebase.js";
-import { memberState, isActive } from "../derive.js";
+import { memberState, isActive, predecessorTitle, ringForMember, ringSeverity } from "../derive.js";
 import { renderMarkdown } from "../markdown.js";
+import { documentPillHtml } from "../document.js";
 import { answerCmd, resumeCmd, combineCmd, forceEndCmd } from "../commands.js";
 import { PaneBanner } from "./PaneBanner.js";
 
@@ -26,7 +27,7 @@ function fmtMsgTime(ts) {
 	return Number.isNaN(d.getTime()) ? String(ts) : d.toLocaleTimeString();
 }
 
-function Roster({ conv }) {
+function Roster({ conv, rings }) {
 	const members = (conv && conv.members) || {};
 	const agentStatus = (conv && conv.agentStatus) || {};
 	const entries = Object.entries(members);
@@ -35,10 +36,13 @@ function Roster({ conv }) {
 		<div class="roster">
 			${entries.map(([sender, m]) => {
 				const status = agentStatus[sender];
+				const ring = ringForMember(m, rings);
+				const pct = ring ? Math.round((Number(ring.pct) || 0) * 100) : null;
 				return html`
 					<div class="member" key=${sender}>
 						<span class=${MEMBER_LAMP[memberState(m)] || "lamp lamp-cold"}></span>
 						<span class="member-name">${sender}</span>
+						${ring ? html`<span class=${"ctx-pct ctx-" + ringSeverity(ring.pct)} title=${"Context window " + pct + "% full"}>${pct}%</span>` : null}
 						<span class="member-surface">${m.surface || ""}</span>
 						${status
 							? html`<span class="member-status">${status.state}${status.detail ? ": " + status.detail : ""}</span>`
@@ -50,14 +54,17 @@ function Roster({ conv }) {
 	`;
 }
 
-function MessageBody({ msg }) {
-	const inner = msg.format === "markdown"
+function MessageBody({ msg, convId, msgId }) {
+	const body = msg.format === "markdown"
 		? renderMarkdown(msg.text)
 		: `<p>${escapePlain(msg.text).replace(/\n/g, "<br />")}</p>`;
+	// A document message carries the caption in text (rendered above) plus a url +
+	// filename; append the pill linking to the preview page.
+	const inner = body + documentPillHtml(msg, convId, msgId);
 	return html`<div class="msg-body" dangerouslySetInnerHTML=${{ __html: inner }}></div>`;
 }
 
-function Transcript({ conv, pendingMsgIds }) {
+function Transcript({ conv, convId, pendingMsgIds }) {
 	const messages = (conv && conv.messages) || {};
 	// A currently-pending question already shows in its own answer box below, so
 	// suppress its transcript copy. Once answered it is no longer pending and
@@ -85,7 +92,7 @@ function Transcript({ conv, pendingMsgIds }) {
 							<span class="msg-sender">${m.sender}</span>
 							<span class="msg-time">${fmtMsgTime(m.timestamp)}</span>
 						</div>
-						<div class="msg-bubble"><${MessageBody} msg=${m} /></div>
+						<div class="msg-bubble"><${MessageBody} msg=${m} convId=${convId} msgId=${msgId} /></div>
 					</div>
 				`;
 			})}
@@ -201,6 +208,18 @@ function DropDialog({ convId, onClose }) {
 	`;
 }
 
+// Slim tappable banner shown under the title row when this line was continued from
+// a predecessor (meta.continued_from resolves to a loaded conversation). Clicking it
+// selects the predecessor in the center pane; multi-hop chains walk back one at a time.
+function PredecessorBanner({ title, onOpen }) {
+	return html`
+		<button class="predecessor-banner" onClick=${onOpen} title="Open the predecessor line">
+			<span class="predecessor-arrow">↩</span>
+			<span>Continued from "<span class="predecessor-title">${title}</span>"</span>
+		</button>
+	`;
+}
+
 export function ConversationDetail({ store }) {
 	const state = store.getState();
 	const id = state.selectedConversationId;
@@ -220,6 +239,8 @@ export function ConversationDetail({ store }) {
 
 	const meta = conv && conv.meta;
 	const active = isActive(meta);
+	const predTitle = predecessorTitle(conv, state.conversations);
+	const predecessorId = meta ? meta.continued_from : null;
 	const members = (conv && conv.members) || {};
 	const memberList = Object.values(members);
 	const restorable = memberList.length > 0 && memberList.every((m) => memberState(m) === "dormant");
@@ -248,13 +269,14 @@ export function ConversationDetail({ store }) {
 							onClick=${() => setDialog("drop")}>Drop line</button>
 					</div>
 				</div>
+				${predTitle ? html`<${PredecessorBanner} title=${predTitle} onOpen=${() => store.selectConversation(predecessorId)} />` : null}
+				<${Roster} conv=${conv} rings=${state.widget.rings} />
 				${dialog === "restore" ? html`<${RestoreDialog} conv=${conv} convId=${id} onClose=${close} />` : null}
 				${dialog === "patch" ? html`<${PatchDialog} store=${store} convId=${id} onClose=${close} />` : null}
 				${dialog === "drop" ? html`<${DropDialog} convId=${id} onClose=${close} />` : null}
 			</div>
 			<div class="detail-body">
-				<${Roster} conv=${conv} />
-				<${Transcript} conv=${conv} pendingMsgIds=${pendingMsgIds} />
+				<${Transcript} conv=${conv} convId=${id} pendingMsgIds=${pendingMsgIds} />
 				<div class="pending-stack">
 					${pendings.map((p) => html`<${AnswerBox} key=${p.requestId} convId=${id} pending=${p} />`)}
 				</div>

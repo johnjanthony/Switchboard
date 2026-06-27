@@ -65,13 +65,13 @@ fun AgentStatusRow(status: AgentStatus) {
 				.size(10.dp)
 				.scale(scaleAnim)
 				.alpha(alphaAnim)
-				.background(MaterialTheme.colorScheme.primary, CircleShape),
+				.background(MaterialTheme.colorScheme.secondary, CircleShape),
 		)
 		Spacer(Modifier.width(8.dp))
 		Text(
 			text = renderStatusText(status),
 			style = MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic),
-			color = MaterialTheme.colorScheme.primary,
+			color = MaterialTheme.colorScheme.secondary,
 			maxLines = 1,
 			overflow = TextOverflow.Ellipsis,
 		)

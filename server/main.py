@@ -29,6 +29,7 @@ from server.gateway.dispatch import (
 	dispatch_spawn_commands,
 	dispatch_away_mode_commands,
 	dispatch_session_end_markers,
+	dispatch_status_request_commands,
 )
 from server.gateway.bg_tasks import _spawn_bg
 from server.hydration import hydrate_from_firebase
@@ -37,6 +38,8 @@ from server.registry import Registry
 from server.rate_limiter import RateLimiter
 from server.firebase import FirebaseBackend
 from server.firebase_supervisor import LoopSupervisor
+from server.widget_snapshot import WidgetSnapshotStore
+from server.claude_status import ClaudeStatusService
 
 
 def _build_away_mode_route(registry: Registry):
@@ -137,6 +140,97 @@ def _build_stats_route(registry: Registry, backend, loop_sups: dict):
 			"healthy": healthy,
 		})
 	return stats
+
+
+def _build_widget_snapshot_route(store, backend, logger):
+	"""POST /widget-snapshot - Watchtower pushes its rings + quota snapshot here
+	(localhost trust, same model as /stats and /agent_status). The store diffs
+	against the last push so RTDB is written only on change; pushed_at is always
+	written so readers can show staleness."""
+	_RING_FIELDS = ("pct", "model", "status", "context_tokens", "window", "is_error")
+
+	async def widget_snapshot(request: Request):
+		try:
+			body = await request.json()
+		except Exception:
+			return JSONResponse({"error": "invalid json"}, status_code=400)
+		if not isinstance(body, dict):
+			return JSONResponse({"error": "expected object"}, status_code=400)
+		rings_list = body.get("rings")
+		if not isinstance(rings_list, list):
+			return JSONResponse({"error": "rings must be a list"}, status_code=400)
+		quota = body.get("quota")
+		pushed_at = body.get("pushed_at") or ""
+
+		rings_map: dict = {}
+		for r in rings_list:
+			if isinstance(r, dict) and isinstance(r.get("session_id"), str):
+				rings_map[r["session_id"]] = {k: r.get(k) for k in _RING_FIELDS}
+
+		rings_changed, quota_changed = store.apply(rings_map, quota, pushed_at)
+		try:
+			if rings_changed:
+				await backend.write_widget_rings(rings_map)
+			if quota_changed:
+				await backend.write_widget_quota(quota)
+			await backend.write_widget_pushed_at(pushed_at)
+		except Exception as exc:
+			await logger.surface_error(f"widget_snapshot_write_error: {exc}")
+			return JSONResponse({"error": "write failed"}, status_code=502)
+		return JSONResponse({"ok": True, "rings_changed": rings_changed, "quota_changed": quota_changed})
+
+	return widget_snapshot
+
+
+def _build_widget_status_route(service):
+	"""POST /widget-status {action: check|stop} - the same-origin control surface
+	Operator (and later Watchtower) use to drive the server-owned status watch.
+	Localhost trust, like /widget-snapshot. Returns the current view."""
+	async def widget_status(request: Request):
+		if request.method == "GET":
+			return JSONResponse(service.view())
+		try:
+			body = await request.json()
+		except Exception:
+			body = {}
+		action = request.query_params.get("action") or (body.get("action") if isinstance(body, dict) else None)
+		if action == "check":
+			return JSONResponse(await service.check())
+		if action == "stop":
+			return JSONResponse(await service.stop())
+		return JSONResponse({"error": "unknown action"}, status_code=400)
+
+	return widget_status
+
+
+def _build_document_route(backend):
+	"""GET /document?conv=&msg=[&download=1] — same-origin proxy that streams a
+	document message's bytes so the Operator preview page can render content
+	without a cross-origin fetch. Localhost-trust, same model as /stats: it only
+	serves blobs referenced by an existing document message."""
+	from server.gateway.document import guess_content_type
+	from starlette.responses import Response
+	from urllib.parse import quote
+
+	async def document(request: Request):
+		conv = request.query_params.get("conv")
+		msg = request.query_params.get("msg")
+		if not conv or not msg:
+			return Response("missing conv/msg", status_code=400)
+		try:
+			data, filename = await backend.read_document(conv, msg)
+		except LookupError:
+			return Response("not found", status_code=404)
+		except Exception:
+			return Response("download failed", status_code=502)
+		disposition = "attachment" if request.query_params.get("download") else "inline"
+		return Response(
+			data,
+			media_type=guess_content_type(filename),
+			headers={"Content-Disposition": f'{disposition}; filename="{quote(filename)}"'},
+		)
+
+	return document
 
 
 def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
@@ -468,6 +562,7 @@ async def _run(config: Config) -> None:
 		"dispatch_spawn_commands": LoopSupervisor("dispatch_spawn_commands", backend, logger.surface_error),
 		"dispatch_away_mode_commands": LoopSupervisor("dispatch_away_mode_commands", backend, logger.surface_error),
 		"dispatch_session_end_markers": LoopSupervisor("dispatch_session_end_markers", backend, logger.surface_error),
+		"dispatch_status_request_commands": LoopSupervisor("dispatch_status_request_commands", backend, logger.surface_error),
 	}
 	mcp = _build_fastmcp(handlers, config.host)
 
@@ -505,9 +600,14 @@ async def _run(config: Config) -> None:
 			"dispatch_loops": dispatch_loops,
 		})
 
+	widget_store = WidgetSnapshotStore()
+	claude_status_service = ClaudeStatusService(publish=backend.write_widget_status)
 	app.add_route("/healthz", healthz, methods=["GET"])
+	app.add_route("/widget-snapshot", _build_widget_snapshot_route(widget_store, backend, logger), methods=["POST"])
+	app.add_route("/widget-status", _build_widget_status_route(claude_status_service), methods=["GET", "POST"])
 	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
 	app.add_route("/stats", _build_stats_route(registry, backend, loop_sups), methods=["GET"])
+	app.add_route("/document", _build_document_route(backend), methods=["GET"])
 	app.add_route("/agent_status", _build_agent_status_route(handlers), methods=["POST"])
 	app.add_route("/cli-session/end", _build_cli_session_end_route(registry, backend=backend, logger=logger), methods=["POST"])
 
@@ -549,6 +649,12 @@ async def _run(config: Config) -> None:
 		dispatch_away_mode_commands(registry, backend, logger, loop_sups["dispatch_away_mode_commands"])
 	)
 
+	status_request_task = asyncio.create_task(
+		dispatch_status_request_commands(
+			claude_status_service, backend, logger, loop_sups["dispatch_status_request_commands"]
+		)
+	)
+
 	session_end_markers_task = asyncio.create_task(
 		dispatch_session_end_markers(
 			registry, backend, logger, loop_sups["dispatch_session_end_markers"],
@@ -579,6 +685,7 @@ async def _run(config: Config) -> None:
 		spawn_task.cancel()
 		away_mode_task.cancel()
 		session_end_markers_task.cancel()
+		status_request_task.cancel()
 		with contextlib.suppress(asyncio.CancelledError):
 			await dispatch_task
 		with contextlib.suppress(asyncio.CancelledError):
@@ -591,6 +698,14 @@ async def _run(config: Config) -> None:
 			await away_mode_task
 		with contextlib.suppress(asyncio.CancelledError):
 			await session_end_markers_task
+		with contextlib.suppress(asyncio.CancelledError):
+			await status_request_task
+		# Flush outstanding fire-and-forget background writes (member removals,
+		# answer-history writes, pending-question cleanups, etc.) before the loop
+		# closes, so a clean shutdown doesn't drop them. Bounded so a stuck write
+		# can't hang shutdown.
+		from server.gateway.bg_tasks import drain_bg_tasks
+		await drain_bg_tasks(timeout=5.0)
 		await backend.aclose()
 
 

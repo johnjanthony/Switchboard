@@ -14,6 +14,7 @@ public sealed class AppConfig
 	public bool ShowQuota { get; set; } = true;
 	public int QuotaPollMinutes { get; set; } = 5;   // plan-usage poll cadence; 1, 5, 15, or 60
 	public SwitchboardConfig Switchboard { get; set; } = new();
+	public ClaudeStatusConfig ClaudeStatus { get; set; } = new();
 
 	public static string DefaultPath => Path.Combine(
 		Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -73,6 +74,9 @@ public sealed class SwitchboardConfig
 	/// <summary>Localhost stats endpoint the widget polls. Point at the Windows host IP for a WSL-hosted server.</summary>
 	public string StatsUrl { get; set; } = "http://localhost:9876/stats";
 
+	/// <summary>Localhost ingest endpoint Watchtower POSTs its rings + quota snapshot to. Point at the Windows host IP for a WSL-hosted server.</summary>
+	public string SnapshotUrl { get; set; } = "http://localhost:9876/widget-snapshot";
+
 	/// <summary>Operator dashboard URL the launcher opens; may have #conv=&lt;id&gt; appended to deep-link.</summary>
 	public string DashboardUrl { get; set; } = "http://localhost:9876/dashboard";
 
@@ -81,4 +85,16 @@ public sealed class SwitchboardConfig
 
 	/// <summary>How often (seconds) to poll /stats. Decoupled from the 60s session-scan cadence so the pending badge updates near-instantly. Floored at 2s.</summary>
 	public int PollSeconds { get; set; } = 4;
+}
+
+/// <summary>Watchtower's Claude service-status indicator: now a thin client of the server's
+/// /widget-status (the watch loop + fetch live on the server). StatusUrl is the server endpoint;
+/// PollSeconds is how often the dot re-syncs from the server.</summary>
+public sealed class ClaudeStatusConfig
+{
+	/// <summary>The server's status endpoint Watchtower GETs (view) and POSTs (check/stop) against.</summary>
+	public string StatusUrl { get; set; } = "http://localhost:9876/widget-status";
+
+	/// <summary>How often (seconds) to re-sync the dot from the server view. Floored at 2s by the host.</summary>
+	public int PollSeconds { get; set; } = 5;
 }

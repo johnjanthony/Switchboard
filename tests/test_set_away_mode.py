@@ -65,6 +65,35 @@ async def test_set_away_mode_false(cfg, logger):
 
 
 @pytest.mark.asyncio
+async def test_set_away_mode_false_flips_flag_before_bulk_resolve(cfg, logger, monkeypatch):
+	"""A2: the in-memory flag must flip to False BEFORE the bulk-resolve runs.
+	Otherwise, during the bulk-resolve's awaits the flag is still True, so a
+	concurrently-arriving ask_human passes the at-desk gate and registers a new
+	pending the snapshot does not cover — stranding it until the 24h timeout."""
+	import server.gateway.bulk_respond as bulk_mod
+
+	backend = RecordingBackend()
+	registry = Registry()
+	registry.global_away_mode = True
+	# A pending so the bulk-resolve branch actually executes.
+	registry.add(conversation_id="conv-1", sender="Claude", request_id="r1", cli_session_id="s-1")
+
+	seen = {}
+
+	async def _spy(reg, be, log, decision, default_text):
+		seen["away_at_call"] = reg.global_away_mode
+		return True
+
+	monkeypatch.setattr(bulk_mod, "_apply_bulk_respond_decision", _spy)
+
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	await handlers.set_away_mode(False, cli_session_id="s-2", cwd="C:/X")
+
+	assert seen["away_at_call"] is False, "flag must be flipped to False before the bulk-resolve runs"
+	assert registry.global_away_mode is False
+
+
+@pytest.mark.asyncio
 async def test_set_away_mode_idempotent(cfg, logger):
 	"""Calling set_away_mode(True) twice keeps the flag True."""
 	backend = RecordingBackend()

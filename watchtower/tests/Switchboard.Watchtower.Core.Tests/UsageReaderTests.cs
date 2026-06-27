@@ -40,4 +40,17 @@ public class UsageReaderTests
 		try { Assert.Throws<InvalidDataException>(() => UsageReader.Read(path, null, Now, 90)); }
 		finally { File.Delete(path); }
 	}
+
+	[Fact]
+	public void Read_sets_session_id_from_transcript_filename()
+	{
+		var line = "{\"type\":\"assistant\",\"cwd\":\"/home/janthony/work/rpdm\",\"message\":{\"model\":\"claude-opus-4-8\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}";
+		var path = TempFile(line);
+		try
+		{
+			var m = UsageReader.Read(path, distro: null, nowUtc: Now, liveThresholdSeconds: 90);
+			Assert.Equal(Path.GetFileNameWithoutExtension(path), m.SessionId);
+		}
+		finally { File.Delete(path); }
+	}
 }

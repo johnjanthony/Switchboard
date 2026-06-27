@@ -32,9 +32,13 @@ async def invoke_spawn_launcher(logger) -> None:
 			error_msg = stderr.decode().strip() or f"exit code {proc.returncode}"
 			raise RuntimeError(error_msg)
 	except Exception as exc:
-		if logger is None:
-			raise
-		await logger.surface_error(f"spawn_invoke_launcher_failed: {exc}")
+		# Always propagate after logging: a launcher failure must reach the
+		# caller so it can surface a phone-visible notice (B4). It previously
+		# log-and-returned when a logger was present, silently leaving John in
+		# away mode with a conversation no agent ever joined.
+		if logger is not None:
+			await logger.surface_error(f"spawn_invoke_launcher_failed: {exc}")
+		raise
 
 
 async def user_has_interactive_session() -> bool:
@@ -345,8 +349,16 @@ class SpawnHandler:
 		pending_path = self._pending_dir / f"spawn-pending-{spawn_id}.json"
 		pending_path.write_text(json.dumps(pending, indent=2), encoding="utf-8")
 
-		# Trigger launcher
-		await self._invoke_launcher()
+		# Trigger launcher. On failure, tell John on the phone (consistent with
+		# the quser gate) rather than silently leaving a conversation that no
+		# agent ever joins while away mode is on (B4).
+		try:
+			await self._invoke_launcher()
+		except Exception as exc:
+			await self._backend.send_text(
+				f"Spawn failed to launch '{project}' ({surface}): {exc}. "
+				"No agent started; end the conversation from the phone and retry."
+			)
 
 	async def handle_resume(self, cmd: dict) -> None:
 		"""Handle a 'resume' spawn command from Firebase.
@@ -519,7 +531,15 @@ class SpawnHandler:
 		}
 		pending_path = self._pending_dir / f"spawn-pending-{spawn_id}.json"
 		pending_path.write_text(json.dumps(pending, indent=2), encoding="utf-8")
-		await self._invoke_launcher()
+		# On launcher failure, surface a phone-visible notice rather than leaving
+		# the resumed members marked alive with no process behind them (B4).
+		try:
+			await self._invoke_launcher()
+		except Exception as exc:
+			await self._backend.send_text(
+				f"Resume failed to launch (continued from {source_id}): {exc}. "
+				"No agent started; end the conversation from the phone and retry."
+			)
 
 	async def _user_has_interactive_session(self) -> bool:
 		"""See module-level user_has_interactive_session(). Kept as a method so

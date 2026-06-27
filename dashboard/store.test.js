@@ -14,10 +14,10 @@ function makeFakeStorage(initial = {}) {
 }
 
 function makeFakeFb() {
-	const calls = { onValue: [], onChildAdded: [], onChildChanged: [], onChildRemoved: [], pushed: [], set: [], updated: [], unsubs: [] };
+	const calls = { onValue: [], onChildAdded: [], onChildChanged: [], onChildRemoved: [], pushed: [], set: [], unsubs: [] };
 	function recorder(kind) {
-		return (path, cb) => {
-			const entry = { path, cb };
+		return (path, cb, errCb) => {
+			const entry = { path, cb, errCb };
 			calls[kind].push(entry);
 			const unsub = () => { calls.unsubs.push({ kind, path }); };
 			entry.unsub = unsub;
@@ -34,7 +34,6 @@ function makeFakeFb() {
 		onChildRemoved: recorder('onChildRemoved'),
 		pushValue: (path, value) => { calls.pushed.push({ path, value }); return Promise.resolve(); },
 		setValue: (path, value) => { calls.set.push({ path, value }); return Promise.resolve(); },
-		updateValue: (path, value) => { calls.updated.push({ path, value }); return Promise.resolve(); },
 		nowIso: () => '2026-06-15T12:00:00.000Z',
 	};
 }
@@ -58,6 +57,7 @@ test('initialState shape is exactly the contract', () => {
 		wslAvailable: false,
 		conversations: {},
 		adminNotifications: {},
+		widget: { rings: {}, quota: null, status: null, pushedAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
 		messageTimestampResolver: {},
@@ -65,6 +65,28 @@ test('initialState shape is exactly the contract', () => {
 		ui: { leftCollapsed: false, rightCollapsed: false, leftWidth: 280, awayOffDialogOpen: false },
 		paneErrors: {},
 	});
+});
+
+test('widget rings listener updates state.widget.rings', () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const entry = fb.calls.onValue.find((e) => e.path === paths.widgetRings());
+	assert.ok(entry, 'widget/rings listener attached');
+	entry.cb({ s1: { pct: 0.4 } });
+	assert.deepEqual(store.getState().widget.rings, { s1: { pct: 0.4 } });
+	entry.cb(null);
+	assert.deepEqual(store.getState().widget.rings, {});
+});
+
+test('widget status listener updates state.widget.status', () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const entry = fb.calls.onValue.find((e) => e.path === paths.widgetStatus());
+	assert.ok(entry, 'widget/status listener attached');
+	entry.cb({ watch_state: 'watching', level: 'major', button: 'stop' });
+	assert.deepEqual(store.getState().widget.status, { watch_state: 'watching', level: 'major', button: 'stop' });
+	entry.cb(null);
+	assert.equal(store.getState().widget.status, null);
 });
 
 test('initialState reads and clamps leftWidth from storage', () => {
@@ -249,6 +271,38 @@ test('startGlobalListeners wires conversation/global/admin listeners', () => {
 	assert.ok(valuePaths.includes('global_settings/away_mode'));
 	assert.ok(valuePaths.includes('global_settings/open_conversation_id'));
 	assert.ok(valuePaths.includes('global_settings/wsl_available'));
+});
+
+test('a denied global read routes back to the sign-in gate with an error (M4)', () => {
+	// A wrong/unauthorized Google account yields an authed session where every
+	// RTDB read is denied. Without an error callback the listeners silently
+	// detach and the dashboard blanks. The global listeners must register an
+	// error callback that drops back to the sign-in gate with a message.
+	const { store, fb } = makeStore();
+	store.setAuthed(true, { email: 'wrong@example.com' });
+	store.startGlobalListeners();
+
+	const entry = fb.calls.onChildAdded.find((e) => e.path === 'conversations');
+	assert.ok(entry, 'conversations listener attached');
+	assert.equal(typeof entry.errCb, 'function', 'global listener must register an error callback');
+
+	entry.errCb(new Error('PERMISSION_DENIED'));
+	const s = store.getState();
+	assert.equal(s.authed, false, 'a denied global read returns to the sign-in gate');
+	assert.ok(s.authError && s.authError.length > 0, 'an explanatory auth error is set');
+});
+
+test('a denied conversation read surfaces a detail pane error (M4)', () => {
+	const { store, fb } = makeStore();
+	store.upsertConversationMeta('c1', { state: 'active' });
+	store.selectConversation('c1');
+
+	const entry = fb.calls.onValue.find((e) => e.path === 'conversations/c1/messages');
+	assert.ok(entry, 'selection listener attached');
+	assert.equal(typeof entry.errCb, 'function', 'selection listener must register an error callback');
+
+	entry.errCb(new Error('PERMISSION_DENIED'));
+	assert.ok(store.getState().paneErrors.detail, 'the detail pane error is set on a denied read');
 });
 
 test('an active conversation meta attaches a pending_questions listener', () => {

@@ -1,6 +1,7 @@
-// RTDB path builders. Single source of truth for the schema coupling that
-// direct-RTDB reads imply, per the design's "single schema module" decision.
-// Paths and field names are pinned to the verified Appendix contract.
+// RTDB read-path builders: the single source of truth for the paths the store
+// subscribes to (direct-RTDB reads). Field names are pinned to the verified
+// Appendix contract. Write-command paths (away/spawn/combine/force-end/answer/
+// meta-hidden) live with their builders in commands.js.
 // NOTE: unread_count and pending_responses are intentionally NOT exposed here
 // for v1 (per spec): the dashboard derives pending counts by enumerating
 // pending_questions children, not the pending_responses mirror counter, and
@@ -8,10 +9,6 @@
 
 export function conversations() {
 	return 'conversations';
-}
-
-export function conversationMeta(id) {
-	return `conversations/${id}/meta`;
 }
 
 export function membersActive(id) {
@@ -30,14 +27,6 @@ export function messages(id) {
 	return `conversations/${id}/messages`;
 }
 
-export function answer(id, requestId) {
-	return `conversations/${id}/answers/${requestId}`;
-}
-
-export function metaHidden(id) {
-	return `conversations/${id}/meta/hidden`;
-}
-
 export function globalAway() {
 	return 'global_settings/away_mode';
 }
@@ -54,18 +43,18 @@ export function adminNotifications() {
 	return 'admin_notifications';
 }
 
-export function awayCommands() {
-	return 'away_mode_commands';
+export function widgetRings() {
+	return 'widget/rings';
 }
 
-export function spawnCommands() {
-	return 'spawn_commands';
+export function widgetQuota() {
+	return 'widget/quota';
 }
 
-export function combineCommands() {
-	return 'combine_commands';
+export function widgetPushedAt() {
+	return 'widget/pushed_at';
 }
 
-export function forceEndCommands() {
-	return 'force_end_commands';
+export function widgetStatus() {
+	return 'widget/status';
 }
