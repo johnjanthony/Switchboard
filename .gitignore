@@ -47,3 +47,12 @@ watchtower/**/publish/
 **/*.user
 **/*.suo
 .vs/
+
+# Internal working docs and journals: kept on disk, not published.
+# Design specs under docs/superpowers/specs/ and the comprehensive spec stay tracked;
+# top-level docs/*.md (plans, reviews, handoffs) and docs/tracking/ do not.
+/AGENTS.md
+/PROJECT-JOURNAL.md
+/docs/*.md
+!/docs/switchboard-design-spec-comprehensive.md
+/docs/tracking/

@@ -18,7 +18,7 @@ Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task an
 
 ## Design & Architecture
 
-For an agent-oriented project tour, see [`AGENTS.md`](AGENTS.md). The current design is documented in [`docs/switchboard-design-spec-comprehensive.md`](docs/switchboard-design-spec-comprehensive.md) — covers the Conversation primitive, session-id routing, MCP tool surface, hook plumbing, Firebase schema, spawn (fresh / resume / combine), away mode, hydration, and the Android UI surface.
+For an agent-oriented project tour, see [`CLAUDE.md`](CLAUDE.md). The current design is documented in [`docs/switchboard-design-spec-comprehensive.md`](docs/switchboard-design-spec-comprehensive.md) — covers the Conversation primitive, session-id routing, MCP tool surface, hook plumbing, Firebase schema, spawn (fresh / resume / combine), away mode, hydration, and the Android UI surface.
 
 ## Install
 

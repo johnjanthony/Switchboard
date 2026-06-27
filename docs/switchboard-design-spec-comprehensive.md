@@ -605,6 +605,5 @@ Gemini CLI gets a separate AfterAgent hook installed via `scripts/install-turn-e
 ## 16. Related repos and docs
 
 - `skills/switchboard/SKILL.md` — agent-facing protocol reference (away-mode rules, tool signatures, conversation lifecycle hints).
-- `CLAUDE.md` (project root) — Claude Code orientation for working in this repo.
-- `AGENTS.md` (project root) — agent-oriented project tour.
+- `CLAUDE.md` (project root) — agent orientation and project tour for working in this repo.
 - `docs/superpowers/specs/` — dated design history. Not authoritative for current behavior; preserved for the reasoning trail.
