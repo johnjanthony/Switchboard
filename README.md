@@ -55,6 +55,10 @@ Switchboard reads its configuration from OS env vars. A `.env` file is loaded as
 
 Firebase is mandatory. The server exits at startup with a ConfigError if `FIREBASE_DATABASE_URL` or `FIREBASE_SERVICE_ACCOUNT_JSON` is unset; there is no Android-disabled run mode.
 
+### Realtime Database security rules
+
+`database.rules.json` locks the RTDB down to a single owner identity. It ships with a placeholder UID: replace `YOUR_FIREBASE_UID` with your own Firebase Auth UID (the one your Android app and the web Operator sign in as) and deploy the rules to your project (`firebase deploy --only database`, or paste them in the Firebase console under Realtime Database → Rules). Without this, the server's reads and writes are rejected.
+
 ## Wire your agent to it
 
 ### AI Agents (Claude, Gemini, etc.)
