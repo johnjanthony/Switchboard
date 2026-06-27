@@ -4,10 +4,13 @@
 
 Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task and ask you a question via a native Android app. Designed for away-from-desk workflows where you want your agents to continue working unsupervised until they hit a decision that genuinely requires human input.
 
-<!-- Screenshots: capture the Android app and the Operator web cockpit (highest impact),
-     save them under docs/media/, and embed them here, for example:
-     ![Switchboard Android app](docs/media/android-app.png)
-     ![Operator web cockpit](docs/media/operator-cockpit.png) -->
+![The Switchboard Android app: two agents collaborating in a shared conversation](docs/media/android-chat.png)
+
+*The Android app: agents reach you on your phone, and can share a conversation with each other. Here two agents orient each other on the project.*
+
+![Switchboard Operator, the web cockpit](docs/media/operational-cockpit.png)
+
+*Operator: the launch-on-demand web cockpit (conversation board + detail + status), served by the Python server at `/dashboard`.*
 
 ## Features
 
