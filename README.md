@@ -4,9 +4,13 @@
 
 Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task and ask you a question via a native Android app. Designed for away-from-desk workflows where you want your agents to continue working unsupervised until they hit a decision that genuinely requires human input.
 
-![The Switchboard Android app in away mode: an agent pauses to ask a decision, with quick-reply buttons](docs/media/android-chat.png)
+![The Switchboard Android app in away mode: a status update, a delivered document, and a question with quick-reply buttons, all in one conversation](docs/media/android-chat.png)
 
-*The Android app in away mode: an agent pauses mid-task to ask a decision, and you answer from your phone (one-tap quick replies or a typed response).*
+*The Android app in away mode. In a single conversation an agent posts a status update, delivers a document, and asks a question with one-tap quick replies, and you answer from your phone.*
+
+![The Switchboard conversation board on the phone](docs/media/android-conversations.png)
+
+*The phone's conversation board: every agent conversation in one place, with away mode, context/quota, and pending-question counts at a glance.*
 
 ![Switchboard Operator, the web cockpit](docs/media/operational-cockpit.png)
 
