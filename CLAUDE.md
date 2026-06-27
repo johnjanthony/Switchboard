@@ -2,7 +2,7 @@
 
 Switchboard is a local MCP gateway that lets AI agents pause mid-task and request human input. Responses come back from a phone. The gateway exists to support *away mode* — at-desk interaction continues to use the normal terminal chat UI.
 
-This file orients any agent (Claude Code, Gemini CLI, etc.) working **on Switchboard itself** or **consuming** its tools. Switchboard ships as a Claude Code plugin; see [Setup](#setup) below.
+This file orients any agent (Claude Code, etc.) working **on Switchboard itself** or **consuming** its tools. Switchboard ships as a Claude Code plugin; see [Setup](#setup) below.
 
 Design history lives under [`docs/`](docs/); the current end-to-end design is [`docs/switchboard-design-spec-comprehensive.md`](docs/switchboard-design-spec-comprehensive.md), and the dated specs under [`docs/superpowers/specs/`](docs/superpowers/specs/) record how each subsystem evolved. The newest dated spec wins where two overlap.
 
@@ -145,7 +145,7 @@ Switchboard ships as a Claude Code plugin. From any Claude Code session:
 /plugin install switchboard@switchboard
 ```
 
-The plugin install wires the skill and the turn-end + agent-status hooks. Three things are installed separately:
+The plugin install wires the skill and the turn-end + agent-status hooks. Two things are installed separately:
 
 1. **The MCP server connection.**
 
@@ -166,8 +166,6 @@ The plugin install wires the skill and the turn-end + agent-status hooks. Three 
 
 2. **The Python server (NSSM Windows service).** Install with `scripts/install-service.ps1`. The plugin's MCP connection is useless until this is running.
 
-3. **The Gemini CLI `AfterAgent` hook** (only if you use Gemini). Install with `scripts/install-turn-end-hook.ps1`. Gemini's hook system is independent of the Claude plugin.
-
 ## Hooks
 
 The Switchboard plugin wires five Claude Code hook events automatically:
@@ -179,8 +177,6 @@ The Switchboard plugin wires five Claude Code hook events automatically:
 See `hooks/hooks.json` for the canonical wiring.
 
 **Server-side gating.** Hooks fire on every lifecycle event regardless of away-mode state, but the server's `/agent_status` handler short-circuits and skips the Firebase write when the cwd is not in away mode. The phone status indicator is therefore only visible during away mode. The HTTP layer always returns 200 so the hook contract is unchanged; the gate is invisible to the hook script.
-
-**Gemini CLI** hooks are independent of the Claude plugin. `scripts/install-turn-end-hook.ps1` registers the away-mode enforcement hook on Gemini's `AfterAgent` event in `~/.gemini/settings.json`.
 
 ## Service management (Windows service via NSSM)
 
@@ -239,8 +235,6 @@ The moment the operator says they are stepping away (or any similar phrasing), s
 
 - Server uses stateful HTTP (`stateless_http=False`). This is what makes per-tool-call `notifications/cancelled` propagate from the CLI to the in-flight responder so a cancel from the terminal correctly marks the question `cancelled: true`.
 - Cost: every server restart invalidates active CLI sessions; agents drop the switchboard tools after the 404. Agents you want to keep working need `/exit` + relaunch after a restart. Mitigation: server startup auto-clears away mode globally, so pre-restart agents fall back to terminal output rather than getting stuck in a Stop-hook loop.
-- Gemini CLI does NOT send `notifications/cancelled`; cancelling a tool call from the Gemini terminal won't propagate.
-
 ## Recovery when the turn-end hook blocks and MCP tools are unavailable
 
 If the Switchboard MCP tools disconnect from your session while the away-mode flag is active, the turn-end hook will block every response with no way to call `set_away_mode(false)` or `notify_human`. Symptom: every turn ends with "Stop hook feedback: You are in away mode..." and `mcp__switchboard__*` tools are gone. Recovery, in order of preference:

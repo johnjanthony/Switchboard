@@ -1,6 +1,6 @@
 # Switchboard
 
-> A human-in-the-loop input gateway for AI agents (Claude, Gemini, etc.).
+> A human-in-the-loop input gateway for AI coding agents.
 
 Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task and ask you a question via a native Android app. Designed for away-from-desk workflows where you want your agents to continue working unsupervised until they hit a decision that genuinely requires human input.
 
@@ -26,7 +26,7 @@ Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task an
 Switchboard is one Python process fronting a single Firebase Realtime Database, with four surfaces reading and writing that shared hub. Agents speak MCP to the server; the server is the only writer of authoritative state; the human-facing clients render and command it.
 
 ```text
-            AI agents (Claude Code, Gemini CLI, ...)
+            AI agents (Claude Code, ...)
                           |  MCP over HTTP
                           v
            +--------------------------------+
@@ -52,7 +52,7 @@ The model is built around **away mode** (a single global flag: when set, agents 
 
 **Built with:** Python (asyncio), the [Model Context Protocol](https://modelcontextprotocol.io), Firebase (Realtime Database + Cloud Messaging), Kotlin / Jetpack Compose (Android + Wear OS), Preact (web), and .NET 9 / WinForms (Windows).
 
-Switchboard was architected and built by John Anthony, directing a multi-agent workflow of off-the-shelf coding agents (Claude Code, Gemini CLI) coordinated, fittingly, through Switchboard itself.
+Switchboard was architected and built by John Anthony, directing a multi-agent workflow of off-the-shelf coding agents (Claude Code among them) coordinated, fittingly, through Switchboard itself.
 
 For an agent-oriented project tour, see [`CLAUDE.md`](CLAUDE.md). The current design is documented in [`docs/switchboard-design-spec-comprehensive.md`](docs/switchboard-design-spec-comprehensive.md) — covers the Conversation primitive, session-id routing, MCP tool surface, hook plumbing, Firebase schema, spawn (fresh / resume / combine), away mode, hydration, and the Android UI surface.
 
@@ -96,17 +96,6 @@ Firebase is mandatory. The server exits at startup with a ConfigError if `FIREBA
 `database.rules.json` locks the RTDB down to a single owner identity. It ships with a placeholder UID: replace `YOUR_FIREBASE_UID` with your own Firebase Auth UID (the one your Android app and the web Operator sign in as) and deploy the rules to your project (`firebase deploy --only database`, or paste them in the Firebase console under Realtime Database → Rules). Without this, the server's reads and writes are rejected.
 
 ## Wire your agent to it
-
-### AI Agents (Claude, Gemini, etc.)
-
-#### Gemini CLI
-
-```bash
-gemini mcp add switchboard http://localhost:9876/mcp --type http --trust
-gemini skills link .\skills\switchboard
-```
-
-#### Claude Code
 
 Switchboard ships as a Claude Code plugin. From any Claude Code session:
 
