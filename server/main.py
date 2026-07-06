@@ -290,6 +290,51 @@ def _build_document_route(backend):
 	return document
 
 
+KEEPALIVE_INTERVAL_SECONDS = 60.0
+
+
+async def _await_with_progress_keepalive(mcp: FastMCP, coro, interval: float = KEEPALIVE_INTERVAL_SECONDS):
+	"""Await a blocking tool handler while pinging MCP progress notifications.
+
+	Claude Code >= 2.1.187 aborts a remote MCP tool call that is silent (no
+	response AND no progress notification) for 5 minutes (its
+	CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT default). ask_human and the other
+	human/agent-blocking tools legitimately sit silent for hours, so the server
+	heartbeats while the handler waits. The keepalive is strictly best-effort:
+	a missing progressToken (report_progress no-ops), a dead stream, or a
+	context lookup failure must never change the handler's outcome.
+	"""
+	try:
+		ctx = mcp.get_context()
+	except Exception:
+		# No request context (or SDK change): the tool still works, it just
+		# loses idle-abort protection. Log so the regression is visible.
+		logging.getLogger(__name__).exception("progress keepalive unavailable; awaiting handler without pings")
+		return await coro
+	task = asyncio.ensure_future(coro)
+	beats = 0
+	try:
+		while True:
+			done, _ = await asyncio.wait({task}, timeout=interval)
+			if done:
+				return task.result()
+			beats += 1
+			try:
+				await ctx.report_progress(beats, None, "waiting")
+			except Exception:
+				# Dead stream or transport hiccup: keep waiting; resolution
+				# still lands in Firebase even if this stream never hears it.
+				pass
+	except asyncio.CancelledError:
+		# Propagate the client's cancel INTO the handler so its own
+		# CancelledError cleanup (e.g. ask_human marking the question
+		# cancelled) runs before we re-raise.
+		task.cancel()
+		with contextlib.suppress(asyncio.CancelledError, Exception):
+			await task
+		raise
+
+
 def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 	# Stateful HTTP: session-scoped transport so per-tool-call cancel
 	# notifications can find the in-flight responder. The cost is that an MCP
@@ -330,10 +375,11 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 
 		cli_session_id and cwd are injected automatically by the switchboard
 		PreToolUse hook. Agents should not pass them."""
-		return await handlers.ask_human(
+		# Keepalive: this call legitimately blocks for hours awaiting John.
+		return await _await_with_progress_keepalive(mcp, handlers.ask_human(
 			question, sender, title=title, format=format, suggestions=suggestions,
 			cli_session_id=cli_session_id, cwd=cwd,
-		)
+		))
 
 	@mcp.tool()
 	async def notify_human(
@@ -382,10 +428,11 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		excluding your own messages).
 
 		cli_session_id and cwd are injected by the PreToolUse hook."""
-		return await handlers.message_and_await_agent(
+		# Keepalive: blocks until a collab partner speaks, which can be hours.
+		return await _await_with_progress_keepalive(mcp, handlers.message_and_await_agent(
 			sender, message, title=title,
 			cli_session_id=cli_session_id, cwd=cwd,
-		)
+		))
 
 	@mcp.tool()
 	async def open_conversation(
@@ -425,10 +472,11 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		- bound + no open: queue for intro in current
 
 		cli_session_id and cwd are injected by the PreToolUse hook."""
-		return await handlers.enter_conversation(
+		# Keepalive: blocks until the talking-stick payload arrives.
+		return await _await_with_progress_keepalive(mcp, handlers.enter_conversation(
 			sender,
 			cli_session_id=cli_session_id, cwd=cwd,
-		)
+		))
 
 	@mcp.tool()
 	async def combine_conversations(
