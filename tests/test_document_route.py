@@ -35,6 +35,29 @@ def test_document_download_param_sets_attachment():
 		assert "attachment" in r.headers["content-disposition"]
 
 
+def test_document_always_sets_nosniff():
+	with TestClient(_app(FakeDocBackend(b"x", "report.md"))) as c:
+		r = c.get("/document", params={"conv": "conv-1", "msg": "m-1"})
+		assert r.headers["x-content-type-options"] == "nosniff"
+
+
+def test_document_html_forced_to_attachment_octet_stream():
+	# An agent-supplied .html must not be served inline as text/html on our origin
+	# (that would execute arbitrary JS against the dashboard's Firebase session).
+	with TestClient(_app(FakeDocBackend(b"<script>alert(1)</script>", "evil.html"))) as c:
+		r = c.get("/document", params={"conv": "conv-1", "msg": "m-1"})
+		assert r.status_code == 200
+		assert r.headers["content-type"].startswith("application/octet-stream")
+		assert "attachment" in r.headers["content-disposition"]
+
+
+def test_document_svg_forced_to_attachment():
+	with TestClient(_app(FakeDocBackend(b"<svg onload=alert(1)>", "pic.svg"))) as c:
+		r = c.get("/document", params={"conv": "conv-1", "msg": "m-1"})
+		assert r.headers["content-type"].startswith("application/octet-stream")
+		assert "attachment" in r.headers["content-disposition"]
+
+
 def test_document_missing_params_returns_400():
 	with TestClient(_app(FakeDocBackend())) as c:
 		assert c.get("/document", params={"conv": "conv-1"}).status_code == 400

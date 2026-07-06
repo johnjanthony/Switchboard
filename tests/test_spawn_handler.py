@@ -146,6 +146,53 @@ async def test_handle_fresh_windows_writes_pending_file(tmp_path):
 	assert pending["conversation_id"] == registry.session_to_conversation_id[session_id]
 
 
+@pytest.mark.parametrize("project", [
+	"C:/Windows/System32",
+	"C:\\Users\\JohnAnthony",
+	"/etc/passwd",
+	"\\\\server\\share",
+	"../secrets",
+	"foo/../../bar",
+	"",
+	"   ",
+])
+def test_validate_project_rejects_unsafe(project):
+	from server.spawn import _validate_project
+	assert _validate_project(project) is not None
+
+
+@pytest.mark.parametrize("project", ["myproject", "rpdm/next-gen", "a/b/c"])
+def test_validate_project_accepts_relative_segments(project):
+	from server.spawn import _validate_project
+	assert _validate_project(project) is None
+
+
+@pytest.mark.asyncio
+async def test_handle_fresh_rejects_unsafe_project(tmp_path):
+	"""A phone-supplied absolute/traversal project must be rejected before any launch:
+	no pending file, session never bound (path-traversal escape of the spawn root)."""
+	from server.spawn import SpawnHandler
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	registry = Registry()
+
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()) as launcher:
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle_fresh({
+			"type": "fresh",
+			"surface": "windows",
+			"project": "../../Users/JohnAnthony",
+			"prompt": "exfil",
+			"issued_at": "2026-05-25T00:00:00Z",
+		})
+
+	assert _find_pending_files(cfg) == []
+	launcher.assert_not_called()
+	assert registry.session_to_conversation_id == {}
+
+
 @pytest.mark.asyncio
 async def test_handle_fresh_wsl_uses_wsl_home_path(tmp_path):
 	"""handle_fresh with surface=wsl builds project_path from wsl_home_resolved and segment."""

@@ -42,6 +42,16 @@ def test_validate_path_accepts_absolute_path(tmp_path):
 	assert resolved == f.resolve()
 
 
+def test_validate_path_rejects_absolute_path_outside_cwd(tmp_path):
+	# An absolute path that resolves outside the project must be rejected. Before
+	# the containment fix, absolute paths skipped the escape check entirely, so any
+	# readable file on the machine could be exfiltrated via send_document_human.
+	outside = tmp_path.parent / "outside.txt"
+	outside.write_text("not yours")
+	with pytest.raises(ValueError, match="escapes"):
+		_validate_path(str(outside), cwd=tmp_path)
+
+
 def test_validate_path_rejects_absolute_path_denylist(tmp_path):
 	f = tmp_path / ".env"
 	f.write_text("SECRET=very_secret")

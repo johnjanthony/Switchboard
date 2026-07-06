@@ -30,6 +30,26 @@ def _now_iso() -> str:
 def _new_request_id() -> str:
 	return uuid.uuid4().hex[:8]
 
+def _locate_member(conv, cli_session_id: str):
+	"""Return the active member for this cli_session_id, or None."""
+	if conv is None:
+		return None
+	for m in conv.members_active.values():
+		if m.cli_session_id == cli_session_id:
+			return m
+	return None
+
+def _canonical_sender(registry, conversation_id: str, cli_session_id: str, raw_sender: str) -> str:
+	"""The sender name a message/pending should be attributed under.
+
+	Prefer the member's disambiguated sender (e.g. 'Claude Win 2') over the raw
+	agent-supplied name: two agents that both call themselves 'Claude Win' are
+	distinct members but would otherwise collide on the (conversation_id, sender)
+	pending key and cancel each other's questions. Falls back to the raw sender
+	when the member isn't resolvable (session bound to an unloaded conversation)."""
+	member = _locate_member(registry.conversations.get(conversation_id), cli_session_id)
+	return member.sender if member is not None else raw_sender
+
 async def _append_session_log(log_path: str, conversation_id: str, direction: str, text: str, logger: JsonlLogger) -> None:
 	# conversation_id is a server-minted `conv-<uuid>` string — already filesystem-safe,
 	# no Firebase-key sanitization needed.
@@ -133,6 +153,7 @@ def build_tool_handlers(
 		conversation_id = await _resolve_conversation_and_member(
 			registry, cli_session_id, cwd, sender, backend=backend,
 		)
+		sender = _canonical_sender(registry, conversation_id, cli_session_id, sender)
 		if limiter is not None and not limiter.consume(conversation_id):
 			await logger.rate_limited(conversation_id, "notify_human")
 			return _rate_limit_error()
@@ -178,6 +199,10 @@ def build_tool_handlers(
 		conversation_id = await _resolve_conversation_and_member(
 			registry, cli_session_id, cwd, sender, backend=backend,
 		)
+		# Attribute the question (and key the pending) under the member's
+		# disambiguated sender, not the raw agent-supplied name, so two agents
+		# sharing a name don't collide on the pending key and cancel each other.
+		sender = _canonical_sender(registry, conversation_id, cli_session_id, sender)
 
 		if limiter is not None and not limiter.consume(conversation_id):
 			await logger.rate_limited(conversation_id, "ask_human")
@@ -329,6 +354,7 @@ def build_tool_handlers(
 		conversation_id = await _resolve_conversation_and_member(
 			registry, cli_session_id, cwd, sender, backend=backend,
 		)
+		sender = _canonical_sender(registry, conversation_id, cli_session_id, sender)
 		# Path validation: resolve against the agent's actual filesystem cwd.
 		cwd_path = _cwd_path if _cwd_path is not None else Path(cwd)
 		try:

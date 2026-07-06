@@ -292,6 +292,30 @@ class Registry:
 			self._fire_pending_mirror(conversation_id, -len(cancelled_request_ids))
 		return cancelled_request_ids
 
+	def cancel_stale_pending_for_conversation(self, conversation_id: str, alive_session_ids: set[str]) -> list[str]:
+		"""Pop and cancel only the pending requests for this conversation whose owning
+		session is NOT currently alive (matched by cli_session_id). Returns the list
+		of cancelled request_ids.
+
+		A pending owned by a live member is left intact: spawning a new agent into a
+		conversation must not destroy a live peer's in-flight question. A pending with
+		no known owner (cli_session_id is None) is treated as stale — that preserves the
+		original 'a prior agent died without cleanup' intent for legacy/orphan entries."""
+		victims = [
+			key for key, record in self._pending.items()
+			if record.conversation_id == conversation_id
+			and (record.cli_session_id is None or record.cli_session_id not in alive_session_ids)
+		]
+		cancelled_request_ids: list[str] = []
+		for key in victims:
+			record = self._pending.pop(key)
+			cancelled_request_ids.append(record.request_id)
+			if not record.future.done():
+				record.future.cancel()
+		if cancelled_request_ids:
+			self._fire_pending_mirror(conversation_id, -len(cancelled_request_ids))
+		return cancelled_request_ids
+
 	def resolve_pending_for_conversation(self, conversation_id: str, result_text: str) -> list[str]:
 		"""Pop every pending request for this conversation_id and resolve its
 		future with result_text (a terminal do-not-retry sentinel), rather than

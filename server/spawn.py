@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
@@ -13,6 +13,24 @@ from server.messenger import ChannelLifecycle, MessageWriter, ConversationStore
 from server.registry import Registry
 
 _TASK_NAME = "SwitchboardSpawn"
+
+
+def _validate_project(project: str) -> str | None:
+	"""Return an error string if the phone-supplied project name is unsafe, else None.
+
+	`project` is joined to the spawn root and handed to the launcher, so it must be a
+	simple relative segment: no absolute paths (pathlib silently drops the root when
+	the right operand is absolute, escaping the spawn root entirely), no drive letters,
+	no leading separator, and no parent traversal. Checked against both path flavours
+	because the same string is joined via pathlib on Windows and by string concat on WSL."""
+	if not project or not project.strip():
+		return "empty project"
+	pw, pp = PureWindowsPath(project), PurePosixPath(project)
+	if pw.is_absolute() or pp.is_absolute() or pw.drive or project[:1] in ("/", "\\"):
+		return f"absolute project path rejected: {project!r}"
+	if ".." in pw.parts or ".." in pp.parts:
+		return f"parent traversal rejected: {project!r}"
+	return None
 
 
 async def invoke_spawn_launcher(logger) -> None:
@@ -100,8 +118,18 @@ class SpawnHandler:
 		hanging on phone and server until the 24h timeout.
 
 		After Phase 3 rename: takes conversation_id (not a filesystem cwd).
+
+		Only cancels pending owned by a NON-live session: a live member's in-flight
+		ask_human must survive a spawn into the same conversation (a phone
+		'add into' or 'resume' while a peer is blocked would otherwise silently
+		kill that peer's question).
 		"""
-		cancelled = self._registry.cancel_pending_for_conversation(conversation_id)
+		conv = self._registry.conversations.get(conversation_id)
+		alive_session_ids = (
+			{m.cli_session_id for m in conv.members_active.values() if m.alive}
+			if conv else set()
+		)
+		cancelled = self._registry.cancel_stale_pending_for_conversation(conversation_id, alive_session_ids)
 		if not cancelled:
 			return
 		for request_id in cancelled:
@@ -231,6 +259,9 @@ class SpawnHandler:
 		if not project:
 			await self._logger.surface_error("spawn_fresh: missing project")
 			return
+		if err := _validate_project(project):
+			await self._logger.surface_error(f"spawn_fresh: {err}")
+			return
 
 		# Validate WSL availability if surface is wsl
 		if surface == "wsl" and not getattr(self._config, "wsl_home_resolved", None):
@@ -259,7 +290,14 @@ class SpawnHandler:
 			if self._config.windows_spawn_root is None:
 				await self._logger.surface_error("spawn_fresh: windows_spawn_root not configured")
 				return
-			project_path = str(Path(self._config.windows_spawn_root) / project)
+			root = Path(self._config.windows_spawn_root).resolve()
+			candidate = (root / project).resolve()
+			try:
+				candidate.relative_to(root)
+			except ValueError:
+				await self._logger.surface_error(f"spawn_fresh: project escapes spawn root: {project!r}")
+				return
+			project_path = str(candidate)
 		else:  # wsl
 			segment = getattr(self._config, "wsl_spawn_root_segment", "work")
 			wsl_home = getattr(self._config, "wsl_home_resolved", None)

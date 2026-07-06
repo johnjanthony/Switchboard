@@ -23,15 +23,19 @@ async def _sha256_hex(path: Path) -> str:
 def _validate_path(path_str: str, cwd: Path | None = None) -> Path:
 	"""Return the resolved Path if safe; raise ValueError otherwise."""
 	p = Path(path_str)
+	_cwd = (cwd or Path.cwd()).resolve()
 	if p.is_absolute():
 		resolved = p.resolve()
 	else:
-		_cwd = (cwd or Path.cwd()).resolve()
 		resolved = (_cwd / p).resolve()
-		try:
-			resolved.relative_to(_cwd)
-		except ValueError:
-			raise ValueError(f"Path escapes project directory: {path_str}")
+	# Containment is enforced for every input, absolute or relative: an absolute
+	# path is only accepted if it still resolves to somewhere inside the project.
+	# (Previously absolute paths skipped this check entirely, letting an agent
+	# read any file on the machine.)
+	try:
+		resolved.relative_to(_cwd)
+	except ValueError:
+		raise ValueError(f"Path escapes project directory: {path_str}")
 
 	if not resolved.exists():
 		raise ValueError(f"File not found: {path_str}")

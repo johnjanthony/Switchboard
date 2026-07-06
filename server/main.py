@@ -224,10 +224,22 @@ def _build_document_route(backend):
 		except Exception:
 			return Response("download failed", status_code=502)
 		disposition = "attachment" if request.query_params.get("download") else "inline"
+		media_type = guess_content_type(filename)
+		# An uploaded document must never execute on our own origin (the dashboard
+		# is served from here too). HTML/SVG/XML render as active content, so force
+		# them to download as opaque bytes; nosniff stops the browser from
+		# reinterpreting any other type as one of these.
+		executable_types = {"text/html", "application/xhtml+xml", "image/svg+xml", "text/xml", "application/xml"}
+		if media_type in executable_types:
+			disposition = "attachment"
+			media_type = "application/octet-stream"
 		return Response(
 			data,
-			media_type=guess_content_type(filename),
-			headers={"Content-Disposition": f'{disposition}; filename="{quote(filename)}"'},
+			media_type=media_type,
+			headers={
+				"Content-Disposition": f'{disposition}; filename="{quote(filename)}"',
+				"X-Content-Type-Options": "nosniff",
+			},
 		)
 
 	return document

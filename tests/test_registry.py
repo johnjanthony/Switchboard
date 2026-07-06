@@ -140,6 +140,35 @@ class TestPendingByKey:
 			assert r.get(("conv-foo", "Claude")) is not None
 		asyncio.run(run())
 
+	def test_cancel_stale_pending_spares_live_session(self):
+		"""Cancel-on-spawn (liveness-aware): a pending owned by a live session must
+		survive; only pendings owned by a dead/unknown session are cancelled."""
+		async def run():
+			r = Registry()
+			live = r.add(conversation_id="conv-foo", sender="Claude", request_id="req-live", cli_session_id="s-live")
+			dead = r.add(conversation_id="conv-foo", sender="Sparkles", request_id="req-dead", cli_session_id="s-dead")
+			orphan = r.add(conversation_id="conv-foo", sender="Ghost", request_id="req-orphan")  # cli_session_id None
+
+			cancelled = r.cancel_stale_pending_for_conversation("conv-foo", alive_session_ids={"s-live"})
+
+			assert sorted(cancelled) == ["req-dead", "req-orphan"]
+			assert not live.cancelled()
+			assert dead.cancelled() and orphan.cancelled()
+			assert r.get(("conv-foo", "Claude")) is not None
+			assert r.get(("conv-foo", "Sparkles")) is None
+			assert r.get(("conv-foo", "Ghost")) is None
+		asyncio.run(run())
+
+	def test_cancel_stale_pending_all_live_cancels_nothing(self):
+		async def run():
+			r = Registry()
+			fut = r.add(conversation_id="conv-foo", sender="Claude", request_id="req-1", cli_session_id="s-live")
+			cancelled = r.cancel_stale_pending_for_conversation("conv-foo", alive_session_ids={"s-live"})
+			assert cancelled == []
+			assert not fut.cancelled()
+			assert r.get(("conv-foo", "Claude")) is not None
+		asyncio.run(run())
+
 
 
 class TestPendingMirror:
