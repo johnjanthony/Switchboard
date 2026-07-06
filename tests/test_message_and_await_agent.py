@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -180,7 +181,8 @@ async def test_message_and_await_sole_alive_member_returns_empty_sentinel(cfg, l
 		cwd="C:/Z",
 	)
 
-	assert result == "__CONVERSATION_EMPTY__"
+	data = json.loads(result)
+	assert data == {"status": "conversation_empty", "conversation_id": conv_id}
 	# Caller removed from members_active and recorded in history.
 	conv = r.conversations[conv_id]
 	assert "s-solo" not in conv.members_active
@@ -259,7 +261,7 @@ async def test_sole_alive_in_open_marker_conv_times_out_without_ending(short_tim
 		cwd="C:/Z",
 	)
 
-	assert result == "__TIMEOUT__"
+	assert json.loads(result) == {"status": "timeout"}
 	conv = r.conversations[conv_id]
 	assert conv.state == "active", "lobby timeout should NOT end the conv"
 	assert "s-solo" in conv.members_active, "caller should remain a member"
@@ -284,7 +286,8 @@ async def test_sole_alive_in_non_open_conv_still_auto_leaves(cfg, logger):
 		cwd="C:/Z",
 	)
 
-	assert result == "__CONVERSATION_EMPTY__"
+	data = json.loads(result)
+	assert data == {"status": "conversation_empty", "conversation_id": conv_id}
 	conv = r.conversations[conv_id]
 	assert "s-solo" not in conv.members_active
 	assert conv.state == "ended"
@@ -326,8 +329,9 @@ async def test_sole_member_empty_sentinel_includes_partings(cfg, logger):
 		cwd="C:/P",
 	)
 
-	assert "__CONVERSATION_EMPTY__" in result
-	assert "goodbye world" in result
+	data = json.loads(result)
+	assert data["status"] == "conversation_empty"
+	assert "goodbye world" in data["log"]
 
 
 # ---------------------------------------------------------------------------
@@ -479,7 +483,7 @@ async def test_timeout_cleans_up_wait_entry(cfg, logger, tmp_path):
 		cwd="C:/X",
 	)
 
-	assert result == "__TIMEOUT__"
+	assert json.loads(result) == {"status": "timeout"}
 	# Queue should be cleaned up
 	assert len(conv.wait_queue) == 0
 

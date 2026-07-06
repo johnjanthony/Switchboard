@@ -35,9 +35,10 @@ async def test_mcp_tool_list_matches_current_surface(cfg):
 	"""Guards the registered tool surface: the exact set of tools exposed via MCP
 	must match the conversations-redesign surface.
 
-	v2 surface (10 tools):
+	v2 surface (11 tools):
 	- enter_away_mode / exit_away_mode: retired
-	- open_conversation, enter_conversation: new additions (Fix 1)
+	- open_conversation, enter_conversation: legacy, kept
+	- join_conversation: non-blocking replacement for open_conversation / enter_conversation
 	- set_away_mode, combine_conversations, leave_conversation: present
 	"""
 	logger = JsonlLogger(cfg.log_path)
@@ -55,6 +56,7 @@ async def test_mcp_tool_list_matches_current_surface(cfg):
 		"message_and_await_agent",
 		"open_conversation",
 		"enter_conversation",
+		"join_conversation",
 		"lookup_conversation_ids",
 		"leave_conversation",
 		"set_away_mode",

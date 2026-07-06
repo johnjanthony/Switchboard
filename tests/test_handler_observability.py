@@ -34,7 +34,7 @@ async def test_leave_conversation_logs_success(tmp_path: Path):
 
 	result = await handlers.leave_conversation("Claude", "bye", cli_session_id="s-l1", cwd="C:/Work/X")
 
-	assert result.startswith("ok. Left conversation")
+	assert json.loads(result) == {"status": "ok", "conversation_id": "conv-l1"}
 	assert any("leave_conversation" in d and "conv-l1" in d for d in _info_details(cfg.log_path)), \
 		"leave_conversation must log a success info event naming the conversation"
 

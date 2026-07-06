@@ -4,6 +4,7 @@ under the new /conversations/<id>/... schema."""
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 
 import pytest
@@ -118,7 +119,7 @@ async def test_leave_conversation_removes_member_and_writes_state(tmp_path):
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 	result = await handlers.leave_conversation("Claude", "goodbye!", cli_session_id="s-1", cwd="C:/Work/X")
 
-	assert result.startswith("ok")
+	assert json.loads(result) == {"status": "ok", "conversation_id": conv.id}
 	await _drain_bg()
 
 	# Member was removed

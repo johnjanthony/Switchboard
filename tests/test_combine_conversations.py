@@ -92,8 +92,11 @@ async def test_combine_alive_members(tmp_path):
 		cwd="C:/Work/X",
 	)
 
-	assert result.startswith("ok")
-	assert "1 member" in result
+	data = json.loads(result)
+	assert data["status"] == "ok"
+	assert data["source"] == src_id
+	assert data["target"] == tgt_id
+	assert "1 member" in data["detail"]
 
 	src = registry.conversations[src_id]
 	tgt = registry.conversations[tgt_id]
@@ -153,7 +156,7 @@ async def test_combine_resumes_dormant(tmp_path):
 			cwd="C:/Work/X",
 		)
 
-	assert result.startswith("ok")
+	assert json.loads(result)["status"] == "ok"
 
 	# Source ended
 	assert registry.conversations["conv-src2"].state == "ended"
@@ -212,8 +215,9 @@ async def test_combine_skips_permanently_lost(tmp_path):
 		cwd="C:/Work/X",
 	)
 
-	assert result.startswith("ok")
-	assert "1 member" in result
+	data = json.loads(result)
+	assert data["status"] == "ok"
+	assert "1 member" in data["detail"]
 
 	src_conv = registry.conversations["conv-src3"]
 	tgt_conv = registry.conversations["conv-tgt3"]
@@ -361,7 +365,7 @@ async def test_combine_clears_open_pointer_when_source_was_open(tmp_path):
 		cwd="C:/Work/X",
 	)
 
-	assert result.startswith("ok")
+	assert json.loads(result)["status"] == "ok"
 	assert registry.open_conversation_id is None
 
 

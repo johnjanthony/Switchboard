@@ -95,7 +95,7 @@ async def test_e2e_combine_alive_and_dormant(tmp_path):
 			cwd="C:/Work/X",
 		)
 
-	assert result.startswith("ok"), f"Unexpected result: {result}"
+	assert json.loads(result)["status"] == "ok", f"Unexpected result: {result}"
 
 	# Source conv-A is ended
 	assert conv_a.state == "ended"
@@ -184,7 +184,7 @@ async def test_e2e_combine_with_target_having_waiter(tmp_path):
 		cli_session_id="s-b2-combiner",
 		cwd="C:/Work/B2",
 	)
-	assert result.startswith("ok"), f"Unexpected result: {result}"
+	assert json.loads(result)["status"] == "ok", f"Unexpected result: {result}"
 
 	# Blocked waiter should wake with merge message
 	wake_result = await asyncio.wait_for(task_waiter_speak, timeout=2.0)
@@ -232,7 +232,7 @@ async def test_e2e_combine_then_speak(tmp_path):
 		cli_session_id="s-b3-combiner",
 		cwd="C:/Work/B3",
 	)
-	assert result.startswith("ok"), f"Unexpected result: {result}"
+	assert json.loads(result)["status"] == "ok", f"Unexpected result: {result}"
 
 	# Verify A3 is now in B3
 	assert registry.session_to_conversation_id["s-a3"] == "conv-b3"
@@ -330,7 +330,7 @@ async def test_combine_migrates_source_waiter_to_target(tmp_path):
 		cli_session_id="s-combiner5",
 		cwd="C:/Work/B5",
 	)
-	assert result.startswith("ok"), f"Unexpected result: {result}"
+	assert json.loads(result)["status"] == "ok", f"Unexpected result: {result}"
 
 	# Source.wait_queue must be empty post-combine (migrated or drained)
 	assert len(conv_a.wait_queue) == 0, \
@@ -429,7 +429,7 @@ async def test_combine_drains_waiter_of_permanently_lost_member_in_source(tmp_pa
 		cli_session_id="s-combiner6",
 		cwd="C:/Work/B6",
 	)
-	assert result.startswith("ok"), f"Unexpected result: {result}"
+	assert json.loads(result)["status"] == "ok", f"Unexpected result: {result}"
 
 	# Carol stayed in source (permanently_lost path)
 	assert "s-carol6" in conv_a.members_active
@@ -480,7 +480,7 @@ async def test_e2e_combine_clears_open_when_source_was_open(tmp_path):
 		cwd="C:/Work/X",
 	)
 
-	assert result.startswith("ok"), f"Unexpected result: {result}"
+	assert json.loads(result)["status"] == "ok", f"Unexpected result: {result}"
 	assert registry.open_conversation_id is None, \
 		"open pointer must be cleared when source was open"
 	assert conv_a.state == "ended"
@@ -520,7 +520,7 @@ async def test_combine_wakes_target_lobby_holder(tmp_path):
 		"conv-a7", "conv-b7",
 		cli_session_id="s-a7", cwd="C:/Work/A7",
 	)
-	assert result.startswith("ok"), f"Unexpected result: {result}"
+	assert json.loads(result)["status"] == "ok", f"Unexpected result: {result}"
 
 	assert opener_future.done(), "combine must wake the target's lobby-holder"
 	payload = opener_future.result()

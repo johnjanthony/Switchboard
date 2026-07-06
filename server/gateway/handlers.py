@@ -21,6 +21,52 @@ from server.gateway.bg_tasks import _spawn_bg
 
 TIMEOUT_SENTINEL = "__TIMEOUT__"
 
+def _envelope(status: str, **fields) -> str:
+	"""One-line JSON status envelope for conversation-tool returns. Internal
+	protocol keeps carrying plain strings and sentinels; this is the MCP-facing
+	boundary only. None-valued fields are omitted so envelopes stay minimal."""
+	payload: dict = {"status": status}
+	for key, value in fields.items():
+		if value is not None:
+			payload[key] = value
+	return json.dumps(payload)
+
+
+def _terminal_envelope(text: str) -> str | None:
+	"""Map an internal terminal sentinel to its envelope, or None for normal text.
+	Futures resolved by force-end, combine, and timeout paths carry these strings;
+	translating here (not at the resolution sites) keeps every internal consumer
+	(wait-queue drains, logs, tests of internals) on the stable string protocol."""
+	if not isinstance(text, str):
+		return None
+	if text == TIMEOUT_SENTINEL:
+		return _envelope("timeout")
+	if text.startswith("__CONVERSATION_ENDED__"):
+		cause = "ended"
+		lines = text.splitlines()
+		if len(lines) > 1 and lines[1].startswith("(") and lines[1].endswith(")"):
+			cause = lines[1][1:-1]
+		return _envelope("conversation_ended", cause=cause)
+	return None
+
+
+def _wrap_wait_result(conversation_id: str, text: str) -> str:
+	"""Envelope a message_and_await wake result. Internal wake payloads are plain
+	strings (delta logs, dormancy notices, lobby 'ok. open_conversation' wakes);
+	sentinels map to their terminal envelopes."""
+	terminal = _terminal_envelope(text)
+	if terminal is not None:
+		return terminal
+	if text.startswith("__CONVERSATION_EMPTY__"):
+		partings = text.partition("\n")[2]
+		return _envelope("conversation_empty", conversation_id=conversation_id, log=partings or None)
+	if text.startswith("ok. open_conversation = "):
+		# Lobby-hold wake (open-marker conv, deprecation window): the meaningful
+		# part is the peer-joined line, not the legacy prefix.
+		log = text.partition("\n")[2]
+		return _envelope("ok", conversation_id=conversation_id, log=log or None)
+	return _envelope("ok", conversation_id=conversation_id, log=text or None)
+
 _SESSION_START = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
@@ -108,6 +154,7 @@ class ToolHandlers:
 	leave_conversation: Callable[..., Coroutine[None, None, str]]
 	set_away_mode: Callable[..., Coroutine[None, None, str]]
 	combine_conversations: Callable[..., Coroutine[None, None, str]]
+	join_conversation: Callable[..., Coroutine[None, None, str]]
 	handle_agent_status: Callable[..., Coroutine[None, None, None]]
 
 class _ToolHandlersBackend(MessageWriter, ChannelLifecycle, ConversationStore):
@@ -206,7 +253,7 @@ def build_tool_handlers(
 		if bound_id is not None:
 			bound_conv = registry.conversations.get(bound_id)
 			if bound_conv is not None and bound_conv.state == "ended":
-				return "__CONVERSATION_ENDED__\n(force-ended)"
+				return _envelope("conversation_ended", cause="force-ended")
 		from server.conversation_ops import _resolve_conversation_and_member
 		conversation_id = await _resolve_conversation_and_member(
 			registry, cli_session_id, cwd, sender, backend=backend,
@@ -298,7 +345,7 @@ def build_tool_handlers(
 				)
 			except Exception as exc:
 				await logger.surface_error(f"timeout_followup_failed: {exc}", correlation=str(correlation))
-			return TIMEOUT_SENTINEL
+			return _envelope("timeout")
 		except asyncio.CancelledError:
 			# See note above re: shielding. This is the live cancel-from-MCP
 			# path that the user observes when pressing Esc on the tool call.
@@ -322,7 +369,7 @@ def build_tool_handlers(
 		# confirmation, pending-record removal). handle_force_end already marked
 		# the question cancelled in Firebase.
 		if isinstance(result, str) and result.startswith("__CONVERSATION_ENDED__"):
-			return result
+			return _terminal_envelope(result)
 
 		# Successful resolution: clear the pending_questions record (read by
 		# the startup sweep). answered_question_msg_ids is NOT written: the
@@ -412,7 +459,7 @@ def build_tool_handlers(
 		if err := _validate_sender(sender):
 			return err
 		if not message:
-			return "ERROR: message is required. The 'listen without speaking' use case is enter_conversation()."
+			return "ERROR: message is required. The 'listen without speaking' use case is join_conversation()."
 
 		from server.conversation_ops import _resolve_conversation_and_member
 		conversation_id = await _resolve_conversation_and_member(
@@ -558,28 +605,29 @@ def build_tool_handlers(
 		# OUTSIDE the conv.lock (it may touch other conversations) and return.
 		if empty_result is not None:
 			apply_fallback(registry, cli_session_id, backend=backend)
-			return empty_result
+			return _wrap_wait_result(conversation_id, empty_result)
 
 		# Sole-alive in the open-marker conv: hold the lobby until a peer joins
 		# or we time out. end_conv_on_timeout=False so the established conv
 		# survives a quiet round — caller can poll again or leave_conversation.
 		if lobby_wait:
 			from server.conversation_ops import _queue_for_open_peer
-			return await _queue_for_open_peer(
+			lobby_result = await _queue_for_open_peer(
 				registry, conversation_id, cli_session_id,
 				config.timeout_seconds, backend=backend,
 				end_conv_on_timeout=False,
 			)
+			return _wrap_wait_result(conversation_id, lobby_result)
 
 		# Lock released; now wait
 		try:
 			result = await asyncio.wait_for(future, timeout=config.timeout_seconds)
-			return result
+			return _wrap_wait_result(conversation_id, result)
 		except asyncio.TimeoutError:
 			async with conv.lock:
 				if wait_entry in conv.wait_queue:
 					conv.wait_queue.remove(wait_entry)
-			return TIMEOUT_SENTINEL
+			return _envelope("timeout")
 		except asyncio.CancelledError:
 			async with conv.lock:
 				if wait_entry in conv.wait_queue:
@@ -731,9 +779,8 @@ def build_tool_handlers(
 		cli_session_id: str,
 		cwd: str,
 	) -> str:
-		"""Returns a JSON-encoded list of matching active conversation_ids.
+		"""Returns an ok envelope carrying the matching active conversation_ids.
 		At least one of cwd_filter, sender_contains, title_contains must be supplied."""
-		import json
 		if not any([cwd_filter, sender_contains, title_contains]):
 			return "ERROR: at least one of cwd_filter, sender_contains, title_contains is required"
 		results = []
@@ -750,7 +797,7 @@ def build_tool_handlers(
 					continue
 			results.append(conv_id)
 		await logger.info(f"lookup_conversation_ids: matched={len(results)}")
-		return json.dumps(results)
+		return _envelope("ok", conversation_ids=results)
 
 	@require_cli_session_id
 	@_touch_sessions
@@ -848,7 +895,7 @@ def build_tool_handlers(
 		# Apply session-fallback OUTSIDE the lock (it may touch other conversations)
 		apply_fallback(registry, cli_session_id, backend=backend)
 		await logger.info(f"leave_conversation: conv_id={conv_id} sender={sender}")
-		return f"ok. Left conversation {conv_id}."
+		return _envelope("ok", conversation_id=conv_id)
 
 	@require_cli_session_id
 	@_touch_sessions
@@ -920,9 +967,94 @@ def build_tool_handlers(
 		if hasattr(config, "log_path") and config.log_path:
 			pending_dir = Path(config.log_path).parent
 		result = await _perform_combine(registry, source_id, target_id, logger, pending_dir, backend=backend)
-		if not result.startswith("ERROR"):
-			await logger.info(f"combine_conversations: source={source_id} target={target_id}")
-		return result
+		if result.startswith("ERROR"):
+			return result
+		await logger.info(f"combine_conversations: source={source_id} target={target_id}")
+		return _envelope("ok", source=source_id, target=target_id, detail=result)
+
+	@require_cli_session_id
+	@_touch_sessions
+	async def join_conversation(
+		sender: str,
+		ref: str | None = None,
+		title: str | None = None,
+		*,
+		cli_session_id: str,
+		cwd: str,
+	) -> str:
+		if err := _validate_sender(sender):
+			return err
+		from server.conversation_ops import (
+			_add_member,
+			_compose_wake_payload,
+			_create_active_conversation_for,
+			_migrate_member,
+		)
+
+		bound_id = registry.session_to_conversation_id.get(cli_session_id)
+
+		if ref is not None:
+			target = registry.conversations.get(ref)
+			if target is None or target.state != "active":
+				return f"ERROR: conversation {ref} not found or not Active."
+			target_id = ref
+		else:
+			open_id = registry.open_conversation_id
+			open_conv = registry.conversations.get(open_id) if open_id else None
+			if open_conv is not None and open_conv.state == "active":
+				target_id = open_conv.id
+			else:
+				# Mint and promote. The promotion is what pairs up the second
+				# ref-absent joiner during the deprecation window: without it the
+				# next joiner would mint a second, separate room.
+				conv_id = await _create_active_conversation_for(
+					registry, cli_session_id, cwd, sender, backend=backend, title=title,
+				)
+				registry.open_conversation_id = conv_id
+				_spawn_bg(
+					backend.set_open_conversation_id(conv_id),
+					label=f"fb_set_open_conv_id:{conv_id}",
+				)
+				await logger.info(f"join_conversation: minted+promoted conv_id={conv_id} sender={sender}")
+				return _envelope("ok", conversation_id=conv_id, minted=True, sender=sender, peers=[])
+
+		conv = registry.conversations[target_id]
+		already_member = False
+
+		if bound_id == target_id:
+			if cli_session_id in conv.members_active:
+				already_member = True
+			else:
+				async with conv.lock:
+					if cli_session_id not in conv.members_active:
+						await _add_member(registry, target_id, cli_session_id, sender, cwd, backend=backend)
+		elif bound_id is not None:
+			source = registry.conversations.get(bound_id)
+			if source is None:
+				async with conv.lock:
+					await _add_member(registry, target_id, cli_session_id, sender, cwd, backend=backend)
+			else:
+				locks = sorted([source, conv], key=lambda c: c.id)
+				async with locks[0].lock, locks[1].lock:
+					await _migrate_member(registry, bound_id, target_id, cli_session_id, sender, cwd, backend=backend)
+		else:
+			async with conv.lock:
+				await _add_member(registry, target_id, cli_session_id, sender, cwd, backend=backend)
+
+		member = conv.members_active.get(cli_session_id)
+		if member is None:
+			return "ERROR: join failed: session is not a member after join."
+		# Unseen history is delivered synchronously - the reason no intro-queue
+		# block exists on this path. Full history for a new member (last_seen 0),
+		# delta for an existing one; cursor advances so the next wake is a delta.
+		log = _compose_wake_payload(conv, member, "enter")
+		member.last_seen_seq = len(conv.messages)
+		peers = [m.sender for sid, m in conv.members_active.items() if sid != cli_session_id]
+		await logger.info(f"join_conversation: conv_id={target_id} sender={member.sender} already_member={already_member}")
+		return _envelope(
+			"ok", conversation_id=target_id, sender=member.sender, peers=peers,
+			log=log or None, already_member=already_member or None,
+		)
 
 	async def handle_agent_status(session_id: str, state: str, detail: str | None) -> None:
 		"""Hook-driven write. Fire-and-forget — never raises to the caller.
@@ -966,5 +1098,6 @@ def build_tool_handlers(
 		leave_conversation=leave_conversation,
 		set_away_mode=set_away_mode,
 		combine_conversations=combine_conversations,
+		join_conversation=join_conversation,
 		handle_agent_status=handle_agent_status,
 	)

@@ -17,6 +17,7 @@ conversation returns the sentinel instead of minting orphan state."""
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 
 import pytest
@@ -88,7 +89,9 @@ async def test_ask_human_returns_force_end_sentinel_without_treating_as_answer(c
 	registry.resolve_pending_for_conversation(conv_id, _FE_SENTINEL)
 	result = await asyncio.wait_for(task, timeout=1.0)
 
-	assert result == _FE_SENTINEL
+	data = json.loads(result)
+	assert data["status"] == "conversation_ended"
+	assert data["cause"] == "force-ended"
 	# A force-end is not an answer: no resolution confirmation must be sent.
 	assert backend.sent_confirmations == []
 
@@ -112,7 +115,9 @@ async def test_ask_human_bound_to_ended_conversation_returns_sentinel_without_mi
 
 	result = await handlers.ask_human("Proceed?", _SENDER, cli_session_id=_SID, cwd=_CWD)
 
-	assert result == _FE_SENTINEL
+	data = json.loads(result)
+	assert data["status"] == "conversation_ended"
+	assert data["cause"] == "force-ended"
 	# No pending question registered.
 	assert registry.pending_count == 0
 	# No orphan conversation minted: only the Ended one exists.

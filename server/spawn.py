@@ -189,10 +189,10 @@ class SpawnHandler:
 				"(e.g. 'Claude Win', 'Claude WSL') or role labels (e.g. 'Reviewer', 'Implementer') "
 				"both work. If you pick a name already in use, the server appends a numeric suffix "
 				"(e.g. 'Claude Win 2'). "
-				"Call enter_conversation(sender='<your_name>') as your first switchboard action — "
-				"that queues you in the conversation's wait queue and delivers the recent log "
-				"when the next peer speaks. After you have that context, introduce yourself via "
-				"message_and_await_agent."
+				f"Call join_conversation(sender='<your_name>', ref='{conv.id}') as your first "
+				"switchboard action to collect the recent log right away. After you have that "
+				"context, introduce yourself via message_and_await_agent, which blocks until a "
+				"peer speaks."
 				+ recent_block
 			)
 		else:
@@ -229,8 +229,8 @@ class SpawnHandler:
 			)
 		else:
 			base += (
-				f"Call enter_conversation(sender='{member.sender}') to receive the conversation's "
-				"new context. You will get the recent history since your session ended."
+				f"Call join_conversation(sender='{member.sender}', ref='{new_conv_id}') to collect "
+				"the conversation's new context: the recent history since your session ended."
 			)
 		user_prompt = cmd.get("prompt")
 		if user_prompt:

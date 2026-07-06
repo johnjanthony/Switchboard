@@ -135,7 +135,7 @@ async def test_mcp_combine_path_fires_launcher_for_dormant_member(tmp_path):
 			cli_session_id="sess-combiner", cwd="C:/Work/X",
 		)
 
-	assert result.startswith("ok"), f"unexpected: {result}"
+	assert json.loads(result)["status"] == "ok", f"unexpected: {result}"
 	assert len(list(tmp_path.glob("spawn-pending-*.json"))) == 1
 	mock_launch.assert_awaited_once()
 

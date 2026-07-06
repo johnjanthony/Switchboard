@@ -6,13 +6,13 @@ pending_questions record leaves the question pending on the phone forever."""
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
 
 from server.config import Config
 from server.gateway import build_tool_handlers
-from server.gateway.handlers import TIMEOUT_SENTINEL
 from server.logging_jsonl import JsonlLogger
 from tests.conftest import make_active_conversation, make_registry_with_loopback
 from tests.test_gateway_notify_human import RecordingBackend
@@ -49,7 +49,8 @@ async def test_timeout_marks_question_cancelled(tmp_path: Path):
 	)
 	await asyncio.sleep(0.05)  # let the _spawn_bg cleanup tasks run
 
-	assert result == TIMEOUT_SENTINEL, f"expected the timeout sentinel, got: {result!r}"
+	data = json.loads(result)
+	assert data["status"] == "timeout", f"expected the timeout envelope, got: {result!r}"
 	# The question's Firebase message is marked cancelled (which also clears
 	# its pending_questions record; firebase.py mark_question_cancelled)
 	assert len(backend.cancelled_questions) == 1, \

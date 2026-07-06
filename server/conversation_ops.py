@@ -418,7 +418,7 @@ async def _inject_combine_intro(registry: Registry, target: Conversation, sender
 		"seq": len(target.messages),
 		"sender": "<system>",
 		"type": "system",
-		"text": f"{sender} joined via combine. Call enter_conversation(sender='{sender}') to receive the conversation history.",
+		"text": f"{sender} joined via combine. Call join_conversation(sender='{sender}') to collect the conversation history.",
 		"timestamp": _now_iso(),
 	}
 	target.messages.append(msg)
@@ -455,7 +455,7 @@ async def _spawn_pending_for_combine_resume(
 		"agents": [{
 			"surface": member.surface,
 			"cli_session_id": member.cli_session_id,
-			"prompt": f"You were moved from conversation '{source_id}' to '{target_id}' via combine. Call enter_conversation(sender='{member.sender}') to receive the new conversation's history.",
+			"prompt": f"You were moved from conversation '{source_id}' to '{target_id}' via combine. Call join_conversation(sender='{member.sender}', ref='{target_id}') to collect the new conversation's history.",
 			"project_path": member.cwd,
 			"prior_sender": member.sender,
 		}],

@@ -366,7 +366,8 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		cwd: str | None = None,
 	) -> str:
 		"""Block until John responds from his phone. Returns the response text,
-		or '__TIMEOUT__' if the timeout window elapses.
+		or one-line JSON {"status":"timeout"} / {"status":"conversation_ended",...}
+		when no reply can arrive.
 
 		sender: your display name (kebab-case recommended).
 		title: optional session label shown on John's phone tab.
@@ -424,8 +425,9 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		cwd: str | None = None,
 	) -> str:
 		"""Send a message to your collab partners and block until one of them speaks.
-		Returns the talking-stick payload (delta since you last saw the conversation,
-		excluding your own messages).
+		Returns one-line JSON: {"status":"ok","log":...} on a peer wake,
+		{"status":"timeout"}, {"status":"conversation_empty",...}, or
+		{"status":"conversation_ended",...}.
 
 		cli_session_id and cwd are injected by the PreToolUse hook."""
 		# Keepalive: blocks until a collab partner speaks, which can be hours.
@@ -488,10 +490,38 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		"""Move all movable members of source_id into target_id, then end source_id.
 		Permanently-lost members stay in source. Alive members are rebound immediately;
 		dormant members are queued for launcher resume into target. Non-blocking.
+		Returns one-line JSON: {"status":"ok","source":...,"target":...,"detail":...}
+		on success; an "ERROR: ..." string on failure.
 
 		cli_session_id and cwd are injected by the PreToolUse hook."""
 		return await handlers.combine_conversations(
 			source_id, target_id,
+			cli_session_id=cli_session_id, cwd=cwd,
+		)
+
+	@mcp.tool()
+	async def join_conversation(
+		sender: str,
+		ref: str | None = None,
+		title: str | None = None,
+		cli_session_id: str | None = None,
+		cwd: str | None = None,
+	) -> str:
+		"""Join a conversation. Never blocks; idempotent.
+
+		ref: a conversation_id (from lookup_conversation_ids, a convene notice,
+		or John's prompt) to join that conversation - migrating you out of your
+		current one if needed. Omit ref to join the currently-open conversation,
+		or mint a fresh one (promoted as open) when none exists.
+
+		Returns one-line JSON: {"status":"ok", "conversation_id", "sender",
+		"peers", "log"?, "minted"?, "already_member"?}. "log" is the history you
+		have not seen yet (full on first join). To wait for peers afterwards,
+		call message_and_await_agent.
+
+		cli_session_id and cwd are injected by the PreToolUse hook."""
+		return await handlers.join_conversation(
+			sender, ref=ref, title=title,
 			cli_session_id=cli_session_id, cwd=cwd,
 		)
 
@@ -503,8 +533,8 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		cli_session_id: str | None = None,
 		cwd: str | None = None,
 	) -> str:
-		"""Returns a JSON-encoded list of active conversation_ids matching ALL
-		provided filters. At least one filter required.
+		"""Returns one-line JSON: {"status":"ok","conversation_ids":[...]} - the active
+		conversation_ids matching ALL provided filters. At least one filter required.
 
 		cwd_filter: exact case-insensitive match against members' cwd.
 		sender_contains: case-insensitive substring match.
@@ -529,6 +559,7 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		Appends the parting to the log, wakes blocked peers, applies session-fallback
 		(rebind home if away, else unbind). Conversation ends if you were the last
 		alive member and no dormant members remain.
+		Returns one-line JSON: {"status":"ok","conversation_id":...}.
 
 		cli_session_id and cwd are injected by the PreToolUse hook."""
 		return await handlers.leave_conversation(

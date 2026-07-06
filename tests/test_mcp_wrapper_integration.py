@@ -41,8 +41,8 @@ def mcp_instance(cfg):
 
 
 @pytest.mark.asyncio
-async def test_mcp_tool_list_includes_all_ten_tools(cfg):
-	"""All 10 expected tools must be registered in the FastMCP instance."""
+async def test_mcp_tool_list_includes_all_eleven_tools(cfg):
+	"""All 11 expected tools must be registered in the FastMCP instance."""
 	logger = JsonlLogger(cfg.log_path)
 	registry = Registry()
 	backend = RecordingBackend()
@@ -58,6 +58,7 @@ async def test_mcp_tool_list_includes_all_ten_tools(cfg):
 		"message_and_await_agent",
 		"open_conversation",
 		"enter_conversation",
+		"join_conversation",
 		"combine_conversations",
 		"lookup_conversation_ids",
 		"leave_conversation",

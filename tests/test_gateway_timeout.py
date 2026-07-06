@@ -1,9 +1,11 @@
 """Timeout and error-path tests for ask_human."""
 
+import json
+
 import pytest
 
 from server.config import Config
-from server.gateway import TIMEOUT_SENTINEL, build_tool_handlers
+from server.gateway import build_tool_handlers
 from server.logging_jsonl import JsonlLogger
 from server.registry import Registry
 from tests.test_gateway_notify_human import RecordingBackend
@@ -42,7 +44,8 @@ async def test_ask_human_returns_sentinel_on_timeout(cfg, logger):
 		cwd=_CWD,
 	)
 
-	assert result == TIMEOUT_SENTINEL
+	data = json.loads(result)
+	assert data["status"] == "timeout"
 	# Backend was asked to send a timeout follow-up.
 	assert len(backend.sent_timeouts) == 1
 	assert backend.sent_timeouts[0][0] == backend.sent_questions[0][0]  # request_id matches
