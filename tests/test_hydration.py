@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 import pytest
 
 from server.registry import Registry
+from server.session_registry import SessionRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -235,9 +236,9 @@ async def test_hydrate_single_active_conversation():
 	conv = registry.conversations["conv-1"]
 	assert conv.title == "My Session"
 	assert conv.state == "active"
-	assert "Claude" in conv.members_active
-	assert conv.members_active["Claude"].cli_session_id == "sess-abc"
-	assert conv.members_active["Claude"].alive is True
+	assert "sess-abc" in conv.members_active
+	assert conv.members_active["sess-abc"].cli_session_id == "sess-abc"
+	assert conv.members_active["sess-abc"].alive is True
 	assert len(conv.messages) == 2
 	# Session binding derived from alive member
 	assert registry._session_to_conversation_id.get("sess-abc") == "conv-1"
@@ -296,8 +297,8 @@ async def test_hydrate_preserves_dormant_members():
 		await hydrate_from_firebase(registry, None, logger)
 
 	conv = registry.conversations["conv-dormant"]
-	assert "Claude" in conv.members_active
-	member = conv.members_active["Claude"]
+	assert "sess-dormant" in conv.members_active
+	member = conv.members_active["sess-dormant"]
 	assert member.alive is False
 	assert member.session_lost_permanently is False
 
@@ -445,9 +446,9 @@ async def test_hydrate_handles_partial_member_data():
 		await hydrate_from_firebase(registry, None, logger)
 
 	conv = registry.conversations["conv-partial"]
-	assert "HasSession" in conv.members_active
-	assert "NoSession" not in conv.members_active
-	assert conv.members_active["HasSession"].cli_session_id == "sess-valid"
+	assert "sess-valid" in conv.members_active
+	assert len(conv.members_active) == 1
+	assert conv.members_active["sess-valid"].cli_session_id == "sess-valid"
 
 
 @pytest.mark.asyncio
@@ -503,8 +504,8 @@ async def test_hydrate_restores_members_history():
 	assert departed.session_end_reason == "hook_sessionend"
 	assert departed.last_seen_seq == 7
 	# Active members still loaded
-	assert "Alive" in conv.members_active
-	assert conv.members_active["Alive"].cli_session_id == "sess-alive"
+	assert "sess-alive" in conv.members_active
+	assert conv.members_active["sess-alive"].cli_session_id == "sess-alive"
 
 
 @pytest.mark.asyncio
@@ -544,3 +545,88 @@ async def test_force_end_after_hydration_does_not_mint_orphan_home_conv():
 	assert registry.conversations["conv-d"].state == "ended"
 	assert len(registry.conversations) == conv_count_before, \
 		"force-end must not mint a '(home)' conversation for a dead session"
+
+
+@pytest.mark.asyncio
+async def test_hydrate_sessions_loads_terminal_and_nonterminal_records_without_remirroring():
+	"""sessions/ children hydrate into the SessionRegistry regardless of state -
+	terminal (ended) records included, since the sweeper needs them in memory to
+	retention-prune their RTDB entries. hydrate_record must seed the mirror canon
+	so hydration itself never re-fires a write back to Firebase."""
+	registry = Registry()
+	logger = make_logger()
+	session_registry = SessionRegistry()
+
+	mirror_calls = []
+	session_registry.set_mirror(lambda sid, payload: mirror_calls.append((sid, payload)))
+
+	snapshot = {
+		"sessions": {
+			"sess-idle": {
+				"cli_session_id": "sess-idle",
+				"cwd": "c:/work/sw",
+				"surface": "windows",
+				"cli": "claude",
+				"started_at": "t0",
+				"last_event_at": "t1",
+				"state": "idle",
+				"state_detail": None,
+				"conversation_id": None,
+				"sender": "Claude",
+				"model": None,
+				"context_pct": None,
+				"end_reason": None,
+			},
+			"sess-ended": {
+				"cli_session_id": "sess-ended",
+				"cwd": "c:/work/sw",
+				"surface": "windows",
+				"cli": "claude",
+				"started_at": "t0",
+				"last_event_at": "t2",
+				"state": "ended",
+				"state_detail": None,
+				"conversation_id": None,
+				"sender": "Claude",
+				"model": None,
+				"context_pct": None,
+				"end_reason": "hook_sessionend",
+			},
+		},
+	}
+	mock_db = make_firebase_db_mock(snapshot)
+
+	with patch("server.hydration.db", mock_db):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, None, logger, session_registry=session_registry)
+
+	idle_rec = session_registry.get("sess-idle")
+	assert idle_rec is not None
+	assert idle_rec.state == "idle"
+	assert idle_rec.last_event_at == "t1"
+	assert idle_rec.source == "hydration"
+
+	ended_rec = session_registry.get("sess-ended")
+	assert ended_rec is not None
+	assert ended_rec.state == "ended"
+	assert ended_rec.last_event_at == "t2"
+	assert ended_rec.source == "hydration"
+
+	assert mirror_calls == [], "hydrate_record must seed the mirror canon, not re-fire writes"
+
+
+@pytest.mark.asyncio
+async def test_hydrate_sessions_skipped_when_session_registry_is_none():
+	"""Callers that don't pass session_registry (or lack the feature) still hydrate
+	cleanly - the sessions block is opt-in via the default None parameter."""
+	registry = Registry()
+	logger = make_logger()
+	mock_db = make_firebase_db_mock({
+		"sessions": {"sess-1": {"cli_session_id": "sess-1", "state": "idle"}},
+	})
+
+	with patch("server.hydration.db", mock_db):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, None, logger)
+
+	logger.surface_error.assert_not_called()

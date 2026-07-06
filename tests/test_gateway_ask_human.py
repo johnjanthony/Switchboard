@@ -266,7 +266,7 @@ class YieldingBackend(RecordingBackend):
 async def test_dispatch_loop_logs_unknown_correlation(cfg, logger, tmp_path):
 	registry = make_registry_with_loopback()
 	backend = YieldingBackend(
-		[IncomingResponse(correlation=("c:/unknown", "Ghost"), text="stray")]
+		[IncomingResponse(correlation="conv-unknown", text="stray", request_id="req-unknown", sender="Ghost")]
 	)
 	sup = _make_loop_supervisor(backend, logger, name="dispatch_responses")
 	dispatch_task = asyncio.create_task(
@@ -314,18 +314,19 @@ async def test_dispatch_loop_continues_after_iteration_exception(
 	"""If an iteration raises unexpectedly, the loop logs surface_error and keeps running."""
 	registry = make_registry_with_loopback()
 	backend = YieldingBackend([
-		IncomingResponse(correlation=(_CWD, _SENDER), text="first"),
-		IncomingResponse(correlation=(_CWD, _SENDER), text="second"),
+		IncomingResponse(correlation=_CWD, text="first", request_id="r1"),
+		IncomingResponse(correlation=_CWD, text="second", request_id="r2"),
 	])
+	registry.add(conversation_id=_CWD, cli_session_id="s-1", sender=_SENDER, request_id="r2")
 
 	call_count = {"n": 0}
 	original_resolve = registry.resolve
 
-	def flaky_resolve(cwd, sender, text, request_id=None):
+	def flaky_resolve(conversation_id, request_id, text):
 		call_count["n"] += 1
 		if call_count["n"] == 1:
 			raise RuntimeError("kaboom")
-		return original_resolve(cwd=cwd, sender=sender, text=text)
+		return original_resolve(conversation_id, request_id, text)
 
 	monkeypatch.setattr(registry, "resolve", flaky_resolve)
 
@@ -448,7 +449,8 @@ async def test_ask_human_supersede_marks_prior_cancelled(cfg, logger):
 
 	# Resolve the second
 	conv_id = registry.session_to_conversation_id.get(_SID)
-	registry.resolve(conversation_id=conv_id, sender=_SENDER, text="answer")
+	second_req_id = registry.pending_for_conversation(conv_id)[0].request_id
+	registry.resolve(conversation_id=conv_id, request_id=second_req_id, text="answer")
 	await asyncio.wait_for(second_task, timeout=1.0)
 
 	# First task was cancelled
@@ -509,7 +511,8 @@ async def test_ask_human_title_passthrough(cfg, logger):
 	assert q_msg["title"] == "My Task"
 
 	conv_id = registry.session_to_conversation_id.get(_SID)
-	registry.resolve(conversation_id=conv_id, sender=_SENDER, text="yes")
+	req_id = registry.pending_for_conversation(conv_id)[0].request_id
+	registry.resolve(conversation_id=conv_id, request_id=req_id, text="yes")
 	await asyncio.wait_for(task, timeout=1.0)
 
 
@@ -530,13 +533,13 @@ async def test_dispatch_loop_calls_stale_reply_notice_on_unknown_correlation(cfg
 	registry = make_registry_with_loopback()
 	# No pending request registered — any response is stale.
 	backend = YieldingBackend([
-		IncomingResponse(correlation=(_CWD, _SENDER), text="stray reply")
+		IncomingResponse(correlation=_CWD, text="stray reply", request_id="r-stray")
 	])
 	stale_backend = StaleNoticeBackend()
 
 	class CombinedBackend(StaleNoticeBackend):
 		async def poll_responses(self):
-			for r in [IncomingResponse(correlation=(_CWD, _SENDER), text="stray reply")]:
+			for r in [IncomingResponse(correlation=_CWD, text="stray reply", request_id="r-stray")]:
 				yield r
 			await asyncio.Event().wait()
 
@@ -552,7 +555,7 @@ async def test_dispatch_loop_calls_stale_reply_notice_on_unknown_correlation(cfg
 	except asyncio.CancelledError:
 		pass
 
-	assert combined.stale_notices == [(_CWD, _SENDER)]
+	assert combined.stale_notices == [(_CWD, "unknown")]
 
 
 @pytest.mark.asyncio
@@ -570,7 +573,7 @@ async def test_dispatch_loop_deletes_stale_response_slot(cfg, logger):
 			self.deleted_slots.append(slot)
 
 		async def poll_responses(self):
-			yield IncomingResponse(correlation=(_CWD, _SENDER), text="stray reply", slot="r1abcd")
+			yield IncomingResponse(correlation=_CWD, text="stray reply", slot="r1abcd", request_id="r-stray")
 			await asyncio.Event().wait()
 
 	backend = DeleteRecordingBackend()
@@ -585,7 +588,7 @@ async def test_dispatch_loop_deletes_stale_response_slot(cfg, logger):
 	except asyncio.CancelledError:
 		pass
 
-	assert backend.stale_notices == [(_CWD, _SENDER)]
+	assert backend.stale_notices == [(_CWD, "unknown")]
 	assert backend.deleted_slots == ["r1abcd"]
 
 
@@ -598,7 +601,7 @@ async def test_dispatch_loop_deletes_response_slot_on_success(cfg, logger):
 	always propagate client disconnects."""
 	registry = make_registry_with_loopback()
 	# Pre-register a pending so registry.resolve succeeds.
-	registry.add(conversation_id=_CWD, sender=_SENDER, request_id="r1", msg_id="m1")
+	registry.add(conversation_id=_CWD, cli_session_id="s-1", sender=_SENDER, request_id="r1", msg_id="m1")
 
 	class DeleteRecordingBackend(StaleNoticeBackend):
 		def __init__(self):
@@ -616,7 +619,7 @@ async def test_dispatch_loop_deletes_response_slot_on_success(cfg, logger):
 			return (conv_id, sender_or_message), "msg-id"
 
 		async def poll_responses(self):
-			yield IncomingResponse(correlation=(_CWD, _SENDER), text="yes", slot="r1")
+			yield IncomingResponse(correlation=_CWD, text="yes", slot="r1", request_id="r1")
 			await asyncio.Event().wait()
 
 	backend = DeleteRecordingBackend()
@@ -662,7 +665,7 @@ async def test_dispatch_loop_skips_slot_delete_when_slot_unknown(cfg, logger):
 			self.deleted_slots.append(slot)
 
 		async def poll_responses(self):
-			yield IncomingResponse(correlation=(_CWD, _SENDER), text="stray reply", slot=None)
+			yield IncomingResponse(correlation=_CWD, text="stray reply", slot=None, request_id="r-stray")
 			await asyncio.Event().wait()
 
 	backend = DeleteRecordingBackend()
@@ -677,7 +680,7 @@ async def test_dispatch_loop_skips_slot_delete_when_slot_unknown(cfg, logger):
 	except asyncio.CancelledError:
 		pass
 
-	assert backend.stale_notices == [(_CWD, _SENDER)]
+	assert backend.stale_notices == [(_CWD, "unknown")]
 	assert backend.deleted_slots == []
 
 
@@ -737,7 +740,8 @@ async def test_ask_human_blocks_when_away_mode_on(cfg, logger):
 
 	# Resolve and confirm the await completes with the resolution text.
 	conv_id = registry.session_to_conversation_id.get(_SID)
-	registry.resolve(conversation_id=conv_id, sender=_SENDER, text="yes")
+	req_id = registry.pending_for_conversation(conv_id)[0].request_id
+	registry.resolve(conversation_id=conv_id, request_id=req_id, text="yes")
 	result = await asyncio.wait_for(task, timeout=1.0)
 	assert result == "yes"
 
@@ -816,7 +820,7 @@ async def test_ask_human_writes_pending_questions_and_clears_on_reply(cfg, logge
 	assert added["question_text"] == "Proceed?"
 
 	conv_id = registry.session_to_conversation_id.get(_SID)
-	registry.resolve(conversation_id=conv_id, sender=_SENDER, text="yes")
+	registry.resolve(conversation_id=conv_id, request_id=added["request_id"], text="yes")
 	result = await asyncio.wait_for(task, timeout=1.0)
 	# Let bg writes complete.
 	for _ in range(6):

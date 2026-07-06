@@ -12,6 +12,9 @@ Doesn't rehydrate: wait_queue (futures die with the process), pending_responses
 (same), conv.lock (new lock per startup is fine). Any agent blocked on a future
 at restart time will eventually time out or surface CancelledError on their next
 MCP call — acceptable degradation per the parent design's T-001 acknowledgment.
+The SessionRegistry roster (sessions/) IS rehydrated when session_registry is
+passed in, including terminal (ended/lost) records — the sweeper needs those in
+memory to retention-prune their RTDB entries.
 
 Also not rehydrated: /conversations/<id>/pending_questions/<request_id>. That
 subtree is read by the startup sweep (sweep_orphaned_pending_questions, wired
@@ -35,7 +38,7 @@ from server.registry import (
 )
 
 
-async def hydrate_from_firebase(registry: Registry, backend, logger) -> None:
+async def hydrate_from_firebase(registry: Registry, backend, logger, session_registry=None) -> None:
 	"""Restore registry state from Firebase. Called once at server startup,
 	BEFORE listeners spawn and BEFORE the FastMCP app starts serving.
 	"""
@@ -91,6 +94,18 @@ async def hydrate_from_firebase(registry: Registry, backend, logger) -> None:
 						f"hydration_clear_open_pointer_backend_failed: {exc}"
 					)
 
+	# 2c. Session roster. Terminal records hydrate too: the sweeper can only
+	# retention-prune RTDB entries it holds in memory.
+	if session_registry is not None:
+		try:
+			sessions_node = await _read_path("sessions")
+			if isinstance(sessions_node, dict):
+				for _sid, data in sessions_node.items():
+					if isinstance(data, dict):
+						session_registry.hydrate_record(data)
+		except Exception as exc:
+			await logger.surface_error(f"hydration_sessions_failed: {exc}")
+
 	# 3. Session home pointers.
 	# Skip pointers that reference a conversation that wasn't hydrated (i.e.
 	# the home conv is Ended or has been deleted). Re-binding a session to a
@@ -126,7 +141,7 @@ async def hydrate_from_firebase(registry: Registry, backend, logger) -> None:
 			if not member.cli_session_id:
 				continue
 			if member.alive:
-				registry._session_to_conversation_id[member.cli_session_id] = conv_id
+				registry.bind_session(member.cli_session_id, conv_id)
 
 	await logger.info(
 		f"hydration_complete: conversations={len(registry.conversations)} "
@@ -187,7 +202,7 @@ def _hydrate_conversation(registry: Registry, conv_id: str, conv_node: Any) -> N
 				left_at=_as_float(member_data.get("left_at"), None),
 				last_seen_seq=int(member_data.get("last_seen_seq", 0) or 0),
 			)
-			conv.members_active[member.sender] = member
+			conv.members_active[member.cli_session_id] = member
 
 	# Departed members (parting metadata) — restored from /conversations/<id>/members_history
 	history_node = conv_node.get("members_history") or {}

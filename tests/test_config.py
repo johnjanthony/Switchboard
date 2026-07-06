@@ -18,6 +18,8 @@ def _clear_env(monkeypatch):
 		"SWITCHBOARD_WINDOWS_SPAWN_ROOT",
 		"SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT",
 		"SWITCHBOARD_RATE_LIMIT",
+		"SWITCHBOARD_SESSION_LOST_AFTER_SECONDS",
+		"SWITCHBOARD_SESSION_RETENTION_HOURS",
 	]:
 		monkeypatch.delenv(key, raising=False)
 
@@ -131,3 +133,29 @@ def test_rate_limit_configurable_via_env(monkeypatch, tmp_path):
 	monkeypatch.setenv("SWITCHBOARD_RATE_LIMIT", "60")
 	cfg = load_config(dotenv_path=tmp_path / "no.env")
 	assert cfg.rate_limit == 60
+
+
+def test_session_lost_after_seconds_defaults_to_900(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.session_lost_after_seconds == 900
+
+
+def test_session_lost_after_seconds_configurable_via_env(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	monkeypatch.setenv("SWITCHBOARD_SESSION_LOST_AFTER_SECONDS", "120")
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.session_lost_after_seconds == 120
+
+
+def test_session_retention_hours_defaults_to_72(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.session_retention_hours == 72
+
+
+def test_session_retention_hours_configurable_via_env(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	monkeypatch.setenv("SWITCHBOARD_SESSION_RETENTION_HOURS", "24")
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.session_retention_hours == 24

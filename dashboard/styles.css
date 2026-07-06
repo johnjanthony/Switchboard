@@ -561,3 +561,26 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .claude-status { display: inline-flex; align-items: center; gap: 6px; }
 .claude-status-label { font-family: var(--font-mono); font-size: 11px; color: var(--label-faint); }
 .claude-status-btn { font-family: var(--font-mono); font-size: 11px; padding: 1px 8px; }
+
+/* ============================================================================
+   Sessions rail - roster of every Claude Code session the hub knows about,
+   mounted above the line board; independently collapsible.
+   ============================================================================ */
+.sessions-rail { border-bottom: 1px solid var(--rule); padding: 4px 0; }
+.sessions-header { display: flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer; user-select: none; }
+.sessions-title { font-weight: 600; }
+.sessions-count { opacity: 0.6; font-size: 0.85em; }
+.sessions-caret { margin-left: auto; opacity: 0.6; }
+.sessions-sensor-offline { padding: 2px 10px; font-size: 0.8em; opacity: 0.7; font-style: italic; }
+.sessions-list { list-style: none; margin: 0; padding: 0; max-height: 40vh; overflow-y: auto; }
+.session-row { display: flex; align-items: center; gap: 6px; padding: 3px 10px; cursor: pointer; }
+.session-row:hover { background: var(--panel-hi); }
+.session-project { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-meta { margin-left: auto; display: flex; gap: 6px; font-size: 0.8em; opacity: 0.75; }
+.session-chip { font-size: 0.7em; padding: 1px 6px; border-radius: 8px; white-space: nowrap; }
+.chip-active { background: #2d5a2d; }
+.chip-idle { background: #444; }
+.chip-awaiting-human { background: #7a5a1e; }
+.chip-awaiting-agent { background: #1e4a7a; }
+.chip-ended { background: #333; opacity: 0.7; }
+.chip-lost { background: #6a2525; }

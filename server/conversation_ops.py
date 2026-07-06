@@ -20,16 +20,18 @@ from server.registry import Conversation, ConversationMember, Registry
 _WSL_MOUNT_RE = re.compile(r"^/mnt/[a-z]/", re.IGNORECASE)
 
 
-def _disambiguate_sender(conv, desired: str) -> str:
-	"""If `desired` is already a key in conv.members_active, append a space and
-	a number (2, 3, ...) until unique — e.g. 'Claude Win' → 'Claude Win 2'.
-	Senders are display labels, so the space-separated form reads naturally on
-	the phone bubble attribution. Returns the disambiguated sender string;
-	caller must update both the dict key and member.sender to the returned value."""
-	if desired not in conv.members_active:
+def _disambiguate_sender(conv, desired: str, exclude_session_id: str | None = None) -> str:
+	"""Sender is a display label; make it unique among the conversation's members
+	(excluding the caller's own entry when renaming) by appending ' 2', ' 3', ...
+	Identity is the members_active key (cli_session_id), never the sender."""
+	taken = {
+		m.sender for sid, m in conv.members_active.items()
+		if sid != exclude_session_id
+	}
+	if desired not in taken:
 		return desired
 	n = 2
-	while f"{desired} {n}" in conv.members_active:
+	while f"{desired} {n}" in taken:
 		n += 1
 	return f"{desired} {n}"
 
@@ -95,9 +97,11 @@ async def _create_active_conversation_for_locked(
 		surface=_infer_surface(cwd),
 		joined_at=now,
 	)
-	conv.members_active[sender] = member
+	conv.members_active[cli_session_id] = member
 	registry.conversations[conv_id] = conv
 	registry.bind_session(cli_session_id, conv_id)
+	if registry.sessions is not None:
+		registry.sessions.set_sender(cli_session_id, member.sender)
 	home_newly_set = cli_session_id not in registry.session_home_conversation_id
 	if home_newly_set:
 		registry.set_session_home(cli_session_id, conv_id)
@@ -161,11 +165,11 @@ async def _resolve_conversation_and_member(
 	conv = registry.conversations.get(conv_id)
 	if conv is None:
 		return conv_id
-	if not any(m.cli_session_id == cli_session_id for m in conv.members_active.values()):
+	if cli_session_id not in conv.members_active:
 		async with conv.lock:
 			# Re-check inside the lock: a concurrent first call from the same
 			# session may have added the member already.
-			if not any(m.cli_session_id == cli_session_id for m in conv.members_active.values()):
+			if cli_session_id not in conv.members_active:
 				await _add_member(registry, conv_id, cli_session_id, sender, cwd, backend=backend)
 	return conv_id
 
@@ -223,8 +227,10 @@ async def _add_member(
 		joined_at=time.time(),
 		last_seen_seq=0,  # new member sees full history on first wake
 	)
-	conv.members_active[actual_sender] = member
+	conv.members_active[cli_session_id] = member
 	registry.bind_session(cli_session_id, conversation_id)
+	if registry.sessions is not None:
+		registry.sessions.set_sender(cli_session_id, member.sender)
 	home_newly_set = cli_session_id not in registry.session_home_conversation_id
 	if home_newly_set:
 		registry.set_session_home(cli_session_id, conversation_id)
@@ -269,27 +275,22 @@ async def _migrate_member(
 	from server.gateway.bg_tasks import _spawn_bg
 	source = registry.conversations[source_id]
 	target = registry.conversations[target_id]
-	# Find caller in source by cli_session_id (sender may have changed)
-	caller_member = None
-	old_key = None
-	for s, m in source.members_active.items():
-		if m.cli_session_id == cli_session_id:
-			caller_member = m
-			old_key = s
-			break
+	caller_member = source.members_active.get(cli_session_id)
 	if caller_member is None:
 		# Not in source — fall through to _add_member behavior
 		await _add_member(registry, target_id, cli_session_id, sender, cwd, backend=backend)
 		return
-	# Pop from source, push to target with updated (possibly disambiguated) sender
-	del source.members_active[old_key]
+	old_sender = caller_member.sender
+	del source.members_active[cli_session_id]
 	actual_sender = _disambiguate_sender(target, sender)
 	caller_member.sender = actual_sender
 	caller_member.cwd = cwd
 	caller_member.surface = _infer_surface(cwd)
-	caller_member.last_seen_seq = 0  # treat as new member of target (full history)
-	target.members_active[actual_sender] = caller_member
+	caller_member.last_seen_seq = 0
+	target.members_active[cli_session_id] = caller_member
 	registry.bind_session(cli_session_id, target_id)
+	if registry.sessions is not None:
+		registry.sessions.set_sender(cli_session_id, caller_member.sender)
 	# If source has no alive members AND no dormant members → end source
 	source_ended = False
 	if not source.members_active:
@@ -300,8 +301,8 @@ async def _migrate_member(
 			registry.open_conversation_id = None
 	if backend is not None:
 		_spawn_bg(
-			backend.remove_conversation_member(source_id, old_key),
-			label=f"fb_remove_member:{source_id}:{old_key}",
+			backend.remove_conversation_member(source_id, old_sender),
+			label=f"fb_remove_member:{source_id}:{old_sender}",
 		)
 		_spawn_bg(
 			backend.write_conversation_member(target_id, caller_member),
@@ -376,12 +377,7 @@ async def _queue_for_intro(
 	Caller is assumed to already be a member of conversation_id (caller of
 	enter_conversation may have just been migrated/added)."""
 	conv = registry.conversations[conversation_id]
-	# Locate caller's member
-	caller_member = None
-	for m in conv.members_active.values():
-		if m.cli_session_id == cli_session_id:
-			caller_member = m
-			break
+	caller_member = conv.members_active.get(cli_session_id)
 	if caller_member is None:
 		return "ERROR: enter_conversation: caller not a member of target conversation."
 	future = asyncio.get_event_loop().create_future()
@@ -523,17 +519,20 @@ async def _perform_combine(
 	async with locks[0].lock, locks[1].lock:
 		moved_names = []
 		removed_from_source: list[str] = []
-		for sender_key, member in list(source.members_active.items()):
+		for sid, member in list(source.members_active.items()):
 			if member.session_lost_permanently:
 				continue  # stay in source for visibility
+			old_sender = member.sender
 			# Disambiguate before inserting into target to avoid clobbering existing members
 			actual_sender = _disambiguate_sender(target, member.sender)
 			member.sender = actual_sender
+			if registry.sessions is not None:
+				registry.sessions.set_sender(member.cli_session_id, actual_sender)
 			if member.alive:
 				registry.bind_session(member.cli_session_id, target_id)
 				member.last_seen_seq = 0
-				del source.members_active[sender_key]
-				target.members_active[actual_sender] = member
+				del source.members_active[sid]
+				target.members_active[sid] = member
 				await _inject_combine_intro(registry, target, actual_sender, backend=backend)
 				# Wake any opener blocked on the target's open_peer_future:
 				# combine is a peer-join from the target's POV, exactly like
@@ -547,11 +546,11 @@ async def _perform_combine(
 					)
 					target.open_peer_future = None
 				moved_names.append(actual_sender)
-				removed_from_source.append(sender_key)
+				removed_from_source.append(old_sender)
 				if backend is not None:
 					_spawn_bg(
-						backend.remove_conversation_member(source_id, sender_key),
-						label=f"fb_remove_member:{source_id}:{sender_key}",
+						backend.remove_conversation_member(source_id, old_sender),
+						label=f"fb_remove_member:{source_id}:{old_sender}",
 					)
 					_spawn_bg(
 						backend.write_conversation_member(target_id, member),
@@ -574,14 +573,14 @@ async def _perform_combine(
 					registry.bind_session(member.cli_session_id, target_id)
 					combine_resume_count += 1
 				member.last_seen_seq = 0
-				del source.members_active[sender_key]
-				target.members_active[actual_sender] = member
+				del source.members_active[sid]
+				target.members_active[sid] = member
 				moved_names.append(actual_sender)
-				removed_from_source.append(sender_key)
+				removed_from_source.append(old_sender)
 				if backend is not None:
 					_spawn_bg(
-						backend.remove_conversation_member(source_id, sender_key),
-						label=f"fb_remove_member:{source_id}:{sender_key}",
+						backend.remove_conversation_member(source_id, old_sender),
+						label=f"fb_remove_member:{source_id}:{old_sender}",
 					)
 					_spawn_bg(
 						backend.write_conversation_member(target_id, member),
@@ -616,8 +615,7 @@ async def _perform_combine(
 			member_ref = entry.get("member")
 			if (
 				member_ref is not None
-				and member_ref.sender in target.members_active
-				and target.members_active[member_ref.sender] is member_ref
+				and target.members_active.get(member_ref.cli_session_id) is member_ref
 			):
 				target.wait_queue.append(entry)
 			else:

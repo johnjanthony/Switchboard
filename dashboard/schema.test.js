@@ -53,3 +53,7 @@ test('widgetPushedAt() targets widget/pushed_at', () => {
 test('widgetStatus() targets widget/status', () => {
 	assert.equal(schema.widgetStatus(), 'widget/status');
 });
+
+test('sessions() is the sessions root', () => {
+	assert.equal(schema.sessions(), 'sessions');
+});

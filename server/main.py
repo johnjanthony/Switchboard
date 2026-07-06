@@ -30,11 +30,13 @@ from server.gateway.dispatch import (
 	dispatch_away_mode_commands,
 	dispatch_session_end_markers,
 	dispatch_status_request_commands,
+	dispatch_session_sweep,
 )
 from server.gateway.bg_tasks import _spawn_bg
 from server.hydration import hydrate_from_firebase
 from server.logging_jsonl import JsonlLogger
 from server.registry import Registry
+from server.session_registry import SessionRegistry
 from server.rate_limiter import RateLimiter
 from server.firebase import FirebaseBackend
 from server.firebase_supervisor import LoopSupervisor
@@ -52,7 +54,7 @@ def _build_away_mode_route(registry: Registry):
 	return away_mode
 
 
-def _build_cli_session_end_route(registry, backend=None, logger=None):
+def _build_cli_session_end_route(registry, backend=None, logger=None, session_registry=None):
 	"""POST /cli-session/end - marks the matching conversation member dormant.
 	Retained for manual/testing use; the reliable path is now marker files swept
 	by dispatch_session_end_markers. Best-effort: returns 200 even on bad input
@@ -77,6 +79,7 @@ def _build_cli_session_end_route(registry, backend=None, logger=None):
 				now=lambda: datetime.now(timezone.utc).isoformat(),
 				backend=backend,
 				logger=logger,
+				session_registry=session_registry,
 			)
 		except Exception:
 			# Don't surface server errors to the hook — best-effort.
@@ -85,12 +88,40 @@ def _build_cli_session_end_route(registry, backend=None, logger=None):
 	return cli_session_end
 
 
-def _build_agent_status_route(handlers):
+def _build_session_start_route(session_registry: SessionRegistry):
+	"""POST /session_start — SessionStart hook ingest. Always 200 (hook contract)."""
+	async def session_start(request: Request):
+		try:
+			body = await request.json()
+		except Exception:
+			return JSONResponse({}, status_code=200)
+		session_id = body.get("session_id")
+		if not isinstance(session_id, str) or not session_id:
+			return JSONResponse({}, status_code=200)
+		cwd = body.get("cwd") if isinstance(body.get("cwd"), str) else ""
+		source = body.get("source") if isinstance(body.get("source"), str) else None
+		session_registry.record_session_start(session_id, cwd=cwd, start_source=source)
+		return JSONResponse({}, status_code=200)
+	return session_start
+
+
+def _build_sessions_route(session_registry: SessionRegistry):
+	"""GET /sessions — the roster as JSON (localhost trust, like /stats)."""
+	async def sessions(request: Request):
+		return JSONResponse({"sessions": [r.to_payload() for r in session_registry.snapshot()]})
+	return sessions
+
+
+def _build_agent_status_route(handlers, session_registry: SessionRegistry):
 	"""POST /agent_status — hook-driven status writes. Always returns 200 with
 	empty body, even on malformed input or backend failure (the handler swallows
 	exceptions internally). The Firebase write is awaited directly: it's a
 	~100ms operation, well inside the hook's 1-second timeout, and direct await
-	avoids the test-loop complications of background-spawned tasks."""
+	avoids the test-loop complications of background-spawned tasks.
+
+	The session-registry upsert happens BEFORE the away-mode gate inside
+	handlers.handle_agent_status, so an unknown session is discovered in the
+	roster even when the conversation-status write itself is gated off."""
 	async def agent_status(request: Request):
 		try:
 			body = await request.json()
@@ -99,14 +130,21 @@ def _build_agent_status_route(handlers):
 		session_id = body.get("session_id")
 		state = body.get("state")
 		detail = body.get("detail")
+		event = body.get("event")
 		if not isinstance(session_id, str) or not session_id or not isinstance(state, str) or not state:
 			return JSONResponse({}, status_code=200)
+		from server.session_registry import map_hook_event_to_state
+		mapped = map_hook_event_to_state(event, state) if isinstance(event, str) else None
+		if mapped is not None:
+			session_registry.upsert_from_hook(session_id, state=mapped, detail=detail if isinstance(detail, str) else None)
+		else:
+			session_registry.touch_mcp(session_id, cwd="")
 		await handlers.handle_agent_status(session_id, state, detail)
 		return JSONResponse({}, status_code=200)
 	return agent_status
 
 
-def _build_stats_route(registry: Registry, backend, loop_sups: dict):
+def _build_stats_route(registry: Registry, backend, loop_sups: dict, session_registry=None):
 	"""GET /stats - the widget-facing roll-up (localhost, unauthenticated, same
 	trust model as /healthz and /away-mode). The widget polls this so it never
 	needs Firebase.
@@ -138,15 +176,20 @@ def _build_stats_route(registry: Registry, backend, loop_sups: dict):
 			"oldest_pending_age_seconds": registry.oldest_pending_age_seconds,
 			"away_mode": bool(registry.global_away_mode),
 			"healthy": healthy,
+			"sessions": {
+				"total": len(session_registry.snapshot()) if session_registry is not None else 0,
+				"by_state": session_registry.counts_by_state() if session_registry is not None else {},
+			},
 		})
 	return stats
 
 
-def _build_widget_snapshot_route(store, backend, logger):
+def _build_widget_snapshot_route(store, backend, logger, session_registry=None):
 	"""POST /widget-snapshot - Watchtower pushes its rings + quota snapshot here
 	(localhost trust, same model as /stats and /agent_status). The store diffs
 	against the last push so RTDB is written only on change; pushed_at is always
-	written so readers can show staleness."""
+	written so readers can show staleness. Also feeds the session registry so a
+	Watchtower ring can enrich or discover a session row."""
 	_RING_FIELDS = ("pct", "model", "status", "context_tokens", "window", "is_error")
 
 	async def widget_snapshot(request: Request):
@@ -168,6 +211,8 @@ def _build_widget_snapshot_route(store, backend, logger):
 				rings_map[r["session_id"]] = {k: r.get(k) for k in _RING_FIELDS}
 
 		rings_changed, quota_changed = store.apply(rings_map, quota, pushed_at)
+		if session_registry is not None:
+			session_registry.apply_rings(rings_map)
 		try:
 			if rings_changed:
 				await backend.write_widget_rings(rings_map)
@@ -508,6 +553,16 @@ async def resolve_wsl_home(logger=None) -> str | None:
 async def _run(config: Config) -> None:
 	logger = JsonlLogger(config.log_path)
 	registry = Registry()
+	session_registry = SessionRegistry()
+	registry.sessions = session_registry
+	widget_store = WidgetSnapshotStore()
+
+	def _session_mirror(sid: str, payload: dict | None) -> None:
+		if payload is None:
+			_spawn_bg(backend.delete_session_record(sid), label=f"fb_session_delete:{sid}")
+		else:
+			_spawn_bg(backend.write_session_record(sid, payload), label=f"fb_session_write:{sid}")
+	session_registry.set_mirror(_session_mirror)
 
 	# Resolve WSL home at startup so downstream code can compute WSL paths
 	# without spawning subprocesses per-request. Config is frozen; use replace().
@@ -550,7 +605,7 @@ async def _run(config: Config) -> None:
 			await logger.info(f"startup_pending_questions_sweep: cancelled={swept}")
 	await backend.start_conversation_answers_listener()
 
-	await hydrate_from_firebase(registry, backend, logger)
+	await hydrate_from_firebase(registry, backend, logger, session_registry=session_registry)
 
 	try:
 		await backend.set_global_wsl_available(bool(config.wsl_home_resolved))
@@ -562,7 +617,7 @@ async def _run(config: Config) -> None:
 		registry.set_pending_mirror(mirror_writer_fn())
 
 	limiter = RateLimiter(config.rate_limit)
-	handlers = build_tool_handlers(config, registry, backend, logger, limiter)
+	handlers = build_tool_handlers(config, registry, backend, logger, limiter, session_registry=session_registry)
 
 	from server.spawn import SpawnHandler
 	spawn_handler = SpawnHandler(config, backend, logger, registry)
@@ -575,6 +630,7 @@ async def _run(config: Config) -> None:
 		"dispatch_away_mode_commands": LoopSupervisor("dispatch_away_mode_commands", backend, logger.surface_error),
 		"dispatch_session_end_markers": LoopSupervisor("dispatch_session_end_markers", backend, logger.surface_error),
 		"dispatch_status_request_commands": LoopSupervisor("dispatch_status_request_commands", backend, logger.surface_error),
+		"dispatch_session_sweep": LoopSupervisor("dispatch_session_sweep", backend, logger.surface_error),
 	}
 	mcp = _build_fastmcp(handlers, config.host)
 
@@ -612,16 +668,29 @@ async def _run(config: Config) -> None:
 			"dispatch_loops": dispatch_loops,
 		})
 
-	widget_store = WidgetSnapshotStore()
 	claude_status_service = ClaudeStatusService(publish=backend.write_widget_status)
 	app.add_route("/healthz", healthz, methods=["GET"])
-	app.add_route("/widget-snapshot", _build_widget_snapshot_route(widget_store, backend, logger), methods=["POST"])
+	app.add_route(
+		"/widget-snapshot",
+		_build_widget_snapshot_route(widget_store, backend, logger, session_registry),
+		methods=["POST"],
+	)
 	app.add_route("/widget-status", _build_widget_status_route(claude_status_service), methods=["GET", "POST"])
 	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
-	app.add_route("/stats", _build_stats_route(registry, backend, loop_sups), methods=["GET"])
+	app.add_route(
+		"/stats",
+		_build_stats_route(registry, backend, loop_sups, session_registry=session_registry),
+		methods=["GET"],
+	)
 	app.add_route("/document", _build_document_route(backend), methods=["GET"])
-	app.add_route("/agent_status", _build_agent_status_route(handlers), methods=["POST"])
-	app.add_route("/cli-session/end", _build_cli_session_end_route(registry, backend=backend, logger=logger), methods=["POST"])
+	app.add_route("/session_start", _build_session_start_route(session_registry), methods=["POST"])
+	app.add_route("/sessions", _build_sessions_route(session_registry), methods=["GET"])
+	app.add_route("/agent_status", _build_agent_status_route(handlers, session_registry), methods=["POST"])
+	app.add_route(
+		"/cli-session/end",
+		_build_cli_session_end_route(registry, backend=backend, logger=logger, session_registry=session_registry),
+		methods=["POST"],
+	)
 
 	dashboard_dir = _Path(__file__).resolve().parent.parent / "dashboard"
 	app.mount("/dashboard", StaticFiles(directory=str(dashboard_dir), html=True), name="dashboard")
@@ -670,7 +739,15 @@ async def _run(config: Config) -> None:
 	session_end_markers_task = asyncio.create_task(
 		dispatch_session_end_markers(
 			registry, backend, logger, loop_sups["dispatch_session_end_markers"],
-			session_end_marker_dir,
+			session_end_marker_dir, session_registry=session_registry,
+		)
+	)
+
+	session_sweep_task = asyncio.create_task(
+		dispatch_session_sweep(
+			session_registry, widget_store, logger, loop_sups["dispatch_session_sweep"],
+			lost_after_seconds=config.session_lost_after_seconds,
+			retention_hours=config.session_retention_hours,
 		)
 	)
 
@@ -698,6 +775,7 @@ async def _run(config: Config) -> None:
 		away_mode_task.cancel()
 		session_end_markers_task.cancel()
 		status_request_task.cancel()
+		session_sweep_task.cancel()
 		with contextlib.suppress(asyncio.CancelledError):
 			await dispatch_task
 		with contextlib.suppress(asyncio.CancelledError):
@@ -712,6 +790,8 @@ async def _run(config: Config) -> None:
 			await session_end_markers_task
 		with contextlib.suppress(asyncio.CancelledError):
 			await status_request_task
+		with contextlib.suppress(asyncio.CancelledError):
+			await session_sweep_task
 		# Flush outstanding fire-and-forget background writes (member removals,
 		# answer-history writes, pending-question cleanups, etc.) before the loop
 		# closes, so a clean shutdown doesn't drop them. Bounded so a stuck write

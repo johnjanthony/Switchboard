@@ -51,7 +51,7 @@ async def test_document_with_http_url_does_not_upload_or_raise(monkeypatch):
 		"conv-1", "Claude", "document", "cap",
 		url="https://example.com/x.pdf", filename="x.pdf",
 	)
-	assert corr == ("conv-1", "Claude")
+	assert corr == "conv-1"
 
 
 @pytest.mark.asyncio

@@ -115,7 +115,7 @@ def main() -> int:
 
 	base_url = os.environ.get("SWITCHBOARD_BASE_URL", DEFAULT_BASE_URL)
 	url = base_url + AGENT_STATUS_PATH
-	body = {"session_id": session_id, "state": state}
+	body = {"session_id": session_id, "state": state, "event": event}
 	if detail is not None:
 		body["detail"] = detail
 	try:

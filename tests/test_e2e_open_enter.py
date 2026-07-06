@@ -52,7 +52,7 @@ async def test_e2e_open_enter_basic(tmp_path):
 	conv_id = registry.session_to_conversation_id.get("s-A")
 	assert conv_id is not None, "A should be bound after notify_human"
 	conv = registry.conversations[conv_id]
-	assert "claude-a" in conv.members_active
+	assert "s-A" in conv.members_active
 
 	# Step 2: A calls open_conversation → conv becomes the open conversation
 	result = await handlers.open_conversation(
@@ -76,7 +76,7 @@ async def test_e2e_open_enter_basic(tmp_path):
 	await asyncio.sleep(0.05)
 
 	# Verify B was added to the conversation
-	assert "claude-b" in conv.members_active
+	assert "s-B" in conv.members_active
 	assert registry.session_to_conversation_id.get("s-B") == conv_id
 	assert len(conv.wait_queue) == 1
 	assert conv.wait_queue[0]["waiting_kind"] == "enter"
@@ -120,7 +120,7 @@ async def test_e2e_open_replaces_prior_open(tmp_path):
 	# Create conv-1 with Agent A
 	conv1 = Conversation(id="conv-1", title="first")
 	m1 = ConversationMember(cli_session_id="s-A", sender="claude-a", cwd="C:/X", surface="windows", joined_at=0.0)
-	conv1.members_active["claude-a"] = m1
+	conv1.members_active["s-A"] = m1
 	registry.conversations["conv-1"] = conv1
 	registry.bind_session("s-A", "conv-1")
 	registry.open_conversation_id = "conv-1"  # conv-1 is initially open
@@ -128,7 +128,7 @@ async def test_e2e_open_replaces_prior_open(tmp_path):
 	# Create conv-2 with Agent B
 	conv2 = Conversation(id="conv-2", title="second")
 	m2 = ConversationMember(cli_session_id="s-B", sender="claude-b", cwd="C:/Y", surface="windows", joined_at=0.0)
-	conv2.members_active["claude-b"] = m2
+	conv2.members_active["s-B"] = m2
 	registry.conversations["conv-2"] = conv2
 	registry.bind_session("s-B", "conv-2")
 

@@ -47,7 +47,7 @@ async def test_resume_drift_dormant_but_bound_member_still_resumes_and_logs(tmp_
 		cli_session_id="sess-d", sender="Claude", cwd="C:/Work/X",
 		surface="windows", joined_at=0.0, alive=False,
 	)
-	conv.members_active["Claude"] = member
+	conv.members_active["sess-d"] = member
 	registry.conversations["conv-drift"] = conv
 	registry.bind_session("sess-d", "conv-drift")  # the drift: dormant yet bound
 
@@ -112,8 +112,8 @@ async def test_resume_works_after_hydration_round_trip(tmp_path):
 	assert len(new_convs) == 1, "resume must mint a continuation conversation post-restart"
 	new_conv = new_convs[0]
 	# The dormant member moved, re-bound, flipped alive
-	assert "Claude" in new_conv.members_active
-	assert new_conv.members_active["Claude"].alive is True
+	assert "sess-dormant" in new_conv.members_active
+	assert new_conv.members_active["sess-dormant"].alive is True
 	assert registry.session_to_conversation_id.get("sess-dormant") == new_conv.id
 	# Spawn-pending file written and launcher fired
 	pending = list(tmp_path.glob("spawn-pending-*.json"))

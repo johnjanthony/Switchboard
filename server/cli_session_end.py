@@ -24,6 +24,7 @@ async def handle_session_end(
 	now: Callable[[], str],
 	backend=None,
 	logger=None,
+	session_registry=None,
 ) -> None:
 	"""Mark a conversation member dormant when its CLI session ends.
 
@@ -32,8 +33,13 @@ async def handle_session_end(
 	  for the dormancy system message.
 	logger: optional logger with a surface_error(msg) coroutine -- if provided,
 	  the three silent early-return paths emit a loud log instead of returning silently.
+	session_registry: optional SessionRegistry -- if provided, its record is marked
+	  ended BEFORE the unbind below, so even a session with no conversation binding
+	  still gets its record ended.
 	"""
 	from server.gateway.bg_tasks import _spawn_bg
+	if session_registry is not None:
+		session_registry.record_session_end(session_id, reason=reason, ended_at=now())
 	conversation_id = registry.unbind_session(session_id)
 	if conversation_id is None:
 		if logger is not None:
@@ -48,11 +54,7 @@ async def handle_session_end(
 				f"session_end_conv_missing: session {session_id} bound to {conversation_id} but conversation absent (reason={reason})"
 			)
 		return
-	target = None
-	for member in conv.members_active.values():
-		if member.cli_session_id == session_id:
-			target = member
-			break
+	target = conv.members_active.get(session_id)
 	if target is None:
 		if logger is not None:
 			await logger.surface_error(
@@ -111,17 +113,7 @@ async def handle_session_end(
 	# Cancel any pending ask_human futures owned by this departed member —
 	# their answer can never arrive (the agent's session is gone), so freeing
 	# the future immediately avoids a 24h _TIMEOUT wait if the agent ever
-	# reconnects mid-block. Match by routing identity (cli_session_id), not by
-	# sender string: ask_human keys the pending by the RAW agent-supplied
-	# sender, which differs from the member's disambiguated sender on a
-	# same-name collision (e.g. pending 'Claude' vs member 'Claude 2'), so a
-	# sender-string compare would silently miss the cancellation (M2). Fall
-	# back to the sender match for any legacy pending with no recorded session.
+	# reconnects mid-block. The pending key is the session, so ownership is exact by construction.
 	for pending in registry.pending_for_conversation(conversation_id):
-		owned = (
-			pending.cli_session_id == session_id
-			if pending.cli_session_id is not None
-			else pending.sender == target.sender
-		)
-		if owned:
-			registry.remove(conversation_id, pending.sender, request_id=pending.request_id)
+		if pending.cli_session_id == session_id:
+			registry.remove(conversation_id, session_id, request_id=pending.request_id)

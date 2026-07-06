@@ -148,7 +148,8 @@ async def test_initial_snapshot_replays_undelivered_answers(backend):
 	# bounced to the loop via call_soon_threadsafe.
 	assert be._response_queue.put.call_count == 1
 	resp = be._response_queue.put.call_args.args[0]
-	assert resp.correlation == ("conv-1", "Claude")
+	assert resp.correlation == "conv-1"
+	assert resp.sender == "Claude"
 	assert resp.text == "yes do it"
 	assert resp.slot == "conv-1/answers/req-1"
 	assert be._loop.call_soon_threadsafe.call_count == 1

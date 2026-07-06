@@ -56,13 +56,17 @@ test('initialState shape is exactly the contract', () => {
 		openConversationId: null,
 		wslAvailable: false,
 		conversations: {},
+		sessions: {},
 		adminNotifications: {},
 		widget: { rings: {}, quota: null, status: null, pushedAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
 		messageTimestampResolver: {},
 		health: { reachable: false, healthy: false, totalAnswered: null },
-		ui: { leftCollapsed: false, rightCollapsed: false, leftWidth: 280, awayOffDialogOpen: false },
+		ui: {
+			leftCollapsed: false, rightCollapsed: false, leftWidth: 280, awayOffDialogOpen: false,
+			sessionsCollapsed: false,
+		},
 		paneErrors: {},
 	});
 });
@@ -375,4 +379,28 @@ test('pendingsFlat firstObservedMs is stable across re-emits of the same (convId
 	const r2 = flat.find((p) => p.requestId === 'r2');
 	assert.equal(r1.firstObservedMs, firstStamp);
 	assert.equal(r2.firstObservedMs, 9000);
+});
+
+test('setSessions replaces the sessions map and notifies', () => {
+	const { store } = makeStore();
+	let notified = 0;
+	store.subscribe(() => { notified += 1; });
+	store.setSessions({ 'sess-a': { state: 'active' } });
+	assert.deepEqual(store.getState().sessions, { 'sess-a': { state: 'active' } });
+	assert.ok(notified >= 1);
+});
+
+test('startGlobalListeners subscribes the sessions path', () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const valuePaths = fb.calls.onValue.map((e) => e.path);
+	assert.ok(valuePaths.includes(paths.sessions()));
+});
+
+test('toggleSessionsCollapsed flips and persists', () => {
+	const { store, storage } = makeStore();
+	const before = store.getState().ui.sessionsCollapsed;
+	store.toggleSessionsCollapsed();
+	assert.equal(store.getState().ui.sessionsCollapsed, !before);
+	assert.equal(storage.getItem('sb.sessionsCollapsed'), String(!before));
 });

@@ -2,6 +2,7 @@ import { html, useState } from "../vendor/htm-preact.js";
 import * as fb from "../firebase.js";
 import { pendingCountFor, isActive } from "../derive.js";
 import { setHiddenCmd } from "../commands.js";
+import { SessionsRail } from "./SessionsRail.js";
 
 // Relative "last traffic" age from meta.last_activity_at (float epoch SECONDS,
 // verified in server write_conversation_meta). Empty when never active.
@@ -105,6 +106,7 @@ export function ConversationList({ store }) {
 
 	return html`
 		<aside class="rail rail-left">
+			<${SessionsRail} store=${store} />
 			<div class="rail-head">
 				<span class="rail-title">Board</span>
 				<label class="show-hidden">

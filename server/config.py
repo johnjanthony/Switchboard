@@ -40,6 +40,12 @@ class Config:
 	# the NSSM Session 0 case where wsl.exe -e bash fails silently); otherwise
 	# calls resolve_wsl_home() which spawns wsl.exe.
 	wsl_home_resolved: str | None = None
+	# Silent-past-this-many-seconds threshold for the session sweeper to mark a
+	# session lost. Env: SWITCHBOARD_SESSION_LOST_AFTER_SECONDS, default 900 (15m).
+	session_lost_after_seconds: int = 900
+	# How long a terminal (ended/lost) session record survives before the sweeper
+	# prunes it. Env: SWITCHBOARD_SESSION_RETENTION_HOURS, default 72.
+	session_retention_hours: int = 72
 
 
 def _require(name: str) -> str:
@@ -77,4 +83,6 @@ def load_config(dotenv_path: str | Path | None = None) -> Config:
 		windows_spawn_root=Path(windows_spawn_root_raw) if windows_spawn_root_raw else None,
 		rate_limit=int(os.environ.get("SWITCHBOARD_RATE_LIMIT", "30")),
 		wsl_spawn_root_segment=os.environ.get("SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT", "work"),
+		session_lost_after_seconds=int(os.environ.get("SWITCHBOARD_SESSION_LOST_AFTER_SECONDS", "900")),
+		session_retention_hours=int(os.environ.get("SWITCHBOARD_SESSION_RETENTION_HOURS", "72")),
 	)

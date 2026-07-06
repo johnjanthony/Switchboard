@@ -516,8 +516,8 @@ class SpawnHandler:
 			# last_seen_seq (T-149). Mirrors _perform_combine's combine-resume reset.
 			m.last_seen_seq = 0
 			self._registry.bind_session(m.cli_session_id, new_id)
-			new_conv.members_active[m.sender] = m
-			del source.members_active[m.sender]
+			new_conv.members_active[m.cli_session_id] = m
+			del source.members_active[m.cli_session_id]
 			agents.append({
 				"surface": m.surface,
 				"cli_session_id": m.cli_session_id,

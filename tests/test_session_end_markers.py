@@ -71,7 +71,7 @@ async def test_sweep_marks_member_dormant_and_deletes_marker(tmp_path):
 
 	await _sweep_session_end_markers(registry, marker_dir, backend=None, logger=_make_logger(tmp_path))
 
-	member = conv.members_active["Claude"]
+	member = conv.members_active["s-1"]
 	assert member.alive is False
 	assert member.session_end_reason == "other"
 	assert member.session_lost_permanently is False
@@ -165,7 +165,7 @@ async def test_dispatch_loop_processes_then_can_be_cancelled(tmp_path):
 		await asyncio.sleep(0)
 	await asyncio.sleep(0.1)
 
-	assert conv.members_active["Claude"].alive is False
+	assert conv.members_active["s-1"].alive is False
 	assert list(marker_dir.glob("*.json")) == []
 
 	task.cancel()

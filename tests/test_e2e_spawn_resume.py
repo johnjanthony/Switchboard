@@ -184,7 +184,7 @@ async def test_e2e_session_end_then_resume(tmp_path):
 			joined_at=0.0,
 			alive=True,
 		)
-		conv.members_active["claude"] = member
+		conv.members_active[pre_bound_session] = member
 
 	# Step 2: simulate SessionEnd — mark member dormant
 	member = next(m for m in conv.members_active.values() if m.cli_session_id == pre_bound_session)
@@ -259,7 +259,7 @@ async def test_e2e_resume_creates_continuation_conv(tmp_path):
 		joined_at=0.0,
 		alive=False,
 	)
-	source.members_active["claude-original"] = m
+	source.members_active["sess-dormant-1"] = m
 	registry.conversations["conv-dormant-src"] = source
 
 	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
@@ -319,7 +319,7 @@ async def test_e2e_fresh_spawn_joins_existing_conversation(tmp_path):
 		joined_at=0.0,
 		alive=True,
 	)
-	existing_conv.members_active["claude-host"] = m_existing
+	existing_conv.members_active["sess-host"] = m_existing
 	registry.conversations["conv-existing-target"] = existing_conv
 	registry.bind_session("sess-host", "conv-existing-target")
 

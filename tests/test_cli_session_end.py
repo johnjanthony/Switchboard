@@ -26,7 +26,7 @@ async def test_dormant_mark():
 		now=_fixed_now,
 	)
 
-	member = conv.members_active["Claude"]
+	member = conv.members_active["s-1"]
 	assert member.alive is False
 	assert member.session_ended_at == "2026-05-20T00:00:00Z"
 	assert member.session_end_reason == "logout"
@@ -45,7 +45,7 @@ async def test_permanently_lost_on_clear_or_compact():
 	registry.bind_session("s-1", "conv-1")
 
 	await handle_session_end(registry=registry, session_id="s-1", reason="compact", now=_fixed_now)
-	assert conv.members_active["Claude"].session_lost_permanently is True
+	assert conv.members_active["s-1"].session_lost_permanently is True
 
 
 @pytest.mark.asyncio
@@ -73,8 +73,8 @@ async def test_session_end_wakes_blocked_peer():
 		cli_session_id="s-B", sender="Claude-B", cwd="C:/Y",
 		surface="windows", joined_at=0.0,
 	)
-	conv.members_active["Claude-A"] = a
-	conv.members_active["Claude-B"] = b
+	conv.members_active["s-A"] = a
+	conv.members_active["s-B"] = b
 	registry.conversations["conv-1"] = conv
 	registry.bind_session("s-A", "conv-1")
 	registry.bind_session("s-B", "conv-1")
@@ -118,7 +118,7 @@ async def test_session_end_cancels_pending_when_sender_was_disambiguated():
 		cli_session_id="s-1", sender="Claude 2", cwd="C:/X",
 		surface="windows", joined_at=0.0,
 	)
-	conv.members_active["Claude 2"] = m
+	conv.members_active["s-1"] = m
 	registry.conversations["conv-1"] = conv
 	registry.bind_session("s-1", "conv-1")
 
@@ -154,7 +154,7 @@ async def test_session_end_cancels_dormant_members_pending_ask_human():
 
 	# Simulate an in-flight ask_human pending for Claude on conv-1.
 	future, _ = registry.add(
-		conversation_id="conv-1", sender="Claude", request_id="req-1",
+		conversation_id="conv-1", cli_session_id="s-1", sender="Claude", request_id="req-1",
 		return_superseded=True,
 	)
 	assert registry.pending_count == 1

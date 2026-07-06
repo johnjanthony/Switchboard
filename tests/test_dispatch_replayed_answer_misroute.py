@@ -1,7 +1,7 @@
 """T-148 manifestation (a) ANSWER MISROUTE: a replayed answer for a superseded
 request_id (e.g. from the _on_answer reconnect snapshot, before the slot delete
-lands) must NOT resolve the newer entry now holding the (conversation_id, sender)
-key. Reproduced against the real dispatch_responses loop."""
+lands) must NOT resolve the newer entry now holding the same request_id's
+conversation. Reproduced against the real dispatch_responses loop."""
 import asyncio
 import pytest
 
@@ -39,10 +39,10 @@ class _GatedBackend:
 		self.deleted_slots = []
 
 	async def poll_responses(self):
-		yield IncomingResponse(correlation=(_CONV, _SENDER), text="answer-1", slot=f"{_CONV}/answers/req-1", request_id="req-1")
+		yield IncomingResponse(correlation=_CONV, text="answer-1", slot=f"{_CONV}/answers/req-1", request_id="req-1")
 		await self._gate.wait()
 		# Reconnect snapshot replay of the SAME (still-present) Q1 answer.
-		yield IncomingResponse(correlation=(_CONV, _SENDER), text="answer-1", slot=f"{_CONV}/answers/req-1", request_id="req-1")
+		yield IncomingResponse(correlation=_CONV, text="answer-1", slot=f"{_CONV}/answers/req-1", request_id="req-1")
 		await asyncio.Event().wait()
 
 	async def delete_response_slot(self, slot):
@@ -63,7 +63,7 @@ async def test_replayed_answer_does_not_misroute_to_superseded_entry(cfg, logger
 	sup = _make_loop_supervisor(backend, logger, name="dispatch_responses")
 
 	# Q1 is pending.
-	fut1 = registry.add(conversation_id=_CONV, sender=_SENDER, request_id="req-1")
+	fut1 = registry.add(conversation_id=_CONV, cli_session_id="s-1", sender=_SENDER, request_id="req-1")
 
 	task = asyncio.create_task(dispatch_responses(registry, backend, logger, sup))
 	# Let the first (legitimate) answer resolve Q1.
@@ -72,7 +72,7 @@ async def test_replayed_answer_does_not_misroute_to_superseded_entry(cfg, logger
 	assert fut1.result() == "answer-1"
 
 	# The asker re-asks: a NEW pending entry (req-2) takes the same key.
-	fut2 = registry.add(conversation_id=_CONV, sender=_SENDER, request_id="req-2")
+	fut2 = registry.add(conversation_id=_CONV, cli_session_id="s-1", sender=_SENDER, request_id="req-2")
 
 	# Now release the replayed Q1 answer.
 	gate.set()

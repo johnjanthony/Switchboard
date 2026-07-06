@@ -200,3 +200,73 @@ def test_missing_session_id_exits_zero_no_post():
 	finally:
 		srv.shutdown()
 	assert _Capture.posts == []
+
+
+def test_body_includes_event_matching_hook_event_name():
+	srv, port = _start_server()
+	try:
+		_run_hook({
+			"hook_event_name": "PostToolUse",
+			"session_id": "s-1",
+			"tool_name": "Bash",
+			"tool_input": {"command": "ls"},
+			"tool_response": {},
+		}, port)
+	finally:
+		srv.shutdown()
+	body = _Capture.posts[0]
+	assert body["event"] == "PostToolUse"
+
+
+START_HOOK = Path(__file__).resolve().parent.parent / "scripts" / "cli-session-start-hook.py"
+
+
+def _run_start_hook(stdin_payload, port, raw_stdin=None):
+	import os
+	env = dict(os.environ)
+	env["SWITCHBOARD_BASE_URL"] = f"http://127.0.0.1:{port}"
+	data = raw_stdin if raw_stdin is not None else json.dumps(stdin_payload).encode("utf-8")
+	result = subprocess.run(
+		[sys.executable, str(START_HOOK)],
+		input=data,
+		capture_output=True,
+		env=env,
+		timeout=5,
+	)
+	return result
+
+
+def test_session_start_posts_session_id_cwd_source():
+	srv, port = _start_server()
+	try:
+		result = _run_start_hook({
+			"session_id": "s-1",
+			"cwd": "/c/Work/switchboard",
+			"source": "startup",
+		}, port)
+	finally:
+		srv.shutdown()
+	assert result.returncode == 0
+	assert len(_Capture.posts) == 1
+	body = _Capture.posts[0]
+	assert body == {"session_id": "s-1", "cwd": "/c/Work/switchboard", "source": "startup"}
+
+
+def test_session_start_empty_stdin_exits_zero_no_post():
+	srv, port = _start_server()
+	try:
+		result = _run_start_hook(None, port, raw_stdin=b"")
+	finally:
+		srv.shutdown()
+	assert result.returncode == 0
+	assert _Capture.posts == []
+
+
+def test_session_start_malformed_stdin_exits_zero_no_post():
+	srv, port = _start_server()
+	try:
+		result = _run_start_hook(None, port, raw_stdin=b"not json at all")
+	finally:
+		srv.shutdown()
+	assert result.returncode == 0
+	assert _Capture.posts == []

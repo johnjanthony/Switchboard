@@ -104,6 +104,11 @@ export function createStore(deps) {
 		notify();
 	}
 
+	function setSessions(map) {
+		state.sessions = map || {};
+		notify();
+	}
+
 	function upsertConversationMeta(id, meta) {
 		const conv = state.conversations[id] || {};
 		state.conversations[id] = { ...conv, meta };
@@ -159,6 +164,12 @@ export function createStore(deps) {
 	function toggleRightCollapsed() {
 		state.ui.rightCollapsed = !state.ui.rightCollapsed;
 		storage.setItem('sb.rightCollapsed', String(state.ui.rightCollapsed));
+		notify();
+	}
+
+	function toggleSessionsCollapsed() {
+		state.ui.sessionsCollapsed = !state.ui.sessionsCollapsed;
+		storage.setItem('sb.sessionsCollapsed', String(state.ui.sessionsCollapsed));
 		notify();
 	}
 
@@ -250,6 +261,7 @@ export function createStore(deps) {
 		fb.onValue(paths.widgetQuota(), (val) => setWidgetQuota(val || null), onReadError);
 		fb.onValue(paths.widgetStatus(), (val) => setWidgetStatus(val || null), onReadError);
 		fb.onValue(paths.widgetPushedAt(), (val) => setWidgetPushedAt(val || null), onReadError);
+		fb.onValue(paths.sessions(), (val) => setSessions(val || {}), onReadError);
 		fb.onChildAdded(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError);
 		fb.onChildChanged(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError);
 	}
@@ -364,6 +376,7 @@ export function createStore(deps) {
 		setWidgetQuota,
 		setWidgetStatus,
 		setWidgetPushedAt,
+		setSessions,
 		upsertConversationMeta,
 		removeConversation,
 		upsertAdminNotification,
@@ -375,6 +388,7 @@ export function createStore(deps) {
 		toggleLeftCollapsed,
 		setLeftCollapsed,
 		toggleRightCollapsed,
+		toggleSessionsCollapsed,
 		setLeftWidth,
 		mergeConversationMessages,
 		mergeConversationMembers,
@@ -411,6 +425,7 @@ function initialState(storage) {
 		openConversationId: null,
 		wslAvailable: false,
 		conversations: {},
+		sessions: {},
 		adminNotifications: {},
 		widget: { rings: {}, quota: null, status: null, pushedAt: null },
 		selectedConversationId: null,
@@ -422,6 +437,7 @@ function initialState(storage) {
 			rightCollapsed: storage.getItem('sb.rightCollapsed') === 'true',
 			leftWidth: readStoredLeftWidth(storage),
 			awayOffDialogOpen: false,
+			sessionsCollapsed: storage.getItem('sb.sessionsCollapsed') === 'true',
 		},
 		paneErrors: {},
 	};

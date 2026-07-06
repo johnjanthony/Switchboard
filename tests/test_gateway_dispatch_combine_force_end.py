@@ -45,7 +45,7 @@ async def test_dispatch_combine_command_invokes_perform_combine(logger):
 		surface="windows",
 		joined_at=0.0,
 	)
-	src_conv.members_active["Agent"] = m
+	src_conv.members_active["s-1"] = m
 	registry.bind_session("s-1", "conv-src")
 
 	backend = MagicMock()
@@ -75,7 +75,7 @@ async def test_dispatch_combine_command_invokes_perform_combine(logger):
 
 	# _perform_combine should have ended source and moved the member to target
 	assert registry.conversations["conv-src"].state == "ended"
-	assert "Agent" in registry.conversations["conv-tgt"].members_active
+	assert "s-1" in registry.conversations["conv-tgt"].members_active
 
 
 @pytest.mark.asyncio
@@ -126,7 +126,7 @@ async def test_dispatch_force_end_command_invokes_handle_force_end(logger):
 	registry = Registry()
 	conv = Conversation(id="conv-xyz", title="test")
 	m = ConversationMember(cli_session_id="s-1", sender="Agent", cwd="C:/X", surface="windows", joined_at=0.0)
-	conv.members_active["Agent"] = m
+	conv.members_active["s-1"] = m
 	registry.conversations["conv-xyz"] = conv
 	registry.bind_session("s-1", "conv-xyz")
 
@@ -215,8 +215,8 @@ async def test_handle_force_end_clears_dormant_member_home_pointer(logger):
 		cwd="C:/Y", surface="windows", joined_at=0.0,
 		alive=False, session_end_reason="logout",
 	)
-	conv.members_active["Alice"] = alice
-	conv.members_active["Bob"] = bob
+	conv.members_active["s-alice"] = alice
+	conv.members_active["s-bob"] = bob
 	registry.conversations["conv-fe"] = conv
 	registry.bind_session("s-alice", "conv-fe")
 	# Bob is intentionally NOT in session_to_conversation_id (dormant).

@@ -58,3 +58,7 @@ export function widgetPushedAt() {
 export function widgetStatus() {
 	return 'widget/status';
 }
+
+export function sessions() {
+	return 'sessions';
+}

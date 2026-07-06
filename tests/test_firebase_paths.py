@@ -250,9 +250,9 @@ async def test_write_conversation_message_returns_correlation_and_msg_id(backend
 
 	# Must be a 2-tuple
 	assert isinstance(result, tuple) and len(result) == 2
-	correlation, msg_id = result
-	# correlation is (conv_id, sender) — dispatch_responses routes by (cwd, sender) key
-	assert correlation == ("conv-ret", "Claude")
+	conv_id, msg_id = result
+	# correlation is the conversation id; answers resolve by (conv_id, request_id)
+	assert conv_id == "conv-ret"
 	assert msg_id == "push-key-xyz"
 
 

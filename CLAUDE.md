@@ -1,6 +1,6 @@
 # Switchboard — Agent Orientation
 
-Switchboard is a local MCP gateway that lets AI agents pause mid-task and request human input. Responses come back from a phone. The gateway exists to support *away mode* — at-desk interaction continues to use the normal terminal chat UI.
+Switchboard is the mission-control hub for a multi-agent workstation: it tracks Claude Code sessions and conversations, routes questions and notifications to a phone, mirrors telemetry to ambient surfaces (Operator, Watchtower), and dispatches phone-issued commands (spawn, combine, away mode). Its founding feature - and still the core protocol - is away mode: agents pause mid-task and request human input, answered from the phone.
 
 This file orients any agent (Claude Code, etc.) working **on Switchboard itself** or **consuming** its tools. Switchboard ships as a Claude Code plugin; see [Setup](#setup) below.
 
@@ -10,7 +10,7 @@ Design history lives under [`docs/`](docs/); the current end-to-end design is [`
 
 Single Python process, one asyncio event loop, MCP HTTP server on `localhost:9876`, with a Firebase backend (Android + Realtime Database). The server also serves **Switchboard Operator**, a launch-on-demand web cockpit (a zero-build Preact+htm app in `dashboard/`), at `/dashboard`, plus a small widget-facing `GET /stats` roll-up. The dashboard talks to Firebase RTDB directly and reads `/healthz` for its health panel.
 
-Switchboard exists specifically for **away mode** — when the operator has stepped away and the terminal chat UI is no longer being watched. At-desk interaction uses the normal terminal chat channel.
+Away mode is the founding feature, not the whole product: ask/notify blocking semantics are away-mode-scoped (at-desk interaction uses the terminal), while session tracking, telemetry fan-out, Operator, and Watchtower are always-on ambient surfaces.
 
 The Registry is in-memory. The pending-request index is keyed by `(conversation_id, sender)` tuples where `conversation_id` is a `conv-<uuid>` string from `Registry.conversations` — not a filesystem path. Pending `ask_human` futures die on restart and waiting agents time out. Conversations (the persistence unit) survive restart via Firebase hydration — see `server/hydration.py`.
 
@@ -22,7 +22,8 @@ server/
   __main__.py          Enables `python -m server`
   main.py              Entry point — wires config, registry, backend, MCP, uvicorn
   config.py            Env-based Config loader (dotenv fallback)
-  registry.py          PendingRequest + Registry (in-memory); conversations dict; session_to_conversation_id routing map; per-session asyncio.Lock for race-free first-call conv creation; global away-mode flag
+  registry.py          PendingRequest + Registry (in-memory); conversations dict with members/pendings keyed by cli_session_id; session_to_conversation_id routing map; per-session asyncio.Lock for race-free first-call conv creation; global away-mode flag
+  session_registry.py  SessionRecord + SessionRegistry (session roster; push-fed; sweeper rules)
   messenger.py         Backend lifecycle base + 4 trait ABCs (MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle) + ConversationStore protocol + IncomingResponse
   firebase.py          FirebaseBackend (implements every messenger surface); Firebase admin logic (FCM, Realtime DB)
   spawn.py             Agent session spawner (triggered from Android app)
@@ -136,6 +137,12 @@ Routing is by `cli_session_id`, injected by the `cli-session-injector-hook.py` P
 
 Conversations are the persistence + routing unit. States: `Active` / `Ended`. At most one Active conversation is the "open" singleton (set by `open_conversation()`; joinable via `enter_conversation()`). Routing key is `cli_session_id` (hook-injected), not cwd. Away mode is a single global flag (`set_away_mode(bool)`).
 
+## Architectural constraints (decided)
+
+- **Local gateway, cloud-synchronized state.** The compute is local; conversation/session/telemetry state persists and transits through Firebase (RTDB + FCM), which is a hard startup dependency. The founding "localhost only" principle was retired deliberately (2026-07-01 architecture review, D1); there is no Firebase-less run mode.
+- **The service runs as LocalSystem** (NSSM; the install script's interactive-user intent never took effect, verified 2026-06-25). It therefore cannot read `~/.claude/projects`, cannot reach WSL, and receives all session/telemetry data by push: plugin hooks, Watchtower snapshots, MCP calls. Do not design features that assume the server can see John's files (D6).
+- **Sessions are first-class** (2026-07-06): `server/session_registry.py` tracks every Claude Code session birth-to-death via SessionStart/agent-status/SessionEnd hooks, ring sightings, and MCP calls, mirrored to RTDB `sessions/` for the roster surfaces. Identity is `cli_session_id` everywhere; `sender` is a display attribute (D4).
+
 ## Setup
 
 Switchboard ships as a Claude Code plugin. From any Claude Code session:
@@ -168,15 +175,16 @@ The plugin install wires the skill and the turn-end + agent-status hooks. Two th
 
 ## Hooks
 
-The Switchboard plugin wires five Claude Code hook events automatically:
+The Switchboard plugin wires six Claude Code hook events automatically:
 
 - `Stop` (two handlers) — `turn-end-hook-away-mode.py` for the away-mode enforcement check; `agent-status-hook.py` for the per-conversation activity indicator.
 - `UserPromptSubmit`, `PreToolUse`, `PostToolUse` — `agent-status-hook.py` for the activity indicator. `PreToolUse` also runs `cli-session-injector-hook.py`, which injects `cli_session_id` + `cwd` into every `mcp__switchboard__*` call.
+- `SessionStart` — `cli-session-start-hook.py` POSTs the session's birth (`session_id`, `cwd`, `source`) to the server's `/session_start` route so the SessionRegistry records the session; a missed birth self-heals on the first MCP call or agent-status event.
 - `SessionEnd` — `cli-session-end-hook.py` writes a SessionEnd marker file (under `SWITCHBOARD_MARKER_DIR`, the server's `<logs>/session-end` dir) that the server's `dispatch_session_end_markers` sweep applies to mark the session's member dormant on orderly exit (the marker write wins the process-exit race a synchronous POST loses). The legacy `POST /cli-session/end` route is retained for manual/testing use only.
 
 See `hooks/hooks.json` for the canonical wiring.
 
-**Server-side gating.** Hooks fire on every lifecycle event regardless of away-mode state, but the server's `/agent_status` handler short-circuits and skips the Firebase write when the cwd is not in away mode. The phone status indicator is therefore only visible during away mode. The HTTP layer always returns 200 so the hook contract is unchanged; the gate is invisible to the hook script.
+**Server-side gating.** Hooks fire on every lifecycle event regardless of away-mode state, but the server's `/agent_status` handler short-circuits and skips the Firebase write when the cwd is not in away mode. The phone status indicator is therefore only visible during away mode. The `/agent_status` route upserts the SessionRegistry before that away-mode gate, so the session roster always updates even when the phone-facing conversation-status write is skipped; only the phone status indicator is away-mode-gated. The HTTP layer always returns 200 so the hook contract is unchanged; the gate is invisible to the hook script.
 
 ## Service management (Windows service via NSSM)
 

@@ -108,3 +108,72 @@ export function ringSeverity(pct) {
 	}
 	return 'green';
 }
+
+const SESSION_CHIPS = {
+	active: { label: 'active', cls: 'chip-active' },
+	idle: { label: 'idle', cls: 'chip-idle' },
+	awaiting_human: { label: 'needs you', cls: 'chip-awaiting-human' },
+	awaiting_agent: { label: 'waiting on agent', cls: 'chip-awaiting-agent' },
+	ended: { label: 'ended', cls: 'chip-ended' },
+	lost: { label: 'lost', cls: 'chip-lost' },
+};
+
+export function sessionChip(record) {
+	const state = record && record.state ? record.state : 'idle';
+	return SESSION_CHIPS[state] || { label: state, cls: 'chip-idle' };
+}
+
+export function projectTail(cwd) {
+	if (!cwd) {
+		return '';
+	}
+	const parts = String(cwd).split(/[\\/]/).filter(Boolean);
+	return parts.length ? parts[parts.length - 1] : '';
+}
+
+export function sessionAgeSeconds(record, nowMs) {
+	const iso = record ? record.last_event_at : null;
+	if (!iso) {
+		return null;
+	}
+	const t = Date.parse(iso);
+	if (Number.isNaN(t)) {
+		return null;
+	}
+	return (nowMs - t) / 1000;
+}
+
+export function formatAge(seconds) {
+	if (seconds == null) {
+		return '';
+	}
+	if (seconds < 60) {
+		return `${Math.round(seconds)}s`;
+	}
+	if (seconds < 3600) {
+		return `${Math.round(seconds / 60)}m`;
+	}
+	if (seconds < 86400) {
+		return `${Math.round(seconds / 3600)}h`;
+	}
+	return `${Math.round(seconds / 86400)}d`;
+}
+
+export function sortSessionEntries(sessionsMap) {
+	return Object.keys(sessionsMap || {})
+		.map((id) => ({ id, record: sessionsMap[id] || {} }))
+		.sort((a, b) => String(b.record.last_event_at || '').localeCompare(String(a.record.last_event_at || '')));
+}
+
+const SENSOR_FRESH_SECONDS = 120;
+
+export function sensorOffline(pushedAtIso, nowMs) {
+	if (!pushedAtIso) {
+		return true;
+	}
+	const t = Date.parse(pushedAtIso);
+	if (Number.isNaN(t)) {
+		return true;
+	}
+	return (nowMs - t) / 1000 > SENSOR_FRESH_SECONDS;
+}

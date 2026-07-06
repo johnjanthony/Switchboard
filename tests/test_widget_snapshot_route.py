@@ -5,6 +5,7 @@ import json
 import pytest
 
 from server.main import _build_widget_snapshot_route
+from server.session_registry import SessionRegistry
 from server.widget_snapshot import WidgetSnapshotStore
 
 
@@ -100,3 +101,20 @@ async def test_rings_not_a_list_returns_400():
 	route = _build_widget_snapshot_route(store, backend, _FakeLogger())
 	resp = await route(_request({"rings": {"bad": 1}, "quota": None, "pushed_at": "t"}))
 	assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_unknown_ring_discovers_session_in_registry():
+	store, backend = WidgetSnapshotStore(), _FakeBackend()
+	session_registry = SessionRegistry()
+	route = _build_widget_snapshot_route(store, backend, _FakeLogger(), session_registry)
+	body = {
+		"rings": [{"session_id": "unseen-session", "pct": 0.3, "model": "sonnet"}],
+		"quota": None,
+		"pushed_at": "2026-06-25T00:00:00+00:00",
+	}
+	resp = await route(_request(body))
+	assert resp.status_code == 200
+	rec = session_registry.get("unseen-session")
+	assert rec is not None
+	assert rec.source == "rings"

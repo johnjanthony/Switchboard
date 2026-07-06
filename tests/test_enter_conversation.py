@@ -43,7 +43,7 @@ def _add_member_to_conv(registry: Registry, conv: Conversation, session_id: str,
 		surface="windows",
 		joined_at=0.0,
 	)
-	conv.members_active[sender] = m
+	conv.members_active[session_id] = m
 	registry.bind_session(session_id, conv.id)
 	return m
 
@@ -100,7 +100,7 @@ async def test_enter_branch_2_unbound_joins_open(cfg, logger):
 	await asyncio.sleep(0.05)
 
 	# Verify: caller added to conv and session bound
-	assert "Claude-New" in conv.members_active
+	assert "s-new" in conv.members_active
 	assert r.session_to_conversation_id.get("s-new") == "conv-open"
 	# Caller should be in the wait queue
 	assert len(conv.wait_queue) == 1
@@ -215,8 +215,8 @@ async def test_enter_branch_3_migrates_to_open_conv(cfg, logger):
 	await asyncio.sleep(0.05)
 
 	# Claude-A should now be in conv-y, not conv-x
-	assert "Claude-A" in conv_y.members_active
-	assert "Claude-A" not in conv_x.members_active
+	assert "s-A" in conv_y.members_active
+	assert "s-A" not in conv_x.members_active
 	assert r.session_to_conversation_id.get("s-A") == "conv-y"
 	# Queued in conv-y
 	assert len(conv_y.wait_queue) == 1

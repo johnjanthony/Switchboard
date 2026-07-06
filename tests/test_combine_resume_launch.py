@@ -47,10 +47,10 @@ def _registry_with_source_and_target() -> Registry:
 	alive combiner."""
 	registry = Registry()
 	source = Conversation(id="conv-src", title="Source")
-	source.members_active["Dormant"] = _member("sess-dormant", "Dormant", alive=False)
+	source.members_active["sess-dormant"] = _member("sess-dormant", "Dormant", alive=False)
 	registry.conversations["conv-src"] = source
 	target = Conversation(id="conv-tgt", title="Target")
-	target.members_active["Combiner"] = _member("sess-combiner", "Combiner", alive=True)
+	target.members_active["sess-combiner"] = _member("sess-combiner", "Combiner", alive=True)
 	registry.conversations["conv-tgt"] = target
 	registry.bind_session("sess-combiner", "conv-tgt")
 	return registry
@@ -75,9 +75,9 @@ async def test_combine_with_dormant_member_aborts_without_desktop_session(tmp_pa
 	# Nothing moved, nothing ended, nothing written
 	source = registry.conversations["conv-src"]
 	target = registry.conversations["conv-tgt"]
-	assert "Dormant" in source.members_active
+	assert "sess-dormant" in source.members_active
 	assert source.state == "active"
-	assert "Dormant" not in target.members_active
+	assert "sess-dormant" not in target.members_active
 	assert "sess-dormant" not in registry.session_to_conversation_id
 	assert list(tmp_path.glob("spawn-pending-*.json")) == []
 
@@ -89,7 +89,7 @@ async def test_combine_dormant_member_binds_flips_alive_and_fires_launcher(tmp_p
 	relaunch-in-flight-with-alive-set), clearing the dormancy fields."""
 	from server.conversation_ops import _perform_combine
 	registry = _registry_with_source_and_target()
-	dormant = registry.conversations["conv-src"].members_active["Dormant"]
+	dormant = registry.conversations["conv-src"].members_active["sess-dormant"]
 	dormant.session_ended_at = "2026-06-11T00:00:00+00:00"
 	dormant.session_end_reason = "logout"
 	backend = RecordingBackend()
@@ -103,7 +103,7 @@ async def test_combine_dormant_member_binds_flips_alive_and_fires_launcher(tmp_p
 
 	assert result.startswith("ok"), f"unexpected: {result}"
 	target = registry.conversations["conv-tgt"]
-	member = target.members_active["Dormant"]
+	member = target.members_active["sess-dormant"]
 	# bind + alive together at relaunch time
 	assert member.alive is True
 	assert member.session_ended_at is None

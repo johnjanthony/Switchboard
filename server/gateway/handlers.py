@@ -32,12 +32,7 @@ def _new_request_id() -> str:
 
 def _locate_member(conv, cli_session_id: str):
 	"""Return the active member for this cli_session_id, or None."""
-	if conv is None:
-		return None
-	for m in conv.members_active.values():
-		if m.cli_session_id == cli_session_id:
-			return m
-	return None
+	return conv.members_active.get(cli_session_id) if conv is not None else None
 
 def _canonical_sender(registry, conversation_id: str, cli_session_id: str, raw_sender: str) -> str:
 	"""The sender name a message/pending should be attributed under.
@@ -124,6 +119,7 @@ def build_tool_handlers(
 	backend: _ToolHandlersBackend,
 	logger: JsonlLogger,
 	limiter: RateLimiter | None = None,
+	session_registry=None,
 ) -> ToolHandlers:
 	def _validate_sender(sender: str) -> str | None:
 		if "__" in sender:
@@ -137,7 +133,22 @@ def build_tool_handlers(
 			f"Wait at least {limiter.wait_seconds} seconds before retrying, or slow your notify cadence."
 		)
 
+	def _touch_sessions(handler):
+		# MCP-call safety net: any switchboard call from a session the registry
+		# has never seen (old plugin, missed SessionStart) upserts it, and every
+		# call refreshes cwd - the registry's only cwd source besides SessionStart.
+		# Sender is NOT extracted here: its positional slot varies per tool (it is
+		# args[0] for message_and_await_agent but args[1] for ask_human), so the
+		# registry learns the display name from the membership paths instead.
+		@wraps(handler)
+		async def wrapped(*args, cli_session_id=None, cwd=None, **kwargs):
+			if cli_session_id and session_registry is not None:
+				session_registry.touch_mcp(cli_session_id, cwd=cwd or "")
+			return await handler(*args, cli_session_id=cli_session_id, cwd=cwd, **kwargs)
+		return wrapped
+
 	@require_cli_session_id
+	@_touch_sessions
 	async def notify_human(
 		message: str,
 		sender: str,
@@ -173,6 +184,7 @@ def build_tool_handlers(
 			return f"ERROR: {exc}"
 
 	@require_cli_session_id
+	@_touch_sessions
 	async def ask_human(
 		question: str,
 		sender: str,
@@ -237,8 +249,8 @@ def build_tool_handlers(
 				request_id=request_id, format=format, suggestions=suggestions, title=title,
 			)
 			future, prior_request_id = registry.add(
-				conversation_id=conversation_id, sender=sender, request_id=request_id, msg_id=msg_id,
-				return_superseded=True, cli_session_id=cli_session_id,
+				conversation_id=conversation_id, cli_session_id=cli_session_id, sender=sender,
+				request_id=request_id, msg_id=msg_id, return_superseded=True,
 			)
 			if prior_request_id is not None:
 				await _safe_mark_cancelled(backend, conversation_id, prior_request_id, logger)
@@ -260,7 +272,7 @@ def build_tool_handlers(
 			# CancelledError. Without this shield, the Firebase write below
 			# never completes and the question stays cancelled=false.
 			with anyio.CancelScope(shield=True):
-				registry.remove(conversation_id, sender, request_id=request_id)
+				registry.remove(conversation_id, cli_session_id, request_id=request_id)
 				await _safe_mark_cancelled(backend, conversation_id, request_id, logger)
 			raise
 		except Exception as exc:
@@ -271,7 +283,7 @@ def build_tool_handlers(
 			result = await asyncio.wait_for(future, timeout=config.timeout_seconds)
 		except asyncio.TimeoutError:
 			await logger.timeout(request_id, conversation_id, config.timeout_seconds)
-			registry.remove(conversation_id, sender, request_id=request_id)
+			registry.remove(conversation_id, cli_session_id, request_id=request_id)
 			# Mark the question message cancelled, which also removes the
 			# pending_questions record (firebase.py). The phone derives
 			# "pending" purely from message flags, so without the cancelled
@@ -291,12 +303,12 @@ def build_tool_handlers(
 			# See note above re: shielding. This is the live cancel-from-MCP
 			# path that the user observes when pressing Esc on the tool call.
 			with anyio.CancelScope(shield=True):
-				registry.remove(conversation_id, sender, request_id=request_id)
+				registry.remove(conversation_id, cli_session_id, request_id=request_id)
 				await _safe_mark_cancelled(backend, conversation_id, request_id, logger)
 			raise
 		except Exception as exc:
 			await logger.tool_error(request_id, conversation_id, str(exc))
-			registry.remove(conversation_id, sender, request_id=request_id)
+			registry.remove(conversation_id, cli_session_id, request_id=request_id)
 			_spawn_bg(
 				backend.mark_question_cancelled(conversation_id, request_id),
 				label=f"fb_mark_cancelled:error:{conversation_id}:{request_id}",
@@ -323,14 +335,11 @@ def build_tool_handlers(
 
 		await _append_session_log(config.log_path, conversation_id, "←", result, logger)
 		duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
-		source = "unknown"
-		if isinstance(correlation, dict):
-			source = "multi"
-		elif str(correlation).startswith("firebase_"):
-			source = "firebase"
-		elif str(correlation).startswith("android_"):
-			source = "android_rest"
-		await logger.request_resolved(request_id, conversation_id, response_text=result, source=source, duration_ms=duration_ms)
+		# correlation is always a plain conv-<uuid> string post-D4, so source
+		# classification never resolves to anything but "unknown"; inline it.
+		await logger.request_resolved(
+			request_id, conversation_id, response_text=result, source="unknown", duration_ms=duration_ms,
+		)
 		try:
 			await backend.send_resolution_confirmation(request_id, conversation_id, correlation, response_text=result)
 		except Exception as exc:
@@ -338,6 +347,7 @@ def build_tool_handlers(
 		return result
 
 	@require_cli_session_id
+	@_touch_sessions
 	async def send_document_human(
 		path: str,
 		sender: str,
@@ -390,6 +400,7 @@ def build_tool_handlers(
 		return "ok"
 
 	@require_cli_session_id
+	@_touch_sessions
 	async def message_and_await_agent(
 		sender: str,
 		message: str | None = None,
@@ -413,12 +424,7 @@ def build_tool_handlers(
 		if conv is None:
 			return "ERROR: bound conversation no longer exists."
 
-		# Locate caller's member by cli_session_id
-		caller_member = None
-		for m in conv.members_active.values():
-			if m.cli_session_id == cli_session_id:
-				caller_member = m
-				break
+		caller_member = conv.members_active.get(cli_session_id)
 		if caller_member is None:
 			return "ERROR: session bound to conversation but not a member."
 
@@ -493,8 +499,8 @@ def build_tool_handlers(
 
 					# Remove caller from members_active; record in history
 					caller_member.left_at = now_ts
-					old_key = caller_member.sender
-					del conv.members_active[old_key]
+					old_sender = caller_member.sender
+					del conv.members_active[cli_session_id]
 					conv.members_history.append(caller_member)
 					# Persist members_history entry so it survives restart
 					_spawn_bg(
@@ -515,8 +521,8 @@ def build_tool_handlers(
 							open_cleared = True
 
 					_spawn_bg(
-						backend.remove_conversation_member(conversation_id, old_key),
-						label=f"fb_remove_member:{conversation_id}:{old_key}",
+						backend.remove_conversation_member(conversation_id, old_sender),
+						label=f"fb_remove_member:{conversation_id}:{old_sender}",
 					)
 					_spawn_bg(
 						backend.set_conversation_last_activity(conversation_id, now_ts),
@@ -581,6 +587,7 @@ def build_tool_handlers(
 			raise
 
 	@require_cli_session_id
+	@_touch_sessions
 	async def open_conversation(
 		sender: str,
 		title: str | None = None,
@@ -629,25 +636,18 @@ def build_tool_handlers(
 					backend.write_conversation_title(conv_id, title),
 					label=f"fb_write_title:{conv_id}",
 				)
-			# Locate and update the caller's member entry (rename if sender changed)
-			caller_member = None
-			old_key = None
-			for s, m in conv.members_active.items():
-				if m.cli_session_id == cli_session_id:
-					caller_member = m
-					old_key = s
-					break
+			caller_member = conv.members_active.get(cli_session_id)
 			if caller_member is None:
 				return "ERROR: session bound to conversation but not a member."
-			renamed = caller_member is not None and old_key != sender
+			old_sender = caller_member.sender
+			renamed = old_sender != sender
 			actual_sender = sender
 			if renamed:
 				from server.conversation_ops import _disambiguate_sender
-				# Check for collision (old_key is no longer in the dict once we delete it)
-				del conv.members_active[old_key]
-				actual_sender = _disambiguate_sender(conv, sender)
+				actual_sender = _disambiguate_sender(conv, sender, exclude_session_id=cli_session_id)
 				caller_member.sender = actual_sender
-				conv.members_active[actual_sender] = caller_member
+				if registry.sessions is not None:
+					registry.sessions.set_sender(cli_session_id, actual_sender)
 			registry.open_conversation_id = conv_id
 			_spawn_bg(
 				backend.set_open_conversation_id(conv_id),
@@ -655,8 +655,8 @@ def build_tool_handlers(
 			)
 			if renamed:
 				_spawn_bg(
-					backend.remove_conversation_member(conv_id, old_key),
-					label=f"fb_remove_member:{conv_id}:{old_key}",
+					backend.remove_conversation_member(conv_id, old_sender),
+					label=f"fb_remove_member:{conv_id}:{old_sender}",
 				)
 				_spawn_bg(
 					backend.write_conversation_member(conv_id, caller_member),
@@ -669,6 +669,7 @@ def build_tool_handlers(
 		return result
 
 	@require_cli_session_id
+	@_touch_sessions
 	async def enter_conversation(
 		sender: str,
 		*,
@@ -721,6 +722,7 @@ def build_tool_handlers(
 		return await _queue_for_intro(registry, open_id, cli_session_id, sender, cwd, config.timeout_seconds)
 
 	@require_cli_session_id
+	@_touch_sessions
 	async def lookup_conversation_ids(
 		cwd_filter: str | None = None,
 		sender_contains: str | None = None,
@@ -751,6 +753,7 @@ def build_tool_handlers(
 		return json.dumps(results)
 
 	@require_cli_session_id
+	@_touch_sessions
 	async def leave_conversation(
 		sender: str,
 		parting_message: str,
@@ -774,14 +777,7 @@ def build_tool_handlers(
 			return "ERROR: bound conversation no longer exists."
 
 		async with conv.lock:
-			# Find caller
-			caller_member = None
-			old_key = None
-			for s, m in conv.members_active.items():
-				if m.cli_session_id == cli_session_id:
-					caller_member = m
-					old_key = s
-					break
+			caller_member = conv.members_active.get(cli_session_id)
 			if caller_member is None:
 				return "ERROR: session bound to conversation but not a member."
 
@@ -805,7 +801,8 @@ def build_tool_handlers(
 
 			# Remove from members_active; add to members_history
 			caller_member.left_at = now_ts
-			del conv.members_active[old_key]
+			old_sender = caller_member.sender
+			del conv.members_active[cli_session_id]
 			conv.members_history.append(caller_member)
 			# Persist members_history entry so it survives restart
 			_spawn_bg(
@@ -830,8 +827,8 @@ def build_tool_handlers(
 
 			# Firebase writes for new /conversations/<id>/... schema
 			_spawn_bg(
-				backend.remove_conversation_member(conv_id, old_key),
-				label=f"fb_remove_member:{conv_id}:{old_key}",
+				backend.remove_conversation_member(conv_id, old_sender),
+				label=f"fb_remove_member:{conv_id}:{old_sender}",
 			)
 			_spawn_bg(
 				backend.set_conversation_last_activity(conv_id, now_ts),
@@ -854,6 +851,7 @@ def build_tool_handlers(
 		return f"ok. Left conversation {conv_id}."
 
 	@require_cli_session_id
+	@_touch_sessions
 	async def set_away_mode(
 		value: bool,
 		*,
@@ -907,6 +905,7 @@ def build_tool_handlers(
 		return f"ok. away_mode={value}"
 
 	@require_cli_session_id
+	@_touch_sessions
 	async def combine_conversations(
 		source_id: str,
 		target_id: str,
@@ -947,13 +946,10 @@ def build_tool_handlers(
 		if not conv_id or conv_id not in registry.conversations:
 			return
 		conv = registry.conversations[conv_id]
-		sender = None
-		for member in conv.members_active.values():
-			if member.cli_session_id == session_id:
-				sender = member.sender
-				break
-		if sender is None:
+		member = conv.members_active.get(session_id)
+		if member is None:
 			return
+		sender = member.sender
 		try:
 			await backend.write_agent_status(conv_id, sender, state, detail)
 		except Exception as exc:

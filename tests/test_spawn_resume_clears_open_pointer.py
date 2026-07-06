@@ -27,7 +27,7 @@ async def test_source_ended_resume_persists_open_pointer_clear(tmp_path, monkeyp
 		cli_session_id="s-dormant", sender="Claude", cwd="C:/Work/X", surface="windows", joined_at=0.0,
 	)
 	dormant.alive = False
-	source.members_active["Claude"] = dormant
+	source.members_active["s-dormant"] = dormant
 	registry.conversations["conv-src"] = source
 	# Source is the open conversation; the resume will end it (sole member resumes out).
 	registry.open_conversation_id = "conv-src"

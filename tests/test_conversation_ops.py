@@ -2,6 +2,8 @@
 
 import asyncio
 
+import pytest
+
 from server.conversation_ops import _create_active_conversation_for
 from server.registry import Registry
 
@@ -102,16 +104,16 @@ def test_add_member_sender_collision_disambiguates():
 			r, cli_session_id="s-a", cwd="C:/Work/X", sender="Claude",
 		)
 		conv = r.conversations[conv_id]
-		assert "Claude" in conv.members_active
+		assert "s-a" in conv.members_active
 
 		# Add a second member with the same desired sender name
 		await _add_member(r, conv_id, "s-b", "Claude", "C:/Work/X")
 
 		# Both members exist, both alive, distinct session ids
-		assert "Claude" in conv.members_active
-		assert "Claude 2" in conv.members_active
-		assert conv.members_active["Claude"].cli_session_id == "s-a"
-		assert conv.members_active["Claude 2"].cli_session_id == "s-b"
+		assert "s-a" in conv.members_active
+		assert "s-b" in conv.members_active
+		assert conv.members_active["s-a"].sender == "Claude"
+		assert conv.members_active["s-b"].sender == "Claude 2"
 	asyncio.run(run())
 
 
@@ -175,3 +177,25 @@ def test_migrate_member_resolves_target_open_peer_future():
 		assert "open_conversation" in result
 		assert target.open_peer_future is None
 	asyncio.run(run())
+
+
+@pytest.mark.anyio
+async def test_members_active_keyed_by_session_id():
+	registry = Registry()
+	conv_id = await _create_active_conversation_for(registry, "sess-A", "C:/Work/X", "Claude")
+	conv = registry.conversations[conv_id]
+	assert "sess-A" in conv.members_active
+	assert conv.members_active["sess-A"].sender == "Claude"
+
+
+@pytest.mark.anyio
+async def test_same_sender_two_sessions_disambiguates_display_only():
+	from server.conversation_ops import _add_member
+
+	registry = Registry()
+	conv_id = await _create_active_conversation_for(registry, "sess-A", "C:/Work/X", "Claude")
+	conv = registry.conversations[conv_id]
+	await _add_member(registry, conv_id, "sess-B", "Claude", "C:/Work/Y")
+	assert set(conv.members_active.keys()) == {"sess-A", "sess-B"}
+	assert conv.members_active["sess-A"].sender == "Claude"
+	assert conv.members_active["sess-B"].sender == "Claude 2"

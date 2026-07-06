@@ -18,7 +18,7 @@ class _DispatchResponsesBackend(ResponsePoller, MessageWriter, ConversationStore
 	"""Backend surface used by dispatch_responses."""
 
 
-async def _sweep_session_end_markers(registry, marker_dir, backend=None, logger=None) -> int:
+async def _sweep_session_end_markers(registry, marker_dir, backend=None, logger=None, session_registry=None) -> int:
 	"""Process and delete SessionEnd marker files written by the hook.
 
 	Each marker is `<marker_dir>/<session_id>.json` with {session_id, reason,
@@ -50,6 +50,7 @@ async def _sweep_session_end_markers(registry, marker_dir, backend=None, logger=
 					now=lambda ts=ended_at: ts,
 					backend=backend,
 					logger=logger,
+					session_registry=session_registry,
 				)
 				count += 1
 		except Exception as exc:
@@ -63,7 +64,9 @@ async def _sweep_session_end_markers(registry, marker_dir, backend=None, logger=
 	return count
 
 
-async def dispatch_session_end_markers(registry, backend, logger, supervisor, marker_dir, interval: float = 5.0) -> None:
+async def dispatch_session_end_markers(
+	registry, backend, logger, supervisor, marker_dir, interval: float = 5.0, session_registry=None,
+) -> None:
 	"""Periodically sweep SessionEnd marker files and mark members dormant.
 
 	Marker-file delivery (not the racy SessionEnd HTTP POST) is the reliable
@@ -74,7 +77,9 @@ async def dispatch_session_end_markers(registry, backend, logger, supervisor, ma
 	from sessions that ended while the server was down."""
 	while True:
 		try:
-			await _sweep_session_end_markers(registry, marker_dir, backend=backend, logger=logger)
+			await _sweep_session_end_markers(
+				registry, marker_dir, backend=backend, logger=logger, session_registry=session_registry,
+			)
 			supervisor.record_success()
 		except asyncio.CancelledError:
 			raise
@@ -95,11 +100,10 @@ async def dispatch_responses(
 			async for response in backend.poll_responses():
 				supervisor.record_success()
 				try:
-					corr = response.correlation
-					if isinstance(corr, tuple) and len(corr) == 2:
-						conversation_id, sender = corr
-						record = registry.get((conversation_id, sender))
-						req_id = registry.resolve(conversation_id, sender, response.text, request_id=response.request_id)
+					conversation_id = response.correlation if isinstance(response.correlation, str) else None
+					if conversation_id and response.request_id:
+						record = registry.find_by_request_id(conversation_id, response.request_id)
+						req_id = registry.resolve(conversation_id, response.request_id, response.text)
 						if req_id is None:
 							# No live pending for this correlation. Distinguish a
 							# benign replay of an answer we already delivered/ended
@@ -115,9 +119,9 @@ async def dispatch_responses(
 									f"replayed_answer_ignored: conversation_id={conversation_id} request_id={response.request_id}"
 								)
 							else:
-								await logger.surface_error(f"unknown_correlation: conversation_id={conversation_id} sender={sender}")
+								await logger.surface_error(f"unknown_correlation: conversation_id={conversation_id} request_id={response.request_id}")
 								try:
-									await backend.send_stale_reply_notice(conversation_id, sender)
+									await backend.send_stale_reply_notice(conversation_id, response.sender or "unknown")
 								except Exception as exc:
 									await logger.surface_error(f"stale_reply_notice_failed: {exc}")
 							if response.slot:
@@ -156,7 +160,7 @@ async def dispatch_responses(
 									await logger.surface_error(f"history_write_failed: {exc}")
 							_spawn_bg(_write_history(), label=f"history_write:{conversation_id}")
 					else:
-						await logger.surface_error(f"legacy_correlation_dropped: {corr}")
+						await logger.surface_error(f"legacy_correlation_dropped: {response.correlation}")
 				except asyncio.CancelledError:
 					raise
 				except Exception as exc:
@@ -206,10 +210,10 @@ async def handle_force_end(registry, conversation_id: str, backend=None, logger=
 		# cleared by cli_session_end) and performs cleanup-only: it clears the
 		# home pointer if it referenced this (now-Ended) conversation, without
 		# creating a new conversation or trying to unbind again.
-		session_ids = [m.cli_session_id for m in conv.members_active.values()]
+		session_ids = list(conv.members_active.keys())
 
 		# Collect member senders for Firebase removal
-		member_senders = list(conv.members_active.keys())
+		member_senders = [m.sender for m in conv.members_active.values()]
 
 		# Clear active membership
 		conv.members_active.clear()
@@ -483,3 +487,45 @@ async def dispatch_status_request_commands(service, backend, logger, supervisor)
 # registry.get_session() was deleted with that cleanup. The inject-listener
 # trait, its firebase implementation, and the associated backend-contract
 # surface were all removed in Fix Pack 3.
+
+
+async def _session_sweep_once(
+	session_registry, widget_store, *, lost_after_seconds, retention_hours, now_ts=None,
+):
+	"""One tick of the staleness sweep, factored out so tests can drive it
+	directly instead of running the infinite loop. Reads the widget store's
+	last Watchtower push to decide whether ring absence is trustworthy."""
+	import time as _time
+	from server.session_registry import rings_are_fresh
+	now = now_ts if now_ts is not None else _time.time()
+	fresh = rings_are_fresh(getattr(widget_store, "pushed_at", None), now)
+	ring_ids = set((getattr(widget_store, "rings", None) or {}).keys())
+	return session_registry.sweep(
+		now_ts=now,
+		lost_after_seconds=lost_after_seconds,
+		retention_seconds=retention_hours * 3600,
+		rings_fresh=fresh,
+		ring_ids=ring_ids,
+	)
+
+
+async def dispatch_session_sweep(
+	session_registry, widget_store, logger, supervisor, *,
+	lost_after_seconds, retention_hours, interval: float = 60.0,
+):
+	"""Periodic staleness judge for the session roster. Pure rules live in
+	SessionRegistry.sweep; this loop only supplies the sensor context."""
+	while True:
+		try:
+			pruned = await _session_sweep_once(
+				session_registry, widget_store,
+				lost_after_seconds=lost_after_seconds, retention_hours=retention_hours,
+			)
+			if pruned:
+				await logger.info(f"session_sweep_pruned: {len(pruned)}")
+			supervisor.record_success()
+		except asyncio.CancelledError:
+			raise
+		except Exception as exc:
+			await supervisor.record_crash(exc)
+		await asyncio.sleep(interval)

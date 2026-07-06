@@ -21,19 +21,18 @@ CorrelationToken = Any
 class IncomingResponse:
 	"""A response arriving from the messenger backend.
 
-	`correlation` is whatever opaque token the backend stored at
-	`send_question` time (e.g. Telegram message_id). The gateway uses it
-	to look up the pending request_id in the registry.
+	`correlation` is the conversation_id string on every live path. The
+	gateway uses it to look up the pending request_id in the registry.
 
 	`slot` is the literal storage key the response was read from (e.g. the
-	Firebase RTDB child under `responses/`). Carried so the dispatcher can
-	clean up unroutable / stale responses without having to reconstruct the
-	key from correlation fields.
+	Firebase RTDB child under `conversations/<id>/answers/`). Carried so the
+	dispatcher can clean up unroutable / stale responses without having to
+	reconstruct the key from correlation fields.
 
 	`request_id` is the exact request_id the answer was minted for. Carried
 	so the dispatcher can pass it to registry.resolve as a guard, ensuring a
 	replayed or stale answer does not resolve a newer entry at the same
-	(conversation_id, sender) key (T-148). None for legacy responses/ payloads.
+	conversation_id (T-148).
 	"""
 
 	correlation: CorrelationToken
@@ -42,9 +41,10 @@ class IncomingResponse:
 	request_id: str | None = None
 	"""The request_id the answer was written for. Carried so the dispatcher can
 	resolve the EXACT pending entry it was minted for, rejecting a replayed or
-	stale answer that lands after the entry was superseded (T-148). None for
-	legacy responses/ payloads that predate request_id routing; the resolve
-	guard then falls back to (conversation_id, sender) keying."""
+	stale answer that lands after the entry was superseded (T-148)."""
+	sender: str | None = None
+	"""Who sent the reply, carried along for display/logging only. Resolution
+	is keyed by (conversation_id, request_id); sender plays no routing role."""
 
 
 class Backend(ABC):
@@ -256,12 +256,12 @@ class ConversationStore:
 
 		Two call forms:
 		- Legacy dict form: write_conversation_message(conv_id, message_dict) -> str push key
-		- Expanded form: write_conversation_message(conv_id, sender, type, text, ...) -> (correlation, msg_id)
+		- Expanded form: write_conversation_message(conv_id, sender, type, text, ...) -> (conv_id, msg_id)
 
 		No-op by default; FirebaseBackend overrides with the full implementation."""
 		if isinstance(sender_or_message, dict):
 			return ""
-		return (conv_id, sender_or_message), None
+		return conv_id, None
 
 	async def set_conversation_state(self, conv_id: str, state: str) -> None:
 		"""Update a conversation's state (active/ended)."""

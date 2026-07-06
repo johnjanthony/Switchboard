@@ -112,11 +112,12 @@ async def test_ask_human_auto_creates_conversation_on_first_call(cfg, logger):
 	assert conv_id is not None
 	assert conv_id.startswith("conv-")
 
-	# Pending request must be keyed under (conv_id, "Claude").
+	# Pending request must be keyed under (conv_id, session_id).
 	assert registry.pending_count == 1
 
 	# Resolve via the registry.
-	req_id = registry.resolve(conversation_id=conv_id, sender="Claude", text="yes")
+	pending_req_id = registry.pending_for_conversation(conv_id)[0].request_id
+	req_id = registry.resolve(conversation_id=conv_id, request_id=pending_req_id, text="yes")
 	assert req_id is not None
 
 	result = await asyncio.wait_for(task, timeout=1.0)

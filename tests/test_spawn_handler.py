@@ -304,8 +304,8 @@ async def test_handle_resume_creates_continuation(tmp_path):
 		cli_session_id="sess-2", sender="claude-2", cwd="C:/Work/X",
 		surface="windows", joined_at=0.0, alive=False,
 	)
-	source.members_active["claude-1"] = m1
-	source.members_active["claude-2"] = m2
+	source.members_active["sess-1"] = m1
+	source.members_active["sess-2"] = m2
 	registry.conversations["conv-src"] = source
 
 	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
@@ -356,9 +356,9 @@ async def test_handle_resume_skips_alive_and_permanently_lost(tmp_path):
 		cli_session_id="sess-perm", sender="perm-agent", cwd="C:/Work/X",
 		surface="windows", joined_at=0.0, alive=False, session_lost_permanently=True,
 	)
-	source.members_active["alive-agent"] = alive_m
-	source.members_active["dormant-agent"] = dormant_m
-	source.members_active["perm-agent"] = perm_lost_m
+	source.members_active["sess-alive"] = alive_m
+	source.members_active["sess-dormant"] = dormant_m
+	source.members_active["sess-perm"] = perm_lost_m
 	registry.conversations["conv-src"] = source
 
 	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
@@ -391,7 +391,7 @@ async def test_handle_resume_ends_source_when_all_resumed(tmp_path):
 		cli_session_id="sess-1", sender="agent-1", cwd="C:/Work/X",
 		surface="windows", joined_at=0.0, alive=False,
 	)
-	source.members_active["agent-1"] = m
+	source.members_active["sess-1"] = m
 	registry.conversations["conv-src"] = source
 
 	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
@@ -427,8 +427,8 @@ async def test_handle_resume_keeps_source_active_with_remaining_alive(tmp_path):
 		cli_session_id="sess-dormant", sender="dormant-agent", cwd="C:/Work/X",
 		surface="windows", joined_at=0.0, alive=False,
 	)
-	source.members_active["alive-agent"] = alive_m
-	source.members_active["dormant-agent"] = dormant_m
+	source.members_active["sess-alive"] = alive_m
+	source.members_active["sess-dormant"] = dormant_m
 	registry.conversations["conv-src"] = source
 
 	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
@@ -442,9 +442,9 @@ async def test_handle_resume_keeps_source_active_with_remaining_alive(tmp_path):
 
 	# Alive member still in source
 	assert source.state == "active"
-	assert "alive-agent" in source.members_active
+	assert "sess-alive" in source.members_active
 	# Dormant member moved to new conv
-	assert "dormant-agent" not in source.members_active
+	assert "sess-dormant" not in source.members_active
 
 
 @pytest.mark.asyncio
@@ -471,8 +471,8 @@ async def test_handle_resume_flips_members_to_alive(tmp_path):
 		surface="windows", joined_at=0.0, alive=False,
 		session_ended_at=124.0, session_end_reason="hook",
 	)
-	source.members_active["claude-1"] = m1
-	source.members_active["claude-2"] = m2
+	source.members_active["sess-1"] = m1
+	source.members_active["sess-2"] = m2
 	registry.conversations["conv-src"] = source
 
 	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
@@ -488,12 +488,12 @@ async def test_handle_resume_flips_members_to_alive(tmp_path):
 	assert len(new_convs) == 1
 	new_conv = new_convs[0]
 	# Both resumed members must be alive=True with dormancy fields cleared
-	for sender in ("claude-1", "claude-2"):
-		m = new_conv.members_active[sender]
-		assert m.alive is True, f"{sender} should be alive after resume"
-		assert m.session_ended_at is None, f"{sender} dormancy ts should be cleared"
-		assert m.session_end_reason is None, f"{sender} dormancy reason should be cleared"
-		assert m.left_at is None, f"{sender} left_at should be cleared"
+	for session_id in ("sess-1", "sess-2"):
+		m = new_conv.members_active[session_id]
+		assert m.alive is True, f"{m.sender} should be alive after resume"
+		assert m.session_ended_at is None, f"{m.sender} dormancy ts should be cleared"
+		assert m.session_end_reason is None, f"{m.sender} dormancy reason should be cleared"
+		assert m.left_at is None, f"{m.sender} left_at should be cleared"
 
 	# Regression check: alive-peer count from claude-2's perspective should
 	# see claude-1 (the bug we're guarding against).

@@ -6,6 +6,7 @@ import pytest
 
 from server.main import _build_stats_route
 from server.registry import Conversation, Registry
+from server.session_registry import SessionRegistry
 
 
 def _make_request() -> "Request":
@@ -48,10 +49,10 @@ def _registry(active=0, ended=0, away=False):
 
 
 @pytest.mark.asyncio
-async def test_stats_returns_all_five_keys_and_counts():
+async def test_stats_returns_all_keys_and_counts():
 	registry = _registry(active=3, ended=2, away=True)
-	registry.add(conversation_id="a0", sender="Claude", request_id="r1")
-	registry.add(conversation_id="a1", sender="Gemini", request_id="r2")
+	registry.add(conversation_id="a0", cli_session_id="s-a0", sender="Claude", request_id="r1")
+	registry.add(conversation_id="a1", cli_session_id="s-a1", sender="Gemini", request_id="r2")
 	backend = _FakeBackend([{"name": "responses", "state": "live"}])
 	loop_sups = {"dispatch_responses": _FakeLoopSup(0)}
 	route = _build_stats_route(registry, backend, loop_sups)
@@ -59,7 +60,7 @@ async def test_stats_returns_all_five_keys_and_counts():
 	body = json.loads(resp.body)
 	assert set(body.keys()) == {
 		"active_conversations", "pending_count",
-		"oldest_pending_age_seconds", "away_mode", "healthy",
+		"oldest_pending_age_seconds", "away_mode", "healthy", "sessions",
 	}
 	assert body["active_conversations"] == 3
 	assert body["pending_count"] == 2
@@ -135,3 +136,33 @@ async def test_stats_listener_health_missing_treated_as_healthy():
 	resp = await route(_make_request())
 	body = json.loads(resp.body)
 	assert body["healthy"] is True
+
+
+@pytest.mark.asyncio
+async def test_stats_includes_sessions_block_with_counts_by_state():
+	registry = _registry(active=1)
+	backend = _FakeBackend([{"name": "responses", "state": "live"}])
+	loop_sups = {"dispatch_responses": _FakeLoopSup(0)}
+	session_registry = SessionRegistry()
+	session_registry.record_session_start("sess-1", cwd="c:/work/sw")
+	session_registry.upsert_from_hook("sess-2", state="active")
+	session_registry.record_session_end("sess-2", reason="hook_sessionend", ended_at="t1")
+
+	route = _build_stats_route(registry, backend, loop_sups, session_registry=session_registry)
+	resp = await route(_make_request())
+	body = json.loads(resp.body)
+
+	assert body["sessions"] == {"total": 2, "by_state": {"idle": 1, "ended": 1}}
+
+
+@pytest.mark.asyncio
+async def test_stats_sessions_block_defaults_when_session_registry_is_none():
+	registry = _registry(active=1)
+	backend = _FakeBackend([{"name": "responses", "state": "live"}])
+	loop_sups = {"dispatch_responses": _FakeLoopSup(0)}
+
+	route = _build_stats_route(registry, backend, loop_sups)
+	resp = await route(_make_request())
+	body = json.loads(resp.body)
+
+	assert body["sessions"] == {"total": 0, "by_state": {}}

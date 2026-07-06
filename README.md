@@ -2,7 +2,7 @@
 
 > A human-in-the-loop input gateway for AI coding agents.
 
-Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task and ask you a question via a native Android app. Designed for away-from-desk workflows where you want your agents to continue working unsupervised until they hit a decision that genuinely requires human input.
+Switchboard is a local MCP gateway with cloud-synchronized state (Firebase) that lets AI agents pause mid-task and ask you a question via a native Android app. Designed for away-from-desk workflows where you want your agents to continue working unsupervised until they hit a decision that genuinely requires human input.
 
 ![The Switchboard Android app in away mode: a status update, a delivered document, and a question with quick-reply buttons, all in one conversation](docs/media/android-chat.png)
 

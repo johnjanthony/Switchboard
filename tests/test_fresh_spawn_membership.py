@@ -122,7 +122,8 @@ async def test_fresh_spawn_first_ask_human_creates_member(tmp_path):
 	assert member.sender == "Claude Win"
 
 	# Unblock the handler so the task completes cleanly.
-	req_id = registry.resolve(conversation_id="conv-fresh", sender="Claude Win", text="go")
+	pending = registry.pending_for_conversation("conv-fresh")[0]
+	req_id = registry.resolve(conversation_id="conv-fresh", request_id=pending.request_id, text="go")
 	assert req_id is not None
 	result = await asyncio.wait_for(task, timeout=1.0)
 	assert result == "go"

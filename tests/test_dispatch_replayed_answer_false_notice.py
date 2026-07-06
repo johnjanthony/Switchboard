@@ -61,9 +61,9 @@ class _ReplayBackend:
 		self.stale_notices: list[tuple] = []
 
 	async def poll_responses(self):
-		yield IncomingResponse(correlation=(_CONV, _SENDER), text="answer-1", slot=f"{_CONV}/answers/req-1", request_id="req-1")
+		yield IncomingResponse(correlation=_CONV, text="answer-1", slot=f"{_CONV}/answers/req-1", request_id="req-1")
 		await self._gate.wait()
-		yield IncomingResponse(correlation=(_CONV, _SENDER), text="answer-1", slot=f"{_CONV}/answers/req-1", request_id="req-1")
+		yield IncomingResponse(correlation=_CONV, text="answer-1", slot=f"{_CONV}/answers/req-1", request_id="req-1")
 		await asyncio.Event().wait()
 
 	async def delete_response_slot(self, slot):
@@ -84,7 +84,7 @@ class _UnknownBackend:
 		self.stale_notices: list[tuple] = []
 
 	async def poll_responses(self):
-		yield IncomingResponse(correlation=(_CONV, "Ghost"), text="huh", slot=f"{_CONV}/answers/req-x", request_id="req-x")
+		yield IncomingResponse(correlation=_CONV, text="huh", slot=f"{_CONV}/answers/req-x", request_id="req-x")
 		await asyncio.Event().wait()
 
 	async def delete_response_slot(self, slot):
@@ -104,7 +104,7 @@ async def test_replayed_delivered_answer_does_not_send_false_withdrawn_notice(cf
 	backend = _ReplayBackend(gate)
 	sup = _make_loop_supervisor(backend, logger, name="dispatch_responses")
 
-	fut = registry.add(conversation_id=_CONV, sender=_SENDER, request_id="req-1")
+	fut = registry.add(conversation_id=_CONV, cli_session_id="s-1", sender=_SENDER, request_id="req-1")
 	task = asyncio.create_task(dispatch_responses(registry, backend, logger, sup))
 	await _until(lambda: fut.done())
 	assert fut.result() == "answer-1"  # delivered
@@ -136,7 +136,7 @@ async def test_genuinely_unknown_answer_still_sends_stale_notice(cfg, logger):
 	task = asyncio.create_task(dispatch_responses(registry, backend, logger, sup))
 	await _until(lambda: backend.stale_notices != [])
 
-	assert backend.stale_notices == [(_CONV, "Ghost")], "an unknown correlation must still notify"
+	assert backend.stale_notices == [(_CONV, "unknown")], "an unknown correlation must still notify"
 	assert f"{_CONV}/answers/req-x" in backend.deleted_slots
 
 	task.cancel()

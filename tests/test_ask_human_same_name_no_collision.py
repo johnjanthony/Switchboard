@@ -1,7 +1,7 @@
 """C1: two distinct agents that call themselves the same raw sender must not
-collide on the (conversation_id, sender) pending key and cancel each other's
-questions. ask_human attributes/keys under the member's disambiguated sender
-(e.g. 'Claude' vs 'Claude 2'), so both pendings coexist."""
+collide on the pending key and cancel each other's questions. The pending key
+is (conversation_id, cli_session_id), so two sessions coexist regardless of
+whether their raw sender strings match."""
 import asyncio
 import pytest
 
@@ -38,8 +38,8 @@ def _two_member_conversation(registry):
 	conv = Conversation(id=_CONV, title="collision")
 	a = ConversationMember(cli_session_id="s-A", sender="Claude", cwd=_CWD, surface="windows", joined_at=0.0)
 	b = ConversationMember(cli_session_id="s-B", sender="Claude 2", cwd=_CWD, surface="windows", joined_at=0.0)
-	conv.members_active["Claude"] = a
-	conv.members_active["Claude 2"] = b
+	conv.members_active["s-A"] = a
+	conv.members_active["s-B"] = b
 	registry.conversations[_CONV] = conv
 	registry.bind_session("s-A", _CONV)
 	registry.bind_session("s-B", _CONV)
@@ -65,8 +65,8 @@ async def test_same_raw_name_agents_do_not_cancel_each_other(cfg, logger):
 		await asyncio.sleep(0)
 
 	assert registry.pending_count == 2
-	assert registry.get((_CONV, "Claude")) is not None
-	assert registry.get((_CONV, "Claude 2")) is not None
+	pending_sessions = {p.cli_session_id for p in registry.pending_for_conversation(_CONV)}
+	assert pending_sessions == {"s-A", "s-B"}
 	assert not t_a.done(), "Agent A's question was wrongly cancelled by a same-named peer"
 
 	for t in (t_a, t_b):

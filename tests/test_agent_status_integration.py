@@ -8,6 +8,7 @@ from server.config import Config
 from server.gateway import build_tool_handlers
 from server.logging_jsonl import JsonlLogger
 from server.registry import Conversation, ConversationMember, Registry
+from server.session_registry import SessionRegistry
 from tests.test_gateway_notify_human import RecordingBackend
 
 
@@ -29,7 +30,7 @@ def logger(cfg):
 def _build_app(handlers):
 	from server.main import _build_agent_status_route
 	app = Starlette()
-	app.add_route("/agent_status", _build_agent_status_route(handlers), methods=["POST"])
+	app.add_route("/agent_status", _build_agent_status_route(handlers, SessionRegistry()), methods=["POST"])
 	return app
 
 
@@ -47,7 +48,7 @@ def _make_active_registry(conv_id="conv-xyz", session_id="s-1", sender="Claude",
 		surface="windows",
 		joined_at=time.time(),
 	)
-	conv.members_active[sender] = m
+	conv.members_active[session_id] = m
 	registry.conversations[conv_id] = conv
 	registry.bind_session(session_id, conv_id)
 	return registry

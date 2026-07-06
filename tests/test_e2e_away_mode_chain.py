@@ -41,7 +41,7 @@ async def test_enter_then_exit_flips_and_resolves_pendings(tmp_path):
 	assert await _away_mode_active(registry) is True, "/away-mode must report active after enter_global"
 
 	# A pending ask_human is parked while away.
-	future = registry.add("conv-e2e", "Claude", request_id="req-e2e", msg_id="msg-e2e")
+	future = registry.add("conv-e2e", "s-e2e", "Claude", request_id="req-e2e", msg_id="msg-e2e")
 
 	# exit_global with send_default: flips False AND resolves the pending.
 	backend2 = _make_backend([

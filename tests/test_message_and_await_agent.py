@@ -62,8 +62,8 @@ def _make_registry_with_two_alive_members():
 		surface="windows",
 		joined_at=0.0,
 	)
-	conv.members_active["Claude-A"] = a
-	conv.members_active["Claude-B"] = b
+	conv.members_active["s-A"] = a
+	conv.members_active["s-B"] = b
 	r.conversations["conv-1"] = conv
 	r.bind_session("s-A", "conv-1")
 	r.bind_session("s-B", "conv-1")
@@ -81,7 +81,7 @@ def _make_registry_with_one_alive_member():
 		surface="windows",
 		joined_at=0.0,
 	)
-	conv.members_active["Claude-Solo"] = m
+	conv.members_active["s-solo"] = m
 	r.conversations["conv-solo"] = conv
 	r.bind_session("s-solo", "conv-solo")
 	return r, "conv-solo"
@@ -183,7 +183,7 @@ async def test_message_and_await_sole_alive_member_returns_empty_sentinel(cfg, l
 	assert result == "__CONVERSATION_EMPTY__"
 	# Caller removed from members_active and recorded in history.
 	conv = r.conversations[conv_id]
-	assert "Claude-Solo" not in conv.members_active
+	assert "s-solo" not in conv.members_active
 	assert any(m.cli_session_id == "s-solo" for m in conv.members_history)
 	# No remaining members → conversation Ended.
 	assert conv.state == "ended"
@@ -216,7 +216,7 @@ async def test_sole_alive_in_open_marker_conv_blocks_until_peer_joins(cfg, logge
 	await asyncio.sleep(0.1)
 	# Lobby-holder should be blocked, not auto-leaving
 	assert not lobby_task.done(), "sole-alive in open-marker conv should block, not auto-leave"
-	assert "Claude-Solo" in r.conversations[conv_id].members_active
+	assert "s-solo" in r.conversations[conv_id].members_active
 
 	# A peer joins to unblock the lobby
 	peer_task = asyncio.create_task(handlers.enter_conversation(
@@ -230,7 +230,7 @@ async def test_sole_alive_in_open_marker_conv_blocks_until_peer_joins(cfg, logge
 	# Conv is still Active; lobby-holder remains a member; open marker still set
 	conv = r.conversations[conv_id]
 	assert conv.state == "active"
-	assert "Claude-Solo" in conv.members_active
+	assert "s-solo" in conv.members_active
 	assert r.open_conversation_id == conv_id
 
 	peer_task.cancel()
@@ -262,7 +262,7 @@ async def test_sole_alive_in_open_marker_conv_times_out_without_ending(short_tim
 	assert result == "__TIMEOUT__"
 	conv = r.conversations[conv_id]
 	assert conv.state == "active", "lobby timeout should NOT end the conv"
-	assert "Claude-Solo" in conv.members_active, "caller should remain a member"
+	assert "s-solo" in conv.members_active, "caller should remain a member"
 	assert r.open_conversation_id == conv_id, "open marker should still be set"
 
 
@@ -286,7 +286,7 @@ async def test_sole_alive_in_non_open_conv_still_auto_leaves(cfg, logger):
 
 	assert result == "__CONVERSATION_EMPTY__"
 	conv = r.conversations[conv_id]
-	assert "Claude-Solo" not in conv.members_active
+	assert "s-solo" not in conv.members_active
 	assert conv.state == "ended"
 
 
@@ -303,7 +303,7 @@ async def test_sole_member_empty_sentinel_includes_partings(cfg, logger):
 		surface="windows",
 		joined_at=0.0,
 	)
-	conv.members_active["Claude-Last"] = m
+	conv.members_active["s-last"] = m
 	# Inject a parting message that was added before the caller's last_seen_seq is updated
 	conv.messages.append({
 		"seq": 0,
@@ -492,7 +492,7 @@ async def test_last_seen_seq_updated_after_wake(cfg, logger):
 	handlers = build_tool_handlers(cfg, r, backend, logger)
 
 	conv = r.conversations[conv_id]
-	member_a = conv.members_active["Claude-A"]
+	member_a = conv.members_active["s-A"]
 	initial_seq = member_a.last_seen_seq
 
 	task_a = asyncio.create_task(

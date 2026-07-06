@@ -49,7 +49,7 @@ def _single_member_registry() -> tuple[Registry, str]:
 	r = Registry()
 	m = _make_member("s-solo", "Claude-Solo")
 	conv = Conversation(id="conv-solo", title="solo conv")
-	conv.members_active["Claude-Solo"] = m
+	conv.members_active["s-solo"] = m
 	r.conversations["conv-solo"] = conv
 	r.bind_session("s-solo", "conv-solo")
 	r.set_session_home("s-solo", "conv-solo")
@@ -62,8 +62,8 @@ def _two_member_registry() -> tuple[Registry, str]:
 	mA = _make_member("s-A", "Claude-A")
 	mB = _make_member("s-B", "Claude-B", cwd="C:/Y")
 	conv = Conversation(id="conv-duo", title="duo conv")
-	conv.members_active["Claude-A"] = mA
-	conv.members_active["Claude-B"] = mB
+	conv.members_active["s-A"] = mA
+	conv.members_active["s-B"] = mB
 	r.conversations["conv-duo"] = conv
 	r.bind_session("s-A", "conv-duo")
 	r.bind_session("s-B", "conv-duo")
@@ -78,8 +78,8 @@ def _alive_plus_dormant_registry() -> tuple[Registry, str]:
 	mA = _make_member("s-A", "Claude-A")
 	mB = _make_member("s-B", "Claude-B", cwd="C:/Y", alive=False)
 	conv = Conversation(id="conv-mixed", title="mixed conv")
-	conv.members_active["Claude-A"] = mA
-	conv.members_active["Claude-B"] = mB
+	conv.members_active["s-A"] = mA
+	conv.members_active["s-B"] = mB
 	r.conversations["conv-mixed"] = conv
 	r.bind_session("s-A", "conv-mixed")
 	r.bind_session("s-B", "conv-mixed")
@@ -127,7 +127,7 @@ async def test_leave_appends_parting_and_removes_member(cfg, logger):
 	assert "ok" in result
 	conv = registry.conversations[conv_id]
 	# Member moved to history
-	assert "Claude-A" not in conv.members_active
+	assert "s-A" not in conv.members_active
 	assert any(m.sender == "Claude-A" for m in conv.members_history)
 	# Parting message appended
 	parting_msgs = [m for m in conv.messages if m.get("type") == "parting"]

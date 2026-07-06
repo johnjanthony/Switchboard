@@ -93,7 +93,7 @@ async def test_exit_global_triggers_bulk_respond_when_default_text_present(tmp_p
 	registry.global_away_mode = True
 
 	# Plant a pending request so bulk_respond has something to resolve.
-	future = registry.add("conv-aaa", "Claude", "req-001", msg_id="msg-1")
+	future = registry.add("conv-aaa", "s-aaa", "Claude", "req-001", msg_id="msg-1")
 
 	backend = _make_backend([
 		{"type": "exit_global", "issued_at": _now_iso(), "default_text": "Back soon"},
@@ -142,7 +142,7 @@ async def test_exit_global_decision_cancel_does_not_flip(tmp_path):
 	away mode ON and leave pendings alone."""
 	registry = Registry()
 	registry.global_away_mode = True
-	future = registry.add("conv-1", "Claude", request_id="req-1", msg_id="msg-1")
+	future = registry.add("conv-1", "s-1", "Claude", request_id="req-1", msg_id="msg-1")
 
 	backend = _make_backend([
 		{"type": "exit_global", "issued_at": _now_iso(), "decision": "cancel"},
@@ -163,7 +163,7 @@ async def test_exit_global_send_default_blank_text_is_rejected(tmp_path):
 	It must surface a validation error and not flip the flag."""
 	registry = Registry()
 	registry.global_away_mode = True
-	future = registry.add("conv-1", "Claude", request_id="req-1", msg_id="msg-1")
+	future = registry.add("conv-1", "s-1", "Claude", request_id="req-1", msg_id="msg-1")
 
 	backend = _make_backend([
 		{"type": "exit_global", "issued_at": _now_iso(), "decision": "send_default", "default_text": ""},
@@ -182,7 +182,7 @@ async def test_exit_global_send_default_blank_text_is_rejected(tmp_path):
 async def test_exit_global_decision_skip_flips_but_leaves_pendings(tmp_path):
 	registry = Registry()
 	registry.global_away_mode = True
-	future = registry.add("conv-1", "Claude", request_id="req-1", msg_id="msg-1")
+	future = registry.add("conv-1", "s-1", "Claude", request_id="req-1", msg_id="msg-1")
 
 	backend = _make_backend([
 		{"type": "exit_global", "issued_at": _now_iso(), "decision": "skip"},

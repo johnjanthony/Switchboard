@@ -51,7 +51,7 @@ def _make_registry_with_bound_session(session_id="s-1", conv_id="conv-abc", send
 		surface="windows",
 		joined_at=0.0,
 	)
-	conv.members_active[sender] = m
+	conv.members_active[session_id] = m
 	r.conversations[conv_id] = conv
 	r.bind_session(session_id, conv_id)
 	return r, conv_id
@@ -100,7 +100,7 @@ async def test_open_conversation_replaces_prior_open(cfg, logger):
 	# First conv — currently open
 	conv1 = Conversation(id="conv-1", title="first")
 	m1 = ConversationMember(cli_session_id="s-1", sender="Claude-A", cwd="C:/X", surface="windows", joined_at=0.0)
-	conv1.members_active["Claude-A"] = m1
+	conv1.members_active["s-1"] = m1
 	r.conversations["conv-1"] = conv1
 	r.bind_session("s-1", "conv-1")
 	r.open_conversation_id = "conv-1"
@@ -108,7 +108,7 @@ async def test_open_conversation_replaces_prior_open(cfg, logger):
 	# Second conv
 	conv2 = Conversation(id="conv-2", title="second")
 	m2 = ConversationMember(cli_session_id="s-2", sender="Claude-B", cwd="C:/Y", surface="windows", joined_at=0.0)
-	conv2.members_active["Claude-B"] = m2
+	conv2.members_active["s-2"] = m2
 	r.conversations["conv-2"] = conv2
 	r.bind_session("s-2", "conv-2")
 
@@ -156,8 +156,8 @@ async def test_open_conversation_mints_when_unbound(cfg, logger):
 	assert r.open_conversation_id == conv_id
 	assert conv_id in r.conversations
 	conv = r.conversations[conv_id]
-	assert "Claude-X" in conv.members_active
-	assert conv.members_active["Claude-X"].cli_session_id == "s-unbound"
+	assert "s-unbound" in conv.members_active
+	assert conv.members_active["s-unbound"].cli_session_id == "s-unbound"
 	assert r.session_to_conversation_id["s-unbound"] == conv_id
 
 	# Clean up the peer (still blocked in intro queue)
@@ -214,9 +214,10 @@ async def test_open_conversation_renames_member_when_sender_changes(cfg, logger)
 	)
 
 	conv = r.conversations[conv_id]
-	assert "NewName" in conv.members_active
-	assert "OldName" not in conv.members_active
-	assert conv.members_active["NewName"].sender == "NewName"
+	# Identity key is the session id and never changes on rename; only the
+	# display sender is updated.
+	assert "s-1" in conv.members_active
+	assert conv.members_active["s-1"].sender == "NewName"
 	assert result.startswith("ok.")
 
 
@@ -234,7 +235,8 @@ async def test_open_conversation_no_rename_when_sender_unchanged(cfg, logger):
 	)
 
 	conv = r.conversations[conv_id]
-	assert "Claude-A" in conv.members_active
+	assert "s-1" in conv.members_active
+	assert conv.members_active["s-1"].sender == "Claude-A"
 	assert len(conv.members_active) == 1
 	assert result.startswith("ok.")
 

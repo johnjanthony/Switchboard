@@ -136,7 +136,7 @@ class _PatchedBackend(_FakeBackend):
 			except Exception:
 				pass
 
-		return (conv_id, sender), msg_id
+		return conv_id, msg_id
 
 	def hidden_set_for(self, conv_id: str) -> bool | None:
 		path = f"conversations/{conv_id}/meta/hidden"
@@ -233,10 +233,10 @@ async def test_title_truncated_to_80_chars():
 
 
 @pytest.mark.asyncio
-async def test_correlation_is_conv_id_sender_tuple():
+async def test_correlation_is_conversation_id():
 	backend = _PatchedBackend()
 	corr, msg_id = await backend.write_conversation_message("conv-proj-1", "Claude", "question", "q?", request_id="r1")
-	assert corr == ("conv-proj-1", "Claude")
+	assert corr == "conv-proj-1"
 	assert msg_id == "fake_msg_id"
 
 

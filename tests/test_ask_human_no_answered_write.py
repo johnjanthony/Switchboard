@@ -38,7 +38,8 @@ async def test_resolved_ask_human_does_not_mark_answered(tmp_path: Path):
 
 	async def _resolve_soon():
 		await asyncio.sleep(0.02)
-		registry.resolve("conv-q1", "Claude", "the answer")
+		pending = registry.pending_for_conversation("conv-q1")[0]
+		registry.resolve("conv-q1", pending.request_id, "the answer")
 
 	asyncio.create_task(_resolve_soon())
 	result = await handlers.ask_human("ready?", "Claude", cli_session_id="s-q1", cwd="C:/Work/X")

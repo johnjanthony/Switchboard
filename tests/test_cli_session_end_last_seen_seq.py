@@ -21,7 +21,7 @@ async def test_woken_member_last_seen_seq_advances_past_dormancy(monkeypatch):
 	waiter = ConversationMember(
 		cli_session_id="s-waiter", sender="Waiter", cwd="C:/Work/X", surface="windows", joined_at=0.0,
 	)
-	conv.members_active["Waiter"] = waiter
+	conv.members_active["s-waiter"] = waiter
 	registry.conversations["conv-d1"] = conv
 	registry.bind_session("s-leaver", "conv-d1")
 	registry.bind_session("s-waiter", "conv-d1")

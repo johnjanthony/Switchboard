@@ -64,7 +64,7 @@ async def test_solo_resume_prompt_does_not_instruct_enter_conversation(tmp_path,
 		surface="windows", joined_at=0.0, alive=False,
 		session_ended_at="2026-06-13T00:00:00+00:00",
 	)
-	source.members_active["Claude"] = member
+	source.members_active["sess-1"] = member
 	registry.conversations["conv-src"] = source
 
 	await handler.handle_resume({"type": "resume", "source_conversation_id": "conv-src"})
@@ -88,7 +88,7 @@ async def test_multi_agent_resume_prompt_still_instructs_enter_conversation(tmp_
 	cfg, registry, handler = _make_handler(tmp_path, monkeypatch)
 	source = Conversation(id="conv-src", title="Collab work")
 	for name, sess in (("Claude Win", "sess-1"), ("Claude WSL", "sess-2")):
-		source.members_active[name] = ConversationMember(
+		source.members_active[sess] = ConversationMember(
 			cli_session_id=sess, sender=name, cwd="C:/Work/X",
 			surface="windows", joined_at=0.0, alive=False,
 			session_ended_at="2026-06-13T00:00:00+00:00",

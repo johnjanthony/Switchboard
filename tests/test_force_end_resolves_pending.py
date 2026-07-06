@@ -38,7 +38,7 @@ async def test_resolve_pending_for_conversation_sets_result_not_cancelled():
 	registry = Registry()
 	conv = Conversation(id="conv-fe", title="FE")
 	registry.conversations["conv-fe"] = conv
-	future = registry.add("conv-fe", "Claude", request_id="req-1", msg_id="msg-1")
+	future = registry.add("conv-fe", "s-1", "Claude", request_id="req-1", msg_id="msg-1")
 	assert not future.done()
 
 	resolved = registry.resolve_pending_for_conversation("conv-fe", _FE_SENTINEL)

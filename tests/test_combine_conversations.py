@@ -56,14 +56,14 @@ def _two_conv_registry_alive() -> tuple[Registry, str, str]:
 	# Source
 	src = Conversation(id="conv-src", title="Source Conv")
 	mA = _make_member("s-A", "Claude-A")
-	src.members_active["Claude-A"] = mA
+	src.members_active["s-A"] = mA
 	r.conversations["conv-src"] = src
 	r.bind_session("s-A", "conv-src")
 	r.set_session_home("s-A", "conv-src")
 	# Target
 	tgt = Conversation(id="conv-tgt", title="Target Conv")
 	mT = _make_member("s-T", "Claude-T")
-	tgt.members_active["Claude-T"] = mT
+	tgt.members_active["s-T"] = mT
 	r.conversations["conv-tgt"] = tgt
 	r.bind_session("s-T", "conv-tgt")
 	r.set_session_home("s-T", "conv-tgt")
@@ -103,8 +103,8 @@ async def test_combine_alive_members(tmp_path):
 	assert src.ended_at is not None
 
 	# Claude-A moved to target
-	assert "Claude-A" in tgt.members_active
-	assert "Claude-A" not in src.members_active
+	assert "s-A" in tgt.members_active
+	assert "s-A" not in src.members_active
 
 	# Binding rewritten to target
 	assert registry.session_to_conversation_id["s-A"] == tgt_id
@@ -131,13 +131,13 @@ async def test_combine_resumes_dormant(tmp_path):
 	# Source with one dormant member
 	src = Conversation(id="conv-src2", title="Dormant Source")
 	mD = _make_member("s-dormant", "Claude-Dormant", alive=False)
-	src.members_active["Claude-Dormant"] = mD
+	src.members_active["s-dormant"] = mD
 	registry.conversations["conv-src2"] = src
 
 	# Target with one alive member (caller)
 	tgt = Conversation(id="conv-tgt2", title="Active Target")
 	mT = _make_member("s-T2", "Claude-T2")
-	tgt.members_active["Claude-T2"] = mT
+	tgt.members_active["s-T2"] = mT
 	registry.conversations["conv-tgt2"] = tgt
 	registry.bind_session("s-T2", "conv-tgt2")
 	registry.set_session_home("s-T2", "conv-tgt2")
@@ -159,8 +159,8 @@ async def test_combine_resumes_dormant(tmp_path):
 	assert registry.conversations["conv-src2"].state == "ended"
 
 	# Dormant member moved to target, flipped alive (relaunch in flight)
-	assert "Claude-Dormant" in registry.conversations["conv-tgt2"].members_active
-	assert registry.conversations["conv-tgt2"].members_active["Claude-Dormant"].alive
+	assert "s-dormant" in registry.conversations["conv-tgt2"].members_active
+	assert registry.conversations["conv-tgt2"].members_active["s-dormant"].alive
 	mock_launch.assert_awaited_once()
 
 	# Session bound to target at relaunch time
@@ -190,15 +190,15 @@ async def test_combine_skips_permanently_lost(tmp_path):
 	src = Conversation(id="conv-src3", title="Source With Lost")
 	mAlive = _make_member("s-alive3", "Claude-Alive3")
 	mLost = _make_member("s-lost3", "Claude-Lost3", session_lost_permanently=True)
-	src.members_active["Claude-Alive3"] = mAlive
-	src.members_active["Claude-Lost3"] = mLost
+	src.members_active["s-alive3"] = mAlive
+	src.members_active["s-lost3"] = mLost
 	registry.conversations["conv-src3"] = src
 	registry.bind_session("s-alive3", "conv-src3")
 	registry.bind_session("s-lost3", "conv-src3")
 
 	tgt = Conversation(id="conv-tgt3", title="Target")
 	mT = _make_member("s-T3", "Claude-T3")
-	tgt.members_active["Claude-T3"] = mT
+	tgt.members_active["s-T3"] = mT
 	registry.conversations["conv-tgt3"] = tgt
 	registry.bind_session("s-T3", "conv-tgt3")
 	registry.set_session_home("s-T3", "conv-tgt3")
@@ -222,11 +222,11 @@ async def test_combine_skips_permanently_lost(tmp_path):
 	assert src_conv.state == "ended"
 
 	# Alive member moved to target
-	assert "Claude-Alive3" in tgt_conv.members_active
-	assert "Claude-Alive3" not in src_conv.members_active
+	assert "s-alive3" in tgt_conv.members_active
+	assert "s-alive3" not in src_conv.members_active
 
 	# Permanently-lost member stays in source
-	assert "Claude-Lost3" in src_conv.members_active
+	assert "s-lost3" in src_conv.members_active
 
 
 @pytest.mark.asyncio
@@ -236,7 +236,7 @@ async def test_combine_same_source_and_target_errors(tmp_path):
 	registry = Registry()
 	src = Conversation(id="conv-same", title="Same")
 	mA = _make_member("s-same", "Claude-Same")
-	src.members_active["Claude-Same"] = mA
+	src.members_active["s-same"] = mA
 	registry.conversations["conv-same"] = src
 	registry.bind_session("s-same", "conv-same")
 
@@ -265,7 +265,7 @@ async def test_combine_inactive_source_errors(tmp_path):
 
 	tgt = Conversation(id="conv-active-tgt4", title="Active Target")
 	mT = _make_member("s-T4", "Claude-T4")
-	tgt.members_active["Claude-T4"] = mT
+	tgt.members_active["s-T4"] = mT
 	registry.conversations["conv-active-tgt4"] = tgt
 	registry.bind_session("s-T4", "conv-active-tgt4")
 
@@ -291,7 +291,7 @@ async def test_combine_inactive_target_errors(tmp_path):
 
 	src = Conversation(id="conv-active-src5", title="Active Source")
 	mA = _make_member("s-A5", "Claude-A5")
-	src.members_active["Claude-A5"] = mA
+	src.members_active["s-A5"] = mA
 	registry.conversations["conv-active-src5"] = src
 	registry.bind_session("s-A5", "conv-active-src5")
 
@@ -320,13 +320,13 @@ async def test_combine_source_with_only_permanently_lost_errors(tmp_path):
 
 	src = Conversation(id="conv-all-lost", title="All Lost Source")
 	mLost = _make_member("s-lost-only", "Claude-Lost-Only", session_lost_permanently=True)
-	src.members_active["Claude-Lost-Only"] = mLost
+	src.members_active["s-lost-only"] = mLost
 	registry.conversations["conv-all-lost"] = src
 	registry.bind_session("s-lost-only", "conv-all-lost")
 
 	tgt = Conversation(id="conv-tgt-lost-test", title="Target")
 	mT = _make_member("s-T-lost-test", "Claude-T-LT")
-	tgt.members_active["Claude-T-LT"] = mT
+	tgt.members_active["s-T-lost-test"] = mT
 	registry.conversations["conv-tgt-lost-test"] = tgt
 	registry.bind_session("s-T-lost-test", "conv-tgt-lost-test")
 	registry.set_session_home("s-T-lost-test", "conv-tgt-lost-test")

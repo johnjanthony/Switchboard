@@ -68,7 +68,7 @@ def _make_active_conv(conv_id: str = "conv-abc", session_id: str = "s-1", sender
 		surface="windows",
 		joined_at=time.time(),
 	)
-	conv.members_active[sender] = m
+	conv.members_active[session_id] = m
 	r.conversations[conv_id] = conv
 	r.bind_session(session_id, conv_id)
 	r.set_session_home(session_id, conv_id)
@@ -159,7 +159,7 @@ async def test_combine_writes_both_target_member_and_source_state(tmp_path):
 		surface="windows",
 		joined_at=time.time(),
 	)
-	registry.conversations["conv-src"].members_active["Agent"] = m
+	registry.conversations["conv-src"].members_active["s-1"] = m
 	registry.bind_session("s-1", "conv-src")
 
 	result = await _perform_combine(registry, "conv-src", "conv-tgt", None, None, backend=backend)
@@ -188,7 +188,7 @@ async def test_handle_force_end_clears_open_pointer_when_target_was_open():
 
 	conv = Conversation(id="conv-1", title="test")
 	m = ConversationMember(cli_session_id="s-A", sender="A", cwd="C:/X", surface="windows", joined_at=0.0)
-	conv.members_active["A"] = m
+	conv.members_active["s-A"] = m
 	registry.conversations["conv-1"] = conv
 	registry.bind_session("s-A", "conv-1")
 
@@ -220,7 +220,7 @@ async def test_handle_session_end_writes_dormant_member_state():
 		surface="windows",
 		joined_at=time.time(),
 	)
-	conv.members_active["Claude"] = m
+	conv.members_active["s-1"] = m
 	registry.conversations["conv-x"] = conv
 	registry.bind_session("s-1", "conv-x")
 
@@ -293,7 +293,7 @@ async def test_message_and_await_writes_message_to_conversations_path(tmp_path):
 			surface="windows",
 			joined_at=time.time(),
 		)
-		conv.members_active[name] = m
+		conv.members_active[sid] = m
 		registry.bind_session(sid, "conv-m")
 	registry.conversations["conv-m"] = conv
 
@@ -408,7 +408,7 @@ async def test_handle_force_end_without_backend_still_ends_conversation():
 	registry = Registry()
 	conv = Conversation(id="conv-1", title="test")
 	m = ConversationMember(cli_session_id="s-A", sender="A", cwd="C:/X", surface="windows", joined_at=0.0)
-	conv.members_active["A"] = m
+	conv.members_active["s-A"] = m
 	registry.conversations["conv-1"] = conv
 	registry.bind_session("s-A", "conv-1")
 

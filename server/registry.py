@@ -4,9 +4,10 @@ All access happens on a single asyncio event loop, so no locking is required
 on the registry dicts themselves; per-Conversation work is serialized via
 each Conversation's own asyncio.Lock.
 
-Pending requests are keyed by (conversation_id, sender) with supersede
-semantics: if a new request arrives for the same (conversation_id, sender)
-pair, the prior future is cancelled and replaced. Routing from a CLI session
+Pending requests are keyed by (conversation_id, cli_session_id) with supersede
+semantics: if a new request arrives for the same (conversation_id, cli_session_id)
+pair, the prior future is cancelled and replaced. Answers resolve by
+(conversation_id, request_id), not by sender. Routing from a CLI session
 to its current conversation uses session_to_conversation_id (hook-injected
 cli_session_id → conv-<uuid>); cwd is informational only.
 """
@@ -29,16 +30,12 @@ _RECENTLY_RESOLVED_MAX = 512
 @dataclass
 class PendingRequest:
 	conversation_id: str
-	sender: str
+	sender: str  # display attribution only, may be the disambiguated member name
 	request_id: str
 	future: asyncio.Future[str]
+	cli_session_id: str
 	started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 	msg_id: str | None = None
-	# Routing identity of the asking session. The pending is keyed by the RAW
-	# agent-supplied sender, which can differ from the member's disambiguated
-	# sender; carrying the cli_session_id lets cleanup paths (session-end)
-	# match a pending to its owning member by identity rather than by name.
-	cli_session_id: str | None = None
 
 
 @dataclass
@@ -62,7 +59,7 @@ class Conversation:
 	title: str
 	state: Literal["active", "ended"] = "active"
 	continued_from: str | None = None
-	members_active: dict = None  # dict[sender, ConversationMember]
+	members_active: dict = None  # dict[cli_session_id, ConversationMember]
 	members_history: list = None  # list[ConversationMember]
 	messages: list = None
 	pending_responses: dict = None
@@ -90,6 +87,7 @@ class Registry:
 	def __init__(self) -> None:
 		self._pending: dict[tuple[str, str], PendingRequest] = {}
 		self.total_answered: int = 0
+		self.sessions = None  # SessionRegistry, attached by main.py; optional for tests
 		self._global_away = False
 		self._pending_mirror = None
 		self._session_to_conversation_id: dict[str, str] = {}
@@ -141,9 +139,14 @@ class Registry:
 
 	def bind_session(self, session_id: str, conversation_id: str) -> None:
 		self._session_to_conversation_id[session_id] = conversation_id
+		if self.sessions is not None:
+			self.sessions.set_binding(session_id, conversation_id)
 
 	def unbind_session(self, session_id: str) -> str | None:
-		return self._session_to_conversation_id.pop(session_id, None)
+		prior = self._session_to_conversation_id.pop(session_id, None)
+		if self.sessions is not None:
+			self.sessions.set_binding(session_id, None)
+		return prior
 
 	def set_session_home(self, session_id: str, conversation_id: str) -> None:
 		self._session_home_conversation_id[session_id] = conversation_id
@@ -167,20 +170,17 @@ class Registry:
 	def add(
 		self,
 		conversation_id: str,
+		cli_session_id: str,
 		sender: str,
 		request_id: str,
 		msg_id: str | None = None,
 		return_superseded: bool = False,
-		cli_session_id: str | None = None,
 	) -> asyncio.Future | tuple[asyncio.Future, str | None]:
-		"""Add a pending request. If (conversation_id, sender) is already occupied,
-		the prior PendingRequest is superseded: its future is cancelled, the entry
-		removed, and the prior request_id returned (when return_superseded=True)
-		so callers can mark the prior question's Firebase entry as cancelled.
-
-		Returns the new Future. If return_superseded=True, returns
-		(future, prior_request_id_or_None)."""
-		key = (conversation_id, sender)
+		"""Add a pending request keyed by (conversation_id, cli_session_id). A second
+		ask from the same session in the same conversation supersedes the first:
+		its future is cancelled and its request_id returned (when
+		return_superseded=True) so the caller can cancel the prior Firebase record."""
+		key = (conversation_id, cli_session_id)
 		prior_request_id = None
 		existing = self._pending.pop(key, None)
 		if existing is not None:
@@ -194,32 +194,28 @@ class Registry:
 			sender=sender,
 			request_id=request_id,
 			future=future,
-			msg_id=msg_id,
 			cli_session_id=cli_session_id,
+			msg_id=msg_id,
 		)
 		self._fire_pending_mirror(conversation_id, +1)
 		if return_superseded:
 			return future, prior_request_id
 		return future
 
-	def get(self, key: tuple[str, str]) -> "PendingRequest | None":
-		return self._pending.get(key)
+	def find_by_request_id(self, conversation_id: str, request_id: str) -> "PendingRequest | None":
+		for record in self._pending.values():
+			if record.conversation_id == conversation_id and record.request_id == request_id:
+				return record
+		return None
 
-	def resolve(self, conversation_id: str, sender: str, text: str, request_id: str | None = None) -> str | None:
-		"""Resolve the pending request for (conversation_id, sender). Returns the
-		request_id of the resolved entry, or None if no pending exists.
-
-		If request_id is provided and does not match the occupying entry's
-		request_id, this is a no-op (returns None, leaves the live entry intact):
-		a stale or replayed answer for a superseded request must not resolve the
-		newer entry that now holds the (conversation_id, sender) key (T-148)."""
-		key = (conversation_id, sender)
-		record = self._pending.get(key)
+	def resolve(self, conversation_id: str, request_id: str, text: str) -> str | None:
+		"""Resolve the pending whose request_id matches within conversation_id.
+		request_id is the lookup key, so a stale or replayed answer for a
+		superseded request cannot resolve the newer pending (T-148 by construction)."""
+		record = self.find_by_request_id(conversation_id, request_id)
 		if record is None:
 			return None
-		if request_id is not None and record.request_id != request_id:
-			return None
-		self._pending.pop(key, None)
+		self._pending.pop((record.conversation_id, record.cli_session_id), None)
 		if not record.future.done():
 			record.future.set_result(text)
 		self.total_answered += 1
@@ -246,14 +242,11 @@ class Registry:
 			return False
 		return (conversation_id, request_id) in self._recently_resolved
 
-	def remove(self, conversation_id: str, sender: str, request_id: str | None = None) -> str | None:
-		"""Remove the pending entry for (conversation_id, sender). Cancels the future if
-		pending. Returns the request_id of the removed entry, or None.
-
-		If request_id is provided and does not match the occupying entry's
-		request_id, this is a no-op: a superseded asker's shielded cleanup must
-		remove only its own entry, not the live entry that superseded it (T-148)."""
-		key = (conversation_id, sender)
+	def remove(self, conversation_id: str, cli_session_id: str, request_id: str | None = None) -> str | None:
+		"""Remove the pending for (conversation_id, cli_session_id). Cancels the future.
+		A request_id mismatch is a no-op: a superseded asker's shielded cleanup must
+		remove only its own entry, not the live entry that superseded it."""
+		key = (conversation_id, cli_session_id)
 		record = self._pending.get(key)
 		if record is None:
 			return None
@@ -298,13 +291,11 @@ class Registry:
 		of cancelled request_ids.
 
 		A pending owned by a live member is left intact: spawning a new agent into a
-		conversation must not destroy a live peer's in-flight question. A pending with
-		no known owner (cli_session_id is None) is treated as stale — that preserves the
-		original 'a prior agent died without cleanup' intent for legacy/orphan entries."""
+		conversation must not destroy a live peer's in-flight question."""
 		victims = [
 			key for key, record in self._pending.items()
 			if record.conversation_id == conversation_id
-			and (record.cli_session_id is None or record.cli_session_id not in alive_session_ids)
+			and record.cli_session_id not in alive_session_ids
 		]
 		cancelled_request_ids: list[str] = []
 		for key in victims:

@@ -112,7 +112,7 @@ async def test_resume_aborts_when_no_desktop_session(tmp_path):
 		cli_session_id="sess-dormant", sender="Claude", cwd="C:/Work/X",
 		surface="windows", joined_at=0.0, alive=False,
 	)
-	conv.members_active["Claude"] = member
+	conv.members_active["sess-dormant"] = member
 	registry.conversations["conv-src"] = conv
 
 	with patch(

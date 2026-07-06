@@ -70,8 +70,8 @@ async def test_e2e_combine_alive_and_dormant(tmp_path):
 	conv_a = Conversation(id="conv-a", title="Conv A")
 	m_alive_a = _make_member("s-alive-a", "claude-alive-a", alive=True)
 	m_dormant_a = _make_member("s-dormant-a", "claude-dormant-a", alive=False)
-	conv_a.members_active["claude-alive-a"] = m_alive_a
-	conv_a.members_active["claude-dormant-a"] = m_dormant_a
+	conv_a.members_active["s-alive-a"] = m_alive_a
+	conv_a.members_active["s-dormant-a"] = m_dormant_a
 	registry.conversations["conv-a"] = conv_a
 	registry.bind_session("s-alive-a", "conv-a")
 	registry.bind_session("s-dormant-a", "conv-a")
@@ -79,7 +79,7 @@ async def test_e2e_combine_alive_and_dormant(tmp_path):
 	# Conv-B: one alive member (the caller)
 	conv_b = Conversation(id="conv-b", title="Conv B")
 	m_b = _make_member("s-b", "claude-b", alive=True)
-	conv_b.members_active["claude-b"] = m_b
+	conv_b.members_active["s-b"] = m_b
 	registry.conversations["conv-b"] = conv_b
 	registry.bind_session("s-b", "conv-b")
 	registry.set_session_home("s-b", "conv-b")
@@ -103,14 +103,14 @@ async def test_e2e_combine_alive_and_dormant(tmp_path):
 
 	# Alive A member's session rebound to B
 	assert registry.session_to_conversation_id["s-alive-a"] == "conv-b"
-	assert "claude-alive-a" in conv_b.members_active
+	assert "s-alive-a" in conv_b.members_active
 
 	# Dormant A member's session pre-bound to B
 	assert registry.session_to_conversation_id["s-dormant-a"] == "conv-b"
-	assert "claude-dormant-a" in conv_b.members_active
+	assert "s-dormant-a" in conv_b.members_active
 
 	# Dormant member flipped alive in B (relaunch in flight) and launcher fired
-	assert conv_b.members_active["claude-dormant-a"].alive
+	assert conv_b.members_active["s-dormant-a"].alive
 	mock_launch.assert_awaited_once()
 
 	# Spawn-pending file written for the dormant member
@@ -147,7 +147,7 @@ async def test_e2e_combine_with_target_having_waiter(tmp_path):
 	# Conv-A: one alive member
 	conv_a = Conversation(id="conv-a2", title="Source A2")
 	m_a = _make_member("s-a2", "claude-a2", alive=True)
-	conv_a.members_active["claude-a2"] = m_a
+	conv_a.members_active["s-a2"] = m_a
 	registry.conversations["conv-a2"] = conv_a
 	registry.bind_session("s-a2", "conv-a2")
 	registry.set_session_home("s-a2", "conv-a2")
@@ -156,8 +156,8 @@ async def test_e2e_combine_with_target_having_waiter(tmp_path):
 	conv_b = Conversation(id="conv-b2", title="Target B2")
 	m_b_waiter = _make_member("s-b2-waiter", "claude-b2-waiter", alive=True)
 	m_b_combiner = _make_member("s-b2-combiner", "claude-b2-combiner", alive=True)
-	conv_b.members_active["claude-b2-waiter"] = m_b_waiter
-	conv_b.members_active["claude-b2-combiner"] = m_b_combiner
+	conv_b.members_active["s-b2-waiter"] = m_b_waiter
+	conv_b.members_active["s-b2-combiner"] = m_b_combiner
 	registry.conversations["conv-b2"] = conv_b
 	registry.bind_session("s-b2-waiter", "conv-b2")
 	registry.bind_session("s-b2-combiner", "conv-b2")
@@ -209,7 +209,7 @@ async def test_e2e_combine_then_speak(tmp_path):
 	# Conv-A: one alive member
 	conv_a = Conversation(id="conv-a3", title="Source A3")
 	m_a = _make_member("s-a3", "claude-a3", alive=True)
-	conv_a.members_active["claude-a3"] = m_a
+	conv_a.members_active["s-a3"] = m_a
 	registry.conversations["conv-a3"] = conv_a
 	registry.bind_session("s-a3", "conv-a3")
 	registry.set_session_home("s-a3", "conv-a3")
@@ -218,8 +218,8 @@ async def test_e2e_combine_then_speak(tmp_path):
 	conv_b = Conversation(id="conv-b3", title="Target B3")
 	m_b_combiner = _make_member("s-b3-combiner", "claude-b3-combiner", alive=True)
 	m_b_listener = _make_member("s-b3-listener", "claude-b3-listener", alive=True)
-	conv_b.members_active["claude-b3-combiner"] = m_b_combiner
-	conv_b.members_active["claude-b3-listener"] = m_b_listener
+	conv_b.members_active["s-b3-combiner"] = m_b_combiner
+	conv_b.members_active["s-b3-listener"] = m_b_listener
 	registry.conversations["conv-b3"] = conv_b
 	registry.bind_session("s-b3-combiner", "conv-b3")
 	registry.bind_session("s-b3-listener", "conv-b3")
@@ -236,7 +236,7 @@ async def test_e2e_combine_then_speak(tmp_path):
 
 	# Verify A3 is now in B3
 	assert registry.session_to_conversation_id["s-a3"] == "conv-b3"
-	assert "claude-a3" in conv_b.members_active
+	assert "s-a3" in conv_b.members_active
 
 	# Now the moved A member speaks in B — should work without errors
 	# The listener in B will be woken by this message (A's speak enqueues A, listener wakes)
@@ -292,8 +292,8 @@ async def test_combine_migrates_source_waiter_to_target(tmp_path):
 	conv_a = Conversation(id="conv-a5", title="Source A5")
 	m_alice = _make_member("s-alice", "claude-alice", alive=True)
 	m_bob = _make_member("s-bob", "claude-bob", alive=True)
-	conv_a.members_active["claude-alice"] = m_alice
-	conv_a.members_active["claude-bob"] = m_bob
+	conv_a.members_active["s-alice"] = m_alice
+	conv_a.members_active["s-bob"] = m_bob
 	registry.conversations["conv-a5"] = conv_a
 	registry.bind_session("s-alice", "conv-a5")
 	registry.bind_session("s-bob", "conv-a5")
@@ -303,7 +303,7 @@ async def test_combine_migrates_source_waiter_to_target(tmp_path):
 	# Conv-B (target): one alive member, the combiner
 	conv_b = Conversation(id="conv-b5", title="Target B5")
 	m_combiner = _make_member("s-combiner5", "claude-combiner5", alive=True)
-	conv_b.members_active["claude-combiner5"] = m_combiner
+	conv_b.members_active["s-combiner5"] = m_combiner
 	registry.conversations["conv-b5"] = conv_b
 	registry.bind_session("s-combiner5", "conv-b5")
 	registry.set_session_home("s-combiner5", "conv-b5")
@@ -337,7 +337,7 @@ async def test_combine_migrates_source_waiter_to_target(tmp_path):
 		f"source.wait_queue must be empty after combine; still has {len(conv_a.wait_queue)} entries"
 
 	# Alice was migrated to target
-	assert "claude-alice" in conv_b.members_active
+	assert "s-alice" in conv_b.members_active
 	assert registry.session_to_conversation_id["s-alice"] == "conv-b5"
 
 	# At this point Alice's wait_entry is either:
@@ -346,7 +346,7 @@ async def test_combine_migrates_source_waiter_to_target(tmp_path):
 	# Either way, Alice must NOT remain blocked indefinitely.
 	if not task_alice.done():
 		# Bob (now also in target) speaks; this must wake Alice via target's wait_queue
-		assert "claude-bob" in conv_b.members_active
+		assert "s-bob" in conv_b.members_active
 		task_bob = asyncio.create_task(
 			handlers.message_and_await_agent(
 				"claude-bob",
@@ -395,8 +395,8 @@ async def test_combine_drains_waiter_of_permanently_lost_member_in_source(tmp_pa
 		"s-carol6", "claude-carol6",
 		alive=False, session_lost_permanently=True,
 	)
-	conv_a.members_active["claude-alice6"] = m_alice
-	conv_a.members_active["claude-carol6"] = m_carol
+	conv_a.members_active["s-alice6"] = m_alice
+	conv_a.members_active["s-carol6"] = m_carol
 	registry.conversations["conv-a6"] = conv_a
 	registry.bind_session("s-alice6", "conv-a6")
 	# Don't bind Carol's session — she's permanently lost
@@ -405,7 +405,7 @@ async def test_combine_drains_waiter_of_permanently_lost_member_in_source(tmp_pa
 	# Conv-B (target): the combiner
 	conv_b = Conversation(id="conv-b6", title="Target B6")
 	m_combiner = _make_member("s-combiner6", "claude-combiner6", alive=True)
-	conv_b.members_active["claude-combiner6"] = m_combiner
+	conv_b.members_active["s-combiner6"] = m_combiner
 	registry.conversations["conv-b6"] = conv_b
 	registry.bind_session("s-combiner6", "conv-b6")
 	registry.set_session_home("s-combiner6", "conv-b6")
@@ -432,9 +432,9 @@ async def test_combine_drains_waiter_of_permanently_lost_member_in_source(tmp_pa
 	assert result.startswith("ok"), f"Unexpected result: {result}"
 
 	# Carol stayed in source (permanently_lost path)
-	assert "claude-carol6" in conv_a.members_active
+	assert "s-carol6" in conv_a.members_active
 	# Alice was migrated to target
-	assert "claude-alice6" in conv_b.members_active
+	assert "s-alice6" in conv_b.members_active
 
 	# source.wait_queue must be empty
 	assert len(conv_a.wait_queue) == 0
@@ -457,7 +457,7 @@ async def test_e2e_combine_clears_open_when_source_was_open(tmp_path):
 	# Conv-A: source (was open)
 	conv_a = Conversation(id="conv-a4", title="Source A4")
 	m_a = _make_member("s-a4", "claude-a4", alive=True)
-	conv_a.members_active["claude-a4"] = m_a
+	conv_a.members_active["s-a4"] = m_a
 	registry.conversations["conv-a4"] = conv_a
 	registry.bind_session("s-a4", "conv-a4")
 	registry.set_session_home("s-a4", "conv-a4")
@@ -466,7 +466,7 @@ async def test_e2e_combine_clears_open_when_source_was_open(tmp_path):
 	# Conv-B: target
 	conv_b = Conversation(id="conv-b4", title="Target B4")
 	m_b = _make_member("s-b4", "claude-b4", alive=True)
-	conv_b.members_active["claude-b4"] = m_b
+	conv_b.members_active["s-b4"] = m_b
 	registry.conversations["conv-b4"] = conv_b
 	registry.bind_session("s-b4", "conv-b4")
 	registry.set_session_home("s-b4", "conv-b4")
@@ -502,14 +502,14 @@ async def test_combine_wakes_target_lobby_holder(tmp_path):
 	# Conv-A (source): one alive member, also the caller triggering combine
 	conv_a = Conversation(id="conv-a7", title="Source A7")
 	m_a = _make_member("s-a7", "claude-a7", alive=True)
-	conv_a.members_active["claude-a7"] = m_a
+	conv_a.members_active["s-a7"] = m_a
 	registry.conversations["conv-a7"] = conv_a
 	registry.bind_session("s-a7", "conv-a7")
 
 	# Conv-B (target): sole member blocked on open_peer_future (lobby-hold)
 	conv_b = Conversation(id="conv-b7", title="Target B7")
 	m_b = _make_member("s-b7", "claude-b7", alive=True)
-	conv_b.members_active["claude-b7"] = m_b
+	conv_b.members_active["s-b7"] = m_b
 	registry.conversations["conv-b7"] = conv_b
 	registry.bind_session("s-b7", "conv-b7")
 

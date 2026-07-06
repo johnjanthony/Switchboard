@@ -123,36 +123,19 @@ class FirebaseBackend(
 	def _enqueue_response(self, slot: str, data: dict):
 		"""Route a response payload to the in-process queue.
 
-		The phone keys responses by request_id (8-char hex, no '__' separator),
-		so the slot itself is no longer routable. Routing fields are written into
-		the payload by the phone: `cwd_key` and `sender`. We fall back to parsing
-		the slot only for legacy `<cwd_key>__<sender>` slots that may still be
-		on disk from older clients.
+		Dead code path: nothing writes to the top-level /responses tree anymore
+		(Android writes /conversations/<id>/answers/<request_id>, handled by
+		start_conversation_answers_listener). Retained only so the listener
+		registered in poll_responses has a callback; any entry that lands here
+		is unroutable and is logged and dropped.
 		"""
-		from server.canonicalization import from_firebase_key
-		text = data.get('text')
-		if not isinstance(text, str):
-			return
-		cwd_key = data.get('cwd_key') if isinstance(data.get('cwd_key'), str) else None
-		sender = data.get('sender') if isinstance(data.get('sender'), str) else None
-		if not (cwd_key and sender):
-			# Legacy fallback: composite slot form `<cwd_key>__<sender>`.
-			parsed_cwd_key, sep, parsed_sender = slot.rpartition("__")
-			if not sep or not parsed_cwd_key or not parsed_sender:
-				if self._logger:
-					_spawn_bg(
-						self._logger.surface_error(
-							f"firebase_response_unroutable: slot={slot!r} keys={list(data.keys())}"
-						),
-						label="firebase_response_unroutable",
-					)
-				return
-			cwd_key = parsed_cwd_key
-			sender = parsed_sender
-		cwd = from_firebase_key(cwd_key)
-		req_id = data.get('request_id') if isinstance(data.get('request_id'), str) else None
-		resp = IncomingResponse(correlation=(cwd, sender), text=text, slot=slot, request_id=req_id)
-		_spawn_bg(self._response_queue.put(resp), label=f"response_enqueue:{cwd}:{sender}")
+		if self._logger:
+			_spawn_bg(
+				self._logger.surface_error(
+					f"firebase_response_unroutable: slot={slot!r} keys={list(data.keys())}"
+				),
+				label="firebase_response_unroutable",
+			)
 
 	async def aclose(self) -> None:
 		# Stop supervised listeners first so their watchdogs don't try to
@@ -488,16 +471,10 @@ class FirebaseBackend(
 		correlation: CorrelationToken,
 		response_text: str | None = None,
 	) -> None:
-		from server.canonicalization import to_firebase_key
-		# The phone keys responses by request_id; older clients used the composite
-		# `<cwd_key>__<sender>` form. Delete both candidates so cleanup is robust
-		# regardless of which key shape produced this response.
+		# correlation is unused: the phone keys answers by request_id under
+		# /conversations/<conversation_id>/answers/<request_id>.
 		def _cleanup():
 			self._resp_ref.child(request_id).delete()
-			if isinstance(correlation, tuple) and len(correlation) == 2:
-				cwd, sender = correlation
-				legacy_slot = f"{to_firebase_key(cwd)}__{sender}"
-				self._resp_ref.child(legacy_slot).delete()
 		await self._loop.run_in_executor(None, _cleanup)
 
 	async def delete_response_slot(self, slot: str) -> None:
@@ -681,6 +658,15 @@ class FirebaseBackend(
 		"""Publish the Claude service-status view (level, description, incidents,
 		fetched_at, watch_state, button) for all surfaces to render."""
 		await asyncio.to_thread(lambda: db.reference("widget/status").set(status))
+
+	async def write_session_record(self, cli_session_id: str, payload: dict) -> None:
+		"""Publish one session record under /sessions/<cli_session_id>. Ids are
+		uuid-like and RTDB-safe as-is; if that assumption ever breaks, route
+		through canonicalization.to_firebase_key."""
+		await asyncio.to_thread(lambda: db.reference(f"sessions/{cli_session_id}").set(payload))
+
+	async def delete_session_record(self, cli_session_id: str) -> None:
+		await asyncio.to_thread(lambda: db.reference(f"sessions/{cli_session_id}").delete())
 
 	async def set_session_home(self, session_id: str, conv_id: str | None) -> None:
 		"""Persist a cli session's home-conversation pointer.
@@ -926,9 +912,8 @@ class FirebaseBackend(
 				if self._logger:
 					await self._logger.surface_error(f"firebase_fcm_error: {exc}")
 
-		# Correlation: encode (conv_id, sender) so dispatch_responses can route replies
-		correlation = (conv_id, sender)
-		return correlation, msg_id
+		# Correlation is the conversation id; answers resolve by (conv_id, request_id).
+		return conv_id, msg_id
 
 	async def set_conversation_last_activity(self, conv_id: str, ts: float) -> None:
 		"""Update /conversations/<id>/meta/last_activity_at."""
@@ -1064,9 +1049,8 @@ class FirebaseBackend(
 	async def start_conversation_answers_listener(self) -> None:
 		"""Listen for answer events under /conversations/<conv_id>/answers/<request_id>.
 
-		When Android writes a reply to this path, we enqueue it as an IncomingResponse
-		with correlation=(conv_id, sender) so dispatch_responses can route it without
-		needing the legacy cwd_key encoding.
+		correlation is the conv_id; request_id (from the answer path) is the
+		resolution key. sender rides along for display/logging only.
 
 		Answers payload written by Android: {text, sender, request_id, written_at}.
 		The slot stored in IncomingResponse is 'conv_id/answers/request_id' so
@@ -1084,7 +1068,7 @@ class FirebaseBackend(
 			if not isinstance(text, str) or not isinstance(sender, str):
 				return
 			slot = f"{conv_id}/answers/{request_id}"  # cleanup path for the slot delete
-			resp = IncomingResponse(correlation=(conv_id, sender), text=text, slot=slot, request_id=request_id)
+			resp = IncomingResponse(correlation=conv_id, text=text, slot=slot, request_id=request_id, sender=sender)
 			# Bounce to the event loop: this runs on the Firebase listener
 			# thread, and _spawn_bg / asyncio.create_task require a running loop.
 			# Without this bounce, every answer event raises RuntimeError inside

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { memberState, isActive, pendingCountFor, globalPendingCount, oldestPendingAgeSeconds, predecessorTitle, ringForMember, ringSeverity } from './derive.js';
+import * as derive from './derive.js';
 
 test('memberState: alive member is alive', () => {
 	assert.equal(memberState({ alive: true, session_lost_permanently: false }), 'alive');
@@ -125,4 +126,45 @@ test('ringSeverity: matches Watchtower thresholds', () => {
 	assert.equal(ringSeverity(0.50), 'amber');
 	assert.equal(ringSeverity(0.49), 'green');
 	assert.equal(ringSeverity(null), 'cold');
+});
+
+test('sessionChip maps states to labels and classes', () => {
+	assert.deepEqual(derive.sessionChip({ state: 'active' }), { label: 'active', cls: 'chip-active' });
+	assert.deepEqual(derive.sessionChip({ state: 'awaiting_human' }), { label: 'needs you', cls: 'chip-awaiting-human' });
+	assert.deepEqual(derive.sessionChip({ state: 'awaiting_agent' }), { label: 'waiting on agent', cls: 'chip-awaiting-agent' });
+	assert.deepEqual(derive.sessionChip({ state: 'idle' }), { label: 'idle', cls: 'chip-idle' });
+	assert.deepEqual(derive.sessionChip({ state: 'ended' }), { label: 'ended', cls: 'chip-ended' });
+	assert.deepEqual(derive.sessionChip({ state: 'lost' }), { label: 'lost', cls: 'chip-lost' });
+	assert.deepEqual(derive.sessionChip({ state: 'weird' }), { label: 'weird', cls: 'chip-idle' });
+});
+
+test('projectTail takes the last segment of either slash style', () => {
+	assert.equal(derive.projectTail('C:\\Work\\Switchboard'), 'Switchboard');
+	assert.equal(derive.projectTail('/home/john/work/x'), 'x');
+	assert.equal(derive.projectTail(''), '');
+});
+
+test('sessionAgeSeconds and formatAge', () => {
+	const nowMs = Date.parse('2026-07-06T12:10:00Z');
+	assert.equal(derive.sessionAgeSeconds({ last_event_at: '2026-07-06T12:00:00+00:00' }, nowMs), 600);
+	assert.equal(derive.sessionAgeSeconds({ last_event_at: 'garbage' }, nowMs), null);
+	assert.equal(derive.formatAge(45), '45s');
+	assert.equal(derive.formatAge(600), '10m');
+	assert.equal(derive.formatAge(7200), '2h');
+	assert.equal(derive.formatAge(259200), '3d');
+});
+
+test('sortSessionEntries orders newest-first by last_event_at', () => {
+	const entries = derive.sortSessionEntries({
+		a: { last_event_at: '2026-07-06T10:00:00+00:00' },
+		b: { last_event_at: '2026-07-06T12:00:00+00:00' },
+	});
+	assert.deepEqual(entries.map((e) => e.id), ['b', 'a']);
+});
+
+test('sensorOffline is true when pushed_at is absent or stale', () => {
+	const nowMs = Date.parse('2026-07-06T12:10:00Z');
+	assert.equal(derive.sensorOffline(null, nowMs), true);
+	assert.equal(derive.sensorOffline('2026-07-06T12:09:30Z', nowMs), false);
+	assert.equal(derive.sensorOffline('2026-07-06T11:00:00Z', nowMs), true);
 });

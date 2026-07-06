@@ -41,7 +41,7 @@ async def test_handle_resume_resets_last_seen_seq(tmp_path, monkeypatch):
 		surface="windows", joined_at=0.0, alive=False,
 		session_ended_at="2026-06-13T00:00:00+00:00", last_seen_seq=50,
 	)
-	source.members_active["Claude"] = member
+	source.members_active["sess-1"] = member
 	registry.conversations["conv-src"] = source
 
 	handler = SpawnHandler(cfg, _StubBackend(), JsonlLogger(cfg.log_path), registry)
@@ -57,7 +57,7 @@ async def test_handle_resume_resets_last_seen_seq(tmp_path, monkeypatch):
 	new_ids = [cid for cid in registry.conversations if cid != "conv-src"]
 	assert len(new_ids) == 1
 	new_conv = registry.conversations[new_ids[0]]
-	moved = new_conv.members_active["Claude"]
+	moved = new_conv.members_active["sess-1"]
 	assert moved.last_seen_seq == 0, (
 		f"expected last_seen_seq reset to 0, got {moved.last_seen_seq} - "
 		"the resumed member would wake to empty context"

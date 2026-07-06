@@ -48,7 +48,7 @@ async def _apply_bulk_respond_decision(
 		# exceptions are caught so a single failure doesn't abort the fan-out.
 		async def _resolve_one(p):
 			try:
-				req_id = registry.resolve(p.conversation_id, p.sender, default_text, request_id=p.request_id)
+				req_id = registry.resolve(p.conversation_id, p.request_id, default_text)
 				if req_id is None:
 					return
 				tasks = [
