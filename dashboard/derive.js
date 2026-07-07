@@ -215,6 +215,8 @@ const WAKE_PATH_HINTS = {
 	awaiting_human: 'on next phone answer',
 	active: 'at end of current turn',
 	idle: "on John's next prompt",
+	ended: 'Resume into conversation',
+	lost: 'Resume into conversation',
 };
 
 export function wakePathHint(record) {
@@ -223,7 +225,14 @@ export function wakePathHint(record) {
 }
 
 const CONVENABLE_STATES = new Set(['active', 'idle', 'awaiting_human', 'awaiting_agent']);
+const RESUMABLE_STATES = new Set(['ended', 'lost']);
 
 export function isConvenable(record) {
-	return !!record && CONVENABLE_STATES.has(record.state);
+	if (!record) {
+		return false;
+	}
+	if (CONVENABLE_STATES.has(record.state)) {
+		return true;
+	}
+	return RESUMABLE_STATES.has(record.state) && !!record.cwd;
 }

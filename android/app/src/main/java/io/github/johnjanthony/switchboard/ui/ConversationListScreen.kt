@@ -9,7 +9,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -37,7 +40,7 @@ import io.github.johnjanthony.switchboard.network.WidgetStatus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SessionListScreen(
+fun ConversationListScreen(
 	rows: List<ConversationRow>,
 	hiddenRows: List<ConversationRow>,
 	adminRow: ConversationRow?,
@@ -51,6 +54,9 @@ fun SessionListScreen(
 	onHideConversation: (ConversationRow) -> Unit,
 	onUnhideConversation: (ConversationRow) -> Unit,
 	onSpawnClick: () -> Unit,
+	sessionBadgeCount: Int = 0,
+	onSessionsClick: () -> Unit = {},
+	resumableByConvId: Map<String, Boolean> = emptyMap(),
 	onResumeClick: (conversationId: String) -> Unit = {},
 	onCombineClick: (conversationId: String) -> Unit = {},
 	onEndClick: (conversationId: String) -> Unit = {},
@@ -72,6 +78,17 @@ fun SessionListScreen(
 						active = globalAway,
 						onLongPress = if (globalAway) onExitGlobalAway else onEnterGlobalAway,
 					)
+					IconButton(onClick = onSessionsClick) {
+						BadgedBox(
+							badge = {
+								if (sessionBadgeCount > 0) {
+									Badge { Text(sessionBadgeCount.toString()) }
+								}
+							},
+						) {
+							Icon(Icons.Default.Hub, contentDescription = "Sessions")
+						}
+					}
 					IconButton(onClick = onSpawnClick) {
 						Icon(Icons.Default.Add, contentDescription = "Spawn")
 					}
@@ -125,8 +142,9 @@ fun SessionListScreen(
 					}
 				}
 				items(displayed, key = { it.id }) { row ->
-					SessionRow(
+					ConversationRow(
 						row = row,
+						resumable = resumableByConvId[row.id] ?: false,
 						onClick = { onSessionClick(row) },
 						onHide = { onHideConversation(row) },
 						onUnhide = { onUnhideConversation(row) },

@@ -226,8 +226,8 @@ test('wakePathHint maps each state to its hint text', () => {
 	assert.equal(derive.wakePathHint({ state: 'awaiting_human' }), 'on next phone answer');
 	assert.equal(derive.wakePathHint({ state: 'active' }), 'at end of current turn');
 	assert.equal(derive.wakePathHint({ state: 'idle' }), "on John's next prompt");
-	assert.equal(derive.wakePathHint({ state: 'ended' }), '');
-	assert.equal(derive.wakePathHint({ state: 'lost' }), '');
+	assert.equal(derive.wakePathHint({ state: 'ended' }), 'Resume into conversation');
+	assert.equal(derive.wakePathHint({ state: 'lost' }), 'Resume into conversation');
 });
 
 test('isConvenable: true for active, idle, awaiting_human, awaiting_agent', () => {
@@ -237,7 +237,9 @@ test('isConvenable: true for active, idle, awaiting_human, awaiting_agent', () =
 	assert.equal(derive.isConvenable({ state: 'awaiting_agent' }), true);
 });
 
-test('isConvenable: false for ended and lost', () => {
+test('isConvenable: false for ended and lost without a cwd, true with one', () => {
 	assert.equal(derive.isConvenable({ state: 'ended' }), false);
 	assert.equal(derive.isConvenable({ state: 'lost' }), false);
+	assert.equal(derive.isConvenable({ state: 'ended', cwd: 'C:/Work/X' }), true);
+	assert.equal(derive.isConvenable({ state: 'lost', cwd: 'C:/Work/X' }), true);
 });

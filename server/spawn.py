@@ -149,6 +149,16 @@ class SpawnHandler:
 		"""Trigger spawn-launcher.ps1 via the SwitchboardSpawn scheduled task."""
 		await invoke_spawn_launcher(self._logger)
 
+	def _write_pending_file(self, payload: dict) -> Path:
+		"""Write a spawn-pending JSON file for the launcher script to claim and consume.
+		Shared by handle_fresh, handle_resume, and launch_resume_agent so there is
+		exactly one place that defines the pending-file naming and serialization."""
+		import uuid
+		spawn_id = uuid.uuid4().hex
+		pending_path = self._pending_dir / f"spawn-pending-{spawn_id}.json"
+		pending_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+		return pending_path
+
 	def _format_fresh_prompt(self, cmd: dict, conv, join_existing: bool) -> str:
 		"""Build the initial prompt for a fresh-spawn agent.
 
@@ -372,7 +382,6 @@ class SpawnHandler:
 		prompt = self._format_fresh_prompt(cmd, conv, join_existing=join_existing)
 
 		# Write spawn-pending file
-		spawn_id = uuid.uuid4().hex
 		pending = {
 			"type": "fresh",
 			"conversation_id": conv_id,
@@ -384,8 +393,7 @@ class SpawnHandler:
 				"join_existing": join_existing,
 			}],
 		}
-		pending_path = self._pending_dir / f"spawn-pending-{spawn_id}.json"
-		pending_path.write_text(json.dumps(pending, indent=2), encoding="utf-8")
+		self._write_pending_file(pending)
 
 		# Trigger launcher. On failure, tell John on the phone (consistent with
 		# the quser gate) rather than silently leaving a conversation that no
@@ -560,15 +568,13 @@ class SpawnHandler:
 			)
 
 		# Write spawn-pending file (type "resume")
-		spawn_id = uuid.uuid4().hex
 		pending = {
 			"type": "resume",
 			"conversation_id": new_id,
 			"continued_from": source_id,
 			"agents": agents,
 		}
-		pending_path = self._pending_dir / f"spawn-pending-{spawn_id}.json"
-		pending_path.write_text(json.dumps(pending, indent=2), encoding="utf-8")
+		self._write_pending_file(pending)
 		# On launcher failure, surface a phone-visible notice rather than leaving
 		# the resumed members marked alive with no process behind them (B4).
 		try:
@@ -578,6 +584,130 @@ class SpawnHandler:
 				f"Resume failed to launch (continued from {source_id}): {exc}. "
 				"No agent started; end the conversation from the phone and retry."
 			)
+
+	async def launch_resume_agent(
+		self, *, session_id: str, surface: str, cwd: str, prompt: str, prior_sender: str | None
+	) -> bool:
+		"""Queue one claude --resume launch. No away-mode side effect - the caller
+		owns that policy (resume paths enable it; convene never does)."""
+		if not await self._user_has_interactive_session():
+			return False
+		pending = {
+			"type": "resume_session",
+			"agents": [{
+				"surface": surface,
+				"cli_session_id": session_id,
+				"prompt": prompt,
+				"project_path": cwd,
+				"prior_sender": prior_sender,
+			}],
+		}
+		self._write_pending_file(pending)
+		try:
+			await self._invoke_launcher()
+		except Exception as exc:
+			await self._logger.surface_error(f"resume_session_launch_failed: {exc}")
+			return False
+		return True
+
+	async def handle_resume_session(self, cmd: dict) -> None:
+		"""Resume a registry session (board resume): standalone, or into an existing
+		conversation. Session ids are stable across --resume (verified 2026-07-07),
+		so membership is pre-added at spawn time under the same id."""
+		session_id = cmd.get("session_id")
+		if not isinstance(session_id, str) or not session_id:
+			await self._logger.surface_error(f"resume_session: missing session_id: {cmd}")
+			return
+		sessions = getattr(self._registry, "sessions", None)
+		rec = sessions.get(session_id) if sessions is not None else None
+		if rec is None:
+			await self._backend.send_text(f"Cannot resume {session_id[:8]}: session not found in the registry (pruned?).")
+			return
+		if rec.state not in ("ended", "lost"):
+			await self._backend.send_text(f"Cannot resume {session_id[:8]}: the session is still live ({rec.state}).")
+			return
+		if not rec.cwd:
+			await self._backend.send_text(f"Cannot resume {session_id[:8]}: no working directory recorded.")
+			return
+
+		target_id = cmd.get("target_conversation_id")
+		target = None
+		if isinstance(target_id, str) and target_id:
+			target = self._registry.conversations.get(target_id)
+			if target is None or target.state != "active":
+				await self._backend.send_text(f"Cannot resume into {target_id}: conversation not found or not Active.")
+				return
+
+		if not await self._user_has_interactive_session():
+			await self._backend.send_text(
+				"Cannot resume: no one is logged in to the desktop. Sign in (locally or via RDP) and try again."
+			)
+			return
+
+		# Auto-enable away mode if currently off
+		if not self._registry.global_away_mode:
+			self._registry.global_away_mode = True
+			try:
+				if hasattr(self._backend, "set_global_away_mode"):
+					await self._backend.set_global_away_mode(True)
+			except Exception as exc:
+				await self._logger.surface_error(f"resume_session_away_mode_persist_failed: {exc}")
+
+		from server.conversation_ops import _add_member, _convene_sender_for, _now_iso
+		from server.gateway.bg_tasks import _spawn_bg as _sbg
+		sender = _convene_sender_for(self._registry, sessions, session_id)
+		other_alive = 0
+		if target is not None:
+			async with target.lock:
+				if session_id not in target.members_active:
+					await _add_member(self._registry, target.id, session_id, sender, rec.cwd, backend=self._backend)
+			sender = target.members_active[session_id].sender
+			other_alive = sum(1 for k, m in target.members_active.items() if k != session_id and m.alive)
+			msg = {
+				"seq": len(target.messages),
+				"sender": "<system>",
+				"type": "system",
+				"text": f"John resumed {sender} into this conversation.",
+				"timestamp": _now_iso(),
+			}
+			target.messages.append(msg)
+			if self._backend is not None:
+				_sbg(self._backend.write_conversation_message(target.id, msg), label=f"fb_resume_msg:{target.id}")
+
+		if sessions is not None:
+			sessions.note_spawn_resume(session_id, rec.cwd)
+		prompt = self._format_resume_session_prompt(cmd, rec, sender, target, other_alive)
+		ok = await self.launch_resume_agent(
+			session_id=session_id, surface=rec.surface, cwd=rec.cwd, prompt=prompt, prior_sender=sender
+		)
+		if not ok:
+			await self._backend.send_text(f"Resume of {sender} did not launch (no desktop session or launcher failure).")
+
+	def _format_resume_session_prompt(self, cmd: dict, rec, sender: str, target, other_alive: int) -> str:
+		if target is None:
+			base = (
+				f"You are resuming your previous session in {rec.cwd}. "
+				"Tool calls auto-inject your cli_session_id. Come online to John directly: "
+				"use ask_human to report your status and ask what's next, or notify_human for a "
+				"non-blocking status update."
+			)
+		elif other_alive == 0:
+			base = (
+				f"You are '{sender}', resumed into conversation '{target.id}'. "
+				"Tool calls auto-inject your cli_session_id. You are currently the only alive agent "
+				"there, so do NOT block in message_and_await_agent - come online via ask_human or notify_human."
+			)
+		else:
+			base = (
+				f"You are '{sender}', resumed into conversation '{target.id}'. "
+				"Tool calls auto-inject your cli_session_id. "
+				f"Call join_conversation(sender='{sender}', ref='{target.id}') to collect the history, "
+				"then message_and_await_agent to speak."
+			)
+		user_prompt = cmd.get("prompt")
+		if user_prompt:
+			base += f"\n\nADDITIONAL CONTEXT FROM JOHN:\n{user_prompt}"
+		return base
 
 	async def _user_has_interactive_session(self) -> bool:
 		"""See module-level user_has_interactive_session(). Kept as a method so

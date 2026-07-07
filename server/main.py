@@ -92,7 +92,7 @@ def _build_cli_session_end_route(registry, backend=None, logger=None, session_re
 	return cli_session_end
 
 
-def _build_session_start_route(session_registry: SessionRegistry):
+def _build_session_start_route(session_registry: SessionRegistry, logger):
 	"""POST /session_start — SessionStart hook ingest. Always 200 (hook contract)."""
 	async def session_start(request: Request):
 		try:
@@ -104,6 +104,14 @@ def _build_session_start_route(session_registry: SessionRegistry):
 			return JSONResponse({}, status_code=200)
 		cwd = body.get("cwd") if isinstance(body.get("cwd"), str) else ""
 		source = body.get("source") if isinstance(body.get("source"), str) else None
+		if source == "resume":
+			expected = session_registry.check_resume_id_change(session_id, cwd)
+			if expected is not None:
+				await logger.surface_error(
+					f"resume_id_change_detected: spawn-resumed {expected} but SessionStart arrived as "
+					f"{session_id} (cwd {cwd}) - CC id-on-resume behavior may have changed; see the "
+					f"dormant supersession rules in the roadmap"
+				)
 		session_registry.record_session_start(session_id, cwd=cwd, start_source=source)
 		return JSONResponse({}, status_code=200)
 	return session_start
@@ -776,7 +784,7 @@ async def _run(config: Config) -> None:
 		methods=["GET"],
 	)
 	app.add_route("/document", _build_document_route(backend), methods=["GET"])
-	app.add_route("/session_start", _build_session_start_route(session_registry), methods=["POST"])
+	app.add_route("/session_start", _build_session_start_route(session_registry, logger), methods=["POST"])
 	app.add_route("/sessions", _build_sessions_route(session_registry), methods=["GET"])
 	app.add_route("/agent_status", _build_agent_status_route(handlers, session_registry), methods=["POST"])
 	app.add_route(
@@ -813,7 +821,7 @@ async def _run(config: Config) -> None:
 
 	convene_task = asyncio.create_task(
 		dispatch_convene_commands(
-			registry, session_registry, backend, logger, loop_sups["dispatch_convene_commands"],
+			registry, session_registry, backend, logger, loop_sups["dispatch_convene_commands"], spawn_handler,
 		)
 	)
 

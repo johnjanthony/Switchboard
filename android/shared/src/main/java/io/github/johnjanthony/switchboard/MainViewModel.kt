@@ -28,6 +28,7 @@ import io.github.johnjanthony.switchboard.network.ConversationSummary
 import io.github.johnjanthony.switchboard.network.Pending
 import io.github.johnjanthony.switchboard.network.PendingExitToggle
 import io.github.johnjanthony.switchboard.network.AgentStatus
+import io.github.johnjanthony.switchboard.network.RegistrySession
 import io.github.johnjanthony.switchboard.network.WidgetQuota
 import io.github.johnjanthony.switchboard.network.WidgetRing
 import io.github.johnjanthony.switchboard.network.WidgetStatus
@@ -107,6 +108,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _widgetPushedAt = MutableStateFlow<String?>(null)
 	val widgetPushedAt: StateFlow<String?> = _widgetPushedAt.asStateFlow()
 
+	// Session registry board (convening chunk 4): mirrors server sessions/* and session_acks/*.
+	private val _registrySessions = MutableStateFlow<Map<String, RegistrySession>>(emptyMap())
+	val registrySessions: StateFlow<Map<String, RegistrySession>> = _registrySessions.asStateFlow()
+
+	private val _sessionAcks = MutableStateFlow<Map<String, String>>(emptyMap())
+	val sessionAcks: StateFlow<Map<String, String>> = _sessionAcks.asStateFlow()
+
 	private val _openConversationId = MutableStateFlow<String?>(null)
 	val openConversationId: StateFlow<String?> = _openConversationId.asStateFlow()
 
@@ -156,6 +164,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 				startConversationMessageSubscriptions()
 				setupAdminNotificationsListener()
 				startWidgetListeners()
+				startSessionRegistryListeners()
 			}
 		})
 	}
@@ -431,6 +440,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		})
 	}
 
+	/**
+	 * Listen to the session registry the server mirrors from its in-memory SessionRegistry:
+	 * every Claude Code session birth-to-death, keyed by cli_session_id, plus the human-ack
+	 * timestamps keyed the same way. A per-child parse failure is logged and skipped rather
+	 * than dropping the whole map, matching the widget/rings pattern.
+	 */
+	private fun startSessionRegistryListeners() {
+		database.getReference("sessions").addValueEventListener(object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				val map = mutableMapOf<String, RegistrySession>()
+				for (child in snapshot.children) {
+					val sessionId = child.key ?: continue
+					try {
+						child.getValue(RegistrySession::class.java)?.let { map[sessionId] = it }
+					} catch (e: Exception) {
+						android.util.Log.w("MainViewModel", "registry session parse failed: $sessionId", e)
+					}
+				}
+				_registrySessions.value = map
+			}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "sessions listener cancelled: $error")
+			}
+		})
+		database.getReference("session_acks").addValueEventListener(object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				val map = mutableMapOf<String, String>()
+				for (child in snapshot.children) {
+					val sessionId = child.key ?: continue
+					try {
+						child.getValue(String::class.java)?.let { map[sessionId] = it }
+					} catch (e: Exception) {
+						android.util.Log.w("MainViewModel", "session ack parse failed: $sessionId", e)
+					}
+				}
+				_sessionAcks.value = map
+			}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "session_acks listener cancelled: $error")
+			}
+		})
+	}
+
 	private fun startConversationListener() {
 		val ref = database.getReference("conversations")
 		ref.addValueEventListener(object : ValueEventListener {
@@ -447,7 +499,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 							?.let { java.time.Instant.ofEpochMilli((it * 1000.0).toLong()).toString() } ?: ""
 
 						// Ended conversations stay visible in the list so users can review the
-						// history and hide them manually when no longer wanted. SessionRowComposable
+						// history and hide them manually when no longer wanted. ConversationRowComposable
 						// gates state-mutating actions (Combine, End) on isActive=state=="active".
 
 						val membersNode = convNode.child("members_active")
@@ -766,6 +818,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		)
 		if (prompt.isNotBlank()) record["prompt"] = prompt
 		if (targetConversationId != null) record["target_conversation_id"] = targetConversationId
+		database.getReference("spawn_commands").push().setValue(record)
+		return wasAwayOff
+	}
+
+	// --- Session registry board command writers (convening chunk 4) ---
+
+	/** Acknowledge a session's current state (e.g. dismiss a stale/ended badge on the board). */
+	fun ackSession(sessionId: String) {
+		database.getReference("session_acks/$sessionId").setValue(nowIso())
+	}
+
+	/**
+	 * Convene one or more sessions into a conversation - either a brand-new one ("new") or
+	 * an existing conversation id. Deliberately does NOT touch away mode: convening is a
+	 * routing operation, not a spawn, and must not have the side effect of forcing away mode on.
+	 */
+	fun conveneSessions(sessionIds: List<String>, target: String, title: String?) {
+		val record = mutableMapOf<String, Any>(
+			"session_ids" to sessionIds,
+			"target" to target,
+			"issued_at" to nowIso(),
+		)
+		if (!title.isNullOrBlank()) record["title"] = title
+		database.getReference("convene_commands").push().setValue(record)
+	}
+
+	/**
+	 * Resume a dormant session from the board. Mirrors spawnSession's away-mode auto-enable:
+	 * returns true if away mode was off and this call turned it on, so the caller can toast.
+	 */
+	fun resumeSession(sessionId: String, targetConversationId: String?, prompt: String?): Boolean {
+		val wasAwayOff = !_globalAway.value
+		if (wasAwayOff) {
+			enterGlobalAway()
+		}
+		val record = mutableMapOf<String, Any>(
+			"type" to "resume_session",
+			"session_id" to sessionId,
+			"issued_at" to nowIso(),
+		)
+		if (targetConversationId != null) record["target_conversation_id"] = targetConversationId
+		if (!prompt.isNullOrBlank()) record["prompt"] = prompt
 		database.getReference("spawn_commands").push().setValue(record)
 		return wasAwayOff
 	}

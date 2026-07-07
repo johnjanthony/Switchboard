@@ -28,7 +28,7 @@ def logger(cfg):
 	return JsonlLogger(cfg.log_path)
 
 
-def _build_app(handlers, session_registry, registry=None):
+def _build_app(handlers, session_registry, registry=None, logger=None):
 	from server.main import (
 		_build_agent_status_route,
 		_build_away_mode_route,
@@ -36,7 +36,7 @@ def _build_app(handlers, session_registry, registry=None):
 		_build_sessions_route,
 	)
 	app = Starlette()
-	app.add_route("/session_start", _build_session_start_route(session_registry), methods=["POST"])
+	app.add_route("/session_start", _build_session_start_route(session_registry, logger), methods=["POST"])
 	app.add_route("/sessions", _build_sessions_route(session_registry), methods=["GET"])
 	app.add_route("/agent_status", _build_agent_status_route(handlers, session_registry), methods=["POST"])
 	if registry is not None:
@@ -283,3 +283,35 @@ def test_agent_status_cwd_fills_empty_record_but_does_not_overwrite(cfg, logger)
 	rec2 = session_registry.get("s1")
 	assert rec2 is not None
 	assert rec2.cwd == "C:/Work/X"
+
+
+class _FakeSurfaceErrorLogger:
+	def __init__(self):
+		self.details = []
+
+	async def surface_error(self, detail, correlation=None):
+		self.details.append(detail)
+
+
+def test_session_start_resume_with_changed_id_surfaces_sentinel(cfg, logger):
+	"""If a spawn-driven resume comes back under a different session id than the
+	one it was resumed from, /session_start must log the tripwire but still
+	record the new session (source == resume never blocks ingest)."""
+	registry = Registry()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	session_registry = SessionRegistry()
+	session_registry.note_spawn_resume("sess-OLD", "C:/Work/X")
+	fake_logger = _FakeSurfaceErrorLogger()
+	app = _build_app(handlers, session_registry, logger=fake_logger)
+
+	with TestClient(app) as client:
+		resp = client.post("/session_start", json={
+			"session_id": "sess-NEW",
+			"cwd": "C:/Work/X",
+			"source": "resume",
+		})
+		assert resp.status_code == 200
+
+	assert any("resume_id_change_detected" in d for d in fake_logger.details)
+	assert session_registry.get("sess-NEW") is not None

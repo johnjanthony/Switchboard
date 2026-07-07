@@ -266,7 +266,7 @@ When the user taps "+" on the phone, they choose surface (Windows / WSL), projec
 
 The Android client uses a list-based two-page nav:
 
-- **Page A**: conversation list, ordered by last activity. Each row shows the title, relative timestamp, unseen-activity dot, AWAY badge (when global away mode is on), open-conversation accent border + "open" label, and a stale-session warning. Swipe-right to end; swipe-left to hide. Long-press for a context menu: Resume, Combine into..., Hide/Unhide, End conversation.
+- **Page A**: conversation list, ordered by last activity. Each row shows the title, relative timestamp, unseen-activity dot, AWAY badge (when global away mode is on), and the open-conversation accent border + "open" label. Swipe-right to end; swipe-left to hide. Long-press for a context menu: Resume, Combine into..., Hide/Unhide, End conversation. The Resume item is enabled when any of the conversation's member sessions has a terminal (ended/lost) registry record.
 - **Page B**: per-conversation message view with the tab info popover and a reply input (visible only when there's a pending question).
 
 Hidden conversations are accessible via the overflow menu's "Show hidden" toggle. FCM notification taps deep-link directly to Page B.

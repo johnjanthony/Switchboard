@@ -101,8 +101,9 @@ private fun CountChip(count: Int) {
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun SessionRow(
+fun ConversationRow(
 	row: ConversationRow,
+	resumable: Boolean,
 	onClick: () -> Unit,
 	onHide: () -> Unit,
 	onUnhide: () -> Unit,
@@ -116,9 +117,7 @@ fun SessionRow(
 	var showEndConfirm by remember { mutableStateOf(false) }
 
 	val isOpenConversation = row.isOpenConversation
-	val isResumable = row.isResumable
 	val isActive = row.state == "active"
-	val staleWarning = row.staleSessionWarning
 	val agentStatus = row.agentStatus
 	val displayTitle = row.title
 	val roster = row.memberRoster
@@ -292,14 +291,6 @@ fun SessionRow(
 						ContextBadge(pct = contextRing.pct, modifier = Modifier.padding(bottom = 2.dp))
 					}
 					Row(verticalAlignment = Alignment.CenterVertically) {
-						if (staleWarning) {
-							Text(
-								"⚠",
-								style = MaterialTheme.typography.labelSmall,
-								color = MaterialTheme.colorScheme.error,
-							)
-							Spacer(Modifier.width(4.dp))
-						}
 						Text(
 							text = formatRelativeTime(row.lastActivityAt),
 							style = MaterialTheme.typography.labelSmall,
@@ -323,7 +314,7 @@ fun SessionRow(
 			DropdownMenu(expanded = contextMenuOpen, onDismissRequest = { contextMenuOpen = false }) {
 				DropdownMenuItem(
 					text = { Text("Resume") },
-					enabled = isResumable,
+					enabled = resumable,
 					onClick = { onResumeClick(row.id); contextMenuOpen = false },
 				)
 				if (isActive) {

@@ -797,13 +797,13 @@ def _convene_sender_for(registry, session_registry, cli_session_id: str) -> str:
 	return f"Agent {cli_session_id[:8]}"
 
 
-async def _perform_convene(registry, session_registry, cmd: dict, logger, backend=None) -> dict:
+async def _perform_convene(registry, session_registry, cmd: dict, logger, backend=None, spawn_handler=None) -> dict:
 	from server.gateway.bg_tasks import _spawn_bg
 	session_ids = [s for s in (cmd.get("session_ids") or []) if isinstance(s, str) and s]
 	target = cmd.get("target") or "new"
 	title = cmd.get("title") if isinstance(cmd.get("title"), str) else None
 
-	result: dict = {"conversation_id": None, "convened": [], "skipped": []}
+	result: dict = {"conversation_id": None, "convened": [], "skipped": [], "resuming": []}
 	if not session_ids:
 		return result
 
@@ -846,8 +846,36 @@ async def _perform_convene(registry, session_registry, cmd: dict, logger, backen
 	woken: list[str] = []
 	for sid in session_ids:
 		rec = session_registry.get(sid) if session_registry is not None else None
-		if rec is None or rec.state in ("ended", "lost"):
+		if rec is None:
 			result["skipped"].append({"session_id": sid, "reason": "not a live session"})
+			continue
+		if rec.state in ("ended", "lost"):
+			if spawn_handler is None:
+				result["skipped"].append({"session_id": sid, "reason": "resume unavailable"})
+				continue
+			if not rec.cwd:
+				result["skipped"].append({"session_id": sid, "reason": "no cwd recorded"})
+				continue
+			_ensure_target()
+			sender = _convene_sender_for(registry, session_registry, sid)
+			prompt = (
+				f"John convened you (by resume) into conversation {conv_id}. "
+				"Tool calls auto-inject your cli_session_id. "
+				f"Call join_conversation(sender='{sender}', ref='{conv_id}') to collect the history "
+				"(idempotent - you are already a member), then message_and_await_agent to speak."
+			)
+			if session_registry is not None:
+				session_registry.note_spawn_resume(sid, rec.cwd)
+			ok = await spawn_handler.launch_resume_agent(
+				session_id=sid, surface=rec.surface, cwd=rec.cwd, prompt=prompt, prior_sender=sender
+			)
+			if not ok:
+				result["skipped"].append({"session_id": sid, "reason": "resume launch failed"})
+				continue
+			async with conv.lock:
+				if sid not in conv.members_active:
+					await _add_member(registry, conv_id, sid, sender, rec.cwd, backend=backend)
+			result["resuming"].append(conv.members_active[sid].sender)
 			continue
 		sender = _convene_sender_for(registry, session_registry, sid)
 		cwd = rec.cwd or ""
@@ -896,8 +924,11 @@ async def _perform_convene(registry, session_registry, cmd: dict, logger, backen
 
 	# Intro message: the transcript explains itself; also the documented backstop
 	# for any lost wake notice.
-	if result["convened"]:
-		text = "John convened: " + ", ".join(result["convened"])
+	if result["convened"] or result["resuming"]:
+		names = result["convened"]
+		text = "John convened: " + ", ".join(names) if names else "John convened"
+		if result["resuming"]:
+			text += ("; " if names else ": ") + "resuming: " + ", ".join(result["resuming"])
 		if result["skipped"]:
 			skips = "; ".join(f"{s['session_id'][:8]} - {s['reason']}" for s in result["skipped"])
 			text += f" (skipped: {skips})"

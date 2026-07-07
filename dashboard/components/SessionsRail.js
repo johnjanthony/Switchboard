@@ -49,7 +49,7 @@ export function SessionsRail({ store }) {
 					${entries.map(({ id, record }) => {
 						const chip = sessionChip(record);
 						const age = formatAge(sessionAgeSeconds(record, Date.now()));
-						const ring = record.context_pct != null ? `${Math.round(record.context_pct)}%` : "";
+						const ring = record.context_pct != null ? `${Math.round(record.context_pct * 100)}%` : "";
 						const convenable = isConvenable(record);
 						const attn = needsAttention(record, state.sessionAcks[id]);
 						const tooltipParts = [record.cwd, record.last_transition_source, wakePathHint(record)]

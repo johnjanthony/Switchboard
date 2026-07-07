@@ -123,7 +123,8 @@ async def test_dispatch_convene_command_all_skipped_notifies_phone(tmp_path):
 	session_registry = SessionRegistry()
 	registry.sessions = session_registry
 
-	# s-dead: a terminal session -> skip reason "not a live session".
+	# s-dead: a terminal session, no spawn_handler wired -> skip reason
+	# "resume unavailable" (the fork-arm can't resume without one).
 	session_registry.record_session_start("s-dead", cwd="C:/Work/D")
 	session_registry.record_session_end("s-dead", reason="logout", ended_at="2026-07-06T00:00:00+00:00")
 
@@ -164,8 +165,62 @@ async def test_dispatch_convene_command_all_skipped_notifies_phone(tmp_path):
 
 	backend.send_text.assert_awaited_once()
 	notice = backend.send_text.await_args.args[0]
-	assert "not a live session" in notice
+	assert "resume unavailable" in notice
 	assert "in a multi-party conversation" in notice
+
+	events = [json.loads(line) for line in log_path.read_text().splitlines() if line]
+	infos = [e for e in events if e["event"] == "info"]
+	assert any("convene_command_handled" in e["detail"] for e in infos)
+
+
+@pytest.mark.asyncio
+async def test_convene_all_resuming_no_phone_noop_notice(tmp_path):
+	"""When a convene command's only session is ended but a spawn_handler is
+	wired, the fork-arm resumes it into "resuming" rather than skipping it -
+	the "did nothing" phone notice must NOT fire, and the outcome is still
+	logged."""
+	from server.gateway.dispatch import dispatch_convene_commands
+	from tests.test_convene import FakeSpawnHandler
+
+	log_path = tmp_path / "log.jsonl"
+	logger = JsonlLogger(str(log_path))
+	registry = make_registry_with_loopback()
+	session_registry = SessionRegistry()
+	registry.sessions = session_registry
+
+	session_registry.record_session_start("s-resumable", cwd="C:/Work/R")
+	session_registry.set_sender("s-resumable", "Resumable")
+	session_registry.record_session_end("s-resumable", reason="logout", ended_at="2026-07-06T00:00:00+00:00")
+
+	backend = MagicMock()
+	backend.write_conversation_meta = AsyncMock()
+	backend.write_conversation_member = AsyncMock()
+	backend.write_conversation_message = AsyncMock(return_value="key-1")
+	backend.set_conversation_last_activity = AsyncMock()
+	backend.set_session_home = AsyncMock()
+	backend.send_text = AsyncMock()
+
+	registered_handler = None
+
+	async def fake_start_listener(handler):
+		nonlocal registered_handler
+		registered_handler = handler
+
+	backend.start_convene_command_listener = fake_start_listener
+	spawn_handler = FakeSpawnHandler()
+
+	await dispatch_convene_commands(registry, session_registry, backend, logger, supervisor=None, spawn_handler=spawn_handler)
+	assert registered_handler is not None
+
+	await registered_handler({
+		"session_ids": ["s-resumable"],
+		"target": "new",
+		"title": None,
+		"issued_at": "2026-07-06T00:00:00+00:00",
+	})
+
+	backend.send_text.assert_not_awaited()
+	assert len(spawn_handler.calls) == 1
 
 	events = [json.loads(line) for line in log_path.read_text().splitlines() if line]
 	infos = [e for e in events if e["event"] == "info"]

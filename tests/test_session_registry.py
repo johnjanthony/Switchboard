@@ -186,3 +186,24 @@ def test_apply_rings_copies_name():
 	assert rec.name == "Fixing FCM tests"
 	assert rec.name_source == "ai-title"
 	assert rec.last_transition_source == "session_start"  # apply_rings must not touch it
+
+def test_resume_sentinel_detects_id_change():
+	clock = [1000.0]
+	reg = SessionRegistry(now=lambda: "2026-07-07T12:00:00+00:00", mono=lambda: clock[0])
+	reg.record_session_start("sess-OLD", cwd="C:/Work/X")
+	reg.record_session_end("sess-OLD", reason="other", ended_at="2026-07-07T12:01:00+00:00")
+	reg.note_spawn_resume("sess-OLD", "C:/Work/X")
+	# same id returning: no record change signal (record exists; entry stays queued)
+	assert reg.check_resume_id_change("sess-OLD", "C:/Work/X") is None
+	# unknown id in the same cwd right after a resume: the tripwire (pops the entry)
+	assert reg.check_resume_id_change("sess-NEW", "C:/Work/X") == "sess-OLD"
+	# entry popped: second check is quiet
+	assert reg.check_resume_id_change("sess-NEW2", "C:/Work/X") is None
+
+def test_resume_sentinel_expires_and_ignores_other_cwds():
+	clock = [1000.0]
+	reg = SessionRegistry(now=lambda: "2026-07-07T12:00:00+00:00", mono=lambda: clock[0])
+	reg.note_spawn_resume("sess-OLD", "C:/Work/X")
+	assert reg.check_resume_id_change("sess-NEW", "C:/Work/OTHER") is None
+	clock[0] += 200.0  # past the 180s TTL
+	assert reg.check_resume_id_change("sess-NEW", "C:/Work/X") is None

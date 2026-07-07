@@ -94,35 +94,6 @@ data class ConversationSummary(
 	val continuedFrom: String? = null,  // conv_id this conversation was resumed from, if any
 	val agentStatuses: Map<String, AgentStatus> = emptyMap(),  // keyed by sender
 ) {
-	/** True if at least one member can be resumed (dormant, not permanently lost, has a session ID). */
-	val isResumable: Boolean
-		get() = members.any { !it.alive && !it.sessionLostPermanently && it.cliSessionId.isNotEmpty() }
-
-	/**
-	 * True if any member's session ended 25-29 days ago — warning that Claude Code's
-	 * 30-day cleanupPeriodDays window is approaching and resume may fail soon.
-	 */
-	val staleSessionWarning: Boolean
-		get() {
-			val now = System.currentTimeMillis()
-			return members.any { m ->
-				m.sessionEndedAt?.let { iso ->
-					// The server writes isoformat() with a +00:00 offset, which
-					// Instant.parse (ISO_INSTANT, wants Z) rejects; an unguarded
-					// parse crashed list rendering for any dormant member (M14).
-					// OffsetDateTime accepts both +00:00 and Z; anything else
-					// degrades to "no warning", like formatRelativeTime.
-					val ms = try {
-						java.time.OffsetDateTime.parse(iso).toInstant().toEpochMilli()
-					} catch (_: Exception) {
-						return@let false
-					}
-					val days = (now - ms) / (1000L * 60 * 60 * 24)
-					days in 25L..29L
-				} ?: false
-			}
-		}
-
 	/** Comma-separated list of member sender names for display. */
 	val memberRoster: String
 		get() = members.joinToString(", ") { it.sender }
@@ -152,8 +123,6 @@ data class ConversationRow(
 		get() = summary.agentStatuses.values
 			.filter { it.isFresh() }
 			.maxByOrNull { it.updatedAt }
-	val isResumable: Boolean get() = summary.isResumable
-	val staleSessionWarning: Boolean get() = summary.staleSessionWarning
 	val memberRoster: String get() = summary.memberRoster
 	val state: String get() = summary.state
 	val members: List<ConversationMember> get() = summary.members
@@ -197,4 +166,28 @@ data class WidgetStatus(
 	@get:PropertyName("has_data") @set:PropertyName("has_data") var hasData: Boolean = false,
 	@get:PropertyName("button") @set:PropertyName("button") var button: String = "check",
 	@get:PropertyName("fetched_at") @set:PropertyName("fetched_at") var fetchedAt: String = "",
+)
+
+// --- Session registry board (convening chunk 4): mirrors server SessionRecord from sessions/*.
+// pending_notices is deliberately omitted - the board never renders queued notices, and
+// @IgnoreExtraProperties absorbs it along with any other field we do not yet render.
+
+@IgnoreExtraProperties
+data class RegistrySession(
+	@get:PropertyName("cli_session_id") @set:PropertyName("cli_session_id") var cliSessionId: String = "",
+	@get:PropertyName("cwd") @set:PropertyName("cwd") var cwd: String = "",
+	@get:PropertyName("surface") @set:PropertyName("surface") var surface: String = "windows",
+	@get:PropertyName("cli") @set:PropertyName("cli") var cli: String = "claude",
+	@get:PropertyName("started_at") @set:PropertyName("started_at") var startedAt: String = "",
+	@get:PropertyName("last_event_at") @set:PropertyName("last_event_at") var lastEventAt: String = "",
+	@get:PropertyName("state") @set:PropertyName("state") var state: String = "idle",
+	@get:PropertyName("state_detail") @set:PropertyName("state_detail") var stateDetail: String? = null,
+	@get:PropertyName("conversation_id") @set:PropertyName("conversation_id") var conversationId: String? = null,
+	@get:PropertyName("sender") @set:PropertyName("sender") var sender: String? = null,
+	@get:PropertyName("model") @set:PropertyName("model") var model: String? = null,
+	@get:PropertyName("context_pct") @set:PropertyName("context_pct") var contextPct: Double? = null,
+	@get:PropertyName("end_reason") @set:PropertyName("end_reason") var endReason: String? = null,
+	@get:PropertyName("name") @set:PropertyName("name") var name: String? = null,
+	@get:PropertyName("name_source") @set:PropertyName("name_source") var nameSource: String? = null,
+	@get:PropertyName("last_transition_source") @set:PropertyName("last_transition_source") var lastTransitionSource: String? = null,
 )

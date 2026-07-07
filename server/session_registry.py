@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from typing import Callable
@@ -76,11 +77,13 @@ class SessionRecord:
 
 
 class SessionRegistry:
-	def __init__(self, now: Callable[[], str] = _now_iso) -> None:
+	def __init__(self, now: Callable[[], str] = _now_iso, mono: Callable[[], float] | None = None) -> None:
 		self._records: dict[str, SessionRecord] = {}
 		self._now = now
+		self._mono = mono or time.monotonic
 		self._mirror: Callable[[str, dict | None], None] | None = None
 		self._mirror_canon: dict[str, str] = {}
+		self._recent_resumes: list = []
 
 	# -- reads ------------------------------------------------------------
 
@@ -256,6 +259,25 @@ class SessionRegistry:
 		rec.pending_notices.clear()
 		self._fire_mirror(rec)
 		return notices
+
+	def note_spawn_resume(self, cli_session_id: str, cwd: str) -> None:
+		"""Sentinel bookkeeping: remember spawn-driven resumes so /session_start can
+		detect if CC ever stops preserving session ids across --resume (verified
+		preserved 2026-07-07; this is the tripwire, not a mechanism)."""
+		self._recent_resumes.append({"session_id": cli_session_id, "cwd": cwd, "at": self._mono()})
+		if len(self._recent_resumes) > 32:
+			del self._recent_resumes[0]
+
+	def check_resume_id_change(self, new_session_id: str, cwd: str) -> str | None:
+		now = self._mono()
+		self._recent_resumes = [e for e in self._recent_resumes if now - e["at"] <= 180.0]
+		if new_session_id in self._records:
+			return None
+		for i, entry in enumerate(self._recent_resumes):
+			if entry["cwd"] == cwd and entry["session_id"] != new_session_id:
+				del self._recent_resumes[i]
+				return entry["session_id"]
+		return None
 
 	def hydrate_record(self, data: dict) -> None:
 		"""Rebuild one record from its RTDB payload at startup. Trusts the stored

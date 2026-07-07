@@ -314,7 +314,7 @@ async def dispatch_combine_commands(registry, backend, logger, supervisor, pendi
 		await logger.info("combine_command_listener not wired (backend missing method)")
 
 
-async def dispatch_convene_commands(registry, session_registry, backend, logger, supervisor):
+async def dispatch_convene_commands(registry, session_registry, backend, logger, supervisor, spawn_handler=None):
 	"""Watch /convene_commands for phone/Operator convene requests.
 
 	Command shape: {session_ids: [...], target: "new" | "<conv-id>", title, issued_at}.
@@ -327,8 +327,8 @@ async def dispatch_convene_commands(registry, session_registry, backend, logger,
 		if not isinstance(cmd.get("session_ids"), list) or not cmd.get("session_ids"):
 			await logger.surface_error(f"convene_command_missing_sessions: {cmd}")
 			return
-		result = await _perform_convene(registry, session_registry, cmd, logger, backend=backend)
-		if not result["convened"] and result["skipped"] and hasattr(backend, "send_text"):
+		result = await _perform_convene(registry, session_registry, cmd, logger, backend=backend, spawn_handler=spawn_handler)
+		if not result["convened"] and not result.get("resuming") and result["skipped"] and hasattr(backend, "send_text"):
 			reasons = "; ".join(f"{s['session_id'][:8]}: {s['reason']}" for s in result["skipped"])
 			try:
 				await backend.send_text(f"Convene did nothing - every selected session was skipped ({reasons}).")
@@ -377,6 +377,8 @@ async def dispatch_spawn_commands(spawn_handler, backend, logger, supervisor):
 			await spawn_handler.handle_fresh(cmd)
 		elif cmd_type == "resume":
 			await spawn_handler.handle_resume(cmd)
+		elif cmd_type == "resume_session":
+			await spawn_handler.handle_resume_session(cmd)
 		else:
 			await logger.surface_error(f"spawn_command_unknown_type: {cmd_type}")
 			return

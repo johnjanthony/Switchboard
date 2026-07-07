@@ -6,7 +6,7 @@ import java.time.OffsetDateTime
  * Short countdown until a quota window resets ("3d" / "2h" / "5m"). Returns "" when the
  * timestamp is absent, already in the past, or unparseable. OffsetDateTime.parse accepts
  * both the +00:00 and Z forms the server may emit; anything else degrades to "" rather
- * than throwing (the same defensive parse staleSessionWarning uses).
+ * than throwing.
  */
 fun formatResetCountdown(nowMs: Long, resetsAtIso: String?): String {
 	if (resetsAtIso.isNullOrBlank()) return ""

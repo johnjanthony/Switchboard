@@ -53,7 +53,7 @@ import io.github.johnjanthony.switchboard.network.Pending
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SessionViewScreen(
+fun ConversationViewScreen(
 	row: ConversationRow,
 	scrollToMessageId: String? = null,
 	onScrollConsumed: () -> Unit = {},

@@ -42,7 +42,8 @@ foreach ($f in $pendingFiles) {
 	# fresh  → --session-id (mints a new session with a pre-assigned ID)
 	# resume → --resume     (restores prior session state from the CLI's local store)
 	# combine_resume → --resume (same as resume)
-	$sessionFlag = if ($params.type -in @("resume", "combine_resume")) { "--resume" } else { "--session-id" }
+	# resume_session → --resume (board-driven resume of a stable ended/lost session id)
+	$sessionFlag = if ($params.type -in @("resume", "combine_resume", "resume_session")) { "--resume" } else { "--session-id" }
 
 	if ($params.PSObject.Properties.Name -contains 'agents') {
 		# Structured spawn (fresh / resume / combine_resume): one tab per agent.

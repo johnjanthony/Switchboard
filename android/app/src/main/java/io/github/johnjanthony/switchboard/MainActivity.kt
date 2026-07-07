@@ -55,8 +55,11 @@ import android.widget.Toast
 import io.github.johnjanthony.switchboard.ui.BulkRespondDialog
 import io.github.johnjanthony.switchboard.ui.CombineDialog
 import io.github.johnjanthony.switchboard.ui.MarkdownViewerScreen
-import io.github.johnjanthony.switchboard.ui.SessionListScreen
-import io.github.johnjanthony.switchboard.ui.SessionViewScreen
+import io.github.johnjanthony.switchboard.ui.ConversationListScreen
+import io.github.johnjanthony.switchboard.ui.ConversationViewScreen
+import io.github.johnjanthony.switchboard.ui.ResumeSessionSheet
+import io.github.johnjanthony.switchboard.ui.SessionDetailSheet
+import io.github.johnjanthony.switchboard.ui.SessionsBoardScreen
 import io.github.johnjanthony.switchboard.ui.SpawnResumeDialog
 import io.github.johnjanthony.switchboard.ui.SpawnSessionDialog
 import io.github.johnjanthony.switchboard.ui.TabInfoPopover
@@ -124,11 +127,21 @@ private fun SwitchboardNavHost(
 	val widgetQuota by viewModel.widgetQuota.collectAsState()
 	val widgetStatus by viewModel.widgetStatus.collectAsState()
 	val widgetPushedAt by viewModel.widgetPushedAt.collectAsState()
+	val registrySessions by viewModel.registrySessions.collectAsState()
+	val sessionAcks by viewModel.sessionAcks.collectAsState()
 	var showHidden by remember { mutableStateOf(false) }
 	var showSpawnDialog by remember { mutableStateOf(false) }
 	// T-027 dialogs
 	var resumeConversationId by remember { mutableStateOf<String?>(null) }
 	var combineConversationId by remember { mutableStateOf<String?>(null) }
+	var detailSession by remember {
+		mutableStateOf<io.github.johnjanthony.switchboard.network.RegistrySession?>(null)
+	}
+	// Task 11: the resume-target sheet, shared by the board's long-press menu and the
+	// detail sheet's Resume button.
+	var resumeSheetSession by remember {
+		mutableStateOf<io.github.johnjanthony.switchboard.network.RegistrySession?>(null)
+	}
 
 	// Automatic Google Sign-In on first start
 	LaunchedEffect(Unit) {
@@ -165,8 +178,14 @@ private fun SwitchboardNavHost(
 				.filter { it.id != "_admin" && it.hidden }
 				.sortedByDescending { it.lastActivityAt }
 			val adminRow = conversationRows["_admin"]
+			// Registry-backed resume enablement (Task 11 - replaces the deleted member
+			// archaeology): a conversation is resumable if any member's session has a
+			// terminal registry record.
+			val resumableByConvId = conversationRows.values.associate {
+				it.id to conversationResumable(it.members, registrySessions)
+			}
 
-			SessionListScreen(
+			ConversationListScreen(
 				rows = visibleRows,
 				hiddenRows = hiddenRows,
 				adminRow = adminRow,
@@ -183,6 +202,9 @@ private fun SwitchboardNavHost(
 				onHideConversation = { viewModel.hideConversation(it.id) },
 				onUnhideConversation = { viewModel.unhideConversation(it.id) },
 				onSpawnClick = { showSpawnDialog = true },
+				sessionBadgeCount = sessionBadgeCount(registrySessions, sessionAcks),
+				onSessionsClick = { navController.navigate("sessions") },
+				resumableByConvId = resumableByConvId,
 				onResumeClick = { convId -> resumeConversationId = convId },
 				onCombineClick = { convId -> combineConversationId = convId },
 				onEndClick = { convId -> viewModel.endConversation(convId) },
@@ -192,6 +214,37 @@ private fun SwitchboardNavHost(
 				pushedAt = widgetPushedAt,
 				onCheckStatus = { viewModel.requestClaudeStatusCheck() },
 				onStopStatus = { viewModel.stopClaudeStatusWatch() },
+			)
+		}
+		composable("sessions") {
+			val onSessionDetails: (io.github.johnjanthony.switchboard.network.RegistrySession) -> Unit = { rec ->
+				viewModel.ackSession(rec.cliSessionId)
+				detailSession = rec
+			}
+			SessionsBoardScreen(
+				sessions = registrySessions,
+				acks = sessionAcks,
+				activeConversations = activeConversations,
+				globalAway = globalAway,
+				onBack = { navController.popBackStack() },
+				onRowClick = { rec ->
+					viewModel.ackSession(rec.cliSessionId)
+					val convId = rec.conversationId
+					if (convId != null) {
+						navController.navigate("session/$convId")
+					} else {
+						onSessionDetails(rec)
+					}
+				},
+				onDetails = onSessionDetails,
+				onResume = { rec -> resumeSheetSession = rec },
+				onConvene = { ids, target, title ->
+					// conveneSessions never touches away mode - no away-mode toast here, unlike spawn/resume.
+					viewModel.conveneSessions(ids, target, title)
+					Toast.makeText(context, "Convene sent", Toast.LENGTH_SHORT).show()
+				},
+				onEnterGlobalAway = { viewModel.requestAwayModeToggle(null, true) },
+				onExitGlobalAway = { viewModel.requestAwayModeToggle(null, false) },
 			)
 		}
 		composable(
@@ -222,7 +275,7 @@ private fun SwitchboardNavHost(
 				}
 			}
 
-			SessionViewScreen(
+			ConversationViewScreen(
 				row = row,
 				scrollToMessageId = deepLinkMessageId.value,
 				onScrollConsumed = { deepLinkMessageId.value = null },
@@ -331,6 +384,38 @@ private fun SwitchboardNavHost(
 		} else {
 			combineConversationId = null
 		}
+	}
+
+	detailSession?.let { rec ->
+		SessionDetailSheet(
+			rec = rec,
+			conversationTitle = activeConversations.firstOrNull { it.id == rec.conversationId }?.title,
+			onDismiss = { detailSession = null },
+			onOpenConversation = { convId ->
+				detailSession = null
+				navController.navigate("session/$convId")
+			},
+			onResume = if (isSessionResumable(rec)) {
+				{ resumeSheetSession = rec; detailSession = null }
+			} else null,
+		)
+	}
+
+	resumeSheetSession?.let { rec ->
+		ResumeSessionSheet(
+			rec = rec,
+			boardLabel = sessionBoardLabel(rec),
+			oldConversation = rec.conversationId?.let { id -> activeConversations.firstOrNull { it.id == id } },
+			activeConversations = activeConversations,
+			onDismiss = { resumeSheetSession = null },
+			onResume = { targetId, prompt ->
+				val wasAwayOff = viewModel.resumeSession(rec.cliSessionId, targetId, prompt)
+				if (wasAwayOff) {
+					Toast.makeText(context, "Away mode enabled", Toast.LENGTH_SHORT).show()
+				}
+				resumeSheetSession = null
+			},
+		)
 	}
 }
 

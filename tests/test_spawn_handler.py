@@ -503,3 +503,269 @@ async def test_handle_resume_flips_members_to_alive(tmp_path):
 	]
 	assert len(alive_peers) == 1
 	assert alive_peers[0].sender == "claude-1"
+
+
+# ===========================================================================
+# Chunk 4 Task 2: resume_session (board-driven session resume)
+# ===========================================================================
+
+def _seed_ended_session(registry: Registry, session_id: str, cwd: str, *, sender: str | None = None):
+	"""Seed registry.sessions with an ended SessionRecord for resume_session tests."""
+	from server.session_registry import SessionRegistry
+	if registry.sessions is None:
+		registry.sessions = SessionRegistry()
+	registry.sessions.record_session_start(session_id, cwd=cwd)
+	registry.sessions.record_session_end(session_id, reason="hook", ended_at="2026-07-07T00:00:00Z")
+	if sender:
+		registry.sessions.set_sender(session_id, sender)
+	return registry.sessions.get(session_id)
+
+
+@pytest.mark.asyncio
+async def test_resume_session_standalone(tmp_path):
+	"""Standalone resume_session (no target conversation) writes a pending file
+	shaped for one agent, flips away mode, and notes the resume sentinel."""
+	from server.spawn import SpawnHandler
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	registry = Registry()
+	assert registry.global_away_mode is False
+
+	cwd = str(spawn_root / "myproject")
+	_seed_ended_session(registry, "sess-1", cwd, sender="claude-1")
+
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle_resume_session({
+			"type": "resume_session",
+			"session_id": "sess-1",
+			"issued_at": "2026-07-07T00:00:00Z",
+		})
+
+	pending = _read_pending(cfg)
+	assert pending["type"] == "resume_session"
+	assert len(pending["agents"]) == 1
+	agent = pending["agents"][0]
+	assert agent["surface"] == "windows"
+	assert agent["cli_session_id"] == "sess-1"
+	assert agent["project_path"] == cwd
+	assert agent["prior_sender"] == "claude-1"
+	assert "ask_human" in agent["prompt"]
+	assert "join_conversation" not in agent["prompt"]
+
+	assert registry.global_away_mode is True
+	# Sentinel noted: a dummy id with the matching cwd resolves back to the real
+	# session id recorded by note_spawn_resume.
+	assert registry.sessions.check_resume_id_change("x", cwd) == "sess-1"
+
+
+@pytest.mark.asyncio
+async def test_resume_session_into_conversation(tmp_path):
+	"""Resuming into an existing active conversation with an alive peer pre-adds
+	the member under the same session id, appends a system message, and the
+	prompt directs the agent to join_conversation."""
+	from server.spawn import SpawnHandler
+	from server.registry import Conversation, ConversationMember
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	registry = Registry()
+
+	target = Conversation(id="conv-target", title="Target")
+	alive_m = ConversationMember(
+		cli_session_id="sess-alive", sender="alive-agent", cwd="C:/Work/X",
+		surface="windows", joined_at=0.0, alive=True,
+	)
+	target.members_active["sess-alive"] = alive_m
+	registry.conversations["conv-target"] = target
+
+	cwd = str(spawn_root / "myproject")
+	_seed_ended_session(registry, "sess-1", cwd, sender="claude-1")
+
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle_resume_session({
+			"type": "resume_session",
+			"session_id": "sess-1",
+			"target_conversation_id": "conv-target",
+			"issued_at": "2026-07-07T00:00:00Z",
+		})
+
+	assert "sess-1" in target.members_active
+	member = target.members_active["sess-1"]
+	assert member.sender == "claude-1"
+	assert registry.session_to_conversation_id["sess-1"] == "conv-target"
+
+	system_msgs = [m for m in target.messages if m.get("type") == "system"]
+	assert any("John resumed claude-1 into this conversation." in m["text"] for m in system_msgs)
+
+	pending = _read_pending(cfg)
+	agent = pending["agents"][0]
+	assert "join_conversation(sender=" in agent["prompt"]
+	assert "conv-target" in agent["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_resume_session_into_empty_conversation_prompt(tmp_path):
+	"""When the target conversation's only other member is dormant, other_alive
+	is 0 and the solo-rule prompt (ask_human/notify_human, no join_conversation)
+	applies even though the resumed member is still added to the roster."""
+	from server.spawn import SpawnHandler
+	from server.registry import Conversation, ConversationMember
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	registry = Registry()
+
+	target = Conversation(id="conv-target", title="Target")
+	dormant_m = ConversationMember(
+		cli_session_id="sess-dormant", sender="dormant-agent", cwd="C:/Work/X",
+		surface="windows", joined_at=0.0, alive=False,
+	)
+	target.members_active["sess-dormant"] = dormant_m
+	registry.conversations["conv-target"] = target
+
+	cwd = str(spawn_root / "myproject")
+	_seed_ended_session(registry, "sess-1", cwd, sender="claude-1")
+
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle_resume_session({
+			"type": "resume_session",
+			"session_id": "sess-1",
+			"target_conversation_id": "conv-target",
+			"issued_at": "2026-07-07T00:00:00Z",
+		})
+
+	assert "sess-1" in target.members_active
+	pending = _read_pending(cfg)
+	agent = pending["agents"][0]
+	assert "ask_human" in agent["prompt"]
+	assert "notify_human" in agent["prompt"]
+	assert "join_conversation" not in agent["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_resume_session_rejects_live_record(tmp_path):
+	"""A registry record that is still live (not ended/lost) is rejected: no
+	pending file, no launch, and a phone-visible 'still live' notice."""
+	from server.spawn import SpawnHandler
+	from server.session_registry import SessionRegistry
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	registry = Registry()
+	registry.sessions = SessionRegistry()
+	registry.sessions.record_session_start("sess-1", cwd=str(spawn_root / "myproject"))
+	registry.sessions.upsert_from_hook("sess-1", state="active")
+
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()) as launcher:
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle_resume_session({
+			"type": "resume_session",
+			"session_id": "sess-1",
+			"issued_at": "2026-07-07T00:00:00Z",
+		})
+
+	assert _find_pending_files(cfg) == []
+	launcher.assert_not_called()
+	backend.send_text.assert_awaited()
+	assert "still live" in backend.send_text.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_resume_session_rejects_missing_or_cwdless(tmp_path):
+	"""An unknown session id, and a known-but-cwdless ended record, are both
+	rejected before any pending file is written."""
+	from server.spawn import SpawnHandler
+	from server.session_registry import SessionRegistry
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	registry = Registry()
+	registry.sessions = SessionRegistry()
+
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()) as launcher:
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+
+		# Unknown session id.
+		await handler.handle_resume_session({
+			"type": "resume_session",
+			"session_id": "sess-unknown",
+			"issued_at": "2026-07-07T00:00:00Z",
+		})
+		assert _find_pending_files(cfg) == []
+		assert "not found" in backend.send_text.await_args.args[0]
+
+		# Known, ended record whose cwd got cleared out from under it.
+		_seed_ended_session(registry, "sess-1", str(spawn_root / "myproject"), sender="claude-1")
+		registry.sessions.get("sess-1").cwd = ""
+		await handler.handle_resume_session({
+			"type": "resume_session",
+			"session_id": "sess-1",
+			"issued_at": "2026-07-07T00:00:00Z",
+		})
+		assert _find_pending_files(cfg) == []
+		assert "no working directory" in backend.send_text.await_args.args[0]
+
+	launcher.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resume_session_invalid_target(tmp_path):
+	"""An unknown target_conversation_id is rejected before away mode is touched -
+	the auto-enable flip happens only after all validation passes."""
+	from server.spawn import SpawnHandler
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	registry = Registry()
+	assert registry.global_away_mode is False
+
+	cwd = str(spawn_root / "myproject")
+	_seed_ended_session(registry, "sess-1", cwd, sender="claude-1")
+
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()) as launcher:
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle_resume_session({
+			"type": "resume_session",
+			"session_id": "sess-1",
+			"target_conversation_id": "conv-nope",
+			"issued_at": "2026-07-07T00:00:00Z",
+		})
+
+	assert _find_pending_files(cfg) == []
+	launcher.assert_not_called()
+	backend.send_text.assert_awaited()
+	assert registry.global_away_mode is False
+
+
+@pytest.mark.asyncio
+async def test_launch_resume_agent_no_login(tmp_path):
+	"""launch_resume_agent returns False and writes no pending file when no one is
+	logged in to the desktop - the quser gate applies to the raw launch primitive
+	directly (Task 3's convene fork-arm calls it without going through
+	handle_resume_session)."""
+	from server.spawn import SpawnHandler
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	registry = Registry()
+
+	with patch.object(SpawnHandler, "_user_has_interactive_session", new=AsyncMock(return_value=False)):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		ok = await handler.launch_resume_agent(
+			session_id="sess-1", surface="windows", cwd=str(spawn_root / "myproject"),
+			prompt="hello", prior_sender="claude-1",
+		)
+
+	assert ok is False
+	assert _find_pending_files(cfg) == []

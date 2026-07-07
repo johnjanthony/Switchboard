@@ -230,9 +230,10 @@ async def test_convene_already_in_target_counts_as_convened(logger):
 
 
 @pytest.mark.asyncio
-async def test_convene_skips_terminal_sessions(logger):
-	"""A session_registry record in a terminal state ("ended") is skipped as
-	"not a live session" and never joins the target."""
+async def test_convene_skips_terminal_sessions_without_spawn_handler(logger):
+	"""A session_registry record in a terminal state ("ended") never joins the
+	target directly; without a spawn_handler the fork-arm can't resume it
+	either, so it is skipped as "resume unavailable"."""
 	registry = make_registry_with_loopback()
 	session_registry = SessionRegistry()
 	registry.sessions = session_registry
@@ -244,10 +245,28 @@ async def test_convene_skips_terminal_sessions(logger):
 	result = await _perform_convene(registry, session_registry, cmd, logger)
 
 	assert result["convened"] == []
-	assert result["skipped"] == [{"session_id": "s-dead", "reason": "not a live session"}]
+	assert result["skipped"] == [{"session_id": "s-dead", "reason": "resume unavailable"}]
 	assert "s-dead" not in registry.session_to_conversation_id
 	assert result["conversation_id"] is None
 	assert registry.conversations == {}  # lazy mint: an all-skipped "new" convene creates no orphan
+
+
+@pytest.mark.asyncio
+async def test_convene_skips_unknown_session_as_not_live(logger):
+	"""A session id with no session_registry record at all (never seen, or
+	pruned) is skipped as "not a live session" - distinct from a known
+	terminal record, which routes to the fork-arm instead."""
+	registry = make_registry_with_loopback()
+	session_registry = SessionRegistry()
+	registry.sessions = session_registry
+
+	cmd = {"session_ids": ["s-unknown"], "target": "new", "title": None, "issued_at": "x"}
+	result = await _perform_convene(registry, session_registry, cmd, logger)
+
+	assert result["convened"] == []
+	assert result["skipped"] == [{"session_id": "s-unknown", "reason": "not a live session"}]
+	assert result["conversation_id"] is None
+	assert registry.conversations == {}
 
 
 @pytest.mark.asyncio
@@ -278,7 +297,7 @@ async def test_convene_intro_message_and_skip_reasons(logger):
 	assert intro.startswith("John convened: ")
 	assert "Ok One" in intro
 	assert "Ok Two" in intro
-	assert "(skipped: s-dead - not a live session)" in intro
+	assert "(skipped: s-dead - resume unavailable)" in intro
 
 
 @pytest.mark.asyncio
@@ -302,6 +321,7 @@ async def test_convene_invalid_target_returns_error(logger):
 			{"session_id": "s-a", "reason": "target not found or not Active"},
 			{"session_id": "s-b", "reason": "target not found or not Active"},
 		],
+		"resuming": [],
 	}
 	assert "s-a" not in registry.session_to_conversation_id
 	assert "s-b" not in registry.session_to_conversation_id
@@ -314,3 +334,149 @@ async def test_convene_invalid_target_returns_error(logger):
 	result2 = await _perform_convene(registry, session_registry, cmd2, logger)
 	assert result2["conversation_id"] is None
 	assert result2["skipped"] == [{"session_id": "s-a", "reason": "target not found or not Active"}]
+
+
+class FakeSpawnHandler:
+	"""Records launch_resume_agent calls without touching the filesystem or
+	scheduled task; `ok` controls whether the simulated launch succeeds."""
+
+	def __init__(self, ok=True):
+		self.calls = []
+		self.ok = ok
+
+	async def launch_resume_agent(self, **kwargs):
+		self.calls.append(kwargs)
+		return self.ok
+
+
+@pytest.mark.asyncio
+async def test_convene_fork_resumes_ended_session(logger):
+	"""An ended session with a recorded cwd routes to the fork-arm: the spawn
+	handler is invoked to resume it, the member is pre-added under the same
+	session id, the sentinel remembers the resume, and the intro names it
+	under "resuming:" rather than "John convened:"."""
+	registry = make_registry_with_loopback()
+	session_registry = SessionRegistry()
+	registry.sessions = session_registry
+
+	session_registry.record_session_start("s-ended", cwd="C:/Work/E")
+	session_registry.set_sender("s-ended", "Ended One")
+	session_registry.record_session_end("s-ended", reason="logout", ended_at="2026-07-06T00:00:00+00:00")
+
+	spawn_handler = FakeSpawnHandler()
+	cmd = {"session_ids": ["s-ended"], "target": "new", "title": None, "issued_at": "x"}
+	result = await _perform_convene(registry, session_registry, cmd, logger, spawn_handler=spawn_handler)
+
+	assert result["resuming"] == ["Ended One"]
+	assert result["skipped"] == []
+	conv_id = result["conversation_id"]
+	assert conv_id is not None
+	conv = registry.conversations[conv_id]
+	assert "s-ended" in conv.members_active
+	assert registry.session_to_conversation_id["s-ended"] == conv_id
+
+	assert len(spawn_handler.calls) == 1
+	call = spawn_handler.calls[0]
+	assert call["session_id"] == "s-ended"
+	assert call["cwd"] == "C:/Work/E"
+	assert "join_conversation(sender=" in call["prompt"]
+	assert conv_id in call["prompt"]
+
+	# Sentinel: a fresh session id starting in the same cwd is recognized as
+	# the continuation of the resumed session.
+	assert session_registry.check_resume_id_change("s-new-after-resume", "C:/Work/E") == "s-ended"
+
+	intro = conv.messages[-1]["text"]
+	assert "resuming:" in intro
+	assert "Ended One" in intro
+
+
+@pytest.mark.asyncio
+async def test_convene_fork_no_cwd_skips(logger):
+	"""An ended session with no recorded cwd can't be resumed (no project
+	path to relaunch into) - skipped as "no cwd recorded", spawn handler not
+	invoked."""
+	registry = make_registry_with_loopback()
+	session_registry = SessionRegistry()
+	registry.sessions = session_registry
+
+	session_registry.record_session_start("s-nocwd", cwd="")
+	session_registry.record_session_end("s-nocwd", reason="logout", ended_at="2026-07-06T00:00:00+00:00")
+
+	spawn_handler = FakeSpawnHandler()
+	cmd = {"session_ids": ["s-nocwd"], "target": "new", "title": None, "issued_at": "x"}
+	result = await _perform_convene(registry, session_registry, cmd, logger, spawn_handler=spawn_handler)
+
+	assert result["resuming"] == []
+	assert result["skipped"] == [{"session_id": "s-nocwd", "reason": "no cwd recorded"}]
+	assert spawn_handler.calls == []
+	assert result["conversation_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_convene_fork_launch_failure_skips(logger):
+	"""When the spawn handler reports a failed launch, the session is skipped
+	as "resume launch failed" and never becomes a member of the target."""
+	registry = make_registry_with_loopback()
+	session_registry = SessionRegistry()
+	registry.sessions = session_registry
+
+	session_registry.record_session_start("s-failed", cwd="C:/Work/F")
+	session_registry.record_session_end("s-failed", reason="logout", ended_at="2026-07-06T00:00:00+00:00")
+
+	spawn_handler = FakeSpawnHandler(ok=False)
+	cmd = {"session_ids": ["s-failed"], "target": "new", "title": None, "issued_at": "x"}
+	result = await _perform_convene(registry, session_registry, cmd, logger, spawn_handler=spawn_handler)
+
+	assert result["resuming"] == []
+	assert result["skipped"] == [{"session_id": "s-failed", "reason": "resume launch failed"}]
+	assert len(spawn_handler.calls) == 1
+	# The target is minted before the launch attempt (the prompt must name a
+	# real conversation id), so a failed launch still leaves conv_id set -
+	# the assertion that matters is that the session never became a member.
+	conv_id = result["conversation_id"]
+	assert conv_id is not None
+	assert "s-failed" not in registry.conversations[conv_id].members_active
+	assert "s-failed" not in registry.session_to_conversation_id
+
+
+@pytest.mark.asyncio
+async def test_convene_fork_without_spawn_handler_skips(logger):
+	"""With no spawn_handler wired, an ended session is skipped as "resume
+	unavailable" while a live session in the same command still convenes
+	normally."""
+	registry = make_registry_with_loopback()
+	session_registry = SessionRegistry()
+	registry.sessions = session_registry
+
+	session_registry.record_session_start("s-ended2", cwd="C:/Work/E2")
+	session_registry.record_session_end("s-ended2", reason="logout", ended_at="2026-07-06T00:00:00+00:00")
+	session_registry.record_session_start("s-live", cwd="C:/Work/L")
+	session_registry.set_sender("s-live", "Live One")
+
+	cmd = {"session_ids": ["s-ended2", "s-live"], "target": "new", "title": None, "issued_at": "x"}
+	result = await _perform_convene(registry, session_registry, cmd, logger)
+
+	assert result["resuming"] == []
+	assert result["skipped"] == [{"session_id": "s-ended2", "reason": "resume unavailable"}]
+	assert result["convened"] == ["Live One"]
+
+
+@pytest.mark.asyncio
+async def test_convene_fork_never_touches_away_mode(logger):
+	"""Fork-arm convene (spawn + pre-add) has no away-mode side effect -
+	global_away_mode is unchanged before and after."""
+	registry = make_registry_with_loopback()
+	registry.global_away_mode = False
+	session_registry = SessionRegistry()
+	registry.sessions = session_registry
+
+	session_registry.record_session_start("s-ended3", cwd="C:/Work/E3")
+	session_registry.record_session_end("s-ended3", reason="logout", ended_at="2026-07-06T00:00:00+00:00")
+
+	assert registry.global_away_mode is False
+	spawn_handler = FakeSpawnHandler()
+	cmd = {"session_ids": ["s-ended3"], "target": "new", "title": None, "issued_at": "x"}
+	await _perform_convene(registry, session_registry, cmd, logger, spawn_handler=spawn_handler)
+
+	assert registry.global_away_mode is False
