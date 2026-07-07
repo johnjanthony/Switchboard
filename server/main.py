@@ -447,57 +447,12 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 	) -> str:
 		"""Send a message to your collab partners and block until one of them speaks.
 		Returns one-line JSON: {"status":"ok","log":...} on a peer wake,
-		{"status":"timeout"}, {"status":"conversation_empty",...}, or
-		{"status":"conversation_ended",...}.
+		{"status":"timeout"}, or {"status":"conversation_ended",...}.
 
 		cli_session_id and cwd are injected by the PreToolUse hook."""
 		# Keepalive: blocks until a collab partner speaks, which can be hours.
 		return await _await_with_progress_keepalive(mcp, handlers.message_and_await_agent(
 			sender, message, title=title,
-			cli_session_id=cli_session_id, cwd=cwd,
-		))
-
-	@mcp.tool()
-	async def open_conversation(
-		sender: str,
-		title: str | None = None,
-		cli_session_id: str | None = None,
-		cwd: str | None = None,
-	) -> str:
-		"""Promote your current conversation to be the globally open one. Other
-		agents calling enter_conversation() will join it. Replaces any prior open
-		marker. Non-blocking.
-
-		If you're not in a conversation yet, this mints one (with the supplied
-		title if any) and promotes it — useful for bootstrapping a collab without
-		first sending a real ask/notify just to create a room.
-
-		cli_session_id and cwd are injected by the PreToolUse hook."""
-		return await handlers.open_conversation(
-			sender, title=title,
-			cli_session_id=cli_session_id, cwd=cwd,
-		)
-
-	@mcp.tool()
-	async def enter_conversation(
-		sender: str,
-		cli_session_id: str | None = None,
-		cwd: str | None = None,
-	) -> str:
-		"""Join the open conversation (or queue for intro in your current one).
-		Blocks until you receive the conversation's payload via the talking-stick.
-
-		Five behaviors depending on caller's state and the open pointer:
-		- bound + open is yours OR no open exists: queue for intro in current
-		- unbound + open exists: join open, queue for intro (full history)
-		- bound + open != current: migrate from current to open, queue for intro
-		- unbound + no open: error
-		- bound + no open: queue for intro in current
-
-		cli_session_id and cwd are injected by the PreToolUse hook."""
-		# Keepalive: blocks until the talking-stick payload arrives.
-		return await _await_with_progress_keepalive(mcp, handlers.enter_conversation(
-			sender,
 			cli_session_id=cli_session_id, cwd=cwd,
 		))
 
@@ -696,6 +651,7 @@ async def _run(config: Config) -> None:
 	# listeners, zero pending counters.
 	await backend.load_away_mode_snapshot(registry)
 	await backend.delete_legacy_away_mode_node()
+	await backend.delete_open_conversation_node()
 	await backend.start_away_mode_listeners(registry)
 	await backend.reset_all_pending_responses()
 	sweep_fn = getattr(backend, "sweep_orphaned_pending_questions", None)

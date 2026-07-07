@@ -614,17 +614,10 @@ class FirebaseBackend(
 	# New-schema node writers (Task 29)
 	# -------------------------------------------------------------------------
 
-	async def set_open_conversation_id(self, conv_id: str | None) -> None:
-		"""Write the global open-conversation pointer to /global_settings/open_conversation_id.
-
-		Pass conv_id=None to clear the pointer. firebase_admin rejects ref.set(None)
-		with ValueError, so the None branch routes through ref.delete() instead
-		(idempotent — Firebase delete on a missing node is a no-op)."""
-		ref = db.reference("global_settings/open_conversation_id")
-		if conv_id is None:
-			await asyncio.to_thread(ref.delete)
-		else:
-			await asyncio.to_thread(ref.set, conv_id)
+	async def delete_open_conversation_node(self) -> None:
+		"""One-shot chunk 5 cleanup: the open-marker RTDB node is retired; deleting
+		it sends the phone's open-accent listener a permanent null."""
+		await asyncio.to_thread(lambda: db.reference("global_settings/open_conversation_id").delete())
 
 	async def set_global_away_mode(self, value: bool) -> None:
 		"""Write the global away-mode flag to /global_settings/away_mode."""
@@ -729,6 +722,7 @@ class FirebaseBackend(
 		last_activity_at: float,
 		ended_at: float | None,
 		hidden: bool,
+		origin: str | None = None,
 	) -> None:
 		"""Write the top-level conversation fields (everything except members and messages)."""
 		ref = db.reference(f"conversations/{conv_id}/meta")
@@ -736,7 +730,7 @@ class FirebaseBackend(
 		# clobber sibling fields (preview) if ever called on an existing
 		# conversation (F-80). All current callers are creation-only, but the
 		# partial write makes the method safe to call post-creation too.
-		await asyncio.to_thread(lambda: ref.update({
+		payload = {
 			"title": title[:80],
 			"state": state,
 			"continued_from": continued_from,
@@ -744,7 +738,10 @@ class FirebaseBackend(
 			"last_activity_at": last_activity_at,
 			"ended_at": ended_at,
 			"hidden": hidden,
-		}))
+		}
+		if origin is not None:
+			payload["origin"] = origin
+		await asyncio.to_thread(lambda: ref.update(payload))
 
 	async def remove_conversation_member(self, conv_id: str, sender: str) -> None:
 		"""Remove a member entry under /conversations/<id>/members_active/<sender>."""
@@ -926,8 +923,8 @@ class FirebaseBackend(
 	async def write_conversation_title(self, conv_id: str, title: str) -> None:
 		"""Update /conversations/<id>/meta/title without touching sibling fields.
 		Targeted update (not a full meta set) so a post-creation title change
-		from message_and_await_agent / open_conversation reaches the phone
-		without clobbering preview, state, or activity timestamps (M3)."""
+		from message_and_await_agent reaches the phone without clobbering
+		preview, state, or activity timestamps (M3)."""
 		ref = db.reference(f"conversations/{conv_id}/meta")
 		await asyncio.to_thread(lambda: ref.update({"title": title[:80]}))
 

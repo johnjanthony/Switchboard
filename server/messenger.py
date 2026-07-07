@@ -191,6 +191,11 @@ class AwayModeMirror(ABC):
 		No-op default."""
 		pass
 
+	async def delete_open_conversation_node(self) -> None:
+		"""Delete the legacy /open_conversation top-level node (one-shot migration).
+		No-op default."""
+		pass
+
 
 class ChannelLifecycle(ABC):
 	"""Channel-state CRUD plus spawn-collision sub-flow."""
@@ -218,6 +223,7 @@ class ConversationStore:
 		last_activity_at: float,
 		ended_at: float | None,
 		hidden: bool,
+		origin: str | None = None,
 	) -> None:
 		"""Write the top-level conversation fields (everything except members and messages)."""
 		pass
@@ -273,10 +279,6 @@ class ConversationStore:
 
 	async def write_conversation_title(self, conv_id: str, title: str) -> None:
 		"""Update /conversations/<id>/meta/title (partial write). No-op default."""
-		pass
-
-	async def set_open_conversation_id(self, conv_id: str | None) -> None:
-		"""Write the global open-conversation pointer."""
 		pass
 
 	async def set_session_home(self, session_id: str, conv_id: str | None) -> None:

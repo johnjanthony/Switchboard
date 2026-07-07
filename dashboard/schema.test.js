@@ -26,10 +26,6 @@ test('globalAway() targets global_settings/away_mode', () => {
 	assert.equal(schema.globalAway(), 'global_settings/away_mode');
 });
 
-test('openConversationId() targets global_settings/open_conversation_id', () => {
-	assert.equal(schema.openConversationId(), 'global_settings/open_conversation_id');
-});
-
 test('wslAvailable() targets global_settings/wsl_available', () => {
 	assert.equal(schema.wslAvailable(), 'global_settings/wsl_available');
 });

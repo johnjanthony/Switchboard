@@ -45,6 +45,18 @@ def test_mcp_touch_enriches_cwd_and_sender():
 	assert rec.surface == "wsl"
 	assert rec.sender == "Claude WSL"
 
+def test_mark_wait_cancelled_resets_state():
+	reg = _reg()
+	reg.record_session_start("sess-A", cwd="C:/Work/X")
+	reg.upsert_from_hook("sess-A", state="awaiting_agent", event="PreToolUse")
+	reg.mark_wait_cancelled("sess-A")
+	rec = reg.get("sess-A")
+	assert rec.state == "active"
+	assert rec.state_detail == "wait-cancelled"
+	assert rec.last_transition_source == "cancel"
+	assert rec.last_event_at == "2026-07-06T12:00:00+00:00"
+	reg.mark_wait_cancelled("sess-UNKNOWN")  # no raise
+
 def test_session_end_marks_ended():
 	reg = _reg()
 	reg.record_session_start("sess-A", cwd="C:/Work/X")

@@ -180,7 +180,7 @@ class SpawnHandler:
 
 			# Recent context: last few non-system messages so the joining agent
 			# has grounding even if no alive peer is around to wake them via
-			# enter_conversation.
+			# message_and_await_agent.
 			recent_msgs = [m for m in conv.messages if m.get("type") != "system"][-5:]
 			recent_block = ""
 			if recent_msgs:
@@ -221,9 +221,9 @@ class SpawnHandler:
 		"""Build the resume prompt for a returning agent.
 
 		solo: True when this member is the only resumable member, so the
-		continuation conversation has no other alive peer. A solo agent must
-		come online via ask_human / notify_human; enter_conversation would park
-		it in the wait queue waiting for a peer that will never speak (T-147).
+		continuation conversation has no other alive peer. message_and_await_agent
+		would park it in the wait queue waiting for a peer that will never speak
+		(T-147), so the prompt directs it to ask_human / notify_human instead.
 		"""
 		base = (
 			f"You are resuming as '{member.sender}' in conversation '{new_conv_id}' "
@@ -232,10 +232,8 @@ class SpawnHandler:
 		)
 		if solo:
 			base += (
-				"You are the only agent in this conversation, so do NOT call enter_conversation "
-				"(it would block in the wait queue waiting for a peer that will never speak). "
-				"Come online to John directly: use ask_human to report your status and ask what's "
-				"next, or notify_human for a non-blocking status update."
+				"You are currently the only agent in this conversation. message_and_await_agent "
+				"would park until a peer joins; to reach John directly use ask_human or notify_human."
 			)
 		else:
 			base += (
@@ -328,7 +326,7 @@ class SpawnHandler:
 			join_existing = True
 		else:
 			conv_id = "conv-" + uuid.uuid4().hex
-			conv = Conversation(id=conv_id, title=f"{project} ({surface})")
+			conv = Conversation(id=conv_id, title=f"{project} ({surface})", origin="spawn")
 			spawn_msg = {
 				"seq": 0,
 				"sender": "<system>",
@@ -354,6 +352,7 @@ class SpawnHandler:
 					last_activity_at=conv.last_activity_at,
 					ended_at=None,
 					hidden=False,
+					origin="spawn",
 				),
 				label=f"fb_write_conv_meta:{conv_id}",
 			)
@@ -472,7 +471,7 @@ class SpawnHandler:
 		from server.conversation_ops import _now_iso
 		from server.gateway.bg_tasks import _spawn_bg as _sbg
 		new_id = "conv-" + uuid.uuid4().hex
-		new_conv = Conversation(id=new_id, title=source.title, continued_from=source_id)
+		new_conv = Conversation(id=new_id, title=source.title, continued_from=source_id, origin="resume")
 		resume_msg = {
 			"seq": 0,
 			"sender": "<system>",
@@ -496,6 +495,7 @@ class SpawnHandler:
 				last_activity_at=new_conv.last_activity_at,
 				ended_at=None,
 				hidden=False,
+				origin="resume",
 			),
 			label=f"fb_write_conv_meta:{new_id}",
 		)
@@ -507,9 +507,10 @@ class SpawnHandler:
 		# Pre-bind each resumable session, move member entry to new conv.
 		# Flip alive=True (and clear dormancy fields) so message_and_await_agent's
 		# alive-peer count includes these resumed members. Without this, a two-agent
-		# resume yields __CONVERSATION_EMPTY__ on the first speak attempt.
-		# A solo resume (one resumable member) has no alive peer to wake an
-		# enter_conversation wait, so the prompt must direct it to ask_human /
+		# resume would leave the resumed members dormant, so the first speak would
+		# park instead of reaching its peer.
+		# A solo resume (one resumable member) has no alive peer to wake a
+		# message_and_await_agent wait, so the prompt must direct it to ask_human /
 		# notify_human instead (T-147).
 		solo_resume = len(resumable) == 1
 		agents = []
@@ -545,26 +546,14 @@ class SpawnHandler:
 
 		# If source has no remaining members (all were resumable), end it
 		source_ended = False
-		open_cleared = False
 		if not source.members_active:
 			source.state = "ended"
 			source.ended_at = datetime.now(timezone.utc).timestamp()
 			source_ended = True
-			if self._registry.open_conversation_id == source_id:
-				self._registry.open_conversation_id = None
-				open_cleared = True
 		if source_ended:
 			_sbg(
 				self._backend.set_conversation_state(source_id, "ended"),
 				label=f"fb_set_state:{source_id}:ended",
-			)
-		if open_cleared:
-			# Persist the open-pointer clear so the phone's open badge does not
-			# stick on the Ended source until restart (F-69(g)). Mirrors the
-			# set_open_conversation_id(None) calls in handlers.py and dispatch.py.
-			_sbg(
-				self._backend.set_open_conversation_id(None),
-				label=f"fb_clear_open_id:{source_id}",
 			)
 
 		# Write spawn-pending file (type "resume")
@@ -695,7 +684,8 @@ class SpawnHandler:
 			base = (
 				f"You are '{sender}', resumed into conversation '{target.id}'. "
 				"Tool calls auto-inject your cli_session_id. You are currently the only alive agent "
-				"there, so do NOT block in message_and_await_agent - come online via ask_human or notify_human."
+				"there. Parking in message_and_await_agent is allowed, but ask_human remains the "
+				"recommended first move to reach John, or use notify_human for a non-blocking update."
 			)
 		else:
 			base = (

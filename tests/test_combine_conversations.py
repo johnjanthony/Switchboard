@@ -349,27 +349,6 @@ async def test_combine_source_with_only_permanently_lost_errors(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_combine_clears_open_pointer_when_source_was_open(tmp_path):
-	"""open_conversation_id == source_id. After combine, open pointer is None."""
-	cfg = _cfg(tmp_path)
-	backend = RecordingBackend()
-	registry, src_id, tgt_id = _two_conv_registry_alive()
-	registry.open_conversation_id = src_id
-
-	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path))
-
-	result = await handlers.combine_conversations(
-		src_id,
-		tgt_id,
-		cli_session_id="s-T",
-		cwd="C:/Work/X",
-	)
-
-	assert json.loads(result)["status"] == "ok"
-	assert registry.open_conversation_id is None
-
-
-@pytest.mark.asyncio
 async def test_combine_appends_system_messages(tmp_path):
 	"""Source + target both get system markers in their message logs."""
 	cfg = _cfg(tmp_path)

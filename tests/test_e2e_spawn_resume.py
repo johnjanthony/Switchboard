@@ -31,7 +31,6 @@ def _make_backend() -> MagicMock:
 	backend.remove_conversation_member = AsyncMock()
 	backend.set_conversation_state = AsyncMock()
 	backend.set_conversation_last_activity = AsyncMock()
-	backend.set_open_conversation_id = AsyncMock()
 	backend.set_session_home = AsyncMock()
 	backend.set_global_away_mode = AsyncMock()
 	return backend

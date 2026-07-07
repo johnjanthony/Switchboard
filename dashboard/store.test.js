@@ -54,7 +54,6 @@ test('initialState shape is exactly the contract', () => {
 		authed: false,
 		authError: null,
 		globalAway: false,
-		openConversationId: null,
 		wslAvailable: false,
 		conversations: {},
 		sessions: {},
@@ -163,14 +162,12 @@ test('retrySignIn clears authError then calls fb.signIn', () => {
 	assert.equal(fb.calls.signInCount, 1);
 });
 
-test('setGlobalAway, setOpenConversationId, setWslAvailable update their slices', () => {
+test('setGlobalAway, setWslAvailable update their slices', () => {
 	const { store } = makeStore();
 	store.setGlobalAway(true);
-	store.setOpenConversationId('c5');
 	store.setWslAvailable(true);
 	const s = store.getState();
 	assert.equal(s.globalAway, true);
-	assert.equal(s.openConversationId, 'c5');
 	assert.equal(s.wslAvailable, true);
 });
 
@@ -275,7 +272,6 @@ test('startGlobalListeners wires conversation/global/admin listeners', () => {
 	assert.ok(addedPaths.includes('admin_notifications'));
 	const valuePaths = fb.calls.onValue.map((e) => e.path);
 	assert.ok(valuePaths.includes('global_settings/away_mode'));
-	assert.ok(valuePaths.includes('global_settings/open_conversation_id'));
 	assert.ok(valuePaths.includes('global_settings/wsl_available'));
 });
 

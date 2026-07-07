@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from functools import wraps
 
@@ -52,21 +53,13 @@ def _terminal_envelope(text: str) -> str | None:
 
 def _wrap_wait_result(conversation_id: str, text: str) -> str:
 	"""Envelope a message_and_await wake result. Internal wake payloads are plain
-	strings (delta logs, dormancy notices, lobby 'ok. open_conversation' wakes);
-	sentinels map to their terminal envelopes."""
+	strings (delta logs, dormancy notices); sentinels map to their terminal
+	envelopes."""
 	if text.startswith('{"status":'):
 		return text  # already an envelope (convene wake resolves futures pre-built)
 	terminal = _terminal_envelope(text)
 	if terminal is not None:
 		return terminal
-	if text.startswith("__CONVERSATION_EMPTY__"):
-		partings = text.partition("\n")[2]
-		return _envelope("conversation_empty", conversation_id=conversation_id, log=partings or None)
-	if text.startswith("ok. open_conversation = "):
-		# Lobby-hold wake (open-marker conv, deprecation window): the meaningful
-		# part is the peer-joined line, not the legacy prefix.
-		log = text.partition("\n")[2]
-		return _envelope("ok", conversation_id=conversation_id, log=log or None)
 	return _envelope("ok", conversation_id=conversation_id, log=text or None)
 
 _SESSION_START = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -150,8 +143,6 @@ class ToolHandlers:
 	notify_human: Callable[..., Coroutine[None, None, str]]
 	send_document_human: Callable[..., Coroutine[None, None, str]]
 	message_and_await_agent: Callable[..., Coroutine[None, None, str]]
-	open_conversation: Callable[..., Coroutine[None, None, str]]
-	enter_conversation: Callable[..., Coroutine[None, None, str]]
 	lookup_conversation_ids: Callable[..., Coroutine[None, None, str]]
 	leave_conversation: Callable[..., Coroutine[None, None, str]]
 	set_away_mode: Callable[..., Coroutine[None, None, str]]
@@ -354,6 +345,8 @@ def build_tool_handlers(
 			with anyio.CancelScope(shield=True):
 				registry.remove(conversation_id, cli_session_id, request_id=request_id)
 				await _safe_mark_cancelled(backend, conversation_id, request_id, logger)
+			if session_registry is not None:
+				session_registry.mark_wait_cancelled(cli_session_id)
 			raise
 		except Exception as exc:
 			await logger.tool_error(request_id, conversation_id, str(exc))
@@ -478,12 +471,9 @@ def build_tool_handlers(
 			return "ERROR: session bound to conversation but not a member."
 
 		from server.conversation_ops import _wake_one_from
-		from server.session_fallback import apply_fallback
 		import time
 
 		wait_entry = None
-		empty_result: str | None = None
-		lobby_wait = False
 		async with conv.lock:
 			# Append speak event to the conversation log
 			now_ts = time.time()
@@ -517,109 +507,19 @@ def build_tool_handlers(
 				label=f"fb_last_activity:{conversation_id}",
 			)
 
-			# Count alive peers (excluding caller)
-			alive_peers = [
-				m for m in conv.members_active.values()
-				if m.alive and m.cli_session_id != cli_session_id
-			]
-			if not alive_peers:
-				# Sole alive member. Two sub-paths:
-				# (a) Conv IS the open marker → hold the lobby. Don't auto-leave;
-				#     fall through to a block on conv.open_peer_future after the
-				#     lock releases. Opener wakes when a peer joins, or gets
-				#     __TIMEOUT__ (without ending the conv) so they can poll again.
-				# (b) Otherwise → original auto-leave behavior: caller removed,
-				#     conv Ended if no remaining members, mirroring leave_conversation.
-				if registry.open_conversation_id == conversation_id:
-					lobby_wait = True
-					# Mark the speak as seen so the next wake's delta starts from here
-					caller_member.last_seen_seq = len(conv.messages)
-				else:
-					partings = [
-						m for m in conv.messages[caller_member.last_seen_seq:]
-						if m.get("type") == "parting"
-					]
-					caller_member.last_seen_seq = len(conv.messages)
-					if partings:
-						parting_text = "\n".join(f"{p['sender']}: {p['text']}" for p in partings)
-						empty_result = f"__CONVERSATION_EMPTY__\n{parting_text}"
-					else:
-						empty_result = "__CONVERSATION_EMPTY__"
+			# Wake FIFO-oldest waiter (if any); no-op on an empty queue, so a solo
+			# speaker simply parks here until a peer joins and replies.
+			_wake_one_from(conv)
 
-					# Remove caller from members_active; record in history
-					caller_member.left_at = now_ts
-					old_sender = caller_member.sender
-					del conv.members_active[cli_session_id]
-					conv.members_history.append(caller_member)
-					# Persist members_history entry so it survives restart
-					_spawn_bg(
-						backend.write_conversation_member_history(conversation_id, caller_member),
-						label=f"fb_write_member_history:{conversation_id}:{caller_member.sender}",
-					)
-
-					# Terminal-state check (same logic as leave_conversation)
-					has_dormant = any(not m.alive for m in conv.members_active.values())
-					has_alive = any(m.alive for m in conv.members_active.values())
-					conv_ended = not has_alive and not has_dormant
-					open_cleared = False
-					if conv_ended:
-						conv.state = "ended"
-						conv.ended_at = now_ts
-						if registry.open_conversation_id == conversation_id:
-							registry.open_conversation_id = None
-							open_cleared = True
-
-					_spawn_bg(
-						backend.remove_conversation_member(conversation_id, old_sender),
-						label=f"fb_remove_member:{conversation_id}:{old_sender}",
-					)
-					_spawn_bg(
-						backend.set_conversation_last_activity(conversation_id, now_ts),
-						label=f"fb_last_activity:{conversation_id}",
-					)
-					if conv_ended:
-						_spawn_bg(
-							backend.set_conversation_state(conversation_id, "ended"),
-							label=f"fb_set_state:{conversation_id}:ended",
-						)
-					if open_cleared:
-						_spawn_bg(
-							backend.set_open_conversation_id(None),
-							label=f"fb_clear_open_id:{conversation_id}",
-						)
-					# Fall through past the lock to apply session-fallback.
-			else:
-				# Wake FIFO-oldest waiter (if any)
-				_wake_one_from(conv)
-
-				# Enqueue caller
-				future = asyncio.get_event_loop().create_future()
-				wait_entry = {
-					"member": caller_member,
-					"future": future,
-					"waiting_kind": "msg_and_await",
-					"block_position": time.monotonic(),
-				}
-				conv.wait_queue.append(wait_entry)
-				caller_member.last_seen_seq = len(conv.messages)
-
-		# If sole-alive-member EMPTY path was taken, apply session-fallback
-		# OUTSIDE the conv.lock (it may touch other conversations) and return.
-		if empty_result is not None:
-			apply_fallback(registry, cli_session_id, backend=backend)
-			return _wrap_wait_result(conversation_id, empty_result)
-
-		# Sole-alive in the open-marker conv: hold the lobby until a peer joins
-		# or we time out. end_conv_on_timeout=False so the established conv
-		# survives a quiet round — caller can poll again or leave_conversation.
-		if lobby_wait:
-			from server.conversation_ops import _queue_for_open_peer
-			lobby_result = await _queue_for_open_peer(
-				registry, conversation_id, cli_session_id,
-				config.timeout_seconds, backend=backend,
-				end_conv_on_timeout=False,
-			)
-			return _wrap_wait_result(conversation_id, lobby_result)
+			future = asyncio.get_event_loop().create_future()
+			wait_entry = {
+				"member": caller_member,
+				"future": future,
+				"waiting_kind": "msg_and_await",
+				"block_position": time.monotonic(),
+			}
+			conv.wait_queue.append(wait_entry)
+			caller_member.last_seen_seq = len(conv.messages)
 
 		# Lock released; now wait
 		try:
@@ -634,142 +534,9 @@ def build_tool_handlers(
 			async with conv.lock:
 				if wait_entry in conv.wait_queue:
 					conv.wait_queue.remove(wait_entry)
+			if session_registry is not None:
+				session_registry.mark_wait_cancelled(cli_session_id)
 			raise
-
-	@require_cli_session_id
-	@_touch_sessions
-	async def open_conversation(
-		sender: str,
-		title: str | None = None,
-		*,
-		cli_session_id: str,
-		cwd: str,
-	) -> str:
-		if err := _validate_sender(sender):
-			return err
-		conv_id = registry.session_to_conversation_id.get(cli_session_id)
-		if conv_id is None:
-			# Caller isn't in any conversation yet. Mint one, promote it, and
-			# block until a peer joins. Atomic bootstrap — the wait IS the API,
-			# so the opener doesn't have to know about intro-queue mechanics.
-			from server.conversation_ops import (
-				_create_active_conversation_for,
-				_queue_for_open_peer,
-			)
-			conv_id = await _create_active_conversation_for(
-				registry, cli_session_id, cwd, sender, backend=backend, title=title,
-			)
-			registry.open_conversation_id = conv_id
-			_spawn_bg(
-				backend.set_open_conversation_id(conv_id),
-				label=f"fb_set_open_conv_id:{conv_id}",
-			)
-			await logger.info(f"open_conversation: minted+promoted conv_id={conv_id} sender={sender}")
-			return await _queue_for_open_peer(
-				registry, conv_id, cli_session_id, config.timeout_seconds, backend=backend,
-			)
-		conv = registry.conversations.get(conv_id)
-		if conv is None:
-			return "ERROR: bound conversation no longer exists."
-		if conv.state != "active":
-			# Don't promote an Ended conversation to the open singleton (F-72):
-			# an Ended conv has no members and joiners would block forever.
-			return "ERROR: cannot open an ended conversation."
-		# Ensure the (possibly fresh-spawn-bound, member-less) caller is a member
-		# before the rename/open logic, which otherwise silently finds no member.
-		from server.conversation_ops import _resolve_conversation_and_member
-		await _resolve_conversation_and_member(registry, cli_session_id, cwd, sender, backend=backend)
-		async with conv.lock:
-			if title:
-				conv.title = title
-				_spawn_bg(
-					backend.write_conversation_title(conv_id, title),
-					label=f"fb_write_title:{conv_id}",
-				)
-			caller_member = conv.members_active.get(cli_session_id)
-			if caller_member is None:
-				return "ERROR: session bound to conversation but not a member."
-			old_sender = caller_member.sender
-			renamed = old_sender != sender
-			actual_sender = sender
-			if renamed:
-				from server.conversation_ops import _disambiguate_sender
-				actual_sender = _disambiguate_sender(conv, sender, exclude_session_id=cli_session_id)
-				caller_member.sender = actual_sender
-				if registry.sessions is not None:
-					registry.sessions.set_sender(cli_session_id, actual_sender)
-			registry.open_conversation_id = conv_id
-			_spawn_bg(
-				backend.set_open_conversation_id(conv_id),
-				label=f"fb_set_open_conv_id:{conv_id}",
-			)
-			if renamed:
-				_spawn_bg(
-					backend.remove_conversation_member(conv_id, old_sender),
-					label=f"fb_remove_member:{conv_id}:{old_sender}",
-				)
-				_spawn_bg(
-					backend.write_conversation_member(conv_id, caller_member),
-					label=f"fb_write_member:{conv_id}:{actual_sender}",
-				)
-		result = f"ok. open_conversation = {conv_id}"
-		if actual_sender != sender:
-			result += f", sender = {actual_sender} (your requested '{sender}' was already taken)"
-		await logger.info(f"open_conversation: promoted conv_id={conv_id} sender={actual_sender}")
-		return result
-
-	@require_cli_session_id
-	@_touch_sessions
-	async def enter_conversation(
-		sender: str,
-		*,
-		cli_session_id: str,
-		cwd: str,
-	) -> str:
-		if err := _validate_sender(sender):
-			return err
-		from server.conversation_ops import _add_member, _migrate_member, _queue_for_intro
-
-		current_id = registry.session_to_conversation_id.get(cli_session_id)
-		open_id = registry.open_conversation_id
-
-		if current_id is not None:
-			# Caller is bound to some conversation
-			if open_id is None or open_id == current_id:
-				# Branch 1 / Branch 5: queue in current. Ensure the (possibly
-				# fresh-spawn-bound, member-less) caller is a member first, else
-				# _queue_for_intro returns "caller not a member".
-				from server.conversation_ops import _resolve_conversation_and_member
-				await _resolve_conversation_and_member(registry, cli_session_id, cwd, sender, backend=backend)
-				await logger.info(f"enter_conversation: queue_in_current conv_id={current_id} sender={sender}")
-				return await _queue_for_intro(registry, current_id, cli_session_id, sender, cwd, config.timeout_seconds)
-			# Branch 3: migrate from current to open
-			conv_open = registry.conversations.get(open_id)
-			conv_current = registry.conversations.get(current_id)
-			if conv_open is None or conv_open.state != "active":
-				return "ERROR: open conversation is not Active."
-			# Lock both in id order to avoid AB-BA deadlock
-			locks = sorted([conv_current, conv_open], key=lambda c: c.id)
-			async with locks[0].lock, locks[1].lock:
-				await _migrate_member(registry, current_id, open_id, cli_session_id, sender, cwd, backend=backend)
-			await logger.info(f"enter_conversation: migrated {current_id}->{open_id} sender={sender}")
-			return await _queue_for_intro(registry, open_id, cli_session_id, sender, cwd, config.timeout_seconds)
-
-		# Caller unbound
-		if open_id is None:
-			# Branch 4: error
-			return (
-				"ERROR: no open conversation. Ask John to open one on the phone, or have "
-				"an agent already in a conversation call open_conversation."
-			)
-		# Branch 2: join open
-		conv_open = registry.conversations.get(open_id)
-		if conv_open is None or conv_open.state != "active":
-			return "ERROR: open conversation is not Active."
-		async with conv_open.lock:
-			await _add_member(registry, open_id, cli_session_id, sender, cwd, backend=backend)
-		await logger.info(f"enter_conversation: joined_open conv_id={open_id} sender={sender}")
-		return await _queue_for_intro(registry, open_id, cli_session_id, sender, cwd, config.timeout_seconds)
 
 	@require_cli_session_id
 	@_touch_sessions
@@ -866,13 +633,9 @@ def build_tool_handlers(
 			has_dormant = any(not m.alive for m in conv.members_active.values())
 			has_alive = any(m.alive for m in conv.members_active.values())
 			conv_ended = not has_alive and not has_dormant
-			open_cleared = False
 			if conv_ended:
 				conv.state = "ended"
 				conv.ended_at = now_ts
-				if registry.open_conversation_id == conv_id:
-					registry.open_conversation_id = None
-					open_cleared = True
 
 			# Firebase writes for new /conversations/<id>/... schema
 			_spawn_bg(
@@ -887,11 +650,6 @@ def build_tool_handlers(
 				_spawn_bg(
 					backend.set_conversation_state(conv_id, "ended"),
 					label=f"fb_set_state:{conv_id}:ended",
-				)
-			if open_cleared:
-				_spawn_bg(
-					backend.set_open_conversation_id(None),
-					label=f"fb_clear_open_id:{conv_id}",
 				)
 
 		# Apply session-fallback OUTSIDE the lock (it may touch other conversations)
@@ -1001,23 +759,15 @@ def build_tool_handlers(
 				return f"ERROR: conversation {ref} not found or not Active."
 			target_id = ref
 		else:
-			open_id = registry.open_conversation_id
-			open_conv = registry.conversations.get(open_id) if open_id else None
-			if open_conv is not None and open_conv.state == "active":
-				target_id = open_conv.id
+			from server.conversation_ops import _find_join_candidate
+			candidate = _find_join_candidate(registry, time.time())
+			if candidate is not None:
+				target_id = candidate.id
 			else:
-				# Mint and promote. The promotion is what pairs up the second
-				# ref-absent joiner during the deprecation window: without it the
-				# next joiner would mint a second, separate room.
 				conv_id = await _create_active_conversation_for(
-					registry, cli_session_id, cwd, sender, backend=backend, title=title,
+					registry, cli_session_id, cwd, sender, backend=backend, title=title, origin="join",
 				)
-				registry.open_conversation_id = conv_id
-				_spawn_bg(
-					backend.set_open_conversation_id(conv_id),
-					label=f"fb_set_open_conv_id:{conv_id}",
-				)
-				await logger.info(f"join_conversation: minted+promoted conv_id={conv_id} sender={sender}")
+				await logger.info(f"join_conversation: minted conv_id={conv_id} sender={sender} origin=join")
 				return _envelope("ok", conversation_id=conv_id, minted=True, sender=sender, peers=[])
 
 		conv = registry.conversations[target_id]
@@ -1094,8 +844,6 @@ def build_tool_handlers(
 		notify_human=notify_human,
 		send_document_human=send_document_human,
 		message_and_await_agent=message_and_await_agent,
-		open_conversation=open_conversation,
-		enter_conversation=enter_conversation,
 		lookup_conversation_ids=lookup_conversation_ids,
 		leave_conversation=leave_conversation,
 		set_away_mode=set_away_mode,

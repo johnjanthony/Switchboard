@@ -1,7 +1,7 @@
 """Tests for _wake_convened: wake delivery for convened sessions (Task 6).
 
 Per woken session, first match wins: a blocked message_and_await future
-(wait_queue or lobby open_peer_future) resolves immediately with a convened
+(queued in a conversation's wait_queue) resolves immediately with a convened
 envelope; a pending ask_human gets the notice prepended to its eventual
 answer; everyone else gets a hook-delivered notice queued on their session
 record. Routing itself (_perform_convene) is covered by test_convene.py.
@@ -71,49 +71,6 @@ async def test_wake_resolves_blocked_message_and_await(logger):
 	assert envelope["conversation_id"] == "conv-X"
 	assert "John convened" in envelope["log"]
 	assert len(conv.wait_queue) == 0
-
-
-@pytest.mark.asyncio
-async def test_wake_resolves_lobby_holder(logger):
-	"""A sole-alive lobby holder migrated into the target: the future it was
-	blocked on lives on the SOURCE's open_peer_future (migrate only fires the
-	target's), handed off in _perform_convene; _wake_convened resolves it with
-	the convened envelope and the handoff clears it."""
-	registry = make_registry_with_loopback()
-	session_registry = SessionRegistry()
-	registry.sessions = session_registry
-
-	session_registry.record_session_start("s-solo", cwd="C:/S")
-	session_registry.set_sender("s-solo", "Solo")
-	session_registry.record_session_start("s-host", cwd="C:/H")
-	session_registry.set_sender("s-host", "Host")
-
-	source = make_active_conversation(
-		conversation_id="conv-solo", member_session_id="s-solo", sender="Solo", cwd="C:/S",
-	)
-	registry.conversations["conv-solo"] = source
-	registry.bind_session("s-solo", "conv-solo")
-
-	target = make_active_conversation(
-		conversation_id="conv-target", member_session_id="s-host", sender="Host", cwd="C:/H",
-	)
-	registry.conversations["conv-target"] = target
-	registry.bind_session("s-host", "conv-target")
-
-	opener_future = asyncio.get_event_loop().create_future()
-	source.open_peer_future = opener_future
-
-	cmd = {"session_ids": ["s-solo"], "target": "conv-target", "title": None, "issued_at": "x"}
-	result = await _perform_convene(registry, session_registry, cmd, logger)
-
-	assert result["conversation_id"] == "conv-target"
-	assert result["convened"] == ["Solo"]
-	assert opener_future.done()
-	envelope = json.loads(opener_future.result())
-	assert envelope["status"] == "convened"
-	assert envelope["conversation_id"] == "conv-target"
-	assert source.open_peer_future is None
-	assert "s-solo" in target.members_active
 
 
 @pytest.mark.asyncio

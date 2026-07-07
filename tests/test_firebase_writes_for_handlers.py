@@ -27,7 +27,6 @@ def _make_store_backend():
 	backend.remove_conversation_member = AsyncMock()
 	backend.set_conversation_state = AsyncMock()
 	backend.set_conversation_last_activity = AsyncMock()
-	backend.set_open_conversation_id = AsyncMock()
 	backend.set_session_home = AsyncMock()
 	backend.set_global_away_mode = AsyncMock()
 	backend.send_timeout_followup = AsyncMock()
@@ -80,27 +79,6 @@ async def _drain_bg():
 	"""Yield control so _spawn_bg tasks get a chance to run."""
 	for _ in range(5):
 		await asyncio.sleep(0)
-
-
-# ---------------------------------------------------------------------------
-# Test 1: open_conversation writes open pointer
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_open_conversation_writes_open_pointer(tmp_path):
-	from server.gateway import build_tool_handlers
-
-	cfg = _make_config(tmp_path)
-	logger = _make_logger(cfg)
-	backend = _make_store_backend()
-	registry, conv = _make_active_conv()
-
-	handlers = build_tool_handlers(cfg, registry, backend, logger)
-	result = await handlers.open_conversation("Claude", cli_session_id="s-1", cwd="C:/Work/X")
-
-	assert result.startswith("ok")
-	await _drain_bg()
-	backend.set_open_conversation_id.assert_awaited_once_with(conv.id)
 
 
 # ---------------------------------------------------------------------------
@@ -172,34 +150,6 @@ async def test_combine_writes_both_target_member_and_source_state(tmp_path):
 	backend.write_conversation_member.assert_awaited()
 	backend.set_conversation_state.assert_awaited_once_with("conv-src", "ended")
 	backend.set_conversation_last_activity.assert_awaited_once_with("conv-tgt", pytest.approx(time.time(), abs=5))
-
-
-# ---------------------------------------------------------------------------
-# Test 4: handle_force_end clears open pointer when target was open
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_handle_force_end_clears_open_pointer_when_target_was_open():
-	from server.gateway.dispatch import handle_force_end
-	from server.registry import Conversation, ConversationMember, Registry
-
-	backend = _make_store_backend()
-	registry = Registry()
-	registry.open_conversation_id = "conv-1"
-
-	conv = Conversation(id="conv-1", title="test")
-	m = ConversationMember(cli_session_id="s-A", sender="A", cwd="C:/X", surface="windows", joined_at=0.0)
-	conv.members_active["s-A"] = m
-	registry.conversations["conv-1"] = conv
-	registry.bind_session("s-A", "conv-1")
-
-	await handle_force_end(registry, "conv-1", backend=backend)
-	await _drain_bg()
-
-	assert registry.open_conversation_id is None
-	backend.set_open_conversation_id.assert_awaited_once_with(None)
-	backend.set_conversation_state.assert_awaited_once_with("conv-1", "ended")
-	backend.remove_conversation_member.assert_awaited_with("conv-1", "A")
 
 
 # ---------------------------------------------------------------------------

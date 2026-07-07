@@ -54,7 +54,6 @@ async def test_dispatch_combine_command_invokes_perform_combine(logger):
 	backend.write_conversation_message = AsyncMock(return_value="key-1")
 	backend.set_conversation_state = AsyncMock()
 	backend.set_conversation_last_activity = AsyncMock()
-	backend.set_open_conversation_id = AsyncMock()
 	registered_handler = None
 
 	async def fake_start_listener(handler):
@@ -133,7 +132,6 @@ async def test_dispatch_force_end_command_invokes_handle_force_end(logger):
 	backend = MagicMock()
 	backend.remove_conversation_member = AsyncMock()
 	backend.set_conversation_state = AsyncMock()
-	backend.set_open_conversation_id = AsyncMock()
 	backend.write_conversation_message = AsyncMock(return_value="key-1")
 	# handle_force_end now calls apply_fallback(..., backend=backend) for every
 	# member session - including alive members whose fallback path may issue
@@ -226,7 +224,6 @@ async def test_handle_force_end_clears_dormant_member_home_pointer(logger):
 	backend = MagicMock()
 	backend.remove_conversation_member = AsyncMock()
 	backend.set_conversation_state = AsyncMock()
-	backend.set_open_conversation_id = AsyncMock()
 	backend.write_conversation_message = AsyncMock(return_value="key-fe")
 	backend.set_session_home = AsyncMock()
 

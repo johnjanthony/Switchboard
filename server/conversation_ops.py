@@ -8,7 +8,6 @@ entries, route sessions, and perform combine/migrate/queue operations.
 
 from __future__ import annotations
 
-import asyncio
 import re
 import time
 import uuid
@@ -18,6 +17,8 @@ from server.registry import Conversation, ConversationMember, Registry
 
 
 _WSL_MOUNT_RE = re.compile(r"^/mnt/[a-z]/", re.IGNORECASE)
+
+JOIN_CANDIDATE_WINDOW_SECONDS = 1800.0
 
 
 def _disambiguate_sender(conv, desired: str, exclude_session_id: str | None = None) -> str:
@@ -45,6 +46,23 @@ def _infer_surface(cwd: str) -> str:
 	return "windows"
 
 
+def _find_join_candidate(registry, now_ts: float):
+	"""The marker's replacement: a ref-less joiner lands with a fresh, still-solo
+	ref-less mint - and ONLY when that target is unambiguous. Zero or several
+	candidates both mean 'mint a new room'."""
+	candidates = []
+	for conv in registry.conversations.values():
+		if conv.state != "active" or conv.origin != "join":
+			continue
+		alive = [m for m in conv.members_active.values() if m.alive]
+		if len(alive) != 1:
+			continue
+		if (conv.created_at or 0.0) < now_ts - JOIN_CANDIDATE_WINDOW_SECONDS:
+			continue
+		candidates.append(conv)
+	return candidates[0] if len(candidates) == 1 else None
+
+
 async def _create_active_conversation_for(
 	registry: Registry,
 	cli_session_id: str,
@@ -52,6 +70,7 @@ async def _create_active_conversation_for(
 	sender: str,
 	backend=None,
 	title: str | None = None,
+	origin: str = "fallback",
 ) -> str:
 	"""Mint a new Active conversation, add the session as its sole member, bind
 	routing, and set home pointer (only if not already set). Returns the new
@@ -71,7 +90,9 @@ async def _create_active_conversation_for(
 		existing = registry.session_to_conversation_id.get(cli_session_id)
 		if existing is not None:
 			return existing
-		return await _create_active_conversation_for_locked(registry, cli_session_id, cwd, sender, backend, title)
+		return await _create_active_conversation_for_locked(
+			registry, cli_session_id, cwd, sender, backend, title, origin,
+		)
 
 
 async def _create_active_conversation_for_locked(
@@ -81,12 +102,13 @@ async def _create_active_conversation_for_locked(
 	sender: str,
 	backend=None,
 	title: str | None = None,
+	origin: str = "fallback",
 ) -> str:
 	"""Inner implementation called while holding session_create_lock. Do not call directly."""
 	from server.gateway.bg_tasks import _spawn_bg
 	conv_id = "conv-" + uuid.uuid4().hex
 	resolved_title = title if title else f"{sender} · {cwd}"
-	conv = Conversation(id=conv_id, title=resolved_title)
+	conv = Conversation(id=conv_id, title=resolved_title, origin=origin)
 	now = time.time()
 	conv.created_at = now
 	conv.last_activity_at = now
@@ -116,6 +138,7 @@ async def _create_active_conversation_for_locked(
 				last_activity_at=now,
 				ended_at=None,
 				hidden=False,
+				origin=origin,
 			),
 			label=f"fb_write_conv_meta:{conv_id}",
 		)
@@ -244,17 +267,6 @@ async def _add_member(
 				backend.set_session_home(cli_session_id, conversation_id),
 				label=f"fb_set_session_home:{cli_session_id}:{conversation_id}",
 			)
-	# Wake any mint-path opener blocked on conv.open_peer_future. The opener's
-	# wake payload identifies the newly-joined peer by sender so they can greet
-	# by name. Newline-separated so the leading line still matches the legacy
-	# `ok. open_conversation = <id>` format that existing parsers split on.
-	fut = conv.open_peer_future
-	if fut is not None and not fut.done():
-		fut.set_result(
-			f"ok. open_conversation = {conversation_id}\n"
-			f"Peer '{actual_sender}' joined."
-		)
-		conv.open_peer_future = None
 
 
 async def _migrate_member(
@@ -297,8 +309,6 @@ async def _migrate_member(
 		source.state = "ended"
 		source.ended_at = time.time()
 		source_ended = True
-		if registry.open_conversation_id == source_id:
-			registry.open_conversation_id = None
 	if backend is not None:
 		_spawn_bg(
 			backend.remove_conversation_member(source_id, old_sender),
@@ -313,96 +323,6 @@ async def _migrate_member(
 				backend.set_conversation_state(source_id, "ended"),
 				label=f"fb_set_state:{source_id}:ended",
 			)
-	# Wake any opener blocked on the target's open_peer_future. Migration is a
-	# peer-join from the target's POV, so the lobby/bootstrap wake protocol
-	# applies the same way as _add_member.
-	fut = target.open_peer_future
-	if fut is not None and not fut.done():
-		fut.set_result(
-			f"ok. open_conversation = {target_id}\n"
-			f"Peer '{actual_sender}' joined."
-		)
-		target.open_peer_future = None
-
-
-async def _queue_for_open_peer(
-	registry: Registry,
-	conversation_id: str,
-	cli_session_id: str,
-	timeout_seconds: float,
-	backend=None,
-	end_conv_on_timeout: bool = True,
-) -> str:
-	"""Block the caller on conv.open_peer_future until a peer becomes an alive
-	member (which resolves the future from inside _add_member), until force-end
-	or session-end resolves the future, or until timeout.
-
-	Two callers:
-	- open_conversation mint path: end_conv_on_timeout=True. A timeout means
-	  no one joined the just-minted room, so we force-end it to avoid leaking
-	  an orphan.
-	- message_and_await_agent sole-alive + open-marker (lobby-hold): end_conv_on_timeout=False.
-	  The conv was already established; a timeout just means "no peer arrived
-	  this round." Return __TIMEOUT__ but leave the conv alive so the caller
-	  can poll again or explicitly leave_conversation."""
-	conv = registry.conversations[conversation_id]
-	future = asyncio.get_event_loop().create_future()
-	conv.open_peer_future = future
-	try:
-		return await asyncio.wait_for(future, timeout=timeout_seconds)
-	except asyncio.TimeoutError:
-		if conv.open_peer_future is future:
-			conv.open_peer_future = None
-		if end_conv_on_timeout:
-			from server.gateway.dispatch import handle_force_end
-			await handle_force_end(registry, conversation_id, backend=backend)
-		return "__TIMEOUT__"
-	except asyncio.CancelledError:
-		if conv.open_peer_future is future:
-			conv.open_peer_future = None
-		raise
-
-
-async def _queue_for_intro(
-	registry: Registry,
-	conversation_id: str,
-	cli_session_id: str,
-	sender: str,
-	cwd: str,
-	timeout_seconds: float,
-) -> str:
-	"""Append a QueueEntry(waiting_kind='enter') for the caller; await the wake
-	payload. Returns the payload string.
-
-	Caller is assumed to already be a member of conversation_id (caller of
-	enter_conversation may have just been migrated/added)."""
-	conv = registry.conversations[conversation_id]
-	caller_member = conv.members_active.get(cli_session_id)
-	if caller_member is None:
-		return "ERROR: enter_conversation: caller not a member of target conversation."
-	future = asyncio.get_event_loop().create_future()
-	entry = {
-		"member": caller_member,
-		"future": future,
-		"waiting_kind": "enter",
-		"block_position": time.monotonic(),
-	}
-	conv.wait_queue.append(entry)
-	try:
-		result = await asyncio.wait_for(future, timeout=timeout_seconds)
-		return result
-	except asyncio.TimeoutError:
-		try:
-			conv.wait_queue.remove(entry)
-		except ValueError:
-			pass
-		return "__TIMEOUT__"
-	except asyncio.CancelledError:
-		try:
-			conv.wait_queue.remove(entry)
-		except ValueError:
-			pass
-		raise
 
 
 async def _inject_combine_intro(registry: Registry, target: Conversation, sender: str, backend=None) -> None:
@@ -534,17 +454,6 @@ async def _perform_combine(
 				del source.members_active[sid]
 				target.members_active[sid] = member
 				await _inject_combine_intro(registry, target, actual_sender, backend=backend)
-				# Wake any opener blocked on the target's open_peer_future:
-				# combine is a peer-join from the target's POV, exactly like
-				# _migrate_member's resolution (H01: without this, a
-				# lobby-holding sole member never learns a peer arrived).
-				fut = target.open_peer_future
-				if fut is not None and not fut.done():
-					fut.set_result(
-						f"ok. open_conversation = {target_id}\n"
-						f"Peer '{actual_sender}' joined."
-					)
-					target.open_peer_future = None
 				moved_names.append(actual_sender)
 				removed_from_source.append(old_sender)
 				if backend is not None:
@@ -625,10 +534,6 @@ async def _perform_combine(
 		source.wait_queue.clear()
 		source.state = "ended"
 		source.ended_at = time.time()
-		open_cleared = False
-		if registry.open_conversation_id == source_id:
-			registry.open_conversation_id = None
-			open_cleared = True
 		if backend is not None:
 			_spawn_bg(
 				backend.write_conversation_message(target_id, target_msg),
@@ -646,11 +551,6 @@ async def _perform_combine(
 				backend.set_conversation_last_activity(target_id, now_ts),
 				label=f"fb_last_activity:{target_id}",
 			)
-			if open_cleared:
-				_spawn_bg(
-					backend.set_open_conversation_id(None),
-					label=f"fb_clear_open_id:{source_id}",
-				)
 	# Fire the launcher once if any dormant member got a combine_resume
 	# pending file: the file alone does nothing until the scheduled task
 	# runs (H08/H09: state used to say "resumed" with no process behind it).
@@ -719,7 +619,6 @@ async def _wake_convened(registry, session_registry, conversation_id, woken_sess
 	target = registry.conversations.get(conversation_id)
 	if target is None:
 		return []
-	lobby_futures = getattr(registry, "_convene_lobby_futures", {})
 	woken_now: list[str] = []
 	for sid in woken_session_ids:
 		member = target.members_active.get(sid)
@@ -729,15 +628,6 @@ async def _wake_convened(registry, session_registry, conversation_id, woken_sess
 		log = _compose_wake_payload(target, member, "enter")
 		envelope = _envelope("convened", conversation_id=conversation_id, peers=peers, log=log or None)
 		notice = _convene_notice(conversation_id, member.sender, peers)
-
-		# (a) Migrate case: mover was lobby-holding on source.open_peer_future,
-		# handed off from _perform_convene above.
-		opener = lobby_futures.pop(sid, None)
-		if opener is not None and not opener.done():
-			opener.set_result(envelope)
-			member.last_seen_seq = len(target.messages)
-			woken_now.append(sid)
-			continue
 
 		# (b) Blocked in message_and_await, queued in some conversation's wait_queue.
 		resolved = False
@@ -756,14 +646,6 @@ async def _wake_convened(registry, session_registry, conversation_id, woken_sess
 					break
 			if resolved:
 				break
-
-		# (c) Already-member lobby-holder: the future lives on the target itself.
-		if not resolved:
-			opener2 = target.open_peer_future
-			if opener2 is not None and not opener2.done():
-				opener2.set_result(envelope)
-				target.open_peer_future = None
-				resolved = True
 
 		if resolved:
 			member.last_seen_seq = len(target.messages)
@@ -829,7 +711,7 @@ async def _perform_convene(registry, session_registry, cmd: dict, logger, backen
 			return
 		conv_id = "conv-" + uuid.uuid4().hex
 		now = time.time()
-		conv = Conversation(id=conv_id, title=title or f"Convened {len(session_ids)} agents")
+		conv = Conversation(id=conv_id, title=title or f"Convened {len(session_ids)} agents", origin="convene")
 		conv.created_at = now
 		conv.last_activity_at = now
 		registry.conversations[conv_id] = conv
@@ -839,6 +721,7 @@ async def _perform_convene(registry, session_registry, cmd: dict, logger, backen
 				backend.write_conversation_meta(
 					conv_id, title=conv.title, state="active", continued_from=None,
 					created_at=now, last_activity_at=now, ended_at=None, hidden=False,
+					origin="convene",
 				),
 				label=f"fb_write_conv_meta:{conv_id}",
 			)
@@ -912,13 +795,6 @@ async def _perform_convene(registry, session_registry, cmd: dict, logger, backen
 		locks = sorted([source, conv], key=lambda c: c.id)
 		async with locks[0].lock, locks[1].lock:
 			await _migrate_member(registry, bound_id, conv_id, sid, rec.sender or sender, cwd, backend=backend)
-		# A lobby-holding mover was blocked on source.open_peer_future; hand it
-		# the convened envelope now, while the source is still in scope.
-		opener = source.open_peer_future
-		if opener is not None and not opener.done():
-			source.open_peer_future = None
-			registry._convene_lobby_futures = getattr(registry, "_convene_lobby_futures", {})
-			registry._convene_lobby_futures[sid] = opener
 		result["convened"].append(conv.members_active[sid].sender)
 		woken.append(sid)
 

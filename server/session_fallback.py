@@ -91,7 +91,7 @@ def apply_fallback(registry, session_id: str, backend=None) -> None:
 	else:  # "create_new"
 		new_id = "conv-" + uuid.uuid4().hex
 		now = time.time()
-		new_conv = Conversation(id=new_id, title="(home)")
+		new_conv = Conversation(id=new_id, title="(home)", origin="fallback")
 		new_conv.created_at = now
 		new_conv.last_activity_at = now
 		registry.conversations[new_id] = new_conv
@@ -109,6 +109,7 @@ def apply_fallback(registry, session_id: str, backend=None) -> None:
 					last_activity_at=now,
 					ended_at=None,
 					hidden=False,
+					origin="fallback",
 				),
 				label=f"fb_write_conv_meta:{new_id}",
 			)

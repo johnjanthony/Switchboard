@@ -23,7 +23,6 @@ def make_backend() -> MagicMock:
 	backend.remove_conversation_member = AsyncMock()
 	backend.set_conversation_state = AsyncMock()
 	backend.set_conversation_last_activity = AsyncMock()
-	backend.set_open_conversation_id = AsyncMock()
 	backend.set_session_home = AsyncMock()
 	backend.set_global_away_mode = AsyncMock()
 	return backend
@@ -144,6 +143,7 @@ async def test_handle_fresh_windows_writes_pending_file(tmp_path):
 	session_id = agent["cli_session_id"]
 	assert session_id in registry.session_to_conversation_id
 	assert pending["conversation_id"] == registry.session_to_conversation_id[session_id]
+	assert registry.conversations[pending["conversation_id"]].origin == "spawn"
 
 
 @pytest.mark.parametrize("project", [
@@ -322,6 +322,7 @@ async def test_handle_resume_creates_continuation(tmp_path):
 	assert len(new_convs) == 1
 	new_conv = new_convs[0]
 	assert new_conv.continued_from == "conv-src"
+	assert new_conv.origin == "resume"
 	# Both sessions bound to new conv
 	assert registry.session_to_conversation_id["sess-1"] == new_conv.id
 	assert registry.session_to_conversation_id["sess-2"] == new_conv.id

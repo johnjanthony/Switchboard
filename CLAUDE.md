@@ -37,7 +37,7 @@ server/
   session_fallback.py  Session-to-conversation fallback resolution (home-conversation rebind / unbind)
   command_freshness.py Staleness gate for queued Firebase command entries (COMMAND_TTL_SECONDS)
   gateway/             Tool handlers + dispatch loops
-    handlers.py          ask_human, notify_human, send_document_human, message_and_await_agent, join_conversation, combine_conversations, lookup_conversation_ids, leave_conversation, set_away_mode tool closures (+ deprecated open_conversation/enter_conversation until the chunk-5 removal); JSON status envelopes (_envelope/_terminal_envelope/_wrap_wait_result)
+    handlers.py          ask_human, notify_human, send_document_human, message_and_await_agent, join_conversation, combine_conversations, lookup_conversation_ids, leave_conversation, set_away_mode tool closures; JSON status envelopes (_envelope/_terminal_envelope/_wrap_wait_result)
     dispatch.py          dispatch_responses, dispatch_combine_commands, dispatch_force_end_commands, dispatch_spawn_commands, dispatch_away_mode_commands, dispatch_status_request_commands, dispatch_session_end_markers, dispatch_session_sweep, handle_force_end
     document.py          _validate_path + denylist + sha256 helpers
     bulk_respond.py      _apply_bulk_respond_decision (used by exit_global to drain pending questions)
@@ -129,13 +129,13 @@ Requirements:
 
 ## MCP tool surface
 
-Active tools: `ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `join_conversation`, `combine_conversations`, `lookup_conversation_ids`, `leave_conversation`, `set_away_mode`. Conversation tools return one-line JSON status envelopes (`ok | timeout | conversation_empty | conversation_ended`); `ask_human` returns bare reply text with JSON terminal sentinels. `open_conversation`/`enter_conversation` still work but are deprecated and undocumented (removal in convening chunk 5).
+Active tools: `ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `join_conversation`, `combine_conversations`, `lookup_conversation_ids`, `leave_conversation`, `set_away_mode`. Conversation tools return one-line JSON status envelopes (`ok | timeout | conversation_ended`); `ask_human` returns bare reply text with JSON terminal sentinels.
 
 Routing is by `cli_session_id`, injected by the `cli-session-injector-hook.py` PreToolUse hook. Agents pass `sender` and tool-specific args only.
 
 ## Conversation model
 
-Conversations are the persistence + routing unit. States: `Active` / `Ended`. At most one Active conversation is the "open" singleton (minted/promoted by the first ref-less `join_conversation()`; joinable by later ref-less callers). Routing key is `cli_session_id` (hook-injected), not cwd. Away mode is a single global flag (`set_away_mode(bool)`).
+Conversations are the persistence + routing unit. States: `Active` / `Ended`. A ref-less `join_conversation()` mints a new Active conversation, or lands the caller in the single still-solo conversation another agent minted ref-less within the last ~30 minutes (the candidate rule); zero or several candidates both mint a new room. Routing key is `cli_session_id` (hook-injected), not cwd. Away mode is a single global flag (`set_away_mode(bool)`).
 
 ## Architectural constraints (decided)
 

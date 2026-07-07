@@ -93,7 +93,6 @@ async def test_hydrate_empty_firebase_leaves_registry_clean():
 	assert registry.conversations == {}
 	assert registry._session_to_conversation_id == {}
 	assert registry._session_home_conversation_id == {}
-	assert registry._open_conversation_id is None
 	assert registry._global_away is False
 	logger.surface_error.assert_not_called()
 
@@ -112,95 +111,6 @@ async def test_hydrate_restores_global_away_mode():
 		await hydrate_from_firebase(registry, None, logger)
 
 	assert registry._global_away is True
-
-
-@pytest.mark.asyncio
-async def test_hydrate_restores_open_conversation_id():
-	"""Firebase has global_settings/open_conversation_id pointing at an Active conv
-	→ registry._open_conversation_id set after hydration."""
-	registry = Registry()
-	logger = make_logger()
-	mock_db = make_firebase_db_mock({
-		"global_settings/open_conversation_id": "conv-open-42",
-		"conversations": {
-			"conv-open-42": conv_snapshot("conv-open-42", state="active"),
-		},
-	})
-
-	with patch("server.hydration.db", mock_db):
-		from server.hydration import hydrate_from_firebase
-		await hydrate_from_firebase(registry, None, logger)
-
-	assert registry._open_conversation_id == "conv-open-42"
-
-
-@pytest.mark.asyncio
-async def test_hydrate_clears_dangling_open_pointer_to_ended_conv():
-	"""Firebase open_conversation_id points at a conv whose state is Ended (so it
-	doesn't get hydrated). Hydration must clear the dangling pointer — in memory
-	AND on the backend — instead of leaving a stale id that every enter_conversation
-	call will reject. Reproduces the divergence observed 2026-05-27 after the
-	set_open_conversation_id(None) bug caused a clear to silently fail."""
-	registry = Registry()
-	logger = make_logger()
-	backend = MagicMock()
-	backend.set_open_conversation_id = AsyncMock()
-	mock_db = make_firebase_db_mock({
-		"global_settings/open_conversation_id": "conv-stale",
-		"conversations": {
-			"conv-stale": conv_snapshot("conv-stale", state="ended"),
-		},
-	})
-
-	with patch("server.hydration.db", mock_db):
-		from server.hydration import hydrate_from_firebase
-		await hydrate_from_firebase(registry, backend, logger)
-
-	assert registry._open_conversation_id is None
-	backend.set_open_conversation_id.assert_awaited_once_with(None)
-
-
-@pytest.mark.asyncio
-async def test_hydrate_clears_dangling_open_pointer_to_missing_conv():
-	"""Firebase open_conversation_id points at a conv that doesn't exist in
-	Firebase at all (deleted, orphaned). Same outcome as the Ended case: clear."""
-	registry = Registry()
-	logger = make_logger()
-	backend = MagicMock()
-	backend.set_open_conversation_id = AsyncMock()
-	mock_db = make_firebase_db_mock({
-		"global_settings/open_conversation_id": "conv-ghost",
-		# no /conversations node at all
-	})
-
-	with patch("server.hydration.db", mock_db):
-		from server.hydration import hydrate_from_firebase
-		await hydrate_from_firebase(registry, backend, logger)
-
-	assert registry._open_conversation_id is None
-	backend.set_open_conversation_id.assert_awaited_once_with(None)
-
-
-@pytest.mark.asyncio
-async def test_hydrate_does_not_touch_backend_when_open_pointer_is_valid():
-	"""Pointer references a live Active conv: leave it alone, no backend write."""
-	registry = Registry()
-	logger = make_logger()
-	backend = MagicMock()
-	backend.set_open_conversation_id = AsyncMock()
-	mock_db = make_firebase_db_mock({
-		"global_settings/open_conversation_id": "conv-live",
-		"conversations": {
-			"conv-live": conv_snapshot("conv-live", state="active"),
-		},
-	})
-
-	with patch("server.hydration.db", mock_db):
-		from server.hydration import hydrate_from_firebase
-		await hydrate_from_firebase(registry, backend, logger)
-
-	assert registry._open_conversation_id == "conv-live"
-	backend.set_open_conversation_id.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -613,6 +523,46 @@ async def test_hydrate_sessions_loads_terminal_and_nonterminal_records_without_r
 	assert ended_rec.source == "hydration"
 
 	assert mirror_calls == [], "hydrate_record must seed the mirror canon, not re-fire writes"
+
+
+@pytest.mark.asyncio
+async def test_hydrate_restores_origin():
+	"""A meta payload carrying origin=join round-trips onto the hydrated Conversation.origin."""
+	registry = Registry()
+	logger = make_logger()
+
+	snapshot = {
+		"conversations": {
+			"conv-origin": conv_snapshot("conv-origin", extra_meta={"origin": "join"}),
+		},
+	}
+	mock_db = make_firebase_db_mock(snapshot)
+
+	with patch("server.hydration.db", mock_db):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, None, logger)
+
+	assert registry.conversations["conv-origin"].origin == "join"
+
+
+@pytest.mark.asyncio
+async def test_hydrate_missing_origin_is_none():
+	"""A meta payload without the origin key hydrates origin is None (pre-origin record)."""
+	registry = Registry()
+	logger = make_logger()
+
+	snapshot = {
+		"conversations": {
+			"conv-no-origin": conv_snapshot("conv-no-origin"),
+		},
+	}
+	mock_db = make_firebase_db_mock(snapshot)
+
+	with patch("server.hydration.db", mock_db):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, None, logger)
+
+	assert registry.conversations["conv-no-origin"].origin is None
 
 
 @pytest.mark.asyncio

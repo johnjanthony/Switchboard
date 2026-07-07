@@ -60,6 +60,7 @@ class Conversation:
 	title: str
 	state: Literal["active", "ended"] = "active"
 	continued_from: str | None = None
+	origin: str | None = None  # join|spawn|resume|convene|fallback; None = pre-origin record, never a join candidate
 	members_active: dict = None  # dict[cli_session_id, ConversationMember]
 	members_history: list = None  # list[ConversationMember]
 	messages: list = None
@@ -70,10 +71,6 @@ class Conversation:
 	ended_at: float | None = None
 	hidden: bool = False
 	lock: asyncio.Lock = None
-	# Mint-path opener's await-peer promise: open_conversation blocks on this
-	# future until a peer becomes an alive member (via _add_member) or until
-	# the conv is torn down. Not hydrated — futures don't survive restart.
-	open_peer_future: asyncio.Future | None = None
 
 	def __post_init__(self):
 		if self.members_active is None: self.members_active = {}
@@ -93,7 +90,6 @@ class Registry:
 		self._pending_mirror = None
 		self._session_to_conversation_id: dict[str, str] = {}
 		self._session_home_conversation_id: dict[str, str] = {}
-		self._open_conversation_id: str | None = None
 		self.conversations: dict[str, "Conversation"] = {}
 		self._session_create_locks: dict[str, asyncio.Lock] = {}
 		# Bounded memory of recently terminally-handled (conversation_id,
@@ -121,14 +117,6 @@ class Registry:
 	@property
 	def session_home_conversation_id(self) -> dict[str, str]:
 		return self._session_home_conversation_id
-
-	@property
-	def open_conversation_id(self) -> str | None:
-		return self._open_conversation_id
-
-	@open_conversation_id.setter
-	def open_conversation_id(self, value: str | None) -> None:
-		self._open_conversation_id = value
 
 	@property
 	def global_away_mode(self) -> bool:

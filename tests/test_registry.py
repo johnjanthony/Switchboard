@@ -295,16 +295,12 @@ def test_registry_session_routing_maps():
 	r = Registry()
 	assert r.session_to_conversation_id == {}
 	assert r.session_home_conversation_id == {}
-	assert r.open_conversation_id is None
 
 	r.bind_session("session-x", "conv-1")
 	assert r.session_to_conversation_id["session-x"] == "conv-1"
 
 	r.set_session_home("session-x", "conv-1")
 	assert r.session_home_conversation_id["session-x"] == "conv-1"
-
-	r.open_conversation_id = "conv-1"
-	assert r.open_conversation_id == "conv-1"
 
 
 class TestActiveConversationsCount:

@@ -76,11 +76,6 @@ export function createStore(deps) {
 		notify();
 	}
 
-	function setOpenConversationId(idOrNull) {
-		state.openConversationId = idOrNull;
-		notify();
-	}
-
 	function setWslAvailable(value) {
 		state.wslAvailable = value;
 		notify();
@@ -286,7 +281,6 @@ export function createStore(deps) {
 			removeConversation(key);
 		}, onReadError);
 		fb.onValue(paths.globalAway(), (val) => setGlobalAway(!!val), onReadError);
-		fb.onValue(paths.openConversationId(), (val) => setOpenConversationId(val || null), onReadError);
 		fb.onValue(paths.wslAvailable(), (val) => setWslAvailable(!!val), onReadError);
 		fb.onValue(paths.widgetRings(), (val) => setWidgetRings(val || {}), onReadError);
 		fb.onValue(paths.widgetQuota(), (val) => setWidgetQuota(val || null), onReadError);
@@ -402,7 +396,6 @@ export function createStore(deps) {
 		setGlobalReadError,
 		retrySignIn,
 		setGlobalAway,
-		setOpenConversationId,
 		setWslAvailable,
 		setWidgetRings,
 		setWidgetQuota,
@@ -459,7 +452,6 @@ function initialState(storage) {
 		authed: false,
 		authError: null,
 		globalAway: false,
-		openConversationId: null,
 		wslAvailable: false,
 		conversations: {},
 		sessions: {},

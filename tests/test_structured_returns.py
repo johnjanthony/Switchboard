@@ -101,40 +101,45 @@ async def test_message_and_await_timeout_returns_timeout_envelope(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_message_and_await_sole_alive_returns_conversation_empty_envelope(tmp_path):
-	"""Sole-alive member in a non-open conv gets a conversation_empty envelope
-	carrying any parting lines left since their last_seen_seq, and is removed
-	from members_active."""
+async def test_message_and_await_sole_alive_parks_then_wakes_ok(tmp_path):
+	"""Sole-alive member parks in the wait_queue instead of getting a
+	conversation_empty envelope; a joiner's speak wakes it with an ok envelope.
+	The conversation_empty status no longer appears anywhere in the flow."""
 	backend = RecordingBackend()
-	r = Registry()
-	conv = Conversation(id="conv-p2", title="parting test 2")
-	m = ConversationMember(
-		cli_session_id="s-last2", sender="Claude-Last2", cwd="C:/P", surface="windows", joined_at=0.0,
-	)
-	conv.members_active["s-last2"] = m
-	conv.messages.append({
-		"seq": 0,
-		"sender": "Claude-Other",
-		"type": "parting",
-		"text": "goodbye world",
-		"timestamp": "2026-01-01T00:00:00+00:00",
-		"title": None,
-	})
-	m.last_seen_seq = 0
-	r.conversations["conv-p2"] = conv
-	r.bind_session("s-last2", "conv-p2")
+	r, conv_id = _make_registry_with_one_alive_member()
 	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
 	handlers = build_tool_handlers(_cfg(tmp_path), r, backend, logger)
 
-	result = await handlers.message_and_await_agent(
-		"Claude-Last2", message="still here?", cli_session_id="s-last2", cwd="C:/P",
-	)
+	solo_task = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-Solo", message="still here?", cli_session_id="s-solo", cwd="C:/Z",
+	))
+	for _ in range(5):
+		await asyncio.sleep(0)
 
+	conv = r.conversations[conv_id]
+	assert len(conv.wait_queue) == 1
+	assert "s-solo" in conv.members_active
+
+	join_result = await handlers.join_conversation(
+		"Joiner", ref=conv_id, cli_session_id="s-joiner", cwd="/home/j",
+	)
+	assert "conversation_empty" not in join_result
+
+	speak_task = asyncio.create_task(handlers.message_and_await_agent(
+		"Joiner", message="hi there", cli_session_id="s-joiner", cwd="/home/j",
+	))
+
+	result = await asyncio.wait_for(solo_task, timeout=2.0)
 	data = json.loads(result)
-	assert data["status"] == "conversation_empty"
-	assert data["conversation_id"] == "conv-p2"
-	assert "goodbye world" in data["log"]
-	assert "s-last2" not in conv.members_active
+	assert data["status"] == "ok"
+	assert "hi there" in data["log"]
+	assert "conversation_empty" not in result
+
+	speak_task.cancel()
+	try:
+		await speak_task
+	except asyncio.CancelledError:
+		pass
 
 
 @pytest.mark.asyncio

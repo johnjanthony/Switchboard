@@ -180,7 +180,7 @@ async def handle_force_end(registry, conversation_id: str, backend=None, logger=
 	Idempotent: if conversation is already Ended or doesn't exist, returns cleanly.
 
 	backend: optional ConversationStore — if provided, Firebase writes are issued
-	for member removal, state change, open-pointer clear, and a force-end system message.
+	for member removal, state change, and a force-end system message.
 	"""
 	import time as _time
 	from datetime import datetime, timezone
@@ -197,11 +197,6 @@ async def handle_force_end(registry, conversation_id: str, backend=None, logger=
 			future = entry["future"]
 			if not future.done():
 				future.set_result("__CONVERSATION_ENDED__\n(force-ended)")
-		# Also resolve any mint-path opener blocked on open_peer_future
-		opener_future = conv.open_peer_future
-		if opener_future is not None and not opener_future.done():
-			opener_future.set_result("__CONVERSATION_ENDED__\n(force-ended)")
-		conv.open_peer_future = None
 
 		# Collect session_ids for fallback (before clearing members).
 		# Both alive and dormant member sessions go through apply_fallback so
@@ -221,10 +216,6 @@ async def handle_force_end(registry, conversation_id: str, backend=None, logger=
 		# Mark Ended
 		conv.state = "ended"
 		conv.ended_at = _time.time()
-		open_cleared = False
-		if registry.open_conversation_id == conversation_id:
-			registry.open_conversation_id = None
-			open_cleared = True
 
 		if backend is not None:
 			now_iso = datetime.now(timezone.utc).isoformat()
@@ -245,11 +236,6 @@ async def handle_force_end(registry, conversation_id: str, backend=None, logger=
 				backend.set_conversation_state(conversation_id, "ended"),
 				label=f"fb_set_state:{conversation_id}:ended",
 			)
-			if open_cleared:
-				_spawn_bg(
-					backend.set_open_conversation_id(None),
-					label=f"fb_clear_open_id:{conversation_id}",
-				)
 			_spawn_bg(
 				backend.write_conversation_message(conversation_id, force_end_msg),
 				label=f"fb_write_force_end_msg:{conversation_id}",

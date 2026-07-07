@@ -50,13 +50,6 @@ async def hydrate_from_firebase(registry: Registry, backend, logger, session_reg
 	except Exception as exc:
 		await logger.surface_error(f"hydration_global_away_failed: {exc}")
 
-	try:
-		open_id = await _read_path("global_settings/open_conversation_id")
-		if isinstance(open_id, str) and open_id:
-			registry._open_conversation_id = open_id
-	except Exception as exc:
-		await logger.surface_error(f"hydration_open_conversation_id_failed: {exc}")
-
 	# 2. Conversations
 	try:
 		conversations_data = await _read_path("conversations")
@@ -70,29 +63,6 @@ async def hydrate_from_firebase(registry: Registry, backend, logger, session_reg
 					)
 	except Exception as exc:
 		await logger.surface_error(f"hydration_conversations_read_failed: {exc}")
-
-	# 2b. Validate the open-conversation pointer against hydrated state.
-	# Firebase can hold a stale pointer if a clear-write previously failed
-	# (e.g. the set_open_conversation_id(None) ValueError bug fixed 2026-05-27,
-	# or any other dropped background write). A dangling pointer breaks
-	# enter_conversation with confusing "open conversation is not Active" errors
-	# forever; clear it here so the system self-heals on restart.
-	open_id = registry._open_conversation_id
-	if open_id is not None:
-		conv = registry.conversations.get(open_id)
-		if conv is None or conv.state != "active":
-			await logger.surface_error(
-				f"hydration_clearing_dangling_open_pointer: conv_id={open_id} "
-				f"(state={'missing' if conv is None else conv.state})"
-			)
-			registry._open_conversation_id = None
-			if backend is not None:
-				try:
-					await backend.set_open_conversation_id(None)
-				except Exception as exc:
-					await logger.surface_error(
-						f"hydration_clear_open_pointer_backend_failed: {exc}"
-					)
 
 	# 2c. Session roster. Terminal records hydrate too: the sweeper can only
 	# retention-prune RTDB entries it holds in memory.
@@ -146,7 +116,7 @@ async def hydrate_from_firebase(registry: Registry, backend, logger, session_reg
 	await logger.info(
 		f"hydration_complete: conversations={len(registry.conversations)} "
 		f"sessions_bound={len(registry._session_to_conversation_id)} "
-		f"open={registry._open_conversation_id} away={registry._global_away}"
+		f"away={registry._global_away}"
 	)
 
 
@@ -174,6 +144,7 @@ def _hydrate_conversation(registry: Registry, conv_id: str, conv_node: Any) -> N
 		title=meta.get("title", conv_id),
 		state="active",
 		continued_from=meta.get("continued_from"),
+		origin=meta.get("origin"),
 		created_at=_as_float(meta.get("created_at"), 0.0),
 		last_activity_at=_as_float(meta.get("last_activity_at"), 0.0),
 		ended_at=_as_float(meta.get("ended_at"), None),

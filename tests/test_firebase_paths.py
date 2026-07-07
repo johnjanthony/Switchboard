@@ -80,29 +80,15 @@ async def test_write_conversation_message_omits_attached_to_msg_id_when_not_pass
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_set_open_conversation_id_writes_to_global_settings(backend):
-	"""set_open_conversation_id writes to global_settings/open_conversation_id."""
+async def test_delete_open_conversation_node_deletes_the_node(backend):
+	"""One-shot chunk 5 cleanup: delete_open_conversation_node deletes
+	global_settings/open_conversation_id via ref.delete(), sending the phone's
+	open-accent listener a permanent null."""
 	be, mock_db = backend
-	await be.set_open_conversation_id("conv-abc123")
+	await be.delete_open_conversation_node()
 	calls = [str(c) for c in mock_db.reference.call_args_list]
 	assert any("global_settings/open_conversation_id" in c for c in calls)
-	mock_db.reference.return_value.set.assert_called_with("conv-abc123")
-
-
-@pytest.mark.asyncio
-async def test_set_open_conversation_id_none_deletes_node(backend):
-	"""set_open_conversation_id(None) must call delete(), not set(None).
-
-	firebase_admin's ref.set(None) raises ValueError('Value must not be None.') —
-	the only way to clear a node is ref.delete(). The previous version called
-	set(None), which silently failed in a background task and left Firebase
-	pointing at a stale conversation id (observed 2026-05-27 in nssm-stderr.log:
-	`Task exception was never retrieved future: <Task finished
-	name='fb_clear_open_id:...' exception=ValueError('Value must not be None.')>`)."""
-	be, mock_db = backend
-	await be.set_open_conversation_id(None)
 	mock_db.reference.return_value.delete.assert_called_once()
-	mock_db.reference.return_value.set.assert_not_called()
 
 
 @pytest.mark.asyncio

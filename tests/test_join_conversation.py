@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -36,9 +37,8 @@ def _handlers(cfg, registry, backend, logger):
 
 
 @pytest.mark.asyncio
-async def test_ref_absent_mints_and_promotes(cfg, logger):
-	"""Unbound caller, no open marker, ref=None: mints a fresh conversation and
-	promotes it to the open singleton in one non-blocking call."""
+async def test_ref_absent_mints_join_origin(cfg, logger):
+	"""Unbound caller, no candidates, ref=None: mints a fresh origin=join conversation."""
 	backend = RecordingBackend()
 	r = make_registry_with_loopback()
 	handlers = _handlers(cfg, r, backend, logger)
@@ -54,15 +54,16 @@ async def test_ref_absent_mints_and_promotes(cfg, logger):
 	assert data["minted"] is True
 	assert data["peers"] == []
 	conv_id = data["conversation_id"]
-	assert r.open_conversation_id == conv_id
+	assert r.conversations[conv_id].origin == "join"
 	assert r.session_to_conversation_id["s-a"] == conv_id
 	assert "s-a" in r.conversations[conv_id].members_active
 
 
 @pytest.mark.asyncio
 async def test_ref_absent_second_joiner_lands_with_first(cfg, logger):
-	"""A mints via ref=None; unbound B also calls with ref=None and lands in the
-	same room (the open marker pairs them up) rather than minting a second one."""
+	"""A mints via ref=None (a solo origin=join room); unbound B also calls with
+	ref=None and lands in that same room (the sole join-origin candidate) rather
+	than minting a second one."""
 	backend = RecordingBackend()
 	r = make_registry_with_loopback()
 	handlers = _handlers(cfg, r, backend, logger)
@@ -85,6 +86,90 @@ async def test_ref_absent_second_joiner_lands_with_first(cfg, logger):
 	assert data_b["peers"] == ["A"]
 	assert "hello from A" in data_b["log"]
 	assert len(r.conversations) == 1
+	assert data_b.get("minted") is not True
+
+
+@pytest.mark.asyncio
+async def test_ref_absent_third_joiner_mints_new(cfg, logger):
+	"""A and B are already paired (two alive members); C's ref-less join finds
+	no solo join-origin candidate and mints a new room instead of joining them."""
+	backend = RecordingBackend()
+	r = make_registry_with_loopback()
+	handlers = _handlers(cfg, r, backend, logger)
+
+	result_a = await handlers.join_conversation("A", cli_session_id="s-a", cwd="C:/Work/A")
+	conv_id_ab = json.loads(result_a)["conversation_id"]
+	await handlers.join_conversation("B", cli_session_id="s-b", cwd="C:/Work/B")
+
+	result_c = await handlers.join_conversation("C", cli_session_id="s-c", cwd="C:/Work/C")
+	data_c = json.loads(result_c)
+
+	assert data_c["minted"] is True
+	assert data_c["conversation_id"] != conv_id_ab
+
+
+@pytest.mark.asyncio
+async def test_ref_absent_two_candidates_mints(cfg, logger):
+	"""Two solo origin=join conversations already exist (seeded independently,
+	so neither pairs the other); a third ref-less joiner faces ambiguity and
+	mints a new room rather than guessing."""
+	backend = RecordingBackend()
+	r = make_registry_with_loopback()
+	from server.conversation_ops import _create_active_conversation_for
+
+	conv_id_a = await _create_active_conversation_for(
+		r, cli_session_id="s-a", cwd="C:/Work/A", sender="A", backend=backend, origin="join",
+	)
+	conv_id_b = await _create_active_conversation_for(
+		r, cli_session_id="s-b", cwd="C:/Work/B", sender="B", backend=backend, origin="join",
+	)
+	handlers = _handlers(cfg, r, backend, logger)
+
+	result_c = await handlers.join_conversation("C", cli_session_id="s-c", cwd="C:/Work/C")
+	data_c = json.loads(result_c)
+
+	assert data_c["minted"] is True
+	assert data_c["conversation_id"] not in (conv_id_a, conv_id_b)
+	assert len(r.conversations) == 3
+
+
+@pytest.mark.asyncio
+async def test_ref_absent_stale_candidate_mints(cfg, logger):
+	"""A solo origin=join conversation exists but is older than the candidate
+	window; it is not eligible and a ref-less joiner mints a new room."""
+	backend = RecordingBackend()
+	r = make_registry_with_loopback()
+	handlers = _handlers(cfg, r, backend, logger)
+
+	result_a = await handlers.join_conversation("A", cli_session_id="s-a", cwd="C:/Work/A")
+	conv_id_a = json.loads(result_a)["conversation_id"]
+	r.conversations[conv_id_a].created_at = time.time() - 3600
+
+	result_b = await handlers.join_conversation("B", cli_session_id="s-b", cwd="C:/Work/B")
+	data_b = json.loads(result_b)
+
+	assert data_b["minted"] is True
+	assert data_b["conversation_id"] != conv_id_a
+
+
+@pytest.mark.asyncio
+async def test_ref_absent_fallback_origin_not_candidate(cfg, logger):
+	"""A solo conversation with origin=fallback (an ask-minted ad-hoc room) is
+	not a join candidate; a ref-less joiner mints a new room instead."""
+	backend = RecordingBackend()
+	r = make_registry_with_loopback()
+	from server.conversation_ops import _create_active_conversation_for
+
+	fallback_id = await _create_active_conversation_for(
+		r, cli_session_id="s-existing", cwd="C:/Work/E", sender="Existing", backend=backend,
+	)
+	handlers = _handlers(cfg, r, backend, logger)
+
+	result = await handlers.join_conversation("A", cli_session_id="s-a", cwd="C:/Work/A")
+	data = json.loads(result)
+
+	assert data["minted"] is True
+	assert data["conversation_id"] != fallback_id
 
 
 @pytest.mark.asyncio
@@ -241,36 +326,3 @@ async def test_bound_elsewhere_migrates(cfg, logger):
 # the absence of any await-a-future pattern in the handler is the proof.
 
 
-@pytest.mark.asyncio
-async def test_join_wakes_lobby_opener(cfg, logger):
-	"""A peer blocked in the mint-path open_conversation (open_peer_future set)
-	is woken when another agent join_conversation()s into that room."""
-	backend = RecordingBackend()
-	r = make_registry_with_loopback()
-	handlers = _handlers(cfg, r, backend, logger)
-
-	opener_task = asyncio.create_task(handlers.open_conversation(
-		"Opener",
-		cli_session_id="s-opener",
-		cwd="C:/Work/O",
-	))
-	await asyncio.sleep(0.05)
-
-	conv_id = next(iter(r.conversations))
-	conv = r.conversations[conv_id]
-	future = conv.open_peer_future
-	assert future is not None
-	assert not future.done()
-
-	result = await handlers.join_conversation(
-		"Joiner",
-		ref=conv_id,
-		cli_session_id="s-joiner",
-		cwd="C:/Work/J",
-	)
-	data = json.loads(result)
-	assert data["status"] == "ok"
-
-	opener_result = await asyncio.wait_for(opener_task, timeout=2.0)
-	assert future.done()
-	assert "Joiner" in opener_result

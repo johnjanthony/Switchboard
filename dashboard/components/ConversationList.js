@@ -48,7 +48,6 @@ export function ConversationList({ store }) {
 		const ended = !isActive(r.meta);
 		const rowClass = "conv-row" +
 			(r.id === state.selectedConversationId ? " selected" : "") +
-			(r.id === state.openConversationId ? " open" : "") +
 			(ended ? " ended" : "") +
 			(r.meta.hidden ? " hidden" : "");
 		return html`
@@ -89,7 +88,6 @@ export function ConversationList({ store }) {
 								key=${r.id}
 								class=${"conv-dot" +
 									(r.id === state.selectedConversationId ? " selected" : "") +
-									(r.id === state.openConversationId ? " open" : "") +
 									(r.meta.hidden ? " hidden" : "")}
 								title=${r.meta.title || r.id}
 								onClick=${() => store.selectConversation(r.id)}

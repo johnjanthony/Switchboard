@@ -260,6 +260,18 @@ class SessionRegistry:
 		self._fire_mirror(rec)
 		return notices
 
+	def mark_wait_cancelled(self, cli_session_id: str) -> None:
+		"""John cancelled the blocking tool call from the CLI; without this the
+		roster shows a stale awaiting_* chip until the next hook event."""
+		rec = self._records.get(cli_session_id)
+		if rec is None:
+			return
+		rec.state = "active"
+		rec.state_detail = "wait-cancelled"
+		rec.last_transition_source = "cancel"
+		rec.last_event_at = self._now()
+		self._fire_mirror(rec)
+
 	def note_spawn_resume(self, cli_session_id: str, cwd: str) -> None:
 		"""Sentinel bookkeeping: remember spawn-driven resumes so /session_start can
 		detect if CC ever stops preserving session ids across --resume (verified

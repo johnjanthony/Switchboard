@@ -31,10 +31,6 @@ export function globalAway() {
 	return 'global_settings/away_mode';
 }
 
-export function openConversationId() {
-	return 'global_settings/open_conversation_id';
-}
-
 export function wslAvailable() {
 	return 'global_settings/wsl_available';
 }
