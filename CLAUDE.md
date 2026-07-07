@@ -52,22 +52,23 @@ scripts/
 skills/
   switchboard/
     SKILL.md           Agent skill instructions (MCP tool signatures + Away Mode protocol)
-android/
-  app/src/main/
-    AndroidManifest.xml
-    java/io/github/johnjanthony/switchboard/
-      MainActivity.kt        Compose UI — list-based two-page nav, chat view, bubble readability, high-vis indicators
-      MainViewModel.kt       Firebase listeners, immutable state tracking, unseen activity
-      fcm/
-        SwitchboardFirebaseMessagingService.kt  Push notifications (three channels, tap-to-tab)
-      network/
-        ApiService.kt        Data classes (@PropertyName annotated)
-      ui/theme/              Material3 dark theme
+android/                     Three Gradle modules: app (phone UI), shared (library used by app + wear), wear (watch)
+  shared/src/main/java/io/github/johnjanthony/switchboard/
+    MainViewModel.kt         ALL Firebase RTDB listeners + command writers (StateFlow state; shared by app and wear)
+    SessionBoardPolicy.kt    Pure sessions-board derivations (label chain, needs-attention, partition/sort, badge count)
+    ConversationPolicy.kt    Pure conversation derivations (context rings, watch partition)
+    network/Models.kt        Data classes (@PropertyName annotated): ConversationSummary/Member/Row, RegistrySession, widget DTOs
+  app/src/main/java/io/github/johnjanthony/switchboard/
+    MainActivity.kt          NavHost (conversation list / chat / sessions board / markdown viewer) + dialog hoisting
+    fcm/SwitchboardFirebaseMessagingService.kt  Push notifications (three channels, tap-to-conversation)
+    ui/                      Compose screens + composables (ConversationListScreen, SessionsBoardScreen, sheets, row composables)
+    ui/theme/                Material3 dark "console" theme (Brass/Jade/Coral palette)
+  wear/                      Wear OS companion (own Compose UI; consumes the shared MainViewModel and models)
   app/build.gradle           Markwon, Firebase, Compose dependencies
 watchtower/                  Windows client (.NET 9 / WinForms taskbar widget) — "Switchboard Watchtower"
   Switchboard.Watchtower.sln
   src/Switchboard.Watchtower/        WinForms app (widget, hover popup, tray, Win32 taskbar placement, Claude status indicator)
-  src/Switchboard.Watchtower.Core/   Pure logic (transcript parsing, session scanners, quota, window math, config, Claude status parse + watch state machine)
+  src/Switchboard.Watchtower.Core/   Pure logic (transcript parsing, session scanners, quota, window math, config, Claude status parse; the status watch state machine lives server-side)
   tests/Switchboard.Watchtower.Core.Tests/   xUnit tests for the Core library
   tools/IconGen/                     One-off WinForms tool that renders the app icon (build helper)
 dashboard/                  Switchboard Operator: zero-build Preact+htm web cockpit, served by the Python server at /dashboard
