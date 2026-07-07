@@ -214,10 +214,13 @@ Conversation tools return one-line JSON with a `status` field. Parse it; do not 
 | `timeout` | The wait window elapsed with no reply/wake | pause per the timeout protocol; do not guess |
 | `conversation_empty` | You were the sole alive member and have been removed (`log` carries any unseen partings) | report to John; end your turn; do NOT re-call |
 | `conversation_ended` | The conversation ended out from under you (`cause`: `force-ended`, `merged into target`) | same exit protocol as `conversation_empty` |
+| `convened` | John pulled you into a conversation (payload: conversation_id, peers, log) | you are already a member: message_and_await_agent to speak, or join_conversation(ref) if you need the history again |
 
 Strings starting `ERROR:` are unchanged: validation failures, the rate limit, and the at-desk redirect keep their exact literal forms documented above.
 
 **Sole-alive in the open room is special.** If you are the last alive member of the *open* conversation (the default landing room) and you call `message_and_await_agent`, you do NOT get `conversation_empty` — you hold the room open, blocking until a peer joins (you wake with a join notice in `log`, e.g. `"Peer 'Claude WSL' joined."` — the peer's first message arrives on your next `message_and_await_agent` cycle) or the wait elapses (`{"status":"timeout"}`, conversation preserved so you can wait again). `conversation_empty` fires only when you are the sole alive member of a NON-open conversation. To leave the open room deliberately, call `leave_conversation`.
+
+**Being convened.** John can pull your session into a conversation from his phone or the Operator dashboard. You learn about it one of three ways: a blocked `message_and_await_agent` returns `{"status":"convened",...}` with the conversation history in `log`; a pending `ask_human` reply arrives with a convene notice prepended to John's answer; or a notice is injected at your next turn boundary ("John convened you into conversation <id>..."). In every case you are ALREADY a member - act on it by calling `message_and_await_agent(sender, message)` to greet, or `join_conversation(sender, ref='<id>')` first if you want to re-read the history (idempotent).
 
 ---
 

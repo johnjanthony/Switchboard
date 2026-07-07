@@ -14,6 +14,7 @@ HOOK = Path(__file__).resolve().parent.parent / "scripts" / "agent-status-hook.p
 
 class _Capture(http.server.BaseHTTPRequestHandler):
 	posts: list[dict] = []
+	response_payload: dict | None = None
 
 	def do_POST(self):
 		length = int(self.headers.get("Content-Length", "0"))
@@ -23,7 +24,14 @@ class _Capture(http.server.BaseHTTPRequestHandler):
 		except Exception:
 			_Capture.posts.append({"_raw": raw.decode("utf-8", "replace")})
 		self.send_response(200)
-		self.end_headers()
+		if _Capture.response_payload is not None:
+			body = json.dumps(_Capture.response_payload).encode("utf-8")
+			self.send_header("Content-Type", "application/json")
+			self.send_header("Content-Length", str(len(body)))
+			self.end_headers()
+			self.wfile.write(body)
+		else:
+			self.end_headers()
 
 	def log_message(self, *args, **kwargs):
 		pass  # silence
@@ -31,6 +39,7 @@ class _Capture(http.server.BaseHTTPRequestHandler):
 
 def _start_server():
 	_Capture.posts = []
+	_Capture.response_payload = None
 	srv = socketserver.TCPServer(("127.0.0.1", 0), _Capture)
 	port = srv.server_address[1]
 	thread = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -216,6 +225,62 @@ def test_body_includes_event_matching_hook_event_name():
 		srv.shutdown()
 	body = _Capture.posts[0]
 	assert body["event"] == "PostToolUse"
+
+
+# --- Convening chunk 3: cwd forwarding + notice printing ---
+
+def test_body_includes_cwd_when_present_in_stdin():
+	srv, port = _start_server()
+	try:
+		_run_hook({
+			"hook_event_name": "PostToolUse",
+			"session_id": "s-1",
+			"tool_name": "Bash",
+			"tool_input": {"command": "ls"},
+			"tool_response": {},
+			"cwd": "/c/Work/switchboard",
+		}, port)
+	finally:
+		srv.shutdown()
+	body = _Capture.posts[0]
+	assert body["cwd"] == "/c/Work/switchboard"
+
+
+def test_user_prompt_submit_prints_notices_to_stdout():
+	"""UserPromptSubmit stdout becomes context for the agent's turn, so returned
+	notices are printed."""
+	srv, port = _start_server()
+	_Capture.response_payload = {"notices": ["N"]}
+	try:
+		result = _run_hook({
+			"hook_event_name": "UserPromptSubmit",
+			"session_id": "s-1",
+			"prompt": "hi",
+		}, port)
+	finally:
+		_Capture.response_payload = None
+		srv.shutdown()
+	assert result.returncode == 0
+	assert result.stdout.decode("utf-8") == "N"
+
+
+def test_pre_tool_use_does_not_print_notices():
+	"""Every event other than UserPromptSubmit keeps the no-stdout contract,
+	even when the server returns notices."""
+	srv, port = _start_server()
+	_Capture.response_payload = {"notices": ["N"]}
+	try:
+		result = _run_hook({
+			"hook_event_name": "PreToolUse",
+			"session_id": "s-1",
+			"tool_name": "Bash",
+			"tool_input": {"command": "ls"},
+		}, port)
+	finally:
+		_Capture.response_payload = None
+		srv.shutdown()
+	assert result.returncode == 0
+	assert result.stdout == b""
 
 
 START_HOOK = Path(__file__).resolve().parent.parent / "scripts" / "cli-session-start-hook.py"

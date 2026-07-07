@@ -63,3 +63,15 @@ export function forceEndCmd({ conversationId } = {}, nowIsoFn) {
 export function setHiddenCmd(convId, hidden) {
 	return { path: `conversations/${convId}/meta/hidden`, value: hidden };
 }
+
+export function conveneCmd({ sessionIds, target, title } = {}, nowIsoFn) {
+	const value = { session_ids: sessionIds, target: target || 'new', issued_at: nowIsoFn() };
+	if (title !== undefined && title !== null) {
+		value.title = title;
+	}
+	return { path: 'convene_commands', value };
+}
+
+export function ackSessionCmd(sessionId, nowIsoFn) {
+	return { path: `session_acks/${sessionId}`, value: nowIsoFn() };
+}

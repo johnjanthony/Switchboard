@@ -54,6 +54,8 @@ def _wrap_wait_result(conversation_id: str, text: str) -> str:
 	"""Envelope a message_and_await wake result. Internal wake payloads are plain
 	strings (delta logs, dormancy notices, lobby 'ok. open_conversation' wakes);
 	sentinels map to their terminal envelopes."""
+	if text.startswith('{"status":'):
+		return text  # already an envelope (convene wake resolves futures pre-built)
 	terminal = _terminal_envelope(text)
 	if terminal is not None:
 		return terminal

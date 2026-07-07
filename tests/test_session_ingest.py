@@ -28,9 +28,10 @@ def logger(cfg):
 	return JsonlLogger(cfg.log_path)
 
 
-def _build_app(handlers, session_registry):
+def _build_app(handlers, session_registry, registry=None):
 	from server.main import (
 		_build_agent_status_route,
+		_build_away_mode_route,
 		_build_session_start_route,
 		_build_sessions_route,
 	)
@@ -38,6 +39,8 @@ def _build_app(handlers, session_registry):
 	app.add_route("/session_start", _build_session_start_route(session_registry), methods=["POST"])
 	app.add_route("/sessions", _build_sessions_route(session_registry), methods=["GET"])
 	app.add_route("/agent_status", _build_agent_status_route(handlers, session_registry), methods=["POST"])
+	if registry is not None:
+		app.add_route("/away-mode", _build_away_mode_route(registry, session_registry), methods=["GET"])
 	return app
 
 
@@ -165,3 +168,118 @@ def test_get_sessions_returns_recorded_payloads(cfg, logger):
 
 	ids = {s["cli_session_id"] for s in body["sessions"]}
 	assert ids == {"s1", "s2"}
+
+
+def test_away_mode_delivers_and_pops_queued_notice_for_session(cfg, logger):
+	registry = Registry()
+	registry.global_away_mode = True
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	session_registry = SessionRegistry()
+	session_registry.record_session_start("s1", cwd="C:/Work/X")
+	session_registry.queue_notice("s1", "wake up")
+	app = _build_app(handlers, session_registry, registry=registry)
+
+	with TestClient(app) as client:
+		resp = client.get("/away-mode", params={"session_id": "s1"})
+		assert resp.status_code == 200
+		assert resp.json() == {"active": True, "notices": ["wake up"]}
+
+		resp2 = client.get("/away-mode", params={"session_id": "s1"})
+		assert resp2.status_code == 200
+		assert resp2.json() == {"active": True, "notices": []}
+
+
+def test_away_mode_without_session_id_does_not_pop_notice(cfg, logger):
+	registry = Registry()
+	registry.global_away_mode = False
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	session_registry = SessionRegistry()
+	session_registry.record_session_start("s1", cwd="C:/Work/X")
+	session_registry.queue_notice("s1", "wake up")
+	app = _build_app(handlers, session_registry, registry=registry)
+
+	with TestClient(app) as client:
+		resp = client.get("/away-mode")
+		assert resp.status_code == 200
+		assert resp.json() == {"active": False, "notices": []}
+
+	# The notice was never popped since no session_id was supplied.
+	assert session_registry.pop_notices("s1") == ["wake up"]
+
+
+def test_agent_status_user_prompt_submit_delivers_and_empties_queue(cfg, logger):
+	registry = Registry()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	session_registry = SessionRegistry()
+	session_registry.record_session_start("s1", cwd="C:/Work/X")
+	session_registry.queue_notice("s1", "wake up")
+	app = _build_app(handlers, session_registry)
+
+	with TestClient(app) as client:
+		resp = client.post("/agent_status", json={
+			"session_id": "s1",
+			"state": "thinking",
+			"event": "UserPromptSubmit",
+		})
+		assert resp.status_code == 200
+		assert resp.json() == {"notices": ["wake up"]}
+
+	assert session_registry.pop_notices("s1") == []
+
+
+def test_agent_status_pre_tool_use_does_not_pop_notice(cfg, logger):
+	registry = Registry()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	session_registry = SessionRegistry()
+	session_registry.record_session_start("s1", cwd="C:/Work/X")
+	session_registry.queue_notice("s1", "wake up")
+	app = _build_app(handlers, session_registry)
+
+	with TestClient(app) as client:
+		resp = client.post("/agent_status", json={
+			"session_id": "s1",
+			"state": "tool:Bash",
+			"event": "PreToolUse",
+		})
+		assert resp.status_code == 200
+		assert resp.json() == {"notices": []}
+
+	# The queue is untouched: PreToolUse has no delivery channel for it.
+	assert session_registry.pop_notices("s1") == ["wake up"]
+
+
+def test_agent_status_cwd_fills_empty_record_but_does_not_overwrite(cfg, logger):
+	registry = Registry()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	session_registry = SessionRegistry()
+	app = _build_app(handlers, session_registry)
+
+	with TestClient(app) as client:
+		resp = client.post("/agent_status", json={
+			"session_id": "s1",
+			"state": "thinking",
+			"event": "PreToolUse",
+			"cwd": "C:/Work/X",
+		})
+		assert resp.status_code == 200
+
+		rec = session_registry.get("s1")
+		assert rec is not None
+		assert rec.cwd == "C:/Work/X"
+
+		resp2 = client.post("/agent_status", json={
+			"session_id": "s1",
+			"state": "thinking",
+			"event": "PreToolUse",
+			"cwd": "C:/Work/Y",
+		})
+		assert resp2.status_code == 200
+
+	rec2 = session_registry.get("s1")
+	assert rec2 is not None
+	assert rec2.cwd == "C:/Work/X"

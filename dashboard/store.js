@@ -8,6 +8,8 @@
 //   storage - localStorage-like { getItem, setItem }
 //   nowMs   - () => epoch ms, used to stamp pendingsFlat firstObservedMs
 
+import { conveneCmd, ackSessionCmd } from './commands.js';
+
 export function createStore(deps) {
 	const { fb, paths, storage, nowMs } = deps;
 
@@ -109,6 +111,11 @@ export function createStore(deps) {
 		notify();
 	}
 
+	function setSessionAcks(map) {
+		state.sessionAcks = map || {};
+		notify();
+	}
+
 	function upsertConversationMeta(id, meta) {
 		const conv = state.conversations[id] || {};
 		state.conversations[id] = { ...conv, meta };
@@ -171,6 +178,30 @@ export function createStore(deps) {
 		state.ui.sessionsCollapsed = !state.ui.sessionsCollapsed;
 		storage.setItem('sb.sessionsCollapsed', String(state.ui.sessionsCollapsed));
 		notify();
+	}
+
+	function toggleSessionSelected(id) {
+		const selected = state.ui.selectedSessionIds;
+		state.ui.selectedSessionIds = selected.includes(id)
+			? selected.filter((existing) => existing !== id)
+			: [...selected, id];
+		notify();
+	}
+
+	function clearSessionSelection() {
+		state.ui.selectedSessionIds = [];
+		notify();
+	}
+
+	function ackSession(sessionId) {
+		const c = ackSessionCmd(sessionId, fb.nowIso);
+		fb.setValue(c.path, c.value);
+	}
+
+	function conveneSelected({ target, title } = {}) {
+		const c = conveneCmd({ sessionIds: state.ui.selectedSessionIds, target, title }, fb.nowIso);
+		fb.pushValue(c.path, c.value);
+		clearSessionSelection();
 	}
 
 	// Drag-to-resize the left conversation list. Width is clamped to a sane range
@@ -262,6 +293,7 @@ export function createStore(deps) {
 		fb.onValue(paths.widgetStatus(), (val) => setWidgetStatus(val || null), onReadError);
 		fb.onValue(paths.widgetPushedAt(), (val) => setWidgetPushedAt(val || null), onReadError);
 		fb.onValue(paths.sessions(), (val) => setSessions(val || {}), onReadError);
+		fb.onValue(paths.sessionAcks(), (val) => setSessionAcks(val || {}), onReadError);
 		fb.onChildAdded(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError);
 		fb.onChildChanged(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError);
 	}
@@ -377,6 +409,11 @@ export function createStore(deps) {
 		setWidgetStatus,
 		setWidgetPushedAt,
 		setSessions,
+		setSessionAcks,
+		toggleSessionSelected,
+		clearSessionSelection,
+		ackSession,
+		conveneSelected,
 		upsertConversationMeta,
 		removeConversation,
 		upsertAdminNotification,
@@ -426,6 +463,7 @@ function initialState(storage) {
 		wslAvailable: false,
 		conversations: {},
 		sessions: {},
+		sessionAcks: {},
 		adminNotifications: {},
 		widget: { rings: {}, quota: null, status: null, pushedAt: null },
 		selectedConversationId: null,
@@ -438,6 +476,7 @@ function initialState(storage) {
 			leftWidth: readStoredLeftWidth(storage),
 			awayOffDialogOpen: false,
 			sessionsCollapsed: storage.getItem('sb.sessionsCollapsed') === 'true',
+			selectedSessionIds: [],
 		},
 		paneErrors: {},
 	};

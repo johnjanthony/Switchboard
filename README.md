@@ -19,7 +19,7 @@ Switchboard is a local MCP gateway with cloud-synchronized state (Firebase) that
 ## Features
 
 - **Session-id routing**: Each agent session is identified by a `cli_session_id` injected automatically by the PreToolUse hook. Agents only pass `sender` and tool arguments.
-- **Conversations**: Messages, members, and state persist in Firebase as named conversations (Active / Ended). At most one is "open" — joinable by any new agent via `enter_conversation`.
+- **Conversations**: Messages, members, and state persist in Firebase as named conversations (Active / Ended). At most one is "open" — joinable by any new agent via `join_conversation`.
 - **Asynchronous updates**: Send non-blocking notifications or deliver documents directly to your phone.
 - **In-line replies**: View your responses directly in the chat history for full context.
 - **Global away mode**: Single server-wide flag. Toggle from the phone's top-bar pill or via the `set_away_mode` MCP tool.
@@ -191,8 +191,7 @@ Away mode activates when you tell your agent you're stepping away — any phrasi
 **Multi-agent (conversation) tools:**
 
 - **`message_and_await_agent(sender, message, title?)`** — speak to peers in your conversation and block for the next reply.
-- **`open_conversation(sender, title?)`** — promote your conversation to the global "open" singleton so other agents can join via `enter_conversation`.
-- **`enter_conversation(sender)`** — join the open conversation (or queue for the next intro in your current one) and block until a peer speaks.
+- **`join_conversation(sender, ref?, title?)`** — join a conversation (a specific one via `ref`, or the currently-open one; mints a fresh room when none exists). Never blocks; returns the unseen history. Replaces the deprecated `open_conversation`/`enter_conversation` pair.
 - **`combine_conversations(source_id, target_id)`** — merge two conversations; dormant members of `source_id` are migrated and auto-resumed.
 - **`lookup_conversation_ids(cwd_filter?, sender_contains?, title_contains?)`** — find conversation IDs to feed `combine_conversations`.
 - **`leave_conversation(sender, parting_message)`** — leave the conversation with a final summary; session falls back to its home conversation (away on) or terminal output (away off).
@@ -205,7 +204,7 @@ Switchboard correlates your reply to the waiting `ask_human` call via the Androi
 
 ### Conversation composition
 
-Multiple agents can share a conversation without spawning. Open one with `open_conversation(sender, title?)`, then have additional agents join via `enter_conversation(sender)`. Agents in the same conversation communicate through `message_and_await_agent`.
+Multiple agents can share a conversation without spawning. Any agent calls `join_conversation(sender, title?)` — the first mints the room and it becomes the open one; later ref-less callers land in it, and `ref` targets a specific conversation. Agents in the same conversation communicate through `message_and_await_agent`.
 
 You can also merge two existing conversations with `combine_conversations(source_id, target_id)` — dormant members of the source are migrated into the target and revived. All three flows are also available from the phone's long-press menu on any conversation row.
 

@@ -57,3 +57,7 @@ test('widgetStatus() targets widget/status', () => {
 test('sessions() is the sessions root', () => {
 	assert.equal(schema.sessions(), 'sessions');
 });
+
+test('sessionAcks() is the session_acks root', () => {
+	assert.equal(schema.sessionAcks(), 'session_acks');
+});

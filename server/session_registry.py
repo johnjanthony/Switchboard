@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -66,6 +66,10 @@ class SessionRecord:
 	context_pct: float | None = None
 	end_reason: str | None = None
 	source: str = "hook"
+	name: str | None = None
+	name_source: str | None = None
+	last_transition_source: str | None = None
+	pending_notices: list = field(default_factory=list)
 
 	def to_payload(self) -> dict:
 		return asdict(self)
@@ -144,11 +148,21 @@ class SessionRegistry:
 		rec.state = "idle"
 		rec.state_detail = start_source
 		rec.end_reason = None
+		rec.last_transition_source = "session_start"
 		self._fire_mirror(rec)
 		return rec
 
-	def upsert_from_hook(self, cli_session_id: str, *, state: str, detail: str | None = None) -> SessionRecord:
+	def upsert_from_hook(
+		self, cli_session_id: str, *, state: str, detail: str | None = None,
+		cwd: str | None = None, event: str | None = None,
+	) -> SessionRecord:
 		rec = self._ensure(cli_session_id, source="hook")
+		if cwd and not rec.cwd:
+			from server.conversation_ops import _infer_surface
+			rec.cwd = cwd
+			rec.surface = _infer_surface(cwd)
+		if rec.state != state and event:
+			rec.last_transition_source = f"hook:{event}"
 		rec.state = state
 		rec.state_detail = detail
 		rec.last_event_at = self._now()
@@ -176,6 +190,7 @@ class SessionRegistry:
 		rec.state = "ended"
 		rec.end_reason = reason
 		rec.last_event_at = ended_at or self._now()
+		rec.last_transition_source = "session_end"
 		self._fire_mirror(rec)
 		return rec
 
@@ -195,6 +210,11 @@ class SessionRegistry:
 				rec.model = model
 			if isinstance(pct, (int, float)):
 				rec.context_pct = float(pct)
+			name = ring.get("name")
+			name_source = ring.get("name_source")
+			if isinstance(name, str) and name:
+				rec.name = name
+				rec.name_source = name_source if isinstance(name_source, str) else None
 			rec.last_event_at = self._now()
 			self._fire_mirror(rec)
 
@@ -217,6 +237,26 @@ class SessionRegistry:
 		rec.sender = sender
 		self._fire_mirror(rec)
 
+	def queue_notice(self, cli_session_id: str, text: str) -> bool:
+		"""Queue a wake notice for hook delivery (turn-end block reason or
+		UserPromptSubmit context). At-most-once: pop_notices clears on read; the
+		convene intro message in the conversation is the backstop for a lost one."""
+		rec = self._records.get(cli_session_id)
+		if rec is None or not text:
+			return False
+		rec.pending_notices.append(text)
+		self._fire_mirror(rec)
+		return True
+
+	def pop_notices(self, cli_session_id: str) -> list[str]:
+		rec = self._records.get(cli_session_id)
+		if rec is None or not rec.pending_notices:
+			return []
+		notices = list(rec.pending_notices)
+		rec.pending_notices.clear()
+		self._fire_mirror(rec)
+		return notices
+
 	def hydrate_record(self, data: dict) -> None:
 		"""Rebuild one record from its RTDB payload at startup. Trusts the stored
 		state and last_event_at (honest ages); the sweeper judges from there."""
@@ -238,6 +278,10 @@ class SessionRegistry:
 			context_pct=data.get("context_pct"),
 			end_reason=data.get("end_reason"),
 			source="hydration",
+			name=data.get("name"),
+			name_source=data.get("name_source"),
+			last_transition_source=data.get("last_transition_source"),
+			pending_notices=list(data.get("pending_notices") or []),
 		)
 		self._records[sid] = rec
 		# Seed the canon so hydration does not immediately re-write RTDB with

@@ -666,7 +666,10 @@ class FirebaseBackend(
 		await asyncio.to_thread(lambda: db.reference(f"sessions/{cli_session_id}").set(payload))
 
 	async def delete_session_record(self, cli_session_id: str) -> None:
-		await asyncio.to_thread(lambda: db.reference(f"sessions/{cli_session_id}").delete())
+		def _delete():
+			db.reference(f"sessions/{cli_session_id}").delete()
+			db.reference(f"session_acks/{cli_session_id}").delete()
+		await asyncio.to_thread(_delete)
 
 	async def set_session_home(self, session_id: str, conv_id: str | None) -> None:
 		"""Persist a cli session's home-conversation pointer.
@@ -1045,6 +1048,13 @@ class FirebaseBackend(
 		"""Listen for entries under /force_end_commands; dispatch handler(cmd_dict)
 		for each queued or new entry (initial snapshot included; TTL-gated)."""
 		self._start_command_listener("force_end_commands", handler)
+
+	async def start_convene_command_listener(self, handler) -> None:
+		"""Listen for entries under /convene_commands; dispatch handler(cmd_dict)
+		for each queued or new entry (initial snapshot included; TTL-gated).
+		At-least-once: convene routing is idempotent (already-a-member counts as
+		success), so replay after a crash re-converges instead of duplicating."""
+		self._start_command_listener("convene_commands", handler)
 
 	async def start_conversation_answers_listener(self) -> None:
 		"""Listen for answer events under /conversations/<conv_id>/answers/<request_id>.

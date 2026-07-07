@@ -15,7 +15,10 @@ public static class UsageReader
 		var status = ActiveClassifier.StatusFor(mtime, nowUtc, liveThresholdSeconds);
 		var label = turn.Cwd is not null ? CwdLabeler.Label(turn.Cwd) : FolderFallbackLabel(path);
 
-		return new SessionModel(label, distro, turn.Usage.ContextTokens, window, turn.Model, status, mtime, SessionId: Path.GetFileNameWithoutExtension(path));
+		var sessionId = Path.GetFileNameWithoutExtension(path);
+		var (name, nameSource) = TranscriptTitles.Read(path, sessionId);
+		return new SessionModel(label, distro, turn.Usage.ContextTokens, window, turn.Model, status, mtime,
+			SessionId: sessionId, Name: name, NameSource: nameSource);
 	}
 
 	// When a transcript has no cwd field, fall back to the project folder name (the encoded cwd).

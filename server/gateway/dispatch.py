@@ -314,6 +314,34 @@ async def dispatch_combine_commands(registry, backend, logger, supervisor, pendi
 		await logger.info("combine_command_listener not wired (backend missing method)")
 
 
+async def dispatch_convene_commands(registry, session_registry, backend, logger, supervisor):
+	"""Watch /convene_commands for phone/Operator convene requests.
+
+	Command shape: {session_ids: [...], target: "new" | "<conv-id>", title, issued_at}.
+	The listener deletes entries after dispatch, so outcomes are recorded in the
+	target conversation's intro message; an all-skipped convene additionally
+	notifies the phone so a no-op tap is never silent."""
+	from server.conversation_ops import _perform_convene
+
+	async def _handle(cmd: dict, ack=None):
+		if not isinstance(cmd.get("session_ids"), list) or not cmd.get("session_ids"):
+			await logger.surface_error(f"convene_command_missing_sessions: {cmd}")
+			return
+		result = await _perform_convene(registry, session_registry, cmd, logger, backend=backend)
+		if not result["convened"] and result["skipped"] and hasattr(backend, "send_text"):
+			reasons = "; ".join(f"{s['session_id'][:8]}: {s['reason']}" for s in result["skipped"])
+			try:
+				await backend.send_text(f"Convene did nothing - every selected session was skipped ({reasons}).")
+			except Exception as exc:
+				await logger.surface_error(f"convene_noop_notice_failed: {exc}")
+		await logger.info(f"convene_command_handled: {result}")
+
+	if hasattr(backend, "start_convene_command_listener"):
+		await backend.start_convene_command_listener(_handle)
+	else:
+		await logger.info("convene_command_listener not wired (backend missing method)")
+
+
 async def dispatch_force_end_commands(registry, backend, logger, supervisor):
 	"""Watch Firebase /force_end_commands/ for force-end requests.
 	On each command, call handle_force_end(registry, conversation_id).

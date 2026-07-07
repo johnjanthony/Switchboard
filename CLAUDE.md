@@ -12,7 +12,7 @@ Single Python process, one asyncio event loop, MCP HTTP server on `localhost:987
 
 Away mode is the founding feature, not the whole product: ask/notify blocking semantics are away-mode-scoped (at-desk interaction uses the terminal), while session tracking, telemetry fan-out, Operator, and Watchtower are always-on ambient surfaces.
 
-The Registry is in-memory. The pending-request index is keyed by `(conversation_id, sender)` tuples where `conversation_id` is a `conv-<uuid>` string from `Registry.conversations` — not a filesystem path. Pending `ask_human` futures die on restart and waiting agents time out. Conversations (the persistence unit) survive restart via Firebase hydration — see `server/hydration.py`.
+The Registry is in-memory. The pending-request index is keyed by `(conversation_id, cli_session_id)` tuples where `conversation_id` is a `conv-<uuid>` string from `Registry.conversations` — not a filesystem path; answers resolve by `(conversation_id, request_id)`. Pending `ask_human` futures die on restart and waiting agents time out (parked-pendings mitigation is scheduled post-convening, see the 2026-07-06 T-001 re-triage). Conversations (the persistence unit) survive restart via Firebase hydration — see `server/hydration.py`.
 
 ## Layout
 
@@ -37,8 +37,8 @@ server/
   session_fallback.py  Session-to-conversation fallback resolution (home-conversation rebind / unbind)
   command_freshness.py Staleness gate for queued Firebase command entries (COMMAND_TTL_SECONDS)
   gateway/             Tool handlers + dispatch loops
-    handlers.py          ask_human, notify_human, send_document_human, message_and_await_agent, open_conversation, enter_conversation, combine_conversations, lookup_conversation_ids, leave_conversation, set_away_mode tool closures
-    dispatch.py          dispatch_responses, dispatch_combine_commands, dispatch_force_end_commands, dispatch_spawn_commands, dispatch_away_mode_commands, dispatch_session_end_markers, handle_force_end
+    handlers.py          ask_human, notify_human, send_document_human, message_and_await_agent, join_conversation, combine_conversations, lookup_conversation_ids, leave_conversation, set_away_mode tool closures (+ deprecated open_conversation/enter_conversation until the chunk-5 removal); JSON status envelopes (_envelope/_terminal_envelope/_wrap_wait_result)
+    dispatch.py          dispatch_responses, dispatch_combine_commands, dispatch_force_end_commands, dispatch_spawn_commands, dispatch_away_mode_commands, dispatch_status_request_commands, dispatch_session_end_markers, dispatch_session_sweep, handle_force_end
     document.py          _validate_path + denylist + sha256 helpers
     bulk_respond.py      _apply_bulk_respond_decision (used by exit_global to drain pending questions)
     bg_tasks.py          _BG_TASKS + _spawn_bg — strong-ref tracker for background tasks
@@ -78,9 +78,9 @@ dashboard/                  Switchboard Operator: zero-build Preact+htm web cock
   derive.js                Pure derivations (member state, pending aggregation, oldest-pending age)
   commands.js              Pure write-command builders, each returning {path, value}
   store.js                 Reactive view-model store (the single owner of projected state)
-  markdown.js              Tiny safe Markdown-subset renderer (HTML-escaped, scheme-allowlisted links)
+  markdown.js              Markdown renderer wrapping vendored markdown-it + highlight.js (GFM + syntax coloring, link-scheme validation)
   app.js                   Boot wiring + /healthz poll + rollUpHealth (parity with /stats)
-  components/              Preact+htm components: App, StatusBar, ConversationList, ConversationDetail, CommandRail, PaneBanner
+  components/              Preact+htm components: App, StatusBar, ConversationList, ConversationDetail, SessionsRail, PaneBanner
   vendor/                  Pinned Preact + hooks + htm ESM + the htm-preact binding
   styles.css               3-pane grid (independently collapsible rails)
   *.test.js                node --test units (schema, derive, commands, store, markdown)
@@ -129,13 +129,13 @@ Requirements:
 
 ## MCP tool surface
 
-Active tools: `ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `open_conversation`, `enter_conversation`, `combine_conversations`, `lookup_conversation_ids`, `leave_conversation`, `set_away_mode`.
+Active tools: `ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `join_conversation`, `combine_conversations`, `lookup_conversation_ids`, `leave_conversation`, `set_away_mode`. Conversation tools return one-line JSON status envelopes (`ok | timeout | conversation_empty | conversation_ended`); `ask_human` returns bare reply text with JSON terminal sentinels. `open_conversation`/`enter_conversation` still work but are deprecated and undocumented (removal in convening chunk 5).
 
 Routing is by `cli_session_id`, injected by the `cli-session-injector-hook.py` PreToolUse hook. Agents pass `sender` and tool-specific args only.
 
 ## Conversation model
 
-Conversations are the persistence + routing unit. States: `Active` / `Ended`. At most one Active conversation is the "open" singleton (set by `open_conversation()`; joinable via `enter_conversation()`). Routing key is `cli_session_id` (hook-injected), not cwd. Away mode is a single global flag (`set_away_mode(bool)`).
+Conversations are the persistence + routing unit. States: `Active` / `Ended`. At most one Active conversation is the "open" singleton (minted/promoted by the first ref-less `join_conversation()`; joinable by later ref-less callers). Routing key is `cli_session_id` (hook-injected), not cwd. Away mode is a single global flag (`set_away_mode(bool)`).
 
 ## Architectural constraints (decided)
 

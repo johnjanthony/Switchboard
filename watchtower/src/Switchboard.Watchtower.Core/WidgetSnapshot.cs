@@ -13,7 +13,9 @@ public sealed record WidgetRingDto(
 	[property: JsonPropertyName("status")] string Status,
 	[property: JsonPropertyName("context_tokens")] long ContextTokens,
 	[property: JsonPropertyName("window")] long Window,
-	[property: JsonPropertyName("is_error")] bool IsError);
+	[property: JsonPropertyName("is_error")] bool IsError,
+	[property: JsonPropertyName("name")] string? Name,
+	[property: JsonPropertyName("name_source")] string? NameSource);
 
 public sealed record WidgetQuotaWindowDto(
 	[property: JsonPropertyName("pct")] double Pct,
@@ -44,7 +46,9 @@ public static class WidgetSnapshotBuilder
 				s.Status == SessionStatus.Live ? "live" : "idle",
 				s.ContextTokens,
 				s.WindowSize,
-				s.IsError));
+				s.IsError,
+				s.Name,
+				s.NameSource));
 		}
 
 		WidgetQuotaDto? quotaDto = null;

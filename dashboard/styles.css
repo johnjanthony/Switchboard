@@ -584,3 +584,29 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .chip-awaiting-agent { background: #1e4a7a; }
 .chip-ended { background: #333; opacity: 0.7; }
 .chip-lost { background: #6a2525; }
+
+/* Multi-select convene: a checkbox per convenable row, a "needs you" dot, and
+   a footer bar that appears once at least one session is selected. */
+.session-check { flex: 0 0 auto; accent-color: var(--cord); cursor: pointer; }
+.session-check-spacer { flex: 0 0 auto; width: 13px; }
+.session-attn {
+	flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
+	background: var(--lamp-amber); box-shadow: 0 0 5px color-mix(in srgb, var(--lamp-amber) 70%, transparent);
+}
+.sessions-convene-bar {
+	display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+	border-top: 1px solid var(--rule); background: var(--well);
+}
+.sessions-convene-count { font-size: 0.8em; opacity: 0.75; white-space: nowrap; }
+.sessions-convene-target, .sessions-convene-title {
+	background: var(--panel); color: var(--label); border: 1px solid var(--rule);
+	border-radius: 4px; padding: 3px 6px; font-size: 0.8em; min-width: 0; flex: 1 1 auto;
+}
+.sessions-convene-target:focus, .sessions-convene-title:focus { outline: none; border-color: var(--cord); }
+.sessions-convene-btn {
+	flex: 0 0 auto; background: var(--cord); color: var(--cord-ink); border: none;
+	border-radius: 4px; padding: 4px 11px; cursor: pointer;
+	font-family: var(--font-legend); text-transform: uppercase; letter-spacing: 0.06em;
+	font-weight: 600; font-size: 0.75em;
+}
+.sessions-convene-btn:hover { background: var(--cord-hi); }

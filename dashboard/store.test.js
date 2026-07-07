@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createStore } from './store.js';
 import * as paths from './schema.js';
 import { pendingCountFor } from './derive.js';
+import { conveneCmd, ackSessionCmd } from './commands.js';
 
 function makeFakeStorage(initial = {}) {
 	const map = new Map(Object.entries(initial));
@@ -57,6 +58,7 @@ test('initialState shape is exactly the contract', () => {
 		wslAvailable: false,
 		conversations: {},
 		sessions: {},
+		sessionAcks: {},
 		adminNotifications: {},
 		widget: { rings: {}, quota: null, status: null, pushedAt: null },
 		selectedConversationId: null,
@@ -65,7 +67,7 @@ test('initialState shape is exactly the contract', () => {
 		health: { reachable: false, healthy: false, totalAnswered: null },
 		ui: {
 			leftCollapsed: false, rightCollapsed: false, leftWidth: 280, awayOffDialogOpen: false,
-			sessionsCollapsed: false,
+			sessionsCollapsed: false, selectedSessionIds: [],
 		},
 		paneErrors: {},
 	});
@@ -403,4 +405,52 @@ test('toggleSessionsCollapsed flips and persists', () => {
 	store.toggleSessionsCollapsed();
 	assert.equal(store.getState().ui.sessionsCollapsed, !before);
 	assert.equal(storage.getItem('sb.sessionsCollapsed'), String(!before));
+});
+
+test('startGlobalListeners subscribes the sessionAcks path', () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const valuePaths = fb.calls.onValue.map((e) => e.path);
+	assert.ok(valuePaths.includes(paths.sessionAcks()));
+});
+
+test('the sessionAcks listener replaces state.sessionAcks', () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const entry = fb.calls.onValue.find((e) => e.path === paths.sessionAcks());
+	assert.ok(entry, 'sessionAcks listener attached');
+	entry.cb({ 'sess-a': '2026-06-15T12:00:00.000Z' });
+	assert.deepEqual(store.getState().sessionAcks, { 'sess-a': '2026-06-15T12:00:00.000Z' });
+	entry.cb(null);
+	assert.deepEqual(store.getState().sessionAcks, {});
+});
+
+test('toggleSessionSelected adds and removes an id; clearSessionSelection resets to empty', () => {
+	const { store } = makeStore();
+	assert.deepEqual(store.getState().ui.selectedSessionIds, []);
+	store.toggleSessionSelected('sess-a');
+	assert.deepEqual(store.getState().ui.selectedSessionIds, ['sess-a']);
+	store.toggleSessionSelected('sess-b');
+	assert.deepEqual(store.getState().ui.selectedSessionIds, ['sess-a', 'sess-b']);
+	store.toggleSessionSelected('sess-a');
+	assert.deepEqual(store.getState().ui.selectedSessionIds, ['sess-b']);
+	store.clearSessionSelection();
+	assert.deepEqual(store.getState().ui.selectedSessionIds, []);
+});
+
+test('ackSession writes ackSessionCmd via fb.setValue', () => {
+	const { store, fb } = makeStore();
+	store.ackSession('sess-a');
+	const expected = ackSessionCmd('sess-a', fb.nowIso);
+	assert.deepEqual(fb.calls.set, [expected]);
+});
+
+test('conveneSelected pushes conveneCmd with the selected ids and clears selection', () => {
+	const { store, fb } = makeStore();
+	store.toggleSessionSelected('sess-a');
+	store.toggleSessionSelected('sess-b');
+	store.conveneSelected({ target: 'new', title: 'Pairing' });
+	const expected = conveneCmd({ sessionIds: ['sess-a', 'sess-b'], target: 'new', title: 'Pairing' }, fb.nowIso);
+	assert.deepEqual(fb.calls.pushed, [expected]);
+	assert.deepEqual(store.getState().ui.selectedSessionIds, []);
 });

@@ -698,3 +698,224 @@ def _wake_one_from(conversation: Conversation) -> bool:
 	# Update last_seen_seq so the next wake doesn't re-deliver
 	member.last_seen_seq = len(conversation.messages)
 	return True
+
+
+def _convene_notice(conversation_id: str, member_sender: str, peers: list) -> str:
+	peer_str = ", ".join(peers) if peers else "(no peers yet)"
+	return (
+		f"John convened you into conversation {conversation_id} (peers: {peer_str}). "
+		f"Call join_conversation(sender='{member_sender}', ref='{conversation_id}') to collect the "
+		f"history (idempotent - you are already a member), then message_and_await_agent to speak."
+	)
+
+
+async def _wake_convened(registry, session_registry, conversation_id, woken_session_ids, logger, backend=None):
+	"""Deliver the convene to each moved session by whatever structure it is
+	actually blocked in RIGHT NOW (live derivation, not roster state): a blocked
+	message_and_await future resolves immediately with a convened envelope; a
+	pending ask_human gets the notice prepended to its eventual answer; everyone
+	else gets a hook-delivered notice queued on their session record."""
+	from server.gateway.handlers import _envelope
+	target = registry.conversations.get(conversation_id)
+	if target is None:
+		return []
+	lobby_futures = getattr(registry, "_convene_lobby_futures", {})
+	woken_now: list[str] = []
+	for sid in woken_session_ids:
+		member = target.members_active.get(sid)
+		if member is None:
+			continue
+		peers = [m.sender for k, m in target.members_active.items() if k != sid]
+		log = _compose_wake_payload(target, member, "enter")
+		envelope = _envelope("convened", conversation_id=conversation_id, peers=peers, log=log or None)
+		notice = _convene_notice(conversation_id, member.sender, peers)
+
+		# (a) Migrate case: mover was lobby-holding on source.open_peer_future,
+		# handed off from _perform_convene above.
+		opener = lobby_futures.pop(sid, None)
+		if opener is not None and not opener.done():
+			opener.set_result(envelope)
+			member.last_seen_seq = len(target.messages)
+			woken_now.append(sid)
+			continue
+
+		# (b) Blocked in message_and_await, queued in some conversation's wait_queue.
+		resolved = False
+		for conv in list(registry.conversations.values()):
+			for entry in list(conv.wait_queue):
+				m = entry.get("member")
+				if m is not None and m.cli_session_id == sid:
+					fut = entry.get("future")
+					try:
+						conv.wait_queue.remove(entry)
+					except ValueError:
+						pass
+					if fut is not None and not fut.done():
+						fut.set_result(envelope)
+						resolved = True
+					break
+			if resolved:
+				break
+
+		# (c) Already-member lobby-holder: the future lives on the target itself.
+		if not resolved:
+			opener2 = target.open_peer_future
+			if opener2 is not None and not opener2.done():
+				opener2.set_result(envelope)
+				target.open_peer_future = None
+				resolved = True
+
+		if resolved:
+			member.last_seen_seq = len(target.messages)
+			woken_now.append(sid)
+			continue
+
+		# (d) Blocked in ask_human: prepend the notice to the eventual human reply.
+		pending_attached = False
+		for pending in registry.all_pending():
+			if pending.cli_session_id == sid:
+				pending.notices.append(notice)
+				pending_attached = True
+				break
+		if pending_attached:
+			continue
+
+		# (e) Otherwise: queue a hook-delivered notice on the session record.
+		if session_registry is not None:
+			session_registry.queue_notice(sid, notice)
+	if logger is not None and woken_now:
+		await logger.info(f"convene_woke_blocked: {woken_now}")
+	return woken_now
+
+
+def _convene_sender_for(registry, session_registry, cli_session_id: str) -> str:
+	rec = session_registry.get(cli_session_id) if session_registry is not None else None
+	if rec is not None and rec.sender:
+		return rec.sender
+	if rec is not None and rec.name:
+		return rec.name
+	return f"Agent {cli_session_id[:8]}"
+
+
+async def _perform_convene(registry, session_registry, cmd: dict, logger, backend=None) -> dict:
+	from server.gateway.bg_tasks import _spawn_bg
+	session_ids = [s for s in (cmd.get("session_ids") or []) if isinstance(s, str) and s]
+	target = cmd.get("target") or "new"
+	title = cmd.get("title") if isinstance(cmd.get("title"), str) else None
+
+	result: dict = {"conversation_id": None, "convened": [], "skipped": []}
+	if not session_ids:
+		return result
+
+	# For an existing target, resolve upfront (it must exist and be Active). For
+	# "new", mint LAZILY - only once a session actually routes in - so an
+	# all-skipped convene leaves no orphan empty Active conversation.
+	if target == "new":
+		conv = None
+		conv_id = None
+	else:
+		conv = registry.conversations.get(target)
+		if conv is None or conv.state != "active":
+			result["skipped"] = [{"session_id": s, "reason": "target not found or not Active"} for s in session_ids]
+			if logger is not None:
+				await logger.surface_error(f"convene_target_invalid: {target}")
+			return result
+		conv_id = target
+		result["conversation_id"] = conv_id
+
+	def _ensure_target():
+		nonlocal conv, conv_id
+		if conv is not None:
+			return
+		conv_id = "conv-" + uuid.uuid4().hex
+		now = time.time()
+		conv = Conversation(id=conv_id, title=title or f"Convened {len(session_ids)} agents")
+		conv.created_at = now
+		conv.last_activity_at = now
+		registry.conversations[conv_id] = conv
+		result["conversation_id"] = conv_id
+		if backend is not None:
+			_spawn_bg(
+				backend.write_conversation_meta(
+					conv_id, title=conv.title, state="active", continued_from=None,
+					created_at=now, last_activity_at=now, ended_at=None, hidden=False,
+				),
+				label=f"fb_write_conv_meta:{conv_id}",
+			)
+
+	woken: list[str] = []
+	for sid in session_ids:
+		rec = session_registry.get(sid) if session_registry is not None else None
+		if rec is None or rec.state in ("ended", "lost"):
+			result["skipped"].append({"session_id": sid, "reason": "not a live session"})
+			continue
+		sender = _convene_sender_for(registry, session_registry, sid)
+		cwd = rec.cwd or ""
+		bound_id = registry.session_to_conversation_id.get(sid)
+		if conv_id is not None and bound_id == conv_id:
+			member = conv.members_active.get(sid)
+			if member is None:
+				async with conv.lock:
+					if sid not in conv.members_active:
+						await _add_member(registry, conv_id, sid, sender, cwd, backend=backend)
+			result["convened"].append(conv.members_active[sid].sender)
+			woken.append(sid)
+			continue
+		if bound_id is None:
+			_ensure_target()
+			async with conv.lock:
+				await _add_member(registry, conv_id, sid, sender, cwd, backend=backend)
+			result["convened"].append(conv.members_active[sid].sender)
+			woken.append(sid)
+			continue
+		source = registry.conversations.get(bound_id)
+		if source is None:
+			_ensure_target()
+			async with conv.lock:
+				await _add_member(registry, conv_id, sid, sender, cwd, backend=backend)
+			result["convened"].append(conv.members_active[sid].sender)
+			woken.append(sid)
+			continue
+		other_alive = [m for k, m in source.members_active.items() if k != sid and m.alive]
+		if other_alive:
+			result["skipped"].append({"session_id": sid, "reason": "in a multi-party conversation"})
+			continue
+		_ensure_target()
+		locks = sorted([source, conv], key=lambda c: c.id)
+		async with locks[0].lock, locks[1].lock:
+			await _migrate_member(registry, bound_id, conv_id, sid, rec.sender or sender, cwd, backend=backend)
+		# A lobby-holding mover was blocked on source.open_peer_future; hand it
+		# the convened envelope now, while the source is still in scope.
+		opener = source.open_peer_future
+		if opener is not None and not opener.done():
+			source.open_peer_future = None
+			registry._convene_lobby_futures = getattr(registry, "_convene_lobby_futures", {})
+			registry._convene_lobby_futures[sid] = opener
+		result["convened"].append(conv.members_active[sid].sender)
+		woken.append(sid)
+
+	# Intro message: the transcript explains itself; also the documented backstop
+	# for any lost wake notice.
+	if result["convened"]:
+		text = "John convened: " + ", ".join(result["convened"])
+		if result["skipped"]:
+			skips = "; ".join(f"{s['session_id'][:8]} - {s['reason']}" for s in result["skipped"])
+			text += f" (skipped: {skips})"
+		msg = {
+			"seq": len(conv.messages),
+			"sender": "<system>",
+			"type": "system",
+			"text": text,
+			"timestamp": _now_iso(),
+		}
+		conv.messages.append(msg)
+		conv.last_activity_at = time.time()
+		if backend is not None:
+			_spawn_bg(backend.write_conversation_message(conv_id, msg), label=f"fb_convene_intro:{conv_id}")
+			_spawn_bg(
+				backend.set_conversation_last_activity(conv_id, conv.last_activity_at),
+				label=f"fb_last_activity:{conv_id}",
+			)
+
+	await _wake_convened(registry, session_registry, conv_id, woken, logger, backend=backend)
+	return result

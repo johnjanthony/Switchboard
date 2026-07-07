@@ -91,3 +91,26 @@ async def test_sweep_pruning_terminal_record_fires_delete():
 
 	assert pruned == ["s-1"]
 	backend.delete_session_record.assert_awaited_once_with("s-1")
+
+
+@pytest.mark.asyncio
+async def test_delete_session_record_deletes_both_session_and_ack_paths(monkeypatch):
+	"""FirebaseBackend.delete_session_record (the real implementation, not the
+	recording fake used above) must delete both sessions/<id> and
+	session_acks/<id>, so a pruned session never leaves an orphan ack entry.
+
+	Constructed via __new__ (skips __init__'s firebase_admin call), following
+	the pattern in tests/test_firebase_command_listeners.py's _make_backend."""
+	from server import firebase as fb_module
+
+	mock_db = MagicMock()
+	monkeypatch.setattr(fb_module, "db", mock_db)
+
+	be = fb_module.FirebaseBackend.__new__(fb_module.FirebaseBackend)
+
+	await be.delete_session_record("s-1")
+
+	referenced_paths = [c.args[0] for c in mock_db.reference.call_args_list]
+	assert "sessions/s-1" in referenced_paths
+	assert "session_acks/s-1" in referenced_paths
+	assert mock_db.reference.return_value.delete.call_count == 2

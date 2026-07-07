@@ -166,6 +166,17 @@ class TestPendingByKey:
 			assert r.find_by_request_id("conv-foo", "req-1") is not None
 		asyncio.run(run())
 
+	def test_resolve_prepends_pending_notices(self):
+		"""A convene notice attached to a pending (PendingRequest.notices) is
+		prepended to the eventual human reply, separated by a blank line."""
+		async def run():
+			r = Registry()
+			fut = r.add("conv-1", "sess-A", "Claude", "req-1")
+			r.find_by_request_id("conv-1", "req-1").notices.append("You were convened into conv-9.")
+			r.resolve("conv-1", "req-1", "yes, proceed")
+			assert fut.result() == "You were convened into conv-9.\n\nyes, proceed"
+		asyncio.run(run())
+
 
 
 class TestPendingMirror:

@@ -62,3 +62,7 @@ export function widgetStatus() {
 export function sessions() {
 	return 'sessions';
 }
+
+export function sessionAcks() {
+	return 'session_acks';
+}

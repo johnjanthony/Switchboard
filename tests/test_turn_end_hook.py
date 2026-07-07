@@ -370,3 +370,47 @@ def test_away_mode_active_emits_block_regardless_of_partner_state_route():
 	# No partner clause
 	assert "end_collab" not in out["reason"]
 	assert "partner is blocked" not in out["reason"].lower()
+
+
+# --- Convening chunk 3: session_id + notices ---
+
+def test_hook_sends_session_id_as_query_param():
+	"""Hook includes ?session_id=... in the URL it requests, derived from stdin."""
+	with _FakeServer({"active": False, "notices": []}, record_queries=True) as srv:
+		r = _run("claude", stdin=json.dumps({"cwd": "c:/work/myproj", "session_id": "sess-123"}), url_env=srv.url)
+	assert r.returncode == 0
+	assert len(srv.received_paths) == 1
+	assert "session_id=" in srv.received_paths[0]
+	assert "sess-123" in srv.received_paths[0]
+
+
+def test_notices_only_emits_block_with_notice_reason():
+	"""Away mode inactive but notices present still blocks the turn - convening
+	is an at-desk operation too."""
+	with _FakeServer({"active": False, "notices": ["N"]}) as srv:
+		r = _run("claude", url_env=srv.url)
+	assert r.returncode == 0
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
+	assert out["reason"] == "N"
+
+
+def test_active_and_notices_combines_reason_notice_first():
+	"""When both away mode and notices are present, the notice text precedes
+	the away-mode reason in one block."""
+	with _FakeServer({"active": True, "notices": ["N"]}) as srv:
+		r = _run("claude", url_env=srv.url)
+	assert r.returncode == 0
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
+	assert "N" in out["reason"]
+	assert "away mode" in out["reason"].lower()
+	assert out["reason"].index("N") < out["reason"].lower().index("away mode")
+
+
+def test_inactive_no_notices_silent_exit():
+	"""Explicit empty-notices-list case stays silent, matching unchanged behavior."""
+	with _FakeServer({"active": False, "notices": []}) as srv:
+		r = _run("claude", url_env=srv.url)
+	assert r.returncode == 0
+	assert r.stdout.strip() == ""

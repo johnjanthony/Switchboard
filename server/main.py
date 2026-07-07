@@ -25,6 +25,7 @@ from server.gateway import (
 )
 from server.gateway.dispatch import (
 	dispatch_combine_commands,
+	dispatch_convene_commands,
 	dispatch_force_end_commands,
 	dispatch_spawn_commands,
 	dispatch_away_mode_commands,
@@ -44,13 +45,16 @@ from server.widget_snapshot import WidgetSnapshotStore
 from server.claude_status import ClaudeStatusService
 
 
-def _build_away_mode_route(registry: Registry):
-	"""GET /away-mode — returns the global away-mode flag.
-	The route accepts but ignores a `?cwd=...` query param sent by older
-	turn-end-hook deployments; the response is invariant of cwd post-conversations
-	redesign. Hook-side fail-open on missing cwd is unchanged."""
+def _build_away_mode_route(registry: Registry, session_registry):
+	"""GET /away-mode - the turn-end hook's single check. With session_id, the
+	response also delivers (and pops) any queued wake notices for that session;
+	the hook blocks the turn with the notice text so the agent acts on it."""
 	async def away_mode(request: Request):
-		return JSONResponse({"active": bool(registry.global_away_mode)})
+		notices: list = []
+		session_id = request.query_params.get("session_id")
+		if session_id:
+			notices = session_registry.pop_notices(session_id)
+		return JSONResponse({"active": bool(registry.global_away_mode), "notices": notices})
 	return away_mode
 
 
@@ -113,11 +117,12 @@ def _build_sessions_route(session_registry: SessionRegistry):
 
 
 def _build_agent_status_route(handlers, session_registry: SessionRegistry):
-	"""POST /agent_status — hook-driven status writes. Always returns 200 with
-	empty body, even on malformed input or backend failure (the handler swallows
-	exceptions internally). The Firebase write is awaited directly: it's a
-	~100ms operation, well inside the hook's 1-second timeout, and direct await
-	avoids the test-loop complications of background-spawned tasks.
+	"""POST /agent_status - hook-driven status writes. Returns 200 with an empty
+	body on malformed input, or on success returns {"notices": [...]} - popped
+	only for the UserPromptSubmit event, the only hook with a channel to deliver
+	them to the agent. The Firebase write is awaited directly: it's a ~100ms
+	operation, well inside the hook's 1-second timeout, and direct await avoids
+	the test-loop complications of background-spawned tasks.
 
 	The session-registry upsert happens BEFORE the away-mode gate inside
 	handlers.handle_agent_status, so an unknown session is discovered in the
@@ -131,16 +136,24 @@ def _build_agent_status_route(handlers, session_registry: SessionRegistry):
 		state = body.get("state")
 		detail = body.get("detail")
 		event = body.get("event")
+		cwd = body.get("cwd") if isinstance(body.get("cwd"), str) else None
 		if not isinstance(session_id, str) or not session_id or not isinstance(state, str) or not state:
 			return JSONResponse({}, status_code=200)
 		from server.session_registry import map_hook_event_to_state
 		mapped = map_hook_event_to_state(event, state) if isinstance(event, str) else None
 		if mapped is not None:
-			session_registry.upsert_from_hook(session_id, state=mapped, detail=detail if isinstance(detail, str) else None)
+			session_registry.upsert_from_hook(
+				session_id, state=mapped,
+				detail=detail if isinstance(detail, str) else None,
+				cwd=cwd, event=event,
+			)
 		else:
-			session_registry.touch_mcp(session_id, cwd="")
+			session_registry.touch_mcp(session_id, cwd=cwd or "")
 		await handlers.handle_agent_status(session_id, state, detail)
-		return JSONResponse({}, status_code=200)
+		notices: list = []
+		if event == "UserPromptSubmit":
+			notices = session_registry.pop_notices(session_id)
+		return JSONResponse({"notices": notices}, status_code=200)
 	return agent_status
 
 
@@ -190,7 +203,7 @@ def _build_widget_snapshot_route(store, backend, logger, session_registry=None):
 	against the last push so RTDB is written only on change; pushed_at is always
 	written so readers can show staleness. Also feeds the session registry so a
 	Watchtower ring can enrich or discover a session row."""
-	_RING_FIELDS = ("pct", "model", "status", "context_tokens", "window", "is_error")
+	_RING_FIELDS = ("pct", "model", "status", "context_tokens", "window", "is_error", "name", "name_source")
 
 	async def widget_snapshot(request: Request):
 		try:
@@ -704,6 +717,7 @@ async def _run(config: Config) -> None:
 	loop_sups = {
 		"dispatch_responses": LoopSupervisor("dispatch_responses", backend, logger.surface_error),
 		"dispatch_combine_commands": LoopSupervisor("dispatch_combine_commands", backend, logger.surface_error),
+		"dispatch_convene_commands": LoopSupervisor("dispatch_convene_commands", backend, logger.surface_error),
 		"dispatch_force_end_commands": LoopSupervisor("dispatch_force_end_commands", backend, logger.surface_error),
 		"dispatch_spawn_commands": LoopSupervisor("dispatch_spawn_commands", backend, logger.surface_error),
 		"dispatch_away_mode_commands": LoopSupervisor("dispatch_away_mode_commands", backend, logger.surface_error),
@@ -755,7 +769,7 @@ async def _run(config: Config) -> None:
 		methods=["POST"],
 	)
 	app.add_route("/widget-status", _build_widget_status_route(claude_status_service), methods=["GET", "POST"])
-	app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
+	app.add_route("/away-mode", _build_away_mode_route(registry, session_registry), methods=["GET"])
 	app.add_route(
 		"/stats",
 		_build_stats_route(registry, backend, loop_sups, session_registry=session_registry),
@@ -794,6 +808,12 @@ async def _run(config: Config) -> None:
 		dispatch_combine_commands(
 			registry, backend, logger, loop_sups["dispatch_combine_commands"],
 			pending_dir=_Path(config.log_path).parent,
+		)
+	)
+
+	convene_task = asyncio.create_task(
+		dispatch_convene_commands(
+			registry, session_registry, backend, logger, loop_sups["dispatch_convene_commands"],
 		)
 	)
 
@@ -849,6 +869,7 @@ async def _run(config: Config) -> None:
 	finally:
 		dispatch_task.cancel()
 		combine_task.cancel()
+		convene_task.cancel()
 		force_end_task.cancel()
 		spawn_task.cancel()
 		away_mode_task.cancel()
@@ -859,6 +880,8 @@ async def _run(config: Config) -> None:
 			await dispatch_task
 		with contextlib.suppress(asyncio.CancelledError):
 			await combine_task
+		with contextlib.suppress(asyncio.CancelledError):
+			await convene_task
 		with contextlib.suppress(asyncio.CancelledError):
 			await force_end_task
 		with contextlib.suppress(asyncio.CancelledError):

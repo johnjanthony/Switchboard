@@ -168,3 +168,76 @@ test('sensorOffline is true when pushed_at is absent or stale', () => {
 	assert.equal(derive.sensorOffline('2026-07-06T12:09:30Z', nowMs), false);
 	assert.equal(derive.sensorOffline('2026-07-06T11:00:00Z', nowMs), true);
 });
+
+test('sessionLabel: name wins regardless of name_source', () => {
+	assert.equal(derive.sessionLabel({ name: 'Claude Win', name_source: 'ai', sender: 'Claude', cwd: '/x/y' }), 'Claude Win');
+	assert.equal(derive.sessionLabel({ name: 'Custom Name', name_source: 'custom', sender: 'Claude', cwd: '/x/y' }), 'Custom Name');
+});
+
+test('sessionLabel: falls back to sender when name is empty', () => {
+	assert.equal(derive.sessionLabel({ name: '', sender: 'Claude Win', cwd: '/x/y' }), 'Claude Win');
+	assert.equal(derive.sessionLabel({ sender: 'Claude Win', cwd: '/x/y' }), 'Claude Win');
+});
+
+test('sessionLabel: falls back to projectTail(cwd) when name and sender are empty', () => {
+	assert.equal(derive.sessionLabel({ cwd: 'C:\\Work\\Switchboard' }), 'Switchboard');
+});
+
+test('sessionLabel: falls back to (unknown) when nothing is available', () => {
+	assert.equal(derive.sessionLabel({}), '(unknown)');
+	assert.equal(derive.sessionLabel({ name: '', sender: '', cwd: '' }), '(unknown)');
+});
+
+test('needsAttention: idle with no ack is true', () => {
+	assert.equal(derive.needsAttention({ state: 'idle', last_event_at: '2026-07-06T12:00:00Z' }, null), true);
+});
+
+test('needsAttention: idle with event after ack is true', () => {
+	assert.equal(
+		derive.needsAttention({ state: 'idle', last_event_at: '2026-07-06T12:00:00Z' }, '2026-07-06T11:00:00Z'),
+		true,
+	);
+});
+
+test('needsAttention: idle with ack after event is false', () => {
+	assert.equal(
+		derive.needsAttention({ state: 'idle', last_event_at: '2026-07-06T11:00:00Z' }, '2026-07-06T12:00:00Z'),
+		false,
+	);
+});
+
+test('needsAttention: equal-second timestamps with differing suffixes are not newer', () => {
+	assert.equal(
+		derive.needsAttention({ state: 'idle', last_event_at: '2026-07-06T12:00:00Z' }, '2026-07-06T12:00:00+00:00'),
+		false,
+	);
+});
+
+test('needsAttention: non-idle state is false', () => {
+	assert.equal(derive.needsAttention({ state: 'active', last_event_at: '2026-07-06T12:00:00Z' }, null), false);
+});
+
+test('needsAttention: unparseable last_event_at is false', () => {
+	assert.equal(derive.needsAttention({ state: 'idle', last_event_at: 'garbage' }, null), false);
+});
+
+test('wakePathHint maps each state to its hint text', () => {
+	assert.equal(derive.wakePathHint({ state: 'awaiting_agent' }), 'wakes instantly');
+	assert.equal(derive.wakePathHint({ state: 'awaiting_human' }), 'on next phone answer');
+	assert.equal(derive.wakePathHint({ state: 'active' }), 'at end of current turn');
+	assert.equal(derive.wakePathHint({ state: 'idle' }), "on John's next prompt");
+	assert.equal(derive.wakePathHint({ state: 'ended' }), '');
+	assert.equal(derive.wakePathHint({ state: 'lost' }), '');
+});
+
+test('isConvenable: true for active, idle, awaiting_human, awaiting_agent', () => {
+	assert.equal(derive.isConvenable({ state: 'active' }), true);
+	assert.equal(derive.isConvenable({ state: 'idle' }), true);
+	assert.equal(derive.isConvenable({ state: 'awaiting_human' }), true);
+	assert.equal(derive.isConvenable({ state: 'awaiting_agent' }), true);
+});
+
+test('isConvenable: false for ended and lost', () => {
+	assert.equal(derive.isConvenable({ state: 'ended' }), false);
+	assert.equal(derive.isConvenable({ state: 'lost' }), false);
+});

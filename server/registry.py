@@ -36,6 +36,7 @@ class PendingRequest:
 	cli_session_id: str
 	started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 	msg_id: str | None = None
+	notices: list = field(default_factory=list)
 
 
 @dataclass
@@ -217,6 +218,8 @@ class Registry:
 			return None
 		self._pending.pop((record.conversation_id, record.cli_session_id), None)
 		if not record.future.done():
+			if record.notices:
+				text = "\n\n".join([*record.notices, text])
 			record.future.set_result(text)
 		self.total_answered += 1
 		self._record_resolved(conversation_id, record.request_id)

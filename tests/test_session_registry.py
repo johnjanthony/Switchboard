@@ -137,3 +137,52 @@ def test_revival_after_lost():
 	rec.state = "lost"
 	reg.upsert_from_hook("sess-A", state="active")
 	assert reg.get("sess-A").state == "active"
+
+def test_queue_and_pop_notices():
+	reg = _reg()
+	reg.record_session_start("sess-A", cwd="C:/Work/X")
+	assert reg.queue_notice("sess-A", "You have been convened into conv-1.") is True
+	assert reg.queue_notice("sess-UNKNOWN", "x") is False
+	assert reg.get("sess-A").pending_notices == ["You have been convened into conv-1."]
+	assert reg.pop_notices("sess-A") == ["You have been convened into conv-1."]
+	assert reg.get("sess-A").pending_notices == []
+	assert reg.pop_notices("sess-A") == []
+	assert reg.pop_notices("sess-UNKNOWN") == []
+
+def test_notices_fire_mirror_and_hydrate():
+	calls = []
+	reg = _reg()
+	reg.set_mirror(lambda sid, payload: calls.append(payload))
+	reg.record_session_start("sess-A", cwd="C:/Work/X")
+	reg.queue_notice("sess-A", "n1")
+	assert calls[-1]["pending_notices"] == ["n1"]
+	reg2 = _reg()
+	reg2.hydrate_record(calls[-1])
+	assert reg2.get("sess-A").pending_notices == ["n1"]
+
+def test_cwd_fill_only_when_empty():
+	reg = _reg()
+	reg.upsert_from_hook("sess-B", state="active", cwd="C:/Work/Y")
+	assert reg.get("sess-B").cwd == "C:/Work/Y"
+	assert reg.get("sess-B").surface == "windows"
+	reg.upsert_from_hook("sess-B", state="idle", cwd="C:/OTHER")
+	assert reg.get("sess-B").cwd == "C:/Work/Y"  # SessionStart/MCP stay authoritative
+
+def test_last_transition_source():
+	reg = _reg()
+	reg.record_session_start("sess-A", cwd="C:/Work/X")
+	assert reg.get("sess-A").last_transition_source == "session_start"
+	reg.upsert_from_hook("sess-A", state="active", event="UserPromptSubmit")
+	assert reg.get("sess-A").last_transition_source == "hook:UserPromptSubmit"
+	reg.record_session_end("sess-A", reason="logout", ended_at="2026-07-06T13:00:00+00:00")
+	assert reg.get("sess-A").last_transition_source == "session_end"
+
+def test_apply_rings_copies_name():
+	reg = _reg()
+	reg.record_session_start("sess-A", cwd="C:/Work/X")
+	reg.apply_rings({"sess-A": {"pct": 10.0, "model": "opus", "status": "ok",
+		"name": "Fixing FCM tests", "name_source": "ai-title"}})
+	rec = reg.get("sess-A")
+	assert rec.name == "Fixing FCM tests"
+	assert rec.name_source == "ai-title"
+	assert rec.last_transition_source == "session_start"  # apply_rings must not touch it

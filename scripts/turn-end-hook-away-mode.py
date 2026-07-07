@@ -42,18 +42,21 @@ REDIRECT_REASON_AWAY_MODE = (
 )
 
 
-def _fetch_active(url: str, cwd: str) -> bool:
+def _fetch_state(url: str, cwd: str, session_id: str) -> tuple[bool, list]:
 	from urllib.parse import urlencode
-	full_url = f"{url}?{urlencode({'cwd': cwd})}"
+	params = {"cwd": cwd}
+	if session_id:
+		params["session_id"] = session_id
+	full_url = f"{url}?{urlencode(params)}"
 	try:
 		with urllib.request.urlopen(full_url, timeout=TIMEOUT_SECONDS) as resp:
 			if resp.status != 200:
-				return False
-			body = resp.read()
-		data = json.loads(body)
-		return bool(data.get("active", False))
+				return False, []
+			data = json.loads(resp.read())
+		notices = data.get("notices")
+		return bool(data.get("active", False)), list(notices) if isinstance(notices, list) else []
 	except (urllib.error.URLError, TimeoutError, ValueError, OSError):
-		return False
+		return False, []
 
 
 def _emit_claude(reason: str) -> None:
@@ -94,15 +97,23 @@ def main() -> int:
 	if not cwd:
 		return 0  # fail-open without cwd
 
+	session_id = payload.get("session_id", "") or ""
+
 	base_url = os.environ.get("SWITCHBOARD_BASE_URL", DEFAULT_BASE_URL)
 	away_url = base_url + AWAY_MODE_PATH
-	if not _fetch_active(away_url, cwd):
-		return 0  # away-mode inactive — don't block
-
+	active, notices = _fetch_state(away_url, cwd, session_id)
+	if not active and not notices:
+		return 0
+	reason_parts = []
+	if notices:
+		reason_parts.append("\n\n".join(notices))
+	if active:
+		reason_parts.append(REDIRECT_REASON_AWAY_MODE)
+	reason = "\n\n".join(reason_parts)
 	if args.cli == "claude":
-		_emit_claude(REDIRECT_REASON_AWAY_MODE)
+		_emit_claude(reason)
 	else:
-		_emit_gemini(REDIRECT_REASON_AWAY_MODE)
+		_emit_gemini(reason)
 	return 0
 
 

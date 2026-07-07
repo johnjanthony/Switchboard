@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { answerCmd, awayOnCmd, awayOffCmd, spawnFreshCmd, resumeCmd, combineCmd, forceEndCmd, setHiddenCmd } from './commands.js';
+import {
+	answerCmd, awayOnCmd, awayOffCmd, spawnFreshCmd, resumeCmd, combineCmd, forceEndCmd, setHiddenCmd,
+	conveneCmd, ackSessionCmd,
+} from './commands.js';
 
 const FIXED_ISO = '2026-06-15T12:00:00.000Z';
 const nowIso = () => FIXED_ISO;
@@ -90,4 +93,33 @@ test('forceEndCmd builds the force-end command', () => {
 test('setHiddenCmd targets meta/hidden with the boolean', () => {
 	assert.deepEqual(setHiddenCmd('c1', true), { path: 'conversations/c1/meta/hidden', value: true });
 	assert.deepEqual(setHiddenCmd('c1', false), { path: 'conversations/c1/meta/hidden', value: false });
+});
+
+test('conveneCmd builds the convene write with session_ids, target, title, issued_at', () => {
+	const cmd = conveneCmd({ sessionIds: ['a', 'b'], target: 'new', title: 'Pairing' }, () => 'T');
+	assert.deepEqual(cmd, {
+		path: 'convene_commands',
+		value: { session_ids: ['a', 'b'], target: 'new', title: 'Pairing', issued_at: 'T' },
+	});
+});
+
+test('conveneCmd defaults target to "new" when omitted', () => {
+	const cmd = conveneCmd({ sessionIds: ['a'] }, () => 'T');
+	assert.equal(cmd.value.target, 'new');
+});
+
+test('conveneCmd omits title from value when null', () => {
+	const cmd = conveneCmd({ sessionIds: ['a', 'b'], target: 'new', title: null }, () => 'T');
+	assert.deepEqual(cmd.value, { session_ids: ['a', 'b'], target: 'new', issued_at: 'T' });
+	assert.equal('title' in cmd.value, false);
+});
+
+test('conveneCmd omits title from value when absent', () => {
+	const cmd = conveneCmd({ sessionIds: ['a', 'b'], target: 'new' }, () => 'T');
+	assert.equal('title' in cmd.value, false);
+});
+
+test('ackSessionCmd builds the ack write at session_acks/<sessionId>', () => {
+	const cmd = ackSessionCmd('s1', () => 'T');
+	assert.deepEqual(cmd, { path: 'session_acks/s1', value: 'T' });
 });

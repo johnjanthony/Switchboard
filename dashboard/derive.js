@@ -177,3 +177,53 @@ export function sensorOffline(pushedAtIso, nowMs) {
 	}
 	return (nowMs - t) / 1000 > SENSOR_FRESH_SECONDS;
 }
+
+// Display name for a session row: custom/ai name wins regardless of name_source
+// (name_source stays on the record for styling only), then sender, then the
+// last path segment of cwd, then a placeholder.
+export function sessionLabel(record) {
+	if (record && record.name) {
+		return record.name;
+	}
+	if (record && record.sender) {
+		return record.sender;
+	}
+	const tail = record ? projectTail(record.cwd) : '';
+	return tail || '(unknown)';
+}
+
+// True when an idle session has an unacknowledged event: no ack yet, or the
+// session's last_event_at is newer than the stored ack. Uses Date.parse (not
+// string comparison) because the server stamps "+00:00" while fb.nowIso stamps
+// "Z", so equal-second timestamps compare unequal lexicographically.
+export function needsAttention(record, ackIso) {
+	if (!record || record.state !== 'idle') {
+		return false;
+	}
+	const eventMs = Date.parse(record.last_event_at);
+	if (Number.isNaN(eventMs)) {
+		return false;
+	}
+	if (!ackIso) {
+		return true;
+	}
+	return eventMs > Date.parse(ackIso);
+}
+
+const WAKE_PATH_HINTS = {
+	awaiting_agent: 'wakes instantly',
+	awaiting_human: 'on next phone answer',
+	active: 'at end of current turn',
+	idle: "on John's next prompt",
+};
+
+export function wakePathHint(record) {
+	const state = record ? record.state : undefined;
+	return WAKE_PATH_HINTS[state] || '';
+}
+
+const CONVENABLE_STATES = new Set(['active', 'idle', 'awaiting_human', 'awaiting_agent']);
+
+export function isConvenable(record) {
+	return !!record && CONVENABLE_STATES.has(record.state);
+}
