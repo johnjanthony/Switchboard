@@ -44,11 +44,23 @@ fun parseIsoMs(iso: String?): Long? {
  * stampers using different (though equivalent) offset notations.
  */
 fun sessionNeedsAttention(rec: RegistrySession, ackIso: String?): Boolean {
+	if (rec.blockedOnApproval) return true
 	if (rec.state != "idle") return false
 	val eventMs = parseIsoMs(rec.lastEventAt) ?: return false
 	if (ackIso == null) return true
 	val ackMs = parseIsoMs(ackIso) ?: return false
 	return eventMs > ackMs
+}
+
+/**
+ * Weak hint for a session that looks stuck mid-tool without the server-confirmed
+ * blocked_on_approval signal: in a tool, no fresher title-state heartbeat, and the last event is
+ * more than 5 minutes old. Sub-line text only - never feeds needs-attention or the badge count.
+ */
+fun sessionApprovalHint(rec: RegistrySession, nowMs: Long): String {
+	if (!rec.inTool || rec.titleState != null || rec.blockedOnApproval) return ""
+	val eventMs = parseIsoMs(rec.lastEventAt) ?: return ""
+	return if (eventMs < nowMs - 300_000) "possibly waiting on approval" else ""
 }
 
 /** Hint for when a session will next resume, shown on the board row. */

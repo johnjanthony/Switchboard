@@ -26,12 +26,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.johnjanthony.switchboard.cwdTail
 import io.github.johnjanthony.switchboard.isSessionSelectable
 import io.github.johnjanthony.switchboard.network.RegistrySession
 import io.github.johnjanthony.switchboard.parseIsoMs
+import io.github.johnjanthony.switchboard.sessionApprovalHint
 import io.github.johnjanthony.switchboard.sessionBoardLabel
 
 // Small lamp for the session board, matching the ConversationRow StatusLamp idiom (which is
@@ -116,9 +118,10 @@ fun RegistrySessionRow(
 					Box(modifier = Modifier.size(6.dp).background(MaterialTheme.colorScheme.tertiary, CircleShape))
 				}
 			}
+			val approvalSuffix = sessionApprovalHint(rec, System.currentTimeMillis()).let { if (it.isEmpty()) "" else " · $it" }
 			Text(
 				text = if (selectionMode) wakeLabel
-					else "${cwdTail(rec.cwd)} · ${rec.surface}${rec.stateDetail?.let { " · $it" } ?: ""}",
+					else "${cwdTail(rec.cwd)} · ${rec.surface}${rec.stateDetail?.let { " · $it" } ?: ""}$approvalSuffix",
 				style = MaterialTheme.typography.bodySmall,
 				color = MaterialTheme.colorScheme.onSurfaceVariant,
 				maxLines = 1,
@@ -136,10 +139,15 @@ fun RegistrySessionRow(
 		}
 		Column(horizontalAlignment = Alignment.End) {
 			Text(
-				text = rec.state,
+				text = if (rec.blockedOnApproval) "needs approval" else rec.state,
 				style = MaterialTheme.typography.labelSmall,
+				color = if (rec.blockedOnApproval) MaterialTheme.colorScheme.tertiary else Color.Unspecified,
 				modifier = Modifier
-					.border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
+					.border(
+						1.dp,
+						if (rec.blockedOnApproval) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.outline,
+						RoundedCornerShape(8.dp),
+					)
 					.padding(horizontal = 6.dp, vertical = 1.dp),
 			)
 			Spacer(Modifier.height(4.dp))

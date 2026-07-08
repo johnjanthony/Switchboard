@@ -150,10 +150,15 @@ def _build_agent_status_route(handlers, session_registry: SessionRegistry):
 		from server.session_registry import map_hook_event_to_state
 		mapped = map_hook_event_to_state(event, state) if isinstance(event, str) else None
 		if mapped is not None:
+			in_tool: bool | None = None
+			if event == "PreToolUse":
+				in_tool = mapped == "active"
+			elif event in ("PostToolUse", "UserPromptSubmit", "Stop"):
+				in_tool = False
 			session_registry.upsert_from_hook(
 				session_id, state=mapped,
 				detail=detail if isinstance(detail, str) else None,
-				cwd=cwd, event=event,
+				cwd=cwd, event=event, in_tool=in_tool,
 			)
 		else:
 			session_registry.touch_mcp(session_id, cwd=cwd or "")
@@ -211,7 +216,7 @@ def _build_widget_snapshot_route(store, backend, logger, session_registry=None):
 	against the last push so RTDB is written only on change; pushed_at is always
 	written so readers can show staleness. Also feeds the session registry so a
 	Watchtower ring can enrich or discover a session row."""
-	_RING_FIELDS = ("pct", "model", "status", "context_tokens", "window", "is_error", "name", "name_source")
+	_RING_FIELDS = ("pct", "model", "status", "context_tokens", "window", "is_error", "name", "name_source", "title_state")
 
 	async def widget_snapshot(request: Request):
 		try:

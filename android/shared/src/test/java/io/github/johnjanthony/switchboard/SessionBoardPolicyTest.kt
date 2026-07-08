@@ -15,7 +15,20 @@ class SessionBoardPolicyTest {
 		name: String? = null,
 		sender: String? = null,
 		cwd: String = "C:\\Work\\Switchboard",
-	) = RegistrySession(cliSessionId = "s1", cwd = cwd, state = state, lastEventAt = lastEventAt, name = name, sender = sender)
+		blockedOnApproval: Boolean = false,
+		inTool: Boolean = false,
+		titleState: String? = null,
+	) = RegistrySession(
+		cliSessionId = "s1",
+		cwd = cwd,
+		state = state,
+		lastEventAt = lastEventAt,
+		name = name,
+		sender = sender,
+		blockedOnApproval = blockedOnApproval,
+		inTool = inTool,
+		titleState = titleState,
+	)
 
 	// --- sessionBoardLabel ---
 
@@ -118,6 +131,17 @@ class SessionBoardPolicyTest {
 	@Test
 	fun `does not need attention for a non-idle state`() {
 		assertFalse(sessionNeedsAttention(rec(state = "active"), ackIso = null))
+	}
+
+	@Test
+	fun `blocked active session needs attention regardless of a recent ack`() {
+		val r = rec(state = "active", blockedOnApproval = true)
+		assertTrue(sessionNeedsAttention(r, ackIso = "2026-07-07T12:00:01Z"))
+	}
+
+	@Test
+	fun `plain active session with no blocked flag does not need attention`() {
+		assertFalse(sessionNeedsAttention(rec(state = "active", blockedOnApproval = false), ackIso = null))
 	}
 
 	@Test
@@ -226,6 +250,18 @@ class SessionBoardPolicyTest {
 		assertEquals(listOf(unacked, acked), live)
 	}
 
+	@Test
+	fun `partition floats a blocked session above a fresher but acked idle session`() {
+		val blocked = rec(state = "active", blockedOnApproval = true, lastEventAt = "2026-07-07T10:00:00+00:00")
+		val fresherAckedIdle = rec(state = "idle", lastEventAt = "2026-07-07T13:00:00+00:00")
+		val sessions = mapOf("s-blocked" to blocked, "s-fresh" to fresherAckedIdle)
+		val acks = mapOf("s-fresh" to "2026-07-07T13:00:01Z")
+
+		val (live, _) = partitionSessionBoard(sessions, acks)
+
+		assertEquals(listOf(blocked, fresherAckedIdle), live)
+	}
+
 	// --- sessionBadgeCount ---
 
 	@Test
@@ -238,6 +274,49 @@ class SessionBoardPolicyTest {
 		val acks = mapOf("s2" to "2026-07-07T12:00:01Z")
 
 		assertEquals(1, sessionBadgeCount(sessions, acks))
+	}
+
+	@Test
+	fun `badge count includes a blocked session`() {
+		val sessions = mapOf(
+			"s1" to rec(state = "active", blockedOnApproval = true),
+			"s2" to rec(state = "active"),
+		)
+		assertEquals(1, sessionBadgeCount(sessions, acks = emptyMap()))
+	}
+
+	// --- sessionApprovalHint ---
+
+	private val hintNowMs = requireNotNull(parseIsoMs("2026-07-07T12:00:00+00:00"))
+
+	@Test
+	fun `approval hint fires when in tool, heartbeat stale, and not blocked`() {
+		val r = rec(lastEventAt = "2026-07-07T11:54:00+00:00", inTool = true)
+		assertEquals("possibly waiting on approval", sessionApprovalHint(r, hintNowMs))
+	}
+
+	@Test
+	fun `approval hint is suppressed by a non-null title state`() {
+		val r = rec(lastEventAt = "2026-07-07T11:54:00+00:00", inTool = true, titleState = "working")
+		assertEquals("", sessionApprovalHint(r, hintNowMs))
+	}
+
+	@Test
+	fun `approval hint is suppressed when already blocked on approval`() {
+		val r = rec(lastEventAt = "2026-07-07T11:54:00+00:00", inTool = true, blockedOnApproval = true)
+		assertEquals("", sessionApprovalHint(r, hintNowMs))
+	}
+
+	@Test
+	fun `approval hint is empty for a fresh heartbeat`() {
+		val r = rec(lastEventAt = "2026-07-07T11:59:00+00:00", inTool = true)
+		assertEquals("", sessionApprovalHint(r, hintNowMs))
+	}
+
+	@Test
+	fun `approval hint is empty when not in a tool`() {
+		val r = rec(lastEventAt = "2026-07-07T11:54:00+00:00", inTool = false)
+		assertEquals("", sessionApprovalHint(r, hintNowMs))
 	}
 
 	// --- conversationResumable ---

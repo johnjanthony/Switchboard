@@ -62,7 +62,7 @@ async def test_first_push_writes_rings_keyed_by_session_id():
 	assert out["rings_changed"] is True and out["quota_changed"] is True
 	assert backend.rings == {"abc": {"pct": 0.4, "model": "opus", "status": "live",
 									  "context_tokens": 80000, "window": 200000, "is_error": False,
-									  "name": None, "name_source": None}}
+									  "name": None, "name_source": None, "title_state": None}}
 	assert backend.pushed == "2026-06-25T00:00:00+00:00"
 
 
@@ -128,7 +128,7 @@ async def test_ring_name_and_source_flow_into_session_registry():
 	route = _build_widget_snapshot_route(store, backend, _FakeLogger(), session_registry)
 	body = {
 		"rings": [{"session_id": "sid-1", "pct": 0.3, "model": "sonnet",
-				   "name": "Fixing tests", "name_source": "ai-title"}],
+				   "name": "Fixing tests", "name_source": "ai-title", "title_state": "star"}],
 		"quota": None,
 		"pushed_at": "2026-06-25T00:00:00+00:00",
 	}
@@ -137,3 +137,4 @@ async def test_ring_name_and_source_flow_into_session_registry():
 	rec = session_registry.get("sid-1")
 	assert rec is not None
 	assert rec.name == "Fixing tests"
+	assert rec.title_state == "star"

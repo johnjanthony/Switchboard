@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using Switchboard.Watchtower.Core;
 
 namespace Switchboard.Watchtower;
@@ -25,6 +26,7 @@ internal sealed class AppHost : IDisposable
 	readonly WidgetSnapshotPusher? _snapshotPusher;
 	IReadOnlyList<SessionModel> _lastSessions = Array.Empty<SessionModel>();
 	QuotaUsage? _lastQuota;
+	IReadOnlyDictionary<string, string> _lastTitleStates = new Dictionary<string, string>();
 	readonly System.Windows.Forms.Timer _claudeStatusTimer = new();   // steady GET-poll of the server view
 	readonly ClaudeStatusReader _claudeStatusReader;
 	volatile bool _claudeStatusScanning;
@@ -164,16 +166,33 @@ internal sealed class AppHost : IDisposable
 				LogError("scan", ex);
 				result = new List<SessionModel>();
 			}
-			return (result, lastActivityUtc);
+
+			// Best-effort tab-title correlation; only worth the UIA walk when there's somewhere to push it.
+			// A malformed title (e.g. a lone surrogate that trips TabTitles.Classify) must never fault the
+			// scan and freeze the widget - fall back to no verdict.
+			IReadOnlyDictionary<string, string> titleStates = new Dictionary<string, string>();
+			if (_snapshotPusher is not null)
+			{
+				try
+				{
+					titleStates = TabTitles.Correlate(TerminalTabScanner.ReadTabTitles().Select(TabTitles.Classify).ToList(), result);
+				}
+				catch (Exception ex)
+				{
+					LogError("title-scan", ex);
+				}
+			}
+
+			return (result, lastActivityUtc, titleStates);
 		}).ContinueWith(t =>
 		{
 			_scanning = false;
 			if (t.IsFaulted) { LogError("scan-continuation", t.Exception!); return; }
-			ApplyToUi(t.Result.Item1, t.Result.Item2);
+			ApplyToUi(t.Result.Item1, t.Result.Item2, t.Result.Item3);
 		}, TaskScheduler.FromCurrentSynchronizationContext());
 	}
 
-	void ApplyToUi(IReadOnlyList<SessionModel> sessions, DateTime? lastActivityUtc)
+	void ApplyToUi(IReadOnlyList<SessionModel> sessions, DateTime? lastActivityUtc, IReadOnlyDictionary<string, string> titleStates)
 	{
 		bool light = _config.LightThemeOverride ?? ThemeReader.IsLightTaskbar();
 		_widget.UpdateSessions(sessions, light);
@@ -191,6 +210,7 @@ internal sealed class AppHost : IDisposable
 		_tray.SetGauge(max, anyError, maxSev, light);
 
 		_lastSessions = sessions;
+		_lastTitleStates = titleStates;
 		PushSnapshot();
 	}
 
@@ -253,7 +273,7 @@ internal sealed class AppHost : IDisposable
 	void PushSnapshot()
 	{
 		if (_snapshotPusher is null) return;
-		var payload = WidgetSnapshotBuilder.Build(_lastSessions, _lastQuota, DateTimeOffset.Now);
+		var payload = WidgetSnapshotBuilder.Build(_lastSessions, _lastQuota, DateTimeOffset.Now, _lastTitleStates);
 		_snapshotPusher.PushAsync(payload, CancellationToken.None).ContinueWith(t =>
 		{
 			if (t.IsFaulted) LogError("widget-snapshot-push", t.Exception!);

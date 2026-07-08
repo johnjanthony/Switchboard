@@ -138,6 +138,13 @@ test('sessionChip maps states to labels and classes', () => {
 	assert.deepEqual(derive.sessionChip({ state: 'weird' }), { label: 'weird', cls: 'chip-idle' });
 });
 
+test('sessionChip: blocked_on_approval overrides state to the needs-approval chip', () => {
+	assert.deepEqual(
+		derive.sessionChip({ state: 'active', blocked_on_approval: true }),
+		{ label: 'needs approval', cls: 'chip-needs-approval' },
+	);
+});
+
 test('projectTail takes the last segment of either slash style', () => {
 	assert.equal(derive.projectTail('C:\\Work\\Switchboard'), 'Switchboard');
 	assert.equal(derive.projectTail('/home/john/work/x'), 'x');
@@ -221,6 +228,23 @@ test('needsAttention: unparseable last_event_at is false', () => {
 	assert.equal(derive.needsAttention({ state: 'idle', last_event_at: 'garbage' }, null), false);
 });
 
+test('needsAttention: blocked_on_approval is true before the idle-state guard', () => {
+	assert.equal(
+		derive.needsAttention({ state: 'active', blocked_on_approval: true, last_event_at: '2026-07-06T12:00:00Z' }, null),
+		true,
+	);
+});
+
+test('needsAttention: blocked_on_approval stays true even with a recent ack', () => {
+	assert.equal(
+		derive.needsAttention(
+			{ state: 'active', blocked_on_approval: true, last_event_at: '2026-07-06T12:00:00Z' },
+			'2026-07-06T12:00:00Z',
+		),
+		true,
+	);
+});
+
 test('wakePathHint maps each state to its hint text', () => {
 	assert.equal(derive.wakePathHint({ state: 'awaiting_agent' }), 'wakes instantly');
 	assert.equal(derive.wakePathHint({ state: 'awaiting_human' }), 'on next phone answer');
@@ -228,6 +252,38 @@ test('wakePathHint maps each state to its hint text', () => {
 	assert.equal(derive.wakePathHint({ state: 'idle' }), "on John's next prompt");
 	assert.equal(derive.wakePathHint({ state: 'ended' }), 'Resume into conversation');
 	assert.equal(derive.wakePathHint({ state: 'lost' }), 'Resume into conversation');
+});
+
+test('approvalHint: in-tool, old, and no verdict yields the weak hint', () => {
+	const nowMs = Date.parse('2026-07-06T12:00:00Z');
+	const record = { in_tool: true, last_event_at: '2026-07-06T11:54:00Z', title_state: null };
+	assert.equal(derive.approvalHint(record, nowMs), 'possibly waiting on approval');
+});
+
+test('approvalHint: a title_state verdict suppresses the hint', () => {
+	const nowMs = Date.parse('2026-07-06T12:00:00Z');
+	const record = { in_tool: true, last_event_at: '2026-07-06T11:54:00Z', title_state: 'working' };
+	assert.equal(derive.approvalHint(record, nowMs), '');
+});
+
+test('approvalHint: blocked_on_approval suppresses the hint', () => {
+	const nowMs = Date.parse('2026-07-06T12:00:00Z');
+	const record = {
+		in_tool: true, last_event_at: '2026-07-06T11:54:00Z', title_state: null, blocked_on_approval: true,
+	};
+	assert.equal(derive.approvalHint(record, nowMs), '');
+});
+
+test('approvalHint: fresh session (under 5 minutes) yields no hint', () => {
+	const nowMs = Date.parse('2026-07-06T12:00:00Z');
+	const record = { in_tool: true, last_event_at: '2026-07-06T11:59:00Z', title_state: null };
+	assert.equal(derive.approvalHint(record, nowMs), '');
+});
+
+test('approvalHint: not in a tool yields no hint', () => {
+	const nowMs = Date.parse('2026-07-06T12:00:00Z');
+	const record = { in_tool: false, last_event_at: '2026-07-06T11:54:00Z', title_state: null };
+	assert.equal(derive.approvalHint(record, nowMs), '');
 });
 
 test('isConvenable: true for active, idle, awaiting_human, awaiting_agent', () => {

@@ -115,9 +115,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _sessionAcks = MutableStateFlow<Map<String, String>>(emptyMap())
 	val sessionAcks: StateFlow<Map<String, String>> = _sessionAcks.asStateFlow()
 
-	private val _openConversationId = MutableStateFlow<String?>(null)
-	val openConversationId: StateFlow<String?> = _openConversationId.asStateFlow()
-
 	private val _pendingDeepLinkMessageId = MutableStateFlow<String?>(null)
 	val pendingDeepLinkMessageId: StateFlow<String?> = _pendingDeepLinkMessageId.asStateFlow()
 
@@ -158,7 +155,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			if (shouldAttachFirebaseListeners(auth.currentUser != null, firebaseListenersAttached)) {
 				firebaseListenersAttached = true
 				setupAwayModeListener()
-				startOpenConversationListener()
 				startWslAvailableListener()
 				startConversationListener()
 				startConversationMessageSubscriptions()
@@ -353,21 +349,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		})
 	}
 
-	private fun startOpenConversationListener() {
-		val ref = database.getReference("global_settings/open_conversation_id")
-		ref.addValueEventListener(object : ValueEventListener {
-			override fun onDataChange(snapshot: DataSnapshot) {
-				val newId = snapshot.getValue(String::class.java)
-				val changed = _openConversationId.value != newId
-				_openConversationId.value = newId
-				if (changed) recomputeConversationOpenFlags()
-			}
-			override fun onCancelled(error: DatabaseError) {
-				android.util.Log.w("MainViewModel", "open_conversation_id listener cancelled: $error")
-			}
-		})
-	}
-
 	private fun startWslAvailableListener() {
 		val ref = database.getReference("global_settings/wsl_available")
 		ref.addValueEventListener(object : ValueEventListener {
@@ -487,7 +468,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		val ref = database.getReference("conversations")
 		ref.addValueEventListener(object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
-				val openId = _openConversationId.value
 				val failures = mutableMapOf<String, String>()
 				val summaries = snapshot.children.mapNotNull { convNode ->
 					try {
@@ -548,7 +528,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 							state = state,
 							members = members,
 							lastActivityAt = lastActivityAt,
-							isOpenConversation = (convId == openId),
 							hidden = hidden,
 							unreadCount = unreadCount,
 							pendingResponses = pendingResponses,
@@ -666,14 +645,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		} catch (e: Exception) {
 			android.util.Log.e("MainViewModel", "MALFORMED MESSAGE at conversations/$convId/messages/$msgId: ${e.message}")
 		}
-	}
-
-	/** Re-emit the current conversations list with refreshed isOpenConversation flags. */
-	private fun recomputeConversationOpenFlags() {
-		val openId = _openConversationId.value
-		val updated = _activeConversations.value.map { it.copy(isOpenConversation = (it.id == openId)) }
-		_activeConversations.value = updated
-		mergeSummariesIntoRows(updated)
 	}
 
 	// --- Public actions ---

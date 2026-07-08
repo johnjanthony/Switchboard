@@ -584,6 +584,7 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .chip-awaiting-agent { background: #1e4a7a; }
 .chip-ended { background: #333; opacity: 0.7; }
 .chip-lost { background: #6a2525; }
+.chip-needs-approval { background: color-mix(in srgb, var(--lamp-amber) 22%, var(--well)); color: var(--lamp-amber); }
 
 /* Multi-select convene: a checkbox per convenable row, a "needs you" dot, and
    a footer bar that appears once at least one session is selected. */

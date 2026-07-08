@@ -252,6 +252,40 @@ def test_agent_status_pre_tool_use_does_not_pop_notice(cfg, logger):
 	assert session_registry.pop_notices("s1") == ["wake up"]
 
 
+def test_agent_status_computes_in_tool_from_event_pair(cfg, logger):
+	registry = Registry()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	session_registry = SessionRegistry()
+	app = _build_app(handlers, session_registry)
+
+	with TestClient(app) as client:
+		resp = client.post("/agent_status", json={
+			"session_id": "s1",
+			"state": "tool:Bash",
+			"event": "PreToolUse",
+		})
+		assert resp.status_code == 200
+		assert session_registry.get("s1").in_tool is True
+
+		resp2 = client.post("/agent_status", json={
+			"session_id": "s1",
+			"state": "thinking",
+			"event": "PostToolUse",
+		})
+		assert resp2.status_code == 200
+		assert session_registry.get("s1").in_tool is False
+
+		# The await special maps to awaiting_agent, not a real tool.
+		resp3 = client.post("/agent_status", json={
+			"session_id": "s1",
+			"state": "waiting",
+			"event": "PreToolUse",
+		})
+		assert resp3.status_code == 200
+		assert session_registry.get("s1").in_tool is False
+
+
 def test_agent_status_cwd_fills_empty_record_but_does_not_overwrite(cfg, logger):
 	registry = Registry()
 	backend = RecordingBackend()

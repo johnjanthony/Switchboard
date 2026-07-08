@@ -86,7 +86,6 @@ data class ConversationSummary(
 	val state: String,  // "active" | "ended"
 	val members: List<ConversationMember>,
 	val lastActivityAt: String,
-	val isOpenConversation: Boolean = false,
 	val hidden: Boolean = false,
 	val unreadCount: Int = 0,
 	val pendingResponses: Int = 0,
@@ -113,7 +112,6 @@ data class ConversationRow(
 	val id: String get() = summary.id
 	val title: String get() = summary.title
 	val displayCount: Int get() = kotlin.math.max(summary.unreadCount, summary.pendingResponses)
-	val isOpenConversation: Boolean get() = summary.isOpenConversation
 	val hidden: Boolean get() = summary.hidden
 	val preview: String? get() = summary.preview
 	val continuedFrom: String? get() = summary.continuedFrom
@@ -190,4 +188,7 @@ data class RegistrySession(
 	@get:PropertyName("name") @set:PropertyName("name") var name: String? = null,
 	@get:PropertyName("name_source") @set:PropertyName("name_source") var nameSource: String? = null,
 	@get:PropertyName("last_transition_source") @set:PropertyName("last_transition_source") var lastTransitionSource: String? = null,
+	@get:PropertyName("title_state") @set:PropertyName("title_state") var titleState: String? = null,
+	@get:PropertyName("in_tool") @set:PropertyName("in_tool") var inTool: Boolean = false,
+	@get:PropertyName("blocked_on_approval") @set:PropertyName("blocked_on_approval") var blockedOnApproval: Boolean = false,
 )

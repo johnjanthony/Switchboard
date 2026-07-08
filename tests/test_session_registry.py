@@ -219,3 +219,73 @@ def test_resume_sentinel_expires_and_ignores_other_cwds():
 	assert reg.check_resume_id_change("sess-NEW", "C:/Work/OTHER") is None
 	clock[0] += 200.0  # past the 180s TTL
 	assert reg.check_resume_id_change("sess-NEW", "C:/Work/X") is None
+
+def test_in_tool_and_star_derive_blocked_on_approval():
+	reg = _reg()
+	reg.record_session_start("sess-A", cwd="C:/Work/X")
+	reg.upsert_from_hook("sess-A", state="active", detail="Bash: git status", event="PreToolUse", in_tool=True)
+	assert reg.get("sess-A").in_tool is True
+	assert reg.get("sess-A").blocked_on_approval is False
+	reg.apply_rings({"sess-A": {"pct": 0.1, "model": "m", "status": "ok", "title_state": "star"}})
+	rec = reg.get("sess-A")
+	assert rec.title_state == "star"
+	assert rec.blocked_on_approval is True
+	assert rec.state == "active"  # apply_rings never changes state
+
+def test_post_tool_use_clears_blocked_on_approval():
+	reg = _reg()
+	reg.record_session_start("sess-A", cwd="C:/Work/X")
+	reg.upsert_from_hook("sess-A", state="active", detail="Bash: x", event="PreToolUse", in_tool=True)
+	reg.apply_rings({"sess-A": {"pct": 0.1, "title_state": "star"}})
+	assert reg.get("sess-A").blocked_on_approval is True
+	reg.upsert_from_hook("sess-A", state="active", detail=None, event="PostToolUse", in_tool=False)
+	assert reg.get("sess-A").in_tool is False
+	assert reg.get("sess-A").blocked_on_approval is False
+
+def test_working_ring_clears_blocked_on_approval():
+	reg = _reg()
+	reg.record_session_start("sess-A", cwd="C:/Work/X")
+	reg.upsert_from_hook("sess-A", state="active", detail="Bash: x", event="PreToolUse", in_tool=True)
+	reg.apply_rings({"sess-A": {"pct": 0.1, "title_state": "star"}})
+	reg.apply_rings({"sess-A": {"pct": 0.1, "title_state": "working"}})
+	rec = reg.get("sess-A")
+	assert rec.title_state == "working"
+	assert rec.blocked_on_approval is False
+
+def test_sensing_fields_hydrate():
+	reg = _reg()
+	reg.record_session_start("sess-A", cwd="C:/Work/X")
+	reg.upsert_from_hook("sess-A", state="active", detail="Bash: x", event="PreToolUse", in_tool=True)
+	reg.apply_rings({"sess-A": {"pct": 0.1, "title_state": "star"}})
+	payload = reg.get("sess-A").to_payload()
+	reg2 = _reg()
+	reg2.hydrate_record(payload)
+	rec = reg2.get("sess-A")
+	assert rec.title_state == "star" and rec.in_tool is True and rec.blocked_on_approval is True
+
+def test_record_session_end_clears_blocked_on_approval():
+	reg = _reg()
+	reg.record_session_start("s1", cwd="C:/Work/X")
+	reg.upsert_from_hook("s1", state="active", detail="Bash: x", event="PreToolUse", in_tool=True)
+	reg.apply_rings({"s1": {"pct": 0.1, "title_state": "star"}})
+	assert reg.get("s1").blocked_on_approval is True
+	reg.record_session_end("s1", reason="exit", ended_at="2026-07-06T12:00:00+00:00")
+	rec = reg.get("s1")
+	assert rec.state == "ended"
+	assert rec.in_tool is False
+	assert rec.blocked_on_approval is False
+
+def test_sweep_lost_clears_blocked_on_approval():
+	reg = _reg()
+	reg.record_session_start("s1", cwd="C:/Work/X")
+	reg.upsert_from_hook("s1", state="active", detail="Bash: x", event="PreToolUse", in_tool=True)
+	reg.apply_rings({"s1": {"pct": 0.1, "title_state": "star"}})
+	assert reg.get("s1").blocked_on_approval is True
+	import datetime as _dt
+	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
+	reg.sweep(now_ts=last + 1000, lost_after_seconds=900, retention_seconds=72 * 3600,
+		rings_fresh=True, ring_ids=set())
+	rec = reg.get("s1")
+	assert rec.state == "lost"
+	assert rec.in_tool is False
+	assert rec.blocked_on_approval is False

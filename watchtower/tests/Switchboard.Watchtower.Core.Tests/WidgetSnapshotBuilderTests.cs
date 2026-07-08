@@ -80,4 +80,14 @@ public class WidgetSnapshotBuilderTests
 		Assert.Contains("\"name\":\"Pairing\"", json);
 		Assert.Contains("\"name_source\":\"custom-title\"", json);
 	}
+
+	[Fact]
+	public void Serializes_title_state()
+	{
+		var p = WidgetSnapshotBuilder.Build(new[] { Session("abc", 0.8), Session("def", 0.5) }, null, Pushed,
+			titleStates: new Dictionary<string, string> { ["abc"] = "star" });
+		var json = JsonSerializer.Serialize(p);
+		Assert.Contains("\"title_state\":\"star\"", json);
+		Assert.Contains("\"title_state\":null", json);
+	}
 }

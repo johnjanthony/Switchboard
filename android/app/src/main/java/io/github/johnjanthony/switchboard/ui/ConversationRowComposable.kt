@@ -43,9 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
@@ -116,7 +114,6 @@ fun ConversationRow(
 	var showHideConfirm by remember { mutableStateOf(false) }
 	var showEndConfirm by remember { mutableStateOf(false) }
 
-	val isOpenConversation = row.isOpenConversation
 	val isActive = row.state == "active"
 	val agentStatus = row.agentStatus
 	val displayTitle = row.title
@@ -211,17 +208,8 @@ fun ConversationRow(
 			}
 		}
 	) {
-		// The open (patched) line carries a brass left rail instead of a full border.
-		val railColor = MaterialTheme.colorScheme.primary
 		val rowModifier = Modifier
 			.background(MaterialTheme.colorScheme.surface)
-			.let {
-				if (isOpenConversation) {
-					it.drawBehind { drawRect(color = railColor, size = Size(3.dp.toPx(), size.height)) }
-				} else {
-					it
-				}
-			}
 
 		Box(modifier = rowModifier) {
 			Row(
@@ -232,15 +220,6 @@ fun ConversationRow(
 					.padding(horizontal = 16.dp, vertical = 12.dp),
 				verticalAlignment = Alignment.CenterVertically,
 			) {
-				if (isOpenConversation) {
-					Text(
-						"open",
-						style = MaterialTheme.typography.labelSmall,
-						color = MaterialTheme.colorScheme.primary,
-						modifier = Modifier.padding(end = 6.dp),
-					)
-				}
-
 				val hasPending = row.summary.pendingResponses > 0
 				val isLive = agentStatus?.isFresh() == true
 				Box(

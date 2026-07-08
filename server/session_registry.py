@@ -70,6 +70,9 @@ class SessionRecord:
 	name: str | None = None
 	name_source: str | None = None
 	last_transition_source: str | None = None
+	title_state: str | None = None
+	in_tool: bool = False
+	blocked_on_approval: bool = False
 	pending_notices: list = field(default_factory=list)
 
 	def to_payload(self) -> dict:
@@ -157,7 +160,7 @@ class SessionRegistry:
 
 	def upsert_from_hook(
 		self, cli_session_id: str, *, state: str, detail: str | None = None,
-		cwd: str | None = None, event: str | None = None,
+		cwd: str | None = None, event: str | None = None, in_tool: bool | None = None,
 	) -> SessionRecord:
 		rec = self._ensure(cli_session_id, source="hook")
 		if cwd and not rec.cwd:
@@ -171,8 +174,14 @@ class SessionRegistry:
 		rec.last_event_at = self._now()
 		if rec.end_reason is not None:
 			rec.end_reason = None
+		if in_tool is not None:
+			rec.in_tool = in_tool
+		self._recompute_blocked(rec)
 		self._fire_mirror(rec)
 		return rec
+
+	def _recompute_blocked(self, rec: SessionRecord) -> None:
+		rec.blocked_on_approval = bool(rec.in_tool and rec.title_state == "star")
 
 	def touch_mcp(self, cli_session_id: str, *, cwd: str, sender: str | None = None) -> SessionRecord:
 		rec = self._ensure(cli_session_id, source="mcp")
@@ -194,6 +203,8 @@ class SessionRegistry:
 		rec.end_reason = reason
 		rec.last_event_at = ended_at or self._now()
 		rec.last_transition_source = "session_end"
+		rec.in_tool = False
+		self._recompute_blocked(rec)
 		self._fire_mirror(rec)
 		return rec
 
@@ -218,6 +229,10 @@ class SessionRegistry:
 			if isinstance(name, str) and name:
 				rec.name = name
 				rec.name_source = name_source if isinstance(name_source, str) else None
+			if "title_state" in ring:
+				ts = ring.get("title_state")
+				rec.title_state = ts if isinstance(ts, str) and ts in ("working", "star") else None
+			self._recompute_blocked(rec)
 			rec.last_event_at = self._now()
 			self._fire_mirror(rec)
 
@@ -315,6 +330,9 @@ class SessionRegistry:
 			name=data.get("name"),
 			name_source=data.get("name_source"),
 			last_transition_source=data.get("last_transition_source"),
+			title_state=data.get("title_state"),
+			in_tool=bool(data.get("in_tool", False)),
+			blocked_on_approval=bool(data.get("blocked_on_approval", False)),
 			pending_notices=list(data.get("pending_notices") or []),
 		)
 		self._records[sid] = rec
@@ -359,6 +377,8 @@ class SessionRegistry:
 			if age > lost_after_seconds:
 				rec.state = "lost"
 				rec.end_reason = "presumed-dead"
+				rec.in_tool = False
+				self._recompute_blocked(rec)
 				self._fire_mirror(rec)
 		return pruned
 

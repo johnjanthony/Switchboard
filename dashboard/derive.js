@@ -119,6 +119,9 @@ const SESSION_CHIPS = {
 };
 
 export function sessionChip(record) {
+	if (record && record.blocked_on_approval) {
+		return { label: 'needs approval', cls: 'chip-needs-approval' };
+	}
 	const state = record && record.state ? record.state : 'idle';
 	return SESSION_CHIPS[state] || { label: state, cls: 'chip-idle' };
 }
@@ -197,7 +200,13 @@ export function sessionLabel(record) {
 // string comparison) because the server stamps "+00:00" while fb.nowIso stamps
 // "Z", so equal-second timestamps compare unequal lexicographically.
 export function needsAttention(record, ackIso) {
-	if (!record || record.state !== 'idle') {
+	if (!record) {
+		return false;
+	}
+	if (record.blocked_on_approval) {
+		return true;
+	}
+	if (record.state !== 'idle') {
 		return false;
 	}
 	const eventMs = Date.parse(record.last_event_at);
@@ -222,6 +231,27 @@ const WAKE_PATH_HINTS = {
 export function wakePathHint(record) {
 	const state = record ? record.state : undefined;
 	return WAKE_PATH_HINTS[state] || '';
+}
+
+// Weak, tooltip-only hint: a session that has been sitting inside a tool call
+// for a while with no title-bar verdict yet (no "working"/"star" heartbeat) may
+// be stuck on an approval prompt Switchboard can't see directly. Any non-null
+// title_state is the heartbeat winning, so it suppresses the hint; the
+// blocked_on_approval flag (a hard signal) also suppresses it since that case
+// already has its own chip and needsAttention badge. Never counts toward
+// needsAttention - this is tooltip text only.
+export function approvalHint(record, nowMs) {
+	if (!record || !record.in_tool || record.blocked_on_approval) {
+		return '';
+	}
+	if (record.title_state != null) {
+		return '';
+	}
+	const ageSeconds = sessionAgeSeconds(record, nowMs);
+	if (ageSeconds == null || ageSeconds <= 300) {
+		return '';
+	}
+	return 'possibly waiting on approval';
 }
 
 const CONVENABLE_STATES = new Set(['active', 'idle', 'awaiting_human', 'awaiting_agent']);

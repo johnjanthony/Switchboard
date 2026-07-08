@@ -8,6 +8,7 @@ import {
 	sessionLabel,
 	needsAttention,
 	wakePathHint,
+	approvalHint,
 	isConvenable,
 	isActive,
 } from "../derive.js";
@@ -52,8 +53,9 @@ export function SessionsRail({ store }) {
 						const ring = record.context_pct != null ? `${Math.round(record.context_pct * 100)}%` : "";
 						const convenable = isConvenable(record);
 						const attn = needsAttention(record, state.sessionAcks[id]);
-						const tooltipParts = [record.cwd, record.last_transition_source, wakePathHint(record)]
-							.filter(Boolean);
+						const tooltipParts = [
+							record.cwd, record.last_transition_source, wakePathHint(record), approvalHint(record, Date.now()),
+						].filter(Boolean);
 						return html`
 							<li class="session-row" key=${id}
 								onClick=${() => {
