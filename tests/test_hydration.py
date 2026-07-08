@@ -580,3 +580,88 @@ async def test_hydrate_sessions_skipped_when_session_registry_is_none():
 		await hydrate_from_firebase(registry, None, logger)
 
 	logger.surface_error.assert_not_called()
+
+
+def _conv_with_pending(pending):
+	node = conv_snapshot(
+		"conv-1",
+		members={"Claude": member_data(cli_session_id="sess-abc", sender="Claude", alive=True)},
+	)
+	node["pending_questions"] = pending
+	return node
+
+
+@pytest.mark.asyncio
+async def test_hydrate_rebuilds_parked_pending_from_record():
+	registry = Registry()
+	logger = make_logger()
+	snapshot = {
+		"conversations": {
+			"conv-1": _conv_with_pending({
+				"req-1": {
+					"sender": "Claude", "questionText": "Deploy?", "cancelled": False,
+					"msgId": "m-q", "suggestions": None,
+					"cliSessionId": "sess-abc", "askedAt": "2026-07-07T10:00:00+00:00",
+				},
+			}),
+		},
+	}
+	with patch("server.hydration.db", make_firebase_db_mock(snapshot)):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, None, logger)
+
+	assert registry.pending_count == 1
+	assert registry.parked_count == 1
+	rec = registry.find_by_request_id("conv-1", "req-1")
+	assert rec.future is None
+	assert rec.cli_session_id == "sess-abc"
+	assert rec.question == "Deploy?"
+	assert rec.msg_id == "m-q"
+	assert rec.started_at.isoformat() == "2026-07-07T10:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_hydrate_cancels_legacy_record_missing_new_fields_once():
+	registry = Registry()
+	logger = make_logger()
+	backend = MagicMock()
+	backend.mark_question_cancelled = AsyncMock()
+	snapshot = {
+		"conversations": {
+			"conv-1": _conv_with_pending({
+				"req-legacy": {
+					"sender": "Claude", "questionText": "Old?", "cancelled": False,
+					"msgId": "m-old", "suggestions": None,
+				},
+			}),
+		},
+	}
+	with patch("server.hydration.db", make_firebase_db_mock(snapshot)):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, backend, logger)
+
+	assert registry.pending_count == 0
+	backend.mark_question_cancelled.assert_awaited_once_with("conv-1", "req-legacy")
+
+
+@pytest.mark.asyncio
+async def test_hydrate_cancels_pending_under_ended_conversation():
+	registry = Registry()
+	logger = make_logger()
+	backend = MagicMock()
+	backend.mark_question_cancelled = AsyncMock()
+	node = conv_snapshot("conv-9", state="ended")
+	node["pending_questions"] = {
+		"req-9": {
+			"sender": "Claude", "questionText": "Orphan?", "cancelled": False,
+			"msgId": "m-9", "suggestions": None,
+			"cliSessionId": "sess-9", "askedAt": "2026-07-07T10:00:00+00:00",
+		},
+	}
+	snapshot = {"conversations": {"conv-9": node}}
+	with patch("server.hydration.db", make_firebase_db_mock(snapshot)):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, backend, logger)
+
+	assert registry.pending_count == 0
+	backend.mark_question_cancelled.assert_awaited_once_with("conv-9", "req-9")

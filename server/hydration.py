@@ -16,17 +16,19 @@ The SessionRegistry roster (sessions/) IS rehydrated when session_registry is
 passed in, including terminal (ended/lost) records — the sweeper needs those in
 memory to retention-prune their RTDB entries.
 
-Also not rehydrated: /conversations/<id>/pending_questions/<request_id>. That
-subtree is read by the startup sweep (sweep_orphaned_pending_questions, wired
-in main.py) to cancel orphaned records whose futures died with the old
-process; the canonical in-memory PendingRequest map is owned by Registry, not
-by Firebase. The answered_question_msg_ids subtree was retired (F-66/F-73): the
-phone derives answered-state from message flags, so the write had no reader.
+Parked pendings (T-001): /conversations/<id>/pending_questions records that
+carry cliSessionId + askedAt ARE rehydrated - as future-less PendingRequests
+in Registry._pending - so answers arriving after a restart still resolve.
+Records missing those fields (written by a pre-parking server) are cancelled
+once at hydration. The answered_question_msg_ids subtree was retired
+(F-66/F-73): the phone derives answered-state from message flags, so the
+write had no reader.
 """
 
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Any
 
 from firebase_admin import db
@@ -51,6 +53,7 @@ async def hydrate_from_firebase(registry: Registry, backend, logger, session_reg
 		await logger.surface_error(f"hydration_global_away_failed: {exc}")
 
 	# 2. Conversations
+	conversations_data = None
 	try:
 		conversations_data = await _read_path("conversations")
 		if isinstance(conversations_data, dict):
@@ -63,6 +66,53 @@ async def hydrate_from_firebase(registry: Registry, backend, logger, session_reg
 					)
 	except Exception as exc:
 		await logger.surface_error(f"hydration_conversations_read_failed: {exc}")
+
+	# 2b. Parked pendings (T-001): rebuild each surviving pending_questions
+	# record as a future-less PendingRequest so an answer arriving after the
+	# restart still resolves. Records written by a pre-parking server (no
+	# cliSessionId/askedAt), records under conversations that did not hydrate
+	# (ended/degenerate), and stray cancelled records are cancelled once - the
+	# old startup-sweep behavior, applied one final time.
+	parked = legacy_cancelled = 0
+	if isinstance(conversations_data, dict):
+		for conv_id, conv_node in conversations_data.items():
+			if not isinstance(conv_node, dict):
+				continue
+			pending_node = conv_node.get("pending_questions")
+			if not isinstance(pending_node, dict):
+				continue
+			for request_id, rec in pending_node.items():
+				if not isinstance(rec, dict):
+					continue
+				cli_session_id = rec.get("cliSessionId")
+				asked_at = _parse_iso(rec.get("askedAt"))
+				parkable = (
+					conv_id in registry.conversations
+					and isinstance(cli_session_id, str) and cli_session_id
+					and asked_at is not None
+					and not rec.get("cancelled")
+				)
+				if parkable:
+					registry.add_parked(
+						conv_id, cli_session_id,
+						sender=rec.get("sender") or "Agent",
+						request_id=request_id,
+						msg_id=rec.get("msgId"),
+						question=rec.get("questionText"),
+						started_at=asked_at,
+					)
+					parked += 1
+				else:
+					if backend is not None:
+						try:
+							await backend.mark_question_cancelled(conv_id, request_id)
+						except Exception as exc:
+							await logger.surface_error(
+								f"hydration_pending_cancel_failed: conv_id={conv_id} request_id={request_id} {exc}"
+							)
+					legacy_cancelled += 1
+	if parked or legacy_cancelled:
+		await logger.info(f"hydration_parked_pendings: parked={parked} legacy_cancelled={legacy_cancelled}")
 
 	# 2c. Session roster. Terminal records hydrate too: the sweeper can only
 	# retention-prune RTDB entries it holds in memory.
@@ -215,3 +265,12 @@ def _as_float(value, default):
 		return float(value)
 	except (TypeError, ValueError):
 		return default
+
+
+def _parse_iso(value) -> datetime | None:
+	if not isinstance(value, str) or not value:
+		return None
+	try:
+		return datetime.fromisoformat(value)
+	except ValueError:
+		return None

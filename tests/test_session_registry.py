@@ -289,3 +289,41 @@ def test_sweep_lost_clears_blocked_on_approval():
 	assert rec.state == "lost"
 	assert rec.in_tool is False
 	assert rec.blocked_on_approval is False
+
+def _sweep(reg, **overrides):
+	import datetime as _dt
+	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
+	args = dict(now_ts=last + 1000, lost_after_seconds=900, retention_seconds=72 * 3600,
+		rings_fresh=True, ring_ids=set())
+	args.update(overrides)
+	return reg.sweep(**args)
+
+def test_awaiting_human_without_live_pending_goes_lost():
+	reg = _reg()
+	reg.record_session_start("s1", cwd="C:/Work/X")
+	reg.upsert_from_hook("s1", state="awaiting_human", detail=None, event="PreToolUse")
+	_sweep(reg, live_ask_ids=set(), live_wait_ids=set())
+	assert reg.get("s1").state == "lost"
+
+def test_awaiting_human_with_live_pending_stays_exempt():
+	reg = _reg()
+	reg.record_session_start("s1", cwd="C:/Work/X")
+	reg.upsert_from_hook("s1", state="awaiting_human", detail=None, event="PreToolUse")
+	_sweep(reg, live_ask_ids={"s1"}, live_wait_ids=set())
+	assert reg.get("s1").state == "awaiting_human"
+
+def test_awaiting_agent_with_live_wait_entry_stays_exempt():
+	reg = _reg()
+	reg.record_session_start("s1", cwd="C:/Work/X")
+	reg.upsert_from_hook("s1", state="awaiting_agent", detail=None, event="PreToolUse")
+	_sweep(reg, live_ask_ids=set(), live_wait_ids={"s1"})
+	assert reg.get("s1").state == "awaiting_agent"
+	_sweep(reg, live_ask_ids=set(), live_wait_ids=set())
+	assert reg.get("s1").state == "lost"
+
+def test_no_liveness_info_preserves_blanket_exemption():
+	reg = _reg()
+	reg.record_session_start("s1", cwd="C:/Work/X")
+	reg.upsert_from_hook("s1", state="awaiting_human", detail=None, event="PreToolUse")
+	_sweep(reg)
+	assert reg.get("s1").state == "awaiting_human"

@@ -22,8 +22,11 @@ from typing import Callable
 
 SESSION_STATES = ("active", "idle", "awaiting_human", "awaiting_agent", "ended", "lost")
 TERMINAL_STATES = ("ended", "lost")
-# Blocked-on-tool sessions are legitimately silent for hours; the pending
-# future is the liveness proof, so the sweeper never marks them lost.
+# awaiting_* sessions may be legitimately silent for hours - but only while an
+# actual in-memory blocking structure exists (a future-bearing pending for
+# awaiting_human, a live wait-queue entry for awaiting_agent). The exemption is
+# conditional (T-001): a hydrated awaiting_* record with no live structure is
+# lost-markable on the normal silence threshold.
 SWEEP_EXEMPT_STATES = ("awaiting_human", "awaiting_agent")
 
 
@@ -351,6 +354,8 @@ class SessionRegistry:
 		retention_seconds: float,
 		rings_fresh: bool,
 		ring_ids: set[str],
+		live_ask_ids: set | None = None,
+		live_wait_ids: set | None = None,
 	) -> list[str]:
 		"""Apply staleness rules. Returns the ids pruned (terminal past retention)
 		so the caller can delete their RTDB entries. Marks lost only when ALL of:
@@ -370,7 +375,7 @@ class SessionRegistry:
 				continue
 			if not rings_fresh:
 				continue
-			if rec.state in SWEEP_EXEMPT_STATES:
+			if rec.state in SWEEP_EXEMPT_STATES and _exemption_live(rec.state, sid, live_ask_ids, live_wait_ids):
 				continue
 			if sid in ring_ids:
 				continue
@@ -390,6 +395,16 @@ def _age_seconds(iso: str, now_ts: float) -> float | None:
 		return now_ts - datetime.fromisoformat(iso).timestamp()
 	except ValueError:
 		return None
+
+
+def _exemption_live(state: str, sid: str, live_ask_ids: set | None, live_wait_ids: set | None) -> bool:
+	"""Blanket exemption when the caller supplied no liveness info (legacy
+	callers, tests); otherwise exempt only a state backed by its live structure."""
+	if live_ask_ids is None and live_wait_ids is None:
+		return True
+	if state == "awaiting_human":
+		return sid in (live_ask_ids or set())
+	return sid in (live_wait_ids or set())
 
 
 WATCHTOWER_FRESH_SECONDS = 120

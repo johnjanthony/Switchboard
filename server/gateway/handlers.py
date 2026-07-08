@@ -300,6 +300,7 @@ def build_tool_handlers(
 					conversation_id, request_id,
 					sender=sender, msg_id=msg_id,
 					question_text=question, suggestions=suggestions,
+					cli_session_id=cli_session_id, asked_at=started.isoformat(),
 				),
 				label=f"fb_add_pending_question:{conversation_id}:{request_id}",
 			)
@@ -692,6 +693,7 @@ def build_tool_handlers(
 						registry, backend, logger,
 						decision="send_default",
 						default_text="John is back at his desk; your question was not answered remotely. Re-ask in the terminal.",
+						session_registry=session_registry,
 					)
 					resolved = before - registry.pending_count
 				except Exception as exc:

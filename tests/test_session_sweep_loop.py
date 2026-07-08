@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from server.registry import Conversation, ConversationMember, Registry
 from server.session_registry import SessionRegistry
 from server.widget_snapshot import WidgetSnapshotStore
 
@@ -112,3 +113,38 @@ async def test_dispatch_loop_runs_and_can_be_cancelled(tmp_path):
 		await task
 	except asyncio.CancelledError:
 		pass
+
+
+@pytest.mark.asyncio
+async def test_sweep_once_derives_liveness_from_registry():
+	"""A parked (future-less) pending is NOT a liveness proof; a live future or
+	a live wait-queue entry is."""
+	from server.gateway.dispatch import _session_sweep_once
+
+	reg = _reg()
+	for sid in ("s-parked", "s-live", "s-wait"):
+		reg.record_session_start(sid, cwd="C:/Work/X")
+	reg.upsert_from_hook("s-parked", state="awaiting_human", detail=None, event="PreToolUse")
+	reg.upsert_from_hook("s-live", state="awaiting_human", detail=None, event="PreToolUse")
+	reg.upsert_from_hook("s-wait", state="awaiting_agent", detail=None, event="PreToolUse")
+
+	registry = Registry()
+	registry.add_parked("conv-1", "s-parked", "Claude", "req-p", question="Q?")
+	registry.add("conv-2", "s-live", "Claude", "req-l")
+	conv = Conversation(id="conv-3", title="t")
+	member = ConversationMember(cli_session_id="s-wait", sender="X", cwd="", surface="windows", joined_at=0.0)
+	fut = asyncio.get_event_loop().create_future()
+	conv.wait_queue.append({"member": member, "future": fut, "waiting_kind": "msg_and_await", "block_position": 0.0})
+	registry.conversations["conv-3"] = conv
+
+	store = WidgetSnapshotStore()
+	store.pushed_at = "2026-07-06T12:15:00+00:00"
+	import datetime as _dt
+	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
+	await _session_sweep_once(
+		reg, store, lost_after_seconds=900, retention_hours=72,
+		now_ts=last + 1000, registry=registry,
+	)
+	assert reg.get("s-parked").state == "lost"
+	assert reg.get("s-live").state == "awaiting_human"
+	assert reg.get("s-wait").state == "awaiting_agent"

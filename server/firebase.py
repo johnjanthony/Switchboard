@@ -209,6 +209,8 @@ class FirebaseBackend(
 		msg_id: str | None,
 		question_text: str,
 		suggestions: list[str] | None = None,
+		cli_session_id: str | None = None,
+		asked_at: str | None = None,
 	) -> None:
 		"""Persist an in-flight ask_human at
 		/conversations/<id>/pending_questions/<request_id> per the 2026-05-19 spec."""
@@ -219,6 +221,8 @@ class FirebaseBackend(
 			"cancelled": False,
 			"msgId": msg_id,
 			"suggestions": suggestions,
+			"cliSessionId": cli_session_id,
+			"askedAt": asked_at,
 		})
 
 	async def remove_pending_question_record(
@@ -299,30 +303,6 @@ class FirebaseBackend(
 			updates = {f'conversations/{conv_id}/pending_responses': 0 for conv_id in conversations.keys()}
 			db.reference().update(updates)
 		await asyncio.to_thread(_reset)
-
-	async def sweep_orphaned_pending_questions(self) -> int:
-		"""Startup sweep: cancel every conversations/*/pending_questions record
-		left behind by the previous server process. Pending futures don't
-		survive a restart, so any record present at startup is an orphan.
-		mark_question_cancelled sets the question message's cancelled flag
-		(what the phone's pending list keys off) AND removes the record.
-		Returns the number of records cancelled."""
-		def _conv_ids():
-			return db.reference('conversations').get(shallow=True)
-		conv_ids = await asyncio.to_thread(_conv_ids)
-		if not isinstance(conv_ids, dict):
-			return 0
-		count = 0
-		for conv_id in conv_ids.keys():
-			def _pending(cid=conv_id):
-				return db.reference(f'conversations/{cid}/pending_questions').get(shallow=True)
-			pending = await asyncio.to_thread(_pending)
-			if not isinstance(pending, dict):
-				continue
-			for request_id in pending.keys():
-				await self.mark_question_cancelled(conv_id, request_id)
-				count += 1
-		return count
 
 	async def reset_all_away_mode(self) -> None:
 		"""Force away mode off globally.

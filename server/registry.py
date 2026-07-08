@@ -32,11 +32,12 @@ class PendingRequest:
 	conversation_id: str
 	sender: str  # display attribution only, may be the disambiguated member name
 	request_id: str
-	future: asyncio.Future[str]
+	future: asyncio.Future[str] | None  # None = parked (T-001): rebuilt after restart, no coroutine awaits it
 	cli_session_id: str
 	started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 	msg_id: str | None = None
 	notices: list = field(default_factory=list)
+	question: str | None = None
 
 
 @dataclass
@@ -174,7 +175,7 @@ class Registry:
 		existing = self._pending.pop(key, None)
 		if existing is not None:
 			prior_request_id = existing.request_id
-			if not existing.future.done():
+			if existing.future is not None and not existing.future.done():
 				existing.future.cancel()
 			self._fire_pending_mirror(conversation_id, -1)
 		future = asyncio.get_event_loop().create_future()
@@ -205,7 +206,7 @@ class Registry:
 		if record is None:
 			return None
 		self._pending.pop((record.conversation_id, record.cli_session_id), None)
-		if not record.future.done():
+		if record.future is not None and not record.future.done():
 			if record.notices:
 				text = "\n\n".join([*record.notices, text])
 			record.future.set_result(text)
@@ -244,7 +245,7 @@ class Registry:
 		if request_id is not None and record.request_id != request_id:
 			return None
 		self._pending.pop(key, None)
-		if not record.future.done():
+		if record.future is not None and not record.future.done():
 			record.future.cancel()
 		self._fire_pending_mirror(conversation_id, -1)
 		return record.request_id
@@ -252,6 +253,51 @@ class Registry:
 	def all_pending(self) -> list["PendingRequest"]:
 		"""Snapshot for bulk-respond on global exit (Slice I)."""
 		return list(self._pending.values())
+
+	def add_parked(
+		self,
+		conversation_id: str,
+		cli_session_id: str,
+		sender: str,
+		request_id: str,
+		msg_id: str | None = None,
+		question: str | None = None,
+		started_at: datetime | None = None,
+	) -> None:
+		"""Register a future-less pending rebuilt from a persisted record (T-001).
+		Same map and same supersede semantics as add(); nothing awaits a parked
+		record - an arriving answer resolves it through the dispatch loop's
+		parked branch instead of a future."""
+		key = (conversation_id, cli_session_id)
+		existing = self._pending.pop(key, None)
+		if existing is not None:
+			if existing.future is not None and not existing.future.done():
+				existing.future.cancel()
+			self._fire_pending_mirror(conversation_id, -1)
+		record = PendingRequest(
+			conversation_id=conversation_id,
+			sender=sender,
+			request_id=request_id,
+			future=None,
+			cli_session_id=cli_session_id,
+			msg_id=msg_id,
+			question=question,
+		)
+		if started_at is not None:
+			record.started_at = started_at
+		self._pending[key] = record
+		self._fire_pending_mirror(conversation_id, +1)
+
+	@property
+	def parked_count(self) -> int:
+		return sum(1 for r in self._pending.values() if r.future is None)
+
+	def expired_parked(self, now: datetime, max_age_seconds: float) -> list["PendingRequest"]:
+		"""Parked records whose ask is older than the horizon (the TTL sweep's input)."""
+		return [
+			r for r in self._pending.values()
+			if r.future is None and (now - r.started_at).total_seconds() > max_age_seconds
+		]
 
 	def pending_for_conversation(self, conversation_id: str) -> list["PendingRequest"]:
 		"""Snapshot of pending requests for a specific conversation."""
@@ -270,7 +316,7 @@ class Registry:
 		for key in victims:
 			record = self._pending.pop(key)
 			cancelled_request_ids.append(record.request_id)
-			if not record.future.done():
+			if record.future is not None and not record.future.done():
 				record.future.cancel()
 		if cancelled_request_ids:
 			self._fire_pending_mirror(conversation_id, -len(cancelled_request_ids))
@@ -292,7 +338,7 @@ class Registry:
 		for key in victims:
 			record = self._pending.pop(key)
 			cancelled_request_ids.append(record.request_id)
-			if not record.future.done():
+			if record.future is not None and not record.future.done():
 				record.future.cancel()
 		if cancelled_request_ids:
 			self._fire_pending_mirror(conversation_id, -len(cancelled_request_ids))
@@ -316,7 +362,7 @@ class Registry:
 		for key in victims:
 			record = self._pending.pop(key)
 			resolved_request_ids.append(record.request_id)
-			if not record.future.done():
+			if record.future is not None and not record.future.done():
 				record.future.set_result(result_text)
 			self._record_resolved(record.conversation_id, record.request_id)
 		if resolved_request_ids:

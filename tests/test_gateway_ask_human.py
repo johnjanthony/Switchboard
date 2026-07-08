@@ -770,6 +770,8 @@ class PendingQuestionTrackingBackend(RecordingBackend):
 		msg_id,
 		question_text: str,
 		suggestions=None,
+		cli_session_id=None,
+		asked_at=None,
 	) -> None:
 		self.pending_added.append({
 			"conversation_id": conversation_id,
@@ -778,6 +780,8 @@ class PendingQuestionTrackingBackend(RecordingBackend):
 			"msg_id": msg_id,
 			"question_text": question_text,
 			"suggestions": suggestions,
+			"cli_session_id": cli_session_id,
+			"asked_at": asked_at,
 		})
 
 	async def remove_pending_question_record(
@@ -830,6 +834,29 @@ async def test_ask_human_writes_pending_questions_and_clears_on_reply(cfg, logge
 	assert (conv_id, added["request_id"]) in backend.pending_removed
 	# answered_question_msg_ids is NOT written (F-66/F-73, retired)
 	assert backend.answered_marked == []
+
+
+@pytest.mark.asyncio
+async def test_ask_human_persists_session_id_and_ask_timestamp(cfg, logger):
+	"""Chunk 7: the pending_questions record must carry the asking session's id
+	and the ask timestamp so hydration can rebuild it as a parked pending."""
+	backend = PendingQuestionTrackingBackend()
+	registry = make_registry_with_loopback()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	task = asyncio.create_task(
+		handlers.ask_human("Proceed?", _SENDER, cli_session_id="s-park-001", cwd=_CWD)
+	)
+	for _ in range(6):
+		await asyncio.sleep(0)
+	assert len(backend.pending_added) == 1
+	added = backend.pending_added[0]
+	assert added["cli_session_id"] == "s-park-001"
+	assert isinstance(added["asked_at"], str) and added["asked_at"]
+
+	conv_id = registry.session_to_conversation_id.get("s-park-001")
+	registry.resolve(conversation_id=conv_id, request_id=added["request_id"], text="ok")
+	await asyncio.wait_for(task, timeout=1.0)
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,7 @@ from server.messenger import (
 	ConversationStore,
 )
 from server.gateway.bg_tasks import _spawn_bg
+from server.gateway.parked import finish_parked_resolve
 from server.firebase_supervisor import LoopSupervisor
 from server.command_freshness import COMMAND_TTL_SECONDS, command_age_seconds
 
@@ -93,6 +94,7 @@ async def dispatch_responses(
 	backend: _DispatchResponsesBackend,
 	logger: JsonlLogger,
 	supervisor: LoopSupervisor,
+	session_registry=None,
 ) -> None:
 	from server.gateway.handlers import _append_session_log
 	while True:
@@ -159,6 +161,8 @@ async def dispatch_responses(
 								except Exception as exc:
 									await logger.surface_error(f"history_write_failed: {exc}")
 							_spawn_bg(_write_history(), label=f"history_write:{conversation_id}")
+							if record.future is None:
+								await finish_parked_resolve(backend, session_registry, logger, record, response.text)
 					else:
 						await logger.surface_error(f"legacy_correlation_dropped: {response.correlation}")
 				except asyncio.CancelledError:
@@ -376,7 +380,7 @@ async def dispatch_spawn_commands(spawn_handler, backend, logger, supervisor):
 		await logger.info("spawn_command_listener not wired (backend missing method)")
 
 
-async def dispatch_away_mode_commands(registry, backend, logger, supervisor):
+async def dispatch_away_mode_commands(registry, backend, logger, supervisor, session_registry=None):
 	"""Watch /away_mode_commands for phone-initiated away mode toggles.
 
 	Command shapes (Android-emitted via MainViewModel):
@@ -433,6 +437,7 @@ async def dispatch_away_mode_commands(registry, backend, logger, supervisor):
 								registry, backend, logger,
 								decision=decision,
 								default_text=default_text,
+								session_registry=session_registry,
 							)
 						except Exception as exc:
 							await logger.surface_error(f"bulk_respond_failed: {exc}")
@@ -505,8 +510,27 @@ async def dispatch_status_request_commands(service, backend, logger, supervisor)
 # surface were all removed in Fix Pack 3.
 
 
+async def _parked_sweep_once(registry, backend, logger, *, max_age_hours, now=None):
+	"""Cancel parked pendings whose ask is older than the retention horizon
+	(T-001 lifetimes). The phone bubble greys out exactly as the old startup
+	sweep made it - just 72h later, and only for questions nobody answered."""
+	from datetime import datetime, timezone
+	now_dt = now if now is not None else datetime.now(timezone.utc)
+	expired = registry.expired_parked(now_dt, max_age_hours * 3600)
+	for record in expired:
+		registry.remove(record.conversation_id, record.cli_session_id, request_id=record.request_id)
+		try:
+			await backend.mark_question_cancelled(record.conversation_id, record.request_id)
+		except Exception as exc:
+			await logger.surface_error(f"parked_ttl_cancel_failed: {exc}")
+		await logger.info(
+			f"parked_pending_expired: conversation_id={record.conversation_id} request_id={record.request_id}"
+		)
+	return len(expired)
+
+
 async def _session_sweep_once(
-	session_registry, widget_store, *, lost_after_seconds, retention_hours, now_ts=None,
+	session_registry, widget_store, *, lost_after_seconds, retention_hours, now_ts=None, registry=None,
 ):
 	"""One tick of the staleness sweep, factored out so tests can drive it
 	directly instead of running the infinite loop. Reads the widget store's
@@ -516,18 +540,30 @@ async def _session_sweep_once(
 	now = now_ts if now_ts is not None else _time.time()
 	fresh = rings_are_fresh(getattr(widget_store, "pushed_at", None), now)
 	ring_ids = set((getattr(widget_store, "rings", None) or {}).keys())
+	live_ask_ids = live_wait_ids = None
+	if registry is not None:
+		live_ask_ids = {p.cli_session_id for p in registry.all_pending() if p.future is not None}
+		live_wait_ids = set()
+		for conv in registry.conversations.values():
+			for entry in conv.wait_queue:
+				member = entry.get("member")
+				fut = entry.get("future")
+				if member is not None and fut is not None and not fut.done():
+					live_wait_ids.add(member.cli_session_id)
 	return session_registry.sweep(
 		now_ts=now,
 		lost_after_seconds=lost_after_seconds,
 		retention_seconds=retention_hours * 3600,
 		rings_fresh=fresh,
 		ring_ids=ring_ids,
+		live_ask_ids=live_ask_ids,
+		live_wait_ids=live_wait_ids,
 	)
 
 
 async def dispatch_session_sweep(
 	session_registry, widget_store, logger, supervisor, *,
-	lost_after_seconds, retention_hours, interval: float = 60.0,
+	lost_after_seconds, retention_hours, interval: float = 60.0, registry=None, backend=None,
 ):
 	"""Periodic staleness judge for the session roster. Pure rules live in
 	SessionRegistry.sweep; this loop only supplies the sensor context."""
@@ -536,9 +572,12 @@ async def dispatch_session_sweep(
 			pruned = await _session_sweep_once(
 				session_registry, widget_store,
 				lost_after_seconds=lost_after_seconds, retention_hours=retention_hours,
+				registry=registry,
 			)
 			if pruned:
 				await logger.info(f"session_sweep_pruned: {len(pruned)}")
+			if registry is not None and backend is not None:
+				await _parked_sweep_once(registry, backend, logger, max_age_hours=retention_hours)
 			supervisor.record_success()
 		except asyncio.CancelledError:
 			raise

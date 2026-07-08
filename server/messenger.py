@@ -112,6 +112,8 @@ class MessageWriter(ABC):
 		msg_id: str | None,
 		question_text: str,
 		suggestions: list[str] | None = None,
+		cli_session_id: str | None = None,
+		asked_at: str | None = None,
 	) -> None:
 		"""Write a tracking record at /conversations/<id>/pending_questions/<request_id>.
 		Used by phone-side UI to render an indicator that an ask_human is in flight.

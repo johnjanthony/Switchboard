@@ -12,7 +12,7 @@ Single Python process, one asyncio event loop, MCP HTTP server on `localhost:987
 
 Away mode is the founding feature, not the whole product: ask/notify blocking semantics are away-mode-scoped (at-desk interaction uses the terminal), while session tracking, telemetry fan-out, Operator, and Watchtower are always-on ambient surfaces.
 
-The Registry is in-memory. The pending-request index is keyed by `(conversation_id, cli_session_id)` tuples where `conversation_id` is a `conv-<uuid>` string from `Registry.conversations` — not a filesystem path; answers resolve by `(conversation_id, request_id)`. Pending `ask_human` futures die on restart and waiting agents time out (parked-pendings mitigation is scheduled post-convening, see the 2026-07-06 T-001 re-triage). Conversations (the persistence unit) survive restart via Firebase hydration — see `server/hydration.py`.
+The Registry is in-memory. The pending-request index is keyed by `(conversation_id, cli_session_id)` tuples where `conversation_id` is a `conv-<uuid>` string from `Registry.conversations` — not a filesystem path; answers resolve by `(conversation_id, request_id)`. Pending ask_human futures die on restart, but the questions survive: hydration rebuilds pending_questions records as parked (future-less) pendings, an arriving answer resolves them with a history write plus a session notice, and unanswered ones expire at the 72h retention horizon (chunk 7). Conversations (the persistence unit) survive restart via Firebase hydration — see `server/hydration.py`.
 
 ## Layout
 
@@ -41,6 +41,7 @@ server/
     dispatch.py          dispatch_responses, dispatch_combine_commands, dispatch_force_end_commands, dispatch_spawn_commands, dispatch_away_mode_commands, dispatch_status_request_commands, dispatch_session_end_markers, dispatch_session_sweep, handle_force_end
     document.py          _validate_path + denylist + sha256 helpers
     bulk_respond.py      _apply_bulk_respond_decision (used by exit_global to drain pending questions)
+    parked.py            finish_parked_resolve - bookkeeping for resolving a future-less parked pending (record cleanup + session notices)
     bg_tasks.py          _BG_TASKS + _spawn_bg — strong-ref tracker for background tasks
 scripts/
   install-service.ps1        One-time NSSM service install

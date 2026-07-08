@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 import pytest
 
@@ -321,3 +321,66 @@ class TestActiveConversationsCount:
 		r = Registry()
 		r.conversations["c1"] = Conversation(id="c1", title="a", state="ended")
 		assert r.active_conversations_count == 0
+
+
+class TestParkedPendings:
+	def _park(self, r, conv="conv-1", sid="sess-A", req="req-1", question="Deploy?"):
+		r.add_parked(conv, sid, "Claude", req, msg_id="m-1", question=question)
+		return r.find_by_request_id(conv, req)
+
+	def test_add_parked_registers_future_less_record(self):
+		r = Registry()
+		rec = self._park(r)
+		assert rec is not None
+		assert rec.future is None
+		assert rec.question == "Deploy?"
+		assert rec.msg_id == "m-1"
+		assert r.pending_count == 1
+		assert r.parked_count == 1
+
+	def test_resolve_parked_record_pops_and_records_resolution(self):
+		r = Registry()
+		self._park(r)
+		assert r.resolve("conv-1", "req-1", "yes") == "req-1"
+		assert r.find_by_request_id("conv-1", "req-1") is None
+		assert r.was_recently_resolved("conv-1", "req-1")
+		assert r.parked_count == 0
+
+	def test_resolve_parked_leaves_notices_for_the_caller(self):
+		r = Registry()
+		rec = self._park(r)
+		rec.notices.append("CONVENE NOTICE")
+		assert r.resolve("conv-1", "req-1", "yes") == "req-1"
+		assert rec.notices == ["CONVENE NOTICE"]
+
+	def test_reask_supersedes_parked_record(self):
+		async def run():
+			r = Registry()
+			self._park(r)
+			fut, prior = r.add("conv-1", "sess-A", "Claude", "req-2", return_superseded=True)
+			assert prior == "req-1"
+			assert not fut.done()
+			assert r.parked_count == 0
+			assert r.pending_count == 1
+		asyncio.run(run())
+
+	def test_remove_and_bulk_cancel_handle_parked_records(self):
+		r = Registry()
+		self._park(r)
+		assert r.remove("conv-1", "sess-A", request_id="req-1") == "req-1"
+		self._park(r)
+		assert r.cancel_pending_for_conversation("conv-1") == ["req-1"]
+		self._park(r)
+		assert r.resolve_pending_for_conversation("conv-1", "__CONVERSATION_ENDED__") == ["req-1"]
+		assert r.pending_count == 0
+
+	def test_expired_parked_honors_horizon_and_skips_live(self):
+		async def run():
+			r = Registry()
+			old = self._park(r)
+			old.started_at = datetime.now(timezone.utc) - timedelta(hours=73)
+			r.add_parked("conv-2", "sess-B", "Claude", "req-fresh")
+			r.add("conv-3", "sess-C", "Claude", "req-live")
+			expired = r.expired_parked(datetime.now(timezone.utc), 72 * 3600)
+			assert [e.request_id for e in expired] == ["req-1"]
+		asyncio.run(run())

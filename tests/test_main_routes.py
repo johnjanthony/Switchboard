@@ -99,6 +99,7 @@ async def test_healthz_returns_pending_listeners_and_dispatch_loops(tmp_path, mo
 		return JSONResponse({
 			"pending": {
 				"count": registry.pending_count,
+				"parked": registry.parked_count,
 				"oldest_pending_age_seconds": registry.oldest_pending_age_seconds,
 				"total_answered": registry.total_answered,
 			},
@@ -117,3 +118,4 @@ async def test_healthz_returns_pending_listeners_and_dispatch_loops(tmp_path, mo
 	}
 	assert body["listeners"][0]["state"] == "live"
 	assert body["pending"]["count"] == 0
+	assert body["pending"]["parked"] == 0

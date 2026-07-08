@@ -659,12 +659,14 @@ async def _run(config: Config) -> None:
 	await backend.delete_open_conversation_node()
 	await backend.start_away_mode_listeners(registry)
 	await backend.reset_all_pending_responses()
-	sweep_fn = getattr(backend, "sweep_orphaned_pending_questions", None)
-	if callable(sweep_fn):
-		swept = await sweep_fn()
-		if swept:
-			await logger.info(f"startup_pending_questions_sweep: cancelled={swept}")
 	await backend.start_conversation_answers_listener()
+
+	# Pending mirror wired BEFORE hydration: parked-pending rebuilds fire +1
+	# per record, restoring each conversation's pending_responses counter
+	# (zeroed just above) so the phone's reply input survives the restart.
+	mirror_writer_fn = getattr(backend, "make_pending_mirror_writer", None)
+	if callable(mirror_writer_fn):
+		registry.set_pending_mirror(mirror_writer_fn())
 
 	await hydrate_from_firebase(registry, backend, logger, session_registry=session_registry)
 
@@ -672,10 +674,6 @@ async def _run(config: Config) -> None:
 		await backend.set_global_wsl_available(bool(config.wsl_home_resolved))
 	except Exception as exc:
 		await logger.surface_error(f"set_global_wsl_available_failed: {exc}")
-
-	mirror_writer_fn = getattr(backend, "make_pending_mirror_writer", None)
-	if callable(mirror_writer_fn):
-		registry.set_pending_mirror(mirror_writer_fn())
 
 	limiter = RateLimiter(config.rate_limit)
 	handlers = build_tool_handlers(config, registry, backend, logger, limiter, session_registry=session_registry)
@@ -723,6 +721,7 @@ async def _run(config: Config) -> None:
 		return JSONResponse({
 			"pending": {
 				"count": registry.pending_count,
+				"parked": registry.parked_count,
 				"oldest_pending_age_seconds": registry.oldest_pending_age_seconds,
 				"total_answered": registry.total_answered,
 			},
@@ -770,7 +769,7 @@ async def _run(config: Config) -> None:
 	await logger.info(f"session_end_marker_dir: {session_end_marker_dir}")
 
 	dispatch_task = asyncio.create_task(
-		dispatch_responses(registry, backend, logger, loop_sups["dispatch_responses"])
+		dispatch_responses(registry, backend, logger, loop_sups["dispatch_responses"], session_registry=session_registry)
 	)
 
 	combine_task = asyncio.create_task(
@@ -795,7 +794,7 @@ async def _run(config: Config) -> None:
 	)
 
 	away_mode_task = asyncio.create_task(
-		dispatch_away_mode_commands(registry, backend, logger, loop_sups["dispatch_away_mode_commands"])
+		dispatch_away_mode_commands(registry, backend, logger, loop_sups["dispatch_away_mode_commands"], session_registry=session_registry)
 	)
 
 	status_request_task = asyncio.create_task(
@@ -816,6 +815,7 @@ async def _run(config: Config) -> None:
 			session_registry, widget_store, logger, loop_sups["dispatch_session_sweep"],
 			lost_after_seconds=config.session_lost_after_seconds,
 			retention_hours=config.session_retention_hours,
+			registry=registry, backend=backend,
 		)
 	)
 
