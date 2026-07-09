@@ -4,9 +4,9 @@ import asyncio
 
 import pytest
 
-from server.conversation_ops import _create_active_conversation_for
-from server.registry import Registry
-from tests.conftest import make_registry_with_loopback
+from server.conversation_ops import _create_active_conversation_for, _wake_one_from
+from server.registry import ConversationMember, Registry
+from tests.conftest import make_active_conversation, make_registry_with_loopback
 
 
 def test_create_active_conversation_for_windows():
@@ -150,3 +150,51 @@ async def test_create_active_conversation_origin_join():
 	registry = make_registry_with_loopback()
 	conv_id = await _create_active_conversation_for(registry, "s-1", "C:/Work/X", "Claude", origin="join")
 	assert registry.conversations[conv_id].origin == "join"
+
+
+def test_wake_one_from_skips_done_future_and_wakes_next():
+	# REV-101: wait_for's timeout or cancel completes a waiter's future before
+	# the waiter reacquires conv.lock to dequeue itself. A speaker holding the
+	# lock pops that dead entry and must go on to wake the next live waiter,
+	# not silently wake nobody.
+	async def run():
+		conv = make_active_conversation(conversation_id="conv-w1", member_session_id="s-dead", sender="Dead")
+		alive = ConversationMember(
+			cli_session_id="s-alive", sender="Alive", cwd="C:/Work/X", surface="windows", joined_at=0.0,
+		)
+		conv.members_active["s-alive"] = alive
+		dead = conv.members_active["s-dead"]
+		loop = asyncio.get_running_loop()
+		dead_fut = loop.create_future()
+		dead_fut.cancel()  # what wait_for does internally on timeout or MCP cancel
+		live_fut = loop.create_future()
+		conv.wait_queue.append({"member": dead, "future": dead_fut, "waiting_kind": "msg_and_await", "block_position": 0.0})
+		conv.wait_queue.append({"member": alive, "future": live_fut, "waiting_kind": "msg_and_await", "block_position": 1.0})
+		conv.messages.append({"seq": 0, "sender": "Dead", "type": "agent_msg", "text": "hello", "timestamp": "2026-07-09T00:00:00+00:00"})
+		assert _wake_one_from(conv) is True
+		assert live_fut.done() and live_fut.result() == "Dead: hello"
+		assert len(conv.wait_queue) == 0
+		assert alive.last_seen_seq == len(conv.messages)
+		assert dead.last_seen_seq == 0  # nothing was delivered to the dead waiter
+	asyncio.run(run())
+
+
+def test_wake_one_from_returns_false_when_all_waiters_dead():
+	async def run():
+		conv = make_active_conversation(conversation_id="conv-w2")
+		member = conv.members_active["s-1"]
+		loop = asyncio.get_running_loop()
+		f1, f2 = loop.create_future(), loop.create_future()
+		f1.cancel()
+		f2.set_result("already resolved elsewhere")
+		conv.wait_queue.append({"member": member, "future": f1, "waiting_kind": "msg_and_await", "block_position": 0.0})
+		conv.wait_queue.append({"member": member, "future": f2, "waiting_kind": "msg_and_await", "block_position": 1.0})
+		assert _wake_one_from(conv) is False
+		assert len(conv.wait_queue) == 0  # dead entries drained, not left to eat future wakes
+		assert member.last_seen_seq == 0
+	asyncio.run(run())
+
+
+def test_wake_one_from_returns_false_on_empty_queue():
+	conv = make_active_conversation(conversation_id="conv-w3")
+	assert _wake_one_from(conv) is False

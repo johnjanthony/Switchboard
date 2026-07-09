@@ -597,21 +597,26 @@ def _now_iso() -> str:
 
 
 def _wake_one_from(conversation: Conversation) -> bool:
-	"""Pop the FIFO-oldest entry from conv.wait_queue, resolve its future with the
-	appropriate wake payload. Returns True if a wake occurred, False if queue was empty."""
-	if not conversation.wait_queue:
-		return False
-	entry = conversation.wait_queue.popleft()
-	future = entry["future"]
-	member = entry["member"]
-	kind = entry["waiting_kind"]
-	if future.done():
-		return False  # already resolved (race); skip
-	payload = _compose_wake_payload(conversation, member, kind)
-	future.set_result(payload)
-	# Update last_seen_seq so the next wake doesn't re-deliver
-	member.last_seen_seq = len(conversation.messages)
-	return True
+	"""Wake the FIFO-oldest LIVE waiter on conv.wait_queue: pop entries until one
+	holds an unresolved future, resolve it with the appropriate wake payload, and
+	advance that member's cursor. A popped entry whose future is already done is
+	dead - its waiter's wait_for timed out or was cancelled before the waiter
+	could reacquire conv.lock to dequeue itself (REV-101) - so it is discarded
+	and the next waiter is tried; the dead waiter's own cleanup arm tolerates the
+	entry being gone. Returns True if a wake occurred, False otherwise."""
+	while conversation.wait_queue:
+		entry = conversation.wait_queue.popleft()
+		future = entry["future"]
+		if future.done():
+			continue
+		member = entry["member"]
+		kind = entry["waiting_kind"]
+		payload = _compose_wake_payload(conversation, member, kind)
+		future.set_result(payload)
+		# Update last_seen_seq so the next wake doesn't re-deliver
+		member.last_seen_seq = len(conversation.messages)
+		return True
+	return False
 
 
 def _convene_notice(conversation_id: str, member_sender: str, peers: list) -> str:

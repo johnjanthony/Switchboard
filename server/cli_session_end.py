@@ -84,24 +84,33 @@ async def handle_session_end(
 			backend.write_conversation_message(conversation_id, dormancy_msg),
 			label=f"fb_write_dormancy_msg:{conversation_id}:{target.sender}",
 		)
-	# Wake every waiter blocked in message_and_await_agent on this conv.
-	# Resolve their futures with the dormancy_msg text so the peer surfaces
-	# from its wait_for and can decide what to do next on its own turn.
+	# Wake every waiter blocked in message_and_await_agent on this conv. Each
+	# live waiter gets its full unseen delta composed via _compose_wake_payload
+	# - which includes the just-appended dormancy line - NOT just the dormancy
+	# text: the cursor jump below would otherwise hide any not-yet-seen message
+	# from every future wake and join log (REV-111). The empty-payload fallback
+	# guards the degenerate already-caught-up case so a wake never resolves
+	# with an empty string.
 	# Don't hold the conv.lock when resolving futures: future callbacks may
 	# schedule async work, and we're not inside the lock here (the route
 	# handler in main.py doesn't take it). Snapshot then clear, then resolve.
+	from server.conversation_ops import _compose_wake_payload
 	to_wake = list(conv.wait_queue)
 	conv.wait_queue.clear()
 	for entry in to_wake:
 		fut = entry.get("future")
-		if fut is not None and not fut.done():
+		if fut is None or fut.done():
+			continue
+		member = entry.get("member")
+		if member is None:
 			fut.set_result(dormancy_msg["text"])
-			# Advance the woken member's cursor past the dormancy message so
-			# its next wake delta does not re-include the dormancy line
-			# (parity with _wake_one_from in conversation_ops.py). F-70.
-			member = entry.get("member")
-			if member is not None:
-				member.last_seen_seq = len(conv.messages)
+			continue
+		payload = _compose_wake_payload(conv, member, entry.get("waiting_kind", "msg_and_await"))
+		fut.set_result(payload or dormancy_msg["text"])
+		# Advance the woken member's cursor past everything just delivered so
+		# its next wake delta does not re-include it (parity with
+		# _wake_one_from in conversation_ops.py). F-70.
+		member.last_seen_seq = len(conv.messages)
 	# Terminal handling for pendings owned by the departed session (REV-001).
 	# Live futures are cancelled - freeing the asker instead of a 24h wait -
 	# and the awaiting coroutine's CancelledError arm performs the Firebase
