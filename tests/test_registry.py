@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 
 import pytest
 
-from server.registry import PendingRequest, Registry
+from server.registry import PendingRequest, Registry, SUPERSEDED_SENTINEL
 
 
 class TestPendingByKey:
@@ -39,7 +39,10 @@ class TestPendingByKey:
 			assert prior is None
 			fut2, prior = r.add("conv-1", "sess-A", "Claude", "req-2", return_superseded=True)
 			assert prior == "req-1"
-			assert fut1.cancelled()
+			# REV-106: superseded, not cancelled - resolved with the sentinel so
+			# the superseded asker's coroutine completes normally.
+			assert fut1.done() and not fut1.cancelled()
+			assert fut1.result() == SUPERSEDED_SENTINEL
 		asyncio.run(run())
 
 	def test_resolve_unknown_request_id_is_noop(self):
@@ -48,14 +51,6 @@ class TestPendingByKey:
 			r.add("conv-1", "sess-A", "Claude", "req-1")
 			assert r.resolve("conv-1", "req-STALE", "text") is None
 			assert r.find_by_request_id("conv-1", "req-1") is not None
-		asyncio.run(run())
-
-	def test_remove_is_keyed_by_session_with_request_id_guard(self):
-		async def run():
-			r = Registry()
-			r.add("conv-1", "sess-A", "Claude", "req-1")
-			assert r.remove("conv-1", "sess-A", request_id="req-OTHER") is None
-			assert r.remove("conv-1", "sess-A", request_id="req-1") == "req-1"
 		asyncio.run(run())
 
 	def test_resolve_increments_total_answered(self):
@@ -93,11 +88,6 @@ class TestPendingByKey:
 		req_id = r.resolve("conv-1", "req-1", "orphan")
 		assert req_id is None
 
-	def test_remove_unknown_returns_none(self):
-		r = Registry()
-		req_id = r.remove("conv-1", "sess-A")
-		assert req_id is None
-
 	def test_all_pending_snapshot(self):
 		async def run():
 			r = Registry()
@@ -108,62 +98,6 @@ class TestPendingByKey:
 			assert len(pending) == 3
 			req_ids = sorted(p.request_id for p in pending)
 			assert req_ids == ["r1", "r2", "r3"]
-		asyncio.run(run())
-
-	def test_cancel_pending_for_conversation_cancels_matching_only(self):
-		"""Cancel-on-spawn: cancel + pop every pending whose conversation_id matches; leave siblings on
-		other conversations untouched. Returns the cancelled request_ids in registry-iteration order."""
-		async def run():
-			r = Registry()
-			fut1 = r.add("conv-foo", "sess-A", "Claude", "req-1")
-			fut2 = r.add("conv-foo", "sess-B", "Sparkles", "req-2")
-			fut3 = r.add("conv-bar", "sess-A", "Claude", "req-3")
-
-			cancelled = r.cancel_pending_for_conversation("conv-foo")
-
-			assert sorted(cancelled) == ["req-1", "req-2"]
-			assert fut1.cancelled() and fut2.cancelled()
-			assert not fut3.cancelled()
-			assert r.find_by_request_id("conv-foo", "req-1") is None
-			assert r.find_by_request_id("conv-foo", "req-2") is None
-			assert r.find_by_request_id("conv-bar", "req-3") is not None
-		asyncio.run(run())
-
-	def test_cancel_pending_for_conversation_no_match_returns_empty(self):
-		async def run():
-			r = Registry()
-			r.add("conv-foo", "sess-A", "Claude", "req-1")
-			cancelled = r.cancel_pending_for_conversation("conv-missing")
-			assert cancelled == []
-			# Existing entry untouched
-			assert r.find_by_request_id("conv-foo", "req-1") is not None
-		asyncio.run(run())
-
-	def test_cancel_stale_pending_spares_live_session(self):
-		"""Cancel-on-spawn (liveness-aware): a pending owned by a live session must
-		survive; only pendings owned by a dead/unknown session are cancelled."""
-		async def run():
-			r = Registry()
-			live = r.add("conv-foo", "s-live", "Claude", "req-live")
-			dead = r.add("conv-foo", "s-dead", "Sparkles", "req-dead")
-
-			cancelled = r.cancel_stale_pending_for_conversation("conv-foo", alive_session_ids={"s-live"})
-
-			assert sorted(cancelled) == ["req-dead"]
-			assert not live.cancelled()
-			assert dead.cancelled()
-			assert r.find_by_request_id("conv-foo", "req-live") is not None
-			assert r.find_by_request_id("conv-foo", "req-dead") is None
-		asyncio.run(run())
-
-	def test_cancel_stale_pending_all_live_cancels_nothing(self):
-		async def run():
-			r = Registry()
-			fut = r.add("conv-foo", "s-live", "Claude", "req-1")
-			cancelled = r.cancel_stale_pending_for_conversation("conv-foo", alive_session_ids={"s-live"})
-			assert cancelled == []
-			assert not fut.cancelled()
-			assert r.find_by_request_id("conv-foo", "req-1") is not None
 		asyncio.run(run())
 
 	def test_resolve_prepends_pending_notices(self):
@@ -209,17 +143,6 @@ class TestPendingMirror:
 			assert calls == []
 		asyncio.run(run())
 
-	def test_remove_calls_mirror_with_minus_one(self):
-		async def run():
-			calls = []
-			r = Registry()
-			r.set_pending_mirror(lambda conversation_id, delta: calls.append((conversation_id, delta)))
-			r.add("conv-1", "sess-A", "Claude", "r1")
-			calls.clear()
-			r.remove("conv-1", "sess-A")
-			assert calls == [("conv-1", -1)]
-		asyncio.run(run())
-
 	def test_supersede_via_add_emits_minus_one_then_plus_one(self):
 		"""When add() supersedes an existing entry, the prior is cancelled (mirror -1)
 		and the new is added (mirror +1). Two calls."""
@@ -232,20 +155,6 @@ class TestPendingMirror:
 			r.add("conv-1", "sess-A", "Claude", "r2")
 			assert calls == [("conv-1", -1), ("conv-1", 1)]
 		asyncio.run(run())
-
-	def test_cancel_pending_for_conversation_calls_mirror_once_with_combined_delta(self):
-		async def run():
-			calls = []
-			r = Registry()
-			r.set_pending_mirror(lambda conversation_id, delta: calls.append((conversation_id, delta)))
-			r.add("conv-1", "sess-A", "A", "r1")
-			r.add("conv-1", "sess-B", "B", "r2")
-			r.add("conv-2", "sess-C", "C", "r3")
-			calls.clear()
-			r.cancel_pending_for_conversation("conv-1")
-			assert calls == [("conv-1", -2)]
-		asyncio.run(run())
-
 
 class TestAwayModeCache:
 	def test_update_global_away_cache(self):
@@ -364,14 +273,11 @@ class TestParkedPendings:
 			assert r.pending_count == 1
 		asyncio.run(run())
 
-	def test_remove_and_bulk_cancel_handle_parked_records(self):
+	def test_pop_record_and_terminate_paths_handle_parked_records(self):
 		r = Registry()
 		self._park(r)
-		assert r.remove("conv-1", "sess-A", request_id="req-1") == "req-1"
-		self._park(r)
-		assert r.cancel_pending_for_conversation("conv-1") == ["req-1"]
-		self._park(r)
-		assert r.resolve_pending_for_conversation("conv-1", "__CONVERSATION_ENDED__") == ["req-1"]
+		rec = r.find_by_request_id("conv-1", "req-1")
+		assert r.pop_record(rec) is True
 		assert r.pending_count == 0
 
 	def test_expired_parked_honors_horizon_and_skips_live(self):
@@ -383,4 +289,85 @@ class TestParkedPendings:
 			r.add("conv-3", "sess-C", "Claude", "req-live")
 			expired = r.expired_parked(datetime.now(timezone.utc), 72 * 3600)
 			assert [e.request_id for e in expired] == ["req-1"]
+		asyncio.run(run())
+
+
+class TestPopRecordAndResolveGuard:
+	def test_pop_record_pops_exact_record_and_fires_mirror(self):
+		async def run():
+			r = Registry()
+			deltas = []
+			r.set_pending_mirror(lambda conv, d: deltas.append((conv, d)))
+			r.add("conv-1", "sess-A", "Claude", "req-1")
+			rec = r.find_by_request_id("conv-1", "req-1")
+			assert r.pop_record(rec) is True
+			assert r.pending_count == 0
+			assert deltas == [("conv-1", 1), ("conv-1", -1)]
+			assert not rec.future.done()  # pop_record never settles the future
+			assert r.pop_record(rec) is False  # idempotent: second pop is a no-op
+		asyncio.run(run())
+
+	def test_pop_record_refuses_stale_record_after_supersede(self):
+		async def run():
+			r = Registry()
+			r.add("conv-1", "sess-A", "Claude", "req-1")
+			old = r.find_by_request_id("conv-1", "req-1")
+			r.add("conv-1", "sess-A", "Claude", "req-2")
+			assert r.pop_record(old) is False
+			assert r.pending_count == 1
+			assert r.find_by_request_id("conv-1", "req-2") is not None
+		asyncio.run(run())
+
+	def test_pop_record_handles_parked_records(self):
+		r = Registry()
+		r.add_parked("conv-1", "sess-A", "Claude", "req-1")
+		rec = r.find_by_request_id("conv-1", "req-1")
+		assert r.pop_record(rec) is True
+		assert r.pending_count == 0
+
+	def test_resolve_returns_none_when_future_already_done(self):
+		async def run():
+			r = Registry()
+			fut = r.add("conv-1", "sess-A", "Claude", "req-1")
+			fut.cancel()  # what wait_for does internally on timeout or MCP cancel
+			assert r.resolve("conv-1", "req-1", "late answer") is None
+			# The record stays: the asker's terminal arm owns the pop (REV-108).
+			assert r.find_by_request_id("conv-1", "req-1") is not None
+			assert r.total_answered == 0
+			assert not r.was_recently_resolved("conv-1", "req-1")
+		asyncio.run(run())
+
+	def test_remember_resolved_is_public(self):
+		r = Registry()
+		r.remember_resolved("conv-1", "req-9")
+		assert r.was_recently_resolved("conv-1", "req-9")
+
+
+class TestSupersedeResolvesNotCancels:
+	def test_supersede_resolves_prior_live_future_with_sentinel(self):
+		async def run():
+			r = Registry()
+			fut1 = r.add("conv-1", "sess-A", "Claude", "req-1")
+			fut2, prior = r.add("conv-1", "sess-A", "Claude", "req-2", return_superseded=True)
+			assert prior == "req-1"
+			assert fut1.done() and not fut1.cancelled()
+			assert fut1.result() == SUPERSEDED_SENTINEL
+			assert not fut2.done()
+		asyncio.run(run())
+
+	def test_supersede_carries_notices_to_new_record(self):
+		async def run():
+			r = Registry()
+			r.add("conv-1", "sess-A", "Claude", "req-1")
+			r.find_by_request_id("conv-1", "req-1").notices.append("CONVENE NOTICE")
+			r.add("conv-1", "sess-A", "Claude", "req-2")
+			assert r.find_by_request_id("conv-1", "req-2").notices == ["CONVENE NOTICE"]
+		asyncio.run(run())
+
+	def test_add_parked_supersede_also_resolves(self):
+		async def run():
+			r = Registry()
+			fut1 = r.add("conv-1", "sess-A", "Claude", "req-1")
+			r.add_parked("conv-1", "sess-A", "Claude", "req-2")
+			assert fut1.result() == SUPERSEDED_SENTINEL
 		asyncio.run(run())

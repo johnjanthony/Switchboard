@@ -129,17 +129,19 @@ class SpawnHandler:
 			{m.cli_session_id for m in conv.members_active.values() if m.alive}
 			if conv else set()
 		)
-		cancelled = self._registry.cancel_stale_pending_for_conversation(conversation_id, alive_session_ids)
-		if not cancelled:
+		from server.gateway.pending_lifecycle import terminate_pending
+		stale = [
+			p for p in self._registry.pending_for_conversation(conversation_id)
+			if p.cli_session_id not in alive_session_ids
+		]
+		if not stale:
 			return
-		for request_id in cancelled:
-			try:
-				await self._backend.mark_question_cancelled(conversation_id, request_id)
-			except Exception as exc:
-				await self._logger.surface_error(
-					f"mark_cancelled_failed_on_spawn: conv={conversation_id} req={request_id} {exc}"
-				)
-		await self._logger.pending_cancelled_on_spawn(conversation_id, cancelled)
+		cancelled = []
+		for record in stale:
+			if await terminate_pending(self._registry, self._backend, self._logger, record):
+				cancelled.append(record.request_id)
+		if cancelled:
+			await self._logger.pending_cancelled_on_spawn(conversation_id, cancelled)
 
 	# ------------------------------------------------------------------
 	# Structured-command handlers (Tasks 25 & 26)

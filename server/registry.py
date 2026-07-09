@@ -6,7 +6,9 @@ each Conversation's own asyncio.Lock.
 
 Pending requests are keyed by (conversation_id, cli_session_id) with supersede
 semantics: if a new request arrives for the same (conversation_id, cli_session_id)
-pair, the prior future is cancelled and replaced. Answers resolve by
+pair, the prior future is resolved with SUPERSEDED_SENTINEL and replaced
+(REV-106; a resolve rather than a cancel, so the superseded asker's coroutine
+completes normally instead of surfacing a transport-level cancel). Answers resolve by
 (conversation_id, request_id), not by sender. Routing from a CLI session
 to its current conversation uses session_to_conversation_id (hook-injected
 cli_session_id → conv-<uuid>); cwd is informational only.
@@ -25,6 +27,12 @@ from typing import Literal
 # the set in a long-running process; far larger than any realistic in-flight
 # replay window, and entries are human-paced (one per answered/ended question).
 _RECENTLY_RESOLVED_MAX = 512
+
+# Terminal sentinel a superseded ask_human future is resolved with. Resolving
+# (not cancelling) hands the superseded asker a semantic value its handler maps
+# to {"status": "superseded"}; a cancel would surface on its MCP client as a
+# transport error the agent retries (REV-106).
+SUPERSEDED_SENTINEL = "__SUPERSEDED__"
 
 
 @dataclass
@@ -168,15 +176,16 @@ class Registry:
 	) -> asyncio.Future | tuple[asyncio.Future, str | None]:
 		"""Add a pending request keyed by (conversation_id, cli_session_id). A second
 		ask from the same session in the same conversation supersedes the first:
-		its future is cancelled and its request_id returned (when
-		return_superseded=True) so the caller can cancel the prior Firebase record."""
+		its future is resolved with SUPERSEDED_SENTINEL (REV-106) and its request_id
+		returned (when return_superseded=True) so the caller can cancel the prior
+		Firebase record."""
 		key = (conversation_id, cli_session_id)
 		prior_request_id = None
 		existing = self._pending.pop(key, None)
 		if existing is not None:
 			prior_request_id = existing.request_id
 			if existing.future is not None and not existing.future.done():
-				existing.future.cancel()
+				existing.future.set_result(SUPERSEDED_SENTINEL)
 			self._fire_pending_mirror(conversation_id, -1)
 		future = asyncio.get_event_loop().create_future()
 		self._pending[key] = PendingRequest(
@@ -187,6 +196,10 @@ class Registry:
 			cli_session_id=cli_session_id,
 			msg_id=msg_id,
 		)
+		if existing is not None and existing.notices:
+			# Session-directed notices attached to the superseded ask carry
+			# over: they belong to the session, not to the individual question.
+			self._pending[key].notices = existing.notices
 		self._fire_pending_mirror(conversation_id, +1)
 		if return_superseded:
 			return future, prior_request_id
@@ -205,20 +218,27 @@ class Registry:
 		record = self.find_by_request_id(conversation_id, request_id)
 		if record is None:
 			return None
+		if record.future is not None and record.future.done():
+			# The awaiting coroutine's wait_for already settled (its timeout or
+			# cancel raced this answer). Leave the record for that coroutine's
+			# terminal arm to pop; report unresolvable so the caller takes the
+			# stale-reply path instead of splicing the answer as delivered (REV-108).
+			return None
 		self._pending.pop((record.conversation_id, record.cli_session_id), None)
 		if record.future is not None and not record.future.done():
 			if record.notices:
 				text = "\n\n".join([*record.notices, text])
 			record.future.set_result(text)
 		self.total_answered += 1
-		self._record_resolved(conversation_id, record.request_id)
+		self.remember_resolved(conversation_id, record.request_id)
 		self._fire_pending_mirror(conversation_id, -1)
 		return record.request_id
 
-	def _record_resolved(self, conversation_id: str, request_id: str | None) -> None:
+	def remember_resolved(self, conversation_id: str, request_id: str | None) -> None:
 		"""Remember a terminally-handled (conversation_id, request_id) so a later
 		replay of its answer is recognized as benign rather than treated as an
-		unknown correlation (M3). Bounded LRU eviction."""
+		unknown correlation (M3). Bounded LRU eviction.
+		Public: terminate_pending (gateway/pending_lifecycle.py) feeds this on terminal cleanup."""
 		if request_id is None:
 			return
 		key = (conversation_id, request_id)
@@ -234,21 +254,17 @@ class Registry:
 			return False
 		return (conversation_id, request_id) in self._recently_resolved
 
-	def remove(self, conversation_id: str, cli_session_id: str, request_id: str | None = None) -> str | None:
-		"""Remove the pending for (conversation_id, cli_session_id). Cancels the future.
-		A request_id mismatch is a no-op: a superseded asker's shielded cleanup must
-		remove only its own entry, not the live entry that superseded it."""
-		key = (conversation_id, cli_session_id)
-		record = self._pending.get(key)
-		if record is None:
-			return None
-		if request_id is not None and record.request_id != request_id:
-			return None
-		self._pending.pop(key, None)
-		if record.future is not None and not record.future.done():
-			record.future.cancel()
-		self._fire_pending_mirror(conversation_id, -1)
-		return record.request_id
+	def pop_record(self, record: "PendingRequest") -> bool:
+		"""Pop this exact record from the pending map (identity-checked: a newer
+		record that superseded it at the same key is never removed - the T-148
+		guard, by construction). Fires the mirror decrement. Never settles the
+		future - terminate_pending (gateway/pending_lifecycle.py) owns settlement."""
+		key = (record.conversation_id, record.cli_session_id)
+		if self._pending.get(key) is not record:
+			return False
+		self._pending.pop(key)
+		self._fire_pending_mirror(record.conversation_id, -1)
+		return True
 
 	def all_pending(self) -> list["PendingRequest"]:
 		"""Snapshot for bulk-respond on global exit (Slice I)."""
@@ -272,7 +288,7 @@ class Registry:
 		existing = self._pending.pop(key, None)
 		if existing is not None:
 			if existing.future is not None and not existing.future.done():
-				existing.future.cancel()
+				existing.future.set_result(SUPERSEDED_SENTINEL)
 			self._fire_pending_mirror(conversation_id, -1)
 		record = PendingRequest(
 			conversation_id=conversation_id,
@@ -302,72 +318,6 @@ class Registry:
 	def pending_for_conversation(self, conversation_id: str) -> list["PendingRequest"]:
 		"""Snapshot of pending requests for a specific conversation."""
 		return [p for p in self._pending.values() if p.conversation_id == conversation_id]
-
-	def cancel_pending_for_conversation(self, conversation_id: str) -> list[str]:
-		"""Pop and cancel every pending request for this conversation_id. Returns the
-		list of request_ids that were cancelled so the caller can mark each
-		question's Firebase entry cancelled (writing the WITHDRAWN marker).
-
-		Used by spawn to clear stale pendings from a prior agent that died without
-		surfacing CancelledError to its tool handler — the MCP streamable-HTTP
-		transport doesn't reliably propagate client disconnects."""
-		victims = [key for key, record in self._pending.items() if record.conversation_id == conversation_id]
-		cancelled_request_ids: list[str] = []
-		for key in victims:
-			record = self._pending.pop(key)
-			cancelled_request_ids.append(record.request_id)
-			if record.future is not None and not record.future.done():
-				record.future.cancel()
-		if cancelled_request_ids:
-			self._fire_pending_mirror(conversation_id, -len(cancelled_request_ids))
-		return cancelled_request_ids
-
-	def cancel_stale_pending_for_conversation(self, conversation_id: str, alive_session_ids: set[str]) -> list[str]:
-		"""Pop and cancel only the pending requests for this conversation whose owning
-		session is NOT currently alive (matched by cli_session_id). Returns the list
-		of cancelled request_ids.
-
-		A pending owned by a live member is left intact: spawning a new agent into a
-		conversation must not destroy a live peer's in-flight question."""
-		victims = [
-			key for key, record in self._pending.items()
-			if record.conversation_id == conversation_id
-			and record.cli_session_id not in alive_session_ids
-		]
-		cancelled_request_ids: list[str] = []
-		for key in victims:
-			record = self._pending.pop(key)
-			cancelled_request_ids.append(record.request_id)
-			if record.future is not None and not record.future.done():
-				record.future.cancel()
-		if cancelled_request_ids:
-			self._fire_pending_mirror(conversation_id, -len(cancelled_request_ids))
-		return cancelled_request_ids
-
-	def resolve_pending_for_conversation(self, conversation_id: str, result_text: str) -> list[str]:
-		"""Pop every pending request for this conversation_id and resolve its
-		future with result_text (a terminal do-not-retry sentinel), rather than
-		cancelling it. Returns the list of request_ids resolved so the caller can
-		mark each question's Firebase record cancelled.
-
-		Used by force-end (T-145). A cancelled future surfaces on the agent's MCP
-		client as a transport error, which the agent retries (re-stranding it or
-		minting orphan state); a resolved future returns result_text as a normal
-		value, so the agent gets a semantic terminal signal and stops.
-		cancel_pending_for_conversation (true cancel) remains for spawn's
-		stale-pending cleanup of a dead prior agent, where there is no live
-		awaiter to receive a semantic result."""
-		victims = [key for key, record in self._pending.items() if record.conversation_id == conversation_id]
-		resolved_request_ids: list[str] = []
-		for key in victims:
-			record = self._pending.pop(key)
-			resolved_request_ids.append(record.request_id)
-			if record.future is not None and not record.future.done():
-				record.future.set_result(result_text)
-			self._record_resolved(record.conversation_id, record.request_id)
-		if resolved_request_ids:
-			self._fire_pending_mirror(conversation_id, -len(resolved_request_ids))
-		return resolved_request_ids
 
 	def update_global_away_cache(self, active: bool) -> None:
 		"""Listener entry point: update the in-memory cache to reflect a Firebase change."""

@@ -551,6 +551,20 @@ async def _perform_combine(
 				backend.set_conversation_last_activity(target_id, now_ts),
 				label=f"fb_last_activity:{target_id}",
 			)
+	# Source is Ended: terminally end its pending ask_humans (REV-102). A live
+	# asker - a member just migrated to target - wakes with a terminal envelope
+	# telling it to re-ask; its binding already points at target, so the re-ask
+	# lands there. A parked record is withdrawn on the phone. Re-keying the
+	# pending to target was rejected: answers correlate by the answer's
+	# conversation_id and the question message lives under source, so a phone
+	# reply could never resolve a re-keyed record.
+	from server.gateway.pending_lifecycle import terminate_pending
+	for record in registry.pending_for_conversation(source_id):
+		await terminate_pending(
+			registry, backend, logger, record,
+			resolve_text=f"__CONVERSATION_ENDED__\n(combined into {target_id}; re-ask your question there)",
+			remember_resolved=True,
+		)
 	# Fire the launcher once if any dormant member got a combine_resume
 	# pending file: the file alone does nothing until the scheduled task
 	# runs (H08/H09: state used to say "resumed" with no process behind it).

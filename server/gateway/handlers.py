@@ -16,9 +16,10 @@ from server.config import Config
 from server.logging_jsonl import JsonlLogger
 from server.messenger import MessageWriter, ChannelLifecycle, ConversationStore
 from server.rate_limiter import RateLimiter
-from server.registry import Registry
+from server.registry import Registry, SUPERSEDED_SENTINEL
 from server.gateway.document import _validate_path, _sha256_hex
 from server.gateway.bg_tasks import _spawn_bg
+from server.gateway.pending_lifecycle import terminate_pending
 
 TIMEOUT_SENTINEL = "__TIMEOUT__"
 
@@ -42,6 +43,8 @@ def _terminal_envelope(text: str) -> str | None:
 		return None
 	if text == TIMEOUT_SENTINEL:
 		return _envelope("timeout")
+	if text == SUPERSEDED_SENTINEL:
+		return _envelope("superseded")
 	if text.startswith("__CONVERSATION_ENDED__"):
 		cause = "ended"
 		lines = text.splitlines()
@@ -310,11 +313,16 @@ def build_tool_handlers(
 			# Shield cleanup against re-cancellation: MCP's responder.cancel()
 			# leaves the surrounding anyio CancelScope in a sustained cancelled
 			# state, so any subsequent await is also a checkpoint that re-raises
-			# CancelledError. Without this shield, the Firebase write below
+			# CancelledError. Without this shield, the Firebase cleanup below
 			# never completes and the question stays cancelled=false.
 			with anyio.CancelScope(shield=True):
-				registry.remove(conversation_id, cli_session_id, request_id=request_id)
-				await _safe_mark_cancelled(backend, conversation_id, request_id, logger)
+				record = registry.find_by_request_id(conversation_id, request_id)
+				if record is not None:
+					await terminate_pending(registry, backend, logger, record)
+				else:
+					# Cancel landed before registry.add ran (or the record was
+					# already superseded); the question message may still exist.
+					await _safe_mark_cancelled(backend, conversation_id, request_id, logger)
 			raise
 		except Exception as exc:
 			await logger.tool_error(request_id, conversation_id, str(exc))
@@ -323,48 +331,51 @@ def build_tool_handlers(
 		try:
 			result = await asyncio.wait_for(future, timeout=config.timeout_seconds)
 		except asyncio.TimeoutError:
+			# terminate_pending pops the registry record synchronously before its
+			# first await, closing the window where a just-landed answer would be
+			# consumed against this already-timed-out future (REV-108). It also
+			# marks the question cancelled in Firebase, which removes the
+			# pending_questions record - without the cancelled flag a timed-out
+			# question stays pending on the phone forever (H05).
+			popped = False
+			record = registry.find_by_request_id(conversation_id, request_id)
+			if record is not None:
+				popped = await terminate_pending(registry, backend, logger, record)
 			await logger.timeout(request_id, conversation_id, config.timeout_seconds)
-			registry.remove(conversation_id, cli_session_id, request_id=request_id)
-			# Mark the question message cancelled, which also removes the
-			# pending_questions record (firebase.py). The phone derives
-			# "pending" purely from message flags, so without the cancelled
-			# flag a timed-out question stays pending on the phone forever (H05).
-			_spawn_bg(
-				backend.mark_question_cancelled(conversation_id, request_id),
-				label=f"fb_mark_cancelled:timeout:{conversation_id}:{request_id}",
-			)
-			try:
-				await backend.send_timeout_followup(
-					request_id, conversation_id, config.timeout_seconds, correlation,
-				)
-			except Exception as exc:
-				await logger.surface_error(f"timeout_followup_failed: {exc}", correlation=str(correlation))
+			if popped:
+				try:
+					await backend.send_timeout_followup(
+						request_id, conversation_id, config.timeout_seconds, correlation,
+					)
+				except Exception as exc:
+					await logger.surface_error(f"timeout_followup_failed: {exc}", correlation=str(correlation))
 			return _envelope("timeout")
 		except asyncio.CancelledError:
 			# See note above re: shielding. This is the live cancel-from-MCP
 			# path that the user observes when pressing Esc on the tool call.
 			with anyio.CancelScope(shield=True):
-				registry.remove(conversation_id, cli_session_id, request_id=request_id)
-				await _safe_mark_cancelled(backend, conversation_id, request_id, logger)
+				record = registry.find_by_request_id(conversation_id, request_id)
+				if record is not None:
+					await terminate_pending(registry, backend, logger, record)
+				else:
+					await _safe_mark_cancelled(backend, conversation_id, request_id, logger)
 			if session_registry is not None:
 				session_registry.mark_wait_cancelled(cli_session_id)
 			raise
 		except Exception as exc:
 			await logger.tool_error(request_id, conversation_id, str(exc))
-			registry.remove(conversation_id, cli_session_id, request_id=request_id)
-			_spawn_bg(
-				backend.mark_question_cancelled(conversation_id, request_id),
-				label=f"fb_mark_cancelled:error:{conversation_id}:{request_id}",
-			)
+			record = registry.find_by_request_id(conversation_id, request_id)
+			if record is not None:
+				await terminate_pending(registry, backend, logger, record)
 			return f"ERROR: {exc}"
 
-		# Force-end resolves the pending future with the __CONVERSATION_ENDED__
-		# sentinel (T-145) rather than cancelling it. That is a terminal signal,
-		# not an answer: hand it straight back so the agent stops without
-		# retrying, and skip the answered-path side effects (resolution
-		# confirmation, pending-record removal). handle_force_end already marked
-		# the question cancelled in Firebase.
-		if isinstance(result, str) and result.startswith("__CONVERSATION_ENDED__"):
+		# Terminal sentinels, not answers: force-end/combine resolve the pending
+		# future with the __CONVERSATION_ENDED__ sentinel (T-145), and a newer
+		# ask from this same session resolves it with __SUPERSEDED__ (REV-106).
+		# Hand the envelope straight back so the agent stops without retrying,
+		# and skip the answered-path side effects - the terminating path (or the
+		# superseding asker's _safe_mark_cancelled) already cleaned up Firebase.
+		if isinstance(result, str) and (result.startswith("__CONVERSATION_ENDED__") or result == SUPERSEDED_SENTINEL):
 			return _terminal_envelope(result)
 
 		# Successful resolution: clear the pending_questions record (read by

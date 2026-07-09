@@ -378,3 +378,38 @@ async def test_combine_appends_system_messages(tmp_path):
 
 	# Also verify the per-member combine intro was injected
 	assert any("joined via combine" in m["text"] for m in tgt_sys)
+
+
+class CancelRecordingBackend(RecordingBackend):
+	"""RecordingBackend plus a recording mark_question_cancelled (REV-102)."""
+
+	def __init__(self) -> None:
+		super().__init__()
+		self.cancelled: list[tuple] = []
+
+	async def mark_question_cancelled(self, conversation_id: str, request_id: str) -> None:
+		self.cancelled.append((conversation_id, request_id))
+
+
+def test_combine_terminates_source_pendings():
+	"""REV-102: combine is a terminal path for the source conversation. A live
+	asker (just migrated to target) wakes with a re-ask envelope; a parked
+	record is withdrawn; both feed the benign-replay memory so a late phone
+	reply is not a false "reply withdrawn"."""
+	async def run():
+		from server.conversation_ops import _perform_combine
+		registry, source_id, target_id = _two_conv_registry_alive()
+		backend = CancelRecordingBackend()
+		fut = registry.add(source_id, "s-A", "Claude-A", "req-live")
+		registry.add_parked(source_id, "s-gone", "Ghost", "req-parked")
+		result = await _perform_combine(
+			registry, source_id, target_id, logger=None, pending_dir=None, backend=backend,
+		)
+		assert result.startswith("ok.")
+		assert fut.done() and not fut.cancelled()
+		assert fut.result() == f"__CONVERSATION_ENDED__\n(combined into {target_id}; re-ask your question there)"
+		assert registry.pending_count == 0
+		assert {(c[0], c[1]) for c in backend.cancelled} == {(source_id, "req-live"), (source_id, "req-parked")}
+		assert registry.was_recently_resolved(source_id, "req-live")
+		assert registry.was_recently_resolved(source_id, "req-parked")
+	asyncio.run(run())

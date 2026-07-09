@@ -102,10 +102,25 @@ async def handle_session_end(
 			member = entry.get("member")
 			if member is not None:
 				member.last_seen_seq = len(conv.messages)
-	# Cancel any pending ask_human futures owned by this departed member —
-	# their answer can never arrive (the agent's session is gone), so freeing
-	# the future immediately avoids a 24h _TIMEOUT wait if the agent ever
-	# reconnects mid-block. The pending key is the session, so ownership is exact by construction.
+	# Terminal handling for pendings owned by the departed session (REV-001).
+	# Live futures are cancelled - freeing the asker instead of a 24h wait -
+	# and the awaiting coroutine's CancelledError arm performs the Firebase
+	# cancel, so no direct write happens here. Parked records (future=None,
+	# T-001) have no coroutine: on a resumable end (logout/other) the question
+	# SURVIVES - it stays parked and phone-answerable, and the answer notice
+	# queues for delivery on resume. On a permanent end (clear/compact)
+	# nothing can ever deliver the answer, so the record terminates properly:
+	# Firebase cancel + replay memory, the pair the old remove()-only path
+	# forgot (ghost questions that resurrected across restarts).
+	from server.gateway.pending_lifecycle import terminate_pending
 	for pending in registry.pending_for_conversation(conversation_id):
-		if pending.cli_session_id == session_id:
-			registry.remove(conversation_id, session_id, request_id=pending.request_id)
+		if pending.cli_session_id != session_id:
+			continue
+		parked = pending.future is None
+		if parked and reason not in PERMANENTLY_LOST_REASONS:
+			continue
+		await terminate_pending(
+			registry, backend, logger, pending,
+			mark_cancelled=parked,
+			remember_resolved=parked,
+		)

@@ -42,6 +42,7 @@ server/
     document.py          _validate_path + denylist + sha256 helpers
     bulk_respond.py      _apply_bulk_respond_decision (used by exit_global to drain pending questions)
     parked.py            finish_parked_resolve - bookkeeping for resolving a future-less parked pending (record cleanup + session notices)
+    pending_lifecycle.py terminate_pending - single terminal-path owner for pending ask_humans (pop + future settlement + Firebase cancel + benign-replay memory); ask arms, force-end, combine, session-end, spawn cleanup, and the TTL sweep all route through it
     bg_tasks.py          _BG_TASKS + _spawn_bg — strong-ref tracker for background tasks
 scripts/
   install-service.ps1        One-time NSSM service install

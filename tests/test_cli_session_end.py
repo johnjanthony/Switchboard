@@ -1,13 +1,50 @@
 """Tests for the cli-session/end handler that marks members dormant on SessionEnd."""
 
+import asyncio
+
 import pytest
 
 from server.cli_session_end import handle_session_end
-from server.registry import Registry
+from server.registry import Conversation, ConversationMember, Registry
 
 
 def _fixed_now():
 	return "2026-05-20T00:00:00Z"
+
+
+class _FakeBackend:
+	"""Minimal recording backend for the REV-001 session-end pending tests."""
+
+	def __init__(self):
+		self.cancelled = []
+		self.member_writes = []
+		self.message_writes = []
+
+	async def write_conversation_member(self, conv_id, member):
+		self.member_writes.append((conv_id, member))
+
+	async def write_conversation_message(self, conv_id, message):
+		self.message_writes.append((conv_id, message))
+
+	async def mark_question_cancelled(self, conversation_id, request_id):
+		self.cancelled.append((conversation_id, request_id))
+
+
+def _setup_conv_with_member():
+	"""A Registry with one Active conversation holding one alive member bound
+	to session 'sess-A', plus a fresh _FakeBackend. Returns
+	(registry, backend, conversation_id, session_id)."""
+	registry = Registry()
+	backend = _FakeBackend()
+	conv = Conversation(id="conv-1", title="REV-001 test")
+	member = ConversationMember(
+		cli_session_id="sess-A", sender="Claude", cwd="C:/X",
+		surface="windows", joined_at=0.0,
+	)
+	conv.members_active["sess-A"] = member
+	registry.conversations["conv-1"] = conv
+	registry.bind_session("sess-A", "conv-1")
+	return registry, backend, "conv-1", "sess-A"
 
 
 @pytest.mark.asyncio
@@ -167,3 +204,52 @@ async def test_session_end_cancels_dormant_members_pending_ask_human():
 	assert registry.pending_count == 0
 	# Future was cancelled.
 	assert future.cancelled() or (future.done() and isinstance(future.exception(), asyncio.CancelledError))
+
+
+def test_session_end_logout_keeps_parked_pending():
+	# T-001 mainline: restart parks the question, /exit is the documented
+	# recovery. A resumable end must NOT kill the parked question.
+	async def run():
+		registry, backend, conv_id, sid = _setup_conv_with_member()
+		registry.add_parked(conv_id, sid, "Claude", "req-park", question="Deploy?")
+		await handle_session_end(registry, sid, "logout", now=lambda: "2026-07-08T00:00:00+00:00", backend=backend)
+		assert registry.pending_count == 1
+		assert registry.find_by_request_id(conv_id, "req-park") is not None
+		assert backend.cancelled == []
+	asyncio.run(run())
+
+
+def test_session_end_clear_terminates_parked_pending():
+	# Permanently-lost session: nothing can ever deliver the answer. The
+	# record terminates properly - Firebase cancel + replay memory - so a
+	# later answer is a benign replay, not a false "reply withdrawn" (REV-001).
+	async def run():
+		registry, backend, conv_id, sid = _setup_conv_with_member()
+		registry.add_parked(conv_id, sid, "Claude", "req-park", question="Deploy?")
+		await handle_session_end(registry, sid, "clear", now=lambda: "2026-07-08T00:00:00+00:00", backend=backend)
+		assert registry.pending_count == 0
+		assert backend.cancelled == [(conv_id, "req-park")]
+		assert registry.was_recently_resolved(conv_id, "req-park")
+	asyncio.run(run())
+
+
+def test_session_end_cancels_live_pending_without_direct_firebase_write():
+	# Live future: cancelling frees the asker coroutine, whose CancelledError
+	# arm owns the Firebase cancel - handle_session_end must not double-write.
+	async def run():
+		registry, backend, conv_id, sid = _setup_conv_with_member()
+		fut = registry.add(conv_id, sid, "Claude", "req-live")
+		await handle_session_end(registry, sid, "logout", now=lambda: "2026-07-08T00:00:00+00:00", backend=backend)
+		assert fut.cancelled()
+		assert registry.pending_count == 0
+		assert backend.cancelled == []
+	asyncio.run(run())
+
+
+def test_session_end_leaves_other_sessions_pendings_alone():
+	async def run():
+		registry, backend, conv_id, sid = _setup_conv_with_member()
+		registry.add_parked(conv_id, "sess-other", "Peer", "req-other")
+		await handle_session_end(registry, sid, "clear", now=lambda: "2026-07-08T00:00:00+00:00", backend=backend)
+		assert registry.find_by_request_id(conv_id, "req-other") is not None
+	asyncio.run(run())

@@ -12,7 +12,13 @@ Decisions (John, 2026-06-15): reuse the existing __CONVERSATION_ENDED__ sentinel
 add a dedicated resolve_pending_for_conversation method (leave
 cancel_pending_for_conversation a true cancel for spawn's dead-agent cleanup);
 and add a defensive guard so ask_human from a session bound to an Ended
-conversation returns the sentinel instead of minting orphan state."""
+conversation returns the sentinel instead of minting orphan state.
+
+Superseded (WP-1 Task 7): resolve_pending_for_conversation and
+cancel_pending_for_conversation were deleted once terminate_pending
+(server/gateway/pending_lifecycle.py) became the single terminal-path owner;
+handle_force_end now loops registry.pending_for_conversation and calls
+terminate_pending per record with the same resolve-not-cancel semantics."""
 
 from __future__ import annotations
 
@@ -24,6 +30,7 @@ import pytest
 
 from server.config import Config
 from server.gateway import build_tool_handlers
+from server.gateway.pending_lifecycle import terminate_pending
 from server.logging_jsonl import JsonlLogger
 from server.registry import Conversation, ConversationMember, Registry
 from tests.conftest import make_registry_with_loopback
@@ -35,21 +42,26 @@ _SENDER = "Claude"
 
 
 @pytest.mark.asyncio
-async def test_resolve_pending_for_conversation_sets_result_not_cancelled():
+async def test_terminate_pending_sets_result_not_cancelled():
 	registry = Registry()
 	conv = Conversation(id="conv-fe", title="FE")
 	registry.conversations["conv-fe"] = conv
 	future = registry.add("conv-fe", "s-1", "Claude", request_id="req-1", msg_id="msg-1")
 	assert not future.done()
 
-	resolved = registry.resolve_pending_for_conversation("conv-fe", _FE_SENTINEL)
+	record = registry.find_by_request_id("conv-fe", "req-1")
+	popped = await terminate_pending(
+		registry, backend=None, logger=None, record=record,
+		resolve_text=_FE_SENTINEL, remember_resolved=True,
+	)
 
-	assert resolved == ["req-1"]
+	assert popped is True
 	assert future.done()
 	assert not future.cancelled(), "force-end must resolve, not cancel, the pending future"
 	assert future.result() == _FE_SENTINEL
 	# No pending entry survives for the conversation.
 	assert registry.pending_for_conversation("conv-fe") == []
+	assert registry.was_recently_resolved("conv-fe", "req-1")
 
 
 @pytest.fixture
@@ -86,7 +98,11 @@ async def test_ask_human_returns_force_end_sentinel_without_treating_as_answer(c
 	assert registry.pending_count == 1
 
 	conv_id = registry.session_to_conversation_id.get(_SID)
-	registry.resolve_pending_for_conversation(conv_id, _FE_SENTINEL)
+	for record in registry.pending_for_conversation(conv_id):
+		await terminate_pending(
+			registry, backend, logger, record,
+			resolve_text=_FE_SENTINEL, remember_resolved=True,
+		)
 	result = await asyncio.wait_for(task, timeout=1.0)
 
 	data = json.loads(result)

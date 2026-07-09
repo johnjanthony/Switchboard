@@ -43,7 +43,7 @@ Switchboard is a local MCP gateway that lets you reach John on his phone while h
 
 **Active tools:**
 
-- **`ask_human(question, sender, title?, format?, suggestions?)`** — blocks until John replies. Returns the reply text; if no reply can arrive it returns one-line JSON: `{"status":"timeout"}` (window elapsed) or `{"status":"conversation_ended","cause":"force-ended"|"merged into target"}` (conversation ended out from under you - a terminal signal: stop, do NOT retry).
+- **`ask_human(question, sender, title?, format?, suggestions?)`** — blocks until John replies. Returns the reply text; if no reply can arrive it returns one-line JSON: `{"status":"timeout"}` (window elapsed), `{"status":"superseded"}` (a newer ask_human from your own session replaced this call - the newer question is the live one; do not retry this one), or `{"status":"conversation_ended","cause":...}` (conversation ended out from under you). `cause` values: `force-ended` and `merged into target` are terminal - stop, do NOT retry; `combined into <conv-id>; re-ask your question there` means John merged your conversation while your question was pending - you are already a member of the target conversation, so re-ask the same question once.
 - **`notify_human(message, sender, title?, format?)`** — fire-and-forget. Returns `"ok"` when away mode is on. At-desk it still delivers the notification and returns `"ERROR: John is at his desk (notification delivered to phone anyway)."`; that is routing guidance (continue in the terminal), not a failure, and there is nothing to re-send.
 - **`send_document_human(path, sender, title?, caption?)`** — deliver a file. path relative to your cwd or absolute. Max 5 MB. Returns `"ok"` or `"ERROR: ..."`.
 - **`message_and_await_agent(sender, message, title?)`** — conversations only. `message` is required and non-empty. Send to peers and block until woken. If you are alone in the conversation your message parks until a peer joins and replies, the wait times out, or John convenes you. Returns one-line JSON: `{"status":"ok","log":"..."}` (the conversation delta since your last wake, excluding your own emissions), `{"status":"timeout"}`, or `{"status":"conversation_ended","cause":...}` (terminal). When called while NOT in any conversation it returns `"ERROR: not in any conversation. End your turn."`.
@@ -211,7 +211,8 @@ Conversation tools return one-line JSON with a `status` field. Parse it; do not 
 | :--- | :--- | :--- |
 | `ok` | Normal result; payload fields carry the content (`log`, `peers`, ...) | continue |
 | `timeout` | The wait window elapsed with no reply/wake | pause per the timeout protocol; do not guess |
-| `conversation_ended` | The conversation ended out from under you (`cause`: `force-ended`, `merged into target`) | report to John; end your turn; do NOT re-call |
+| `conversation_ended` | The conversation ended out from under you (`cause`: `force-ended`, `merged into target`, `combined into <conv-id>; re-ask your question there`) | report to John; end your turn; do NOT re-call - EXCEPT when `cause` says re-ask after a combine: re-ask the same question once (you are already in the target conversation) |
+| `superseded` | A newer ask_human from your own session replaced this call | the newer call carries the live question; do not re-ask this one |
 | `convened` | John pulled you into a conversation (payload: conversation_id, peers, log) | you are already a member: message_and_await_agent to speak, or join_conversation(ref) if you need the history again |
 
 Strings starting `ERROR:` are unchanged: validation failures, the rate limit, and the at-desk redirect keep their exact literal forms documented above.

@@ -12,6 +12,7 @@ from server.messenger import (
 )
 from server.gateway.bg_tasks import _spawn_bg
 from server.gateway.parked import finish_parked_resolve
+from server.gateway.pending_lifecycle import terminate_pending
 from server.firebase_supervisor import LoopSupervisor
 from server.command_freshness import COMMAND_TTL_SECONDS, command_age_seconds
 
@@ -245,26 +246,18 @@ async def handle_force_end(registry, conversation_id: str, backend=None, logger=
 				label=f"fb_write_force_end_msg:{conversation_id}",
 			)
 
-	# Resolve any pending ask_human futures for this conversation (H02) with the
-	# terminal __CONVERSATION_ENDED__ sentinel and mark their Firebase question
-	# records cancelled so the phone's pending list clears. Resolving (rather
-	# than cancelling) the future hands the agent a semantic value it returns
-	# normally, so it stops instead of reading a cancellation as a transport
-	# error and retrying onto orphan/home state (T-145). mark_question_cancelled
-	# also removes the pending_questions record; the registry's pending-mirror
-	# fires the badge decrement.
-	cancelled = registry.resolve_pending_for_conversation(
-		conversation_id, "__CONVERSATION_ENDED__\n(force-ended)"
-	)
-	if backend is not None:
-		for request_id in cancelled:
-			try:
-				await backend.mark_question_cancelled(conversation_id, request_id)
-			except Exception as exc:
-				if logger is not None:
-					await logger.surface_error(
-						f"force_end_mark_cancelled_failed: conv={conversation_id} req={request_id} {exc}"
-					)
+	# Terminally end every pending ask_human for this conversation (H02) with
+	# the __CONVERSATION_ENDED__ sentinel. Resolving (not cancelling) hands the
+	# agent a semantic value so it stops instead of retrying a transport error
+	# (T-145 - rationale in pending_lifecycle). terminate_pending marks each
+	# question cancelled in Firebase (clearing the phone's pending list) and
+	# feeds the benign-replay memory; the pending-mirror fires the badge decrement.
+	for record in registry.pending_for_conversation(conversation_id):
+		await terminate_pending(
+			registry, backend, logger, record,
+			resolve_text="__CONVERSATION_ENDED__\n(force-ended)",
+			remember_resolved=True,
+		)
 
 	# Apply session-fallback for each member's session (alive AND dormant).
 	# apply_fallback dispatches internally based on binding state.
@@ -518,11 +511,7 @@ async def _parked_sweep_once(registry, backend, logger, *, max_age_hours, now=No
 	now_dt = now if now is not None else datetime.now(timezone.utc)
 	expired = registry.expired_parked(now_dt, max_age_hours * 3600)
 	for record in expired:
-		registry.remove(record.conversation_id, record.cli_session_id, request_id=record.request_id)
-		try:
-			await backend.mark_question_cancelled(record.conversation_id, record.request_id)
-		except Exception as exc:
-			await logger.surface_error(f"parked_ttl_cancel_failed: {exc}")
+		await terminate_pending(registry, backend, logger, record)
 		await logger.info(
 			f"parked_pending_expired: conversation_id={record.conversation_id} request_id={record.request_id}"
 		)

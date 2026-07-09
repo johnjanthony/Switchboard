@@ -749,6 +749,44 @@ async def test_resume_session_invalid_target(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_cancel_prior_pending_spares_live_session_cancels_dead(tmp_path):
+	"""_cancel_prior_pending (spawn's stale-pending cleanup) must cancel a pending
+	owned by a dead/unknown session while sparing one owned by a live member -
+	spawning into a conversation must not destroy a live peer's in-flight
+	question. Regression for behavior formerly unit-tested directly on
+	Registry.cancel_stale_pending_for_conversation (deleted); the filter now lives
+	inline in _cancel_prior_pending, routed through terminate_pending."""
+	from server.spawn import SpawnHandler
+	from server.registry import Conversation, ConversationMember
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	backend.mark_question_cancelled = AsyncMock()
+	registry = Registry()
+
+	conv = Conversation(id="conv-1", title="Conv")
+	live_m = ConversationMember(
+		cli_session_id="s-live", sender="Claude", cwd="C:/Work/X",
+		surface="windows", joined_at=0.0, alive=True,
+	)
+	conv.members_active["s-live"] = live_m
+	registry.conversations["conv-1"] = conv
+
+	live_fut = registry.add("conv-1", "s-live", "Claude", "req-live")
+	dead_fut = registry.add("conv-1", "s-dead", "Sparkles", "req-dead")
+
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+	await handler._cancel_prior_pending("conv-1")
+
+	assert not live_fut.cancelled()
+	assert dead_fut.cancelled()
+	assert registry.find_by_request_id("conv-1", "req-live") is not None
+	assert registry.find_by_request_id("conv-1", "req-dead") is None
+	backend.mark_question_cancelled.assert_awaited_once_with("conv-1", "req-dead")
+
+
+@pytest.mark.asyncio
 async def test_launch_resume_agent_no_login(tmp_path):
 	"""launch_resume_agent returns False and writes no pending file when no one is
 	logged in to the desktop - the quser gate applies to the raw launch primitive

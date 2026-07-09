@@ -5,7 +5,6 @@ pending_questions record leaves the question pending on the phone forever."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 
@@ -47,7 +46,6 @@ async def test_timeout_marks_question_cancelled(tmp_path: Path):
 		"still there?", "Claude",
 		cli_session_id="s-1", cwd="C:/Work/X",
 	)
-	await asyncio.sleep(0.05)  # let the _spawn_bg cleanup tasks run
 
 	data = json.loads(result)
 	assert data["status"] == "timeout", f"expected the timeout envelope, got: {result!r}"
@@ -56,4 +54,43 @@ async def test_timeout_marks_question_cancelled(tmp_path: Path):
 	assert len(backend.cancelled_questions) == 1, \
 		f"timeout must mark the question cancelled; got: {backend.cancelled_questions}"
 	# No pending entry survives
+	assert registry.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_timeout_pops_registry_before_firebase_write(tmp_path: Path):
+	# REV-108: the pop must precede the first await in the timeout arm, so a
+	# just-landed answer can never resolve "successfully" against a future
+	# that already timed out. Instrument the backend: at the moment
+	# mark_question_cancelled runs, the registry must already be empty.
+	cfg = Config(
+		host="127.0.0.1",
+		port=9876,
+		timeout_seconds=0.05,
+		log_path=str(tmp_path / "server.log"),
+	)
+	registry = make_registry_with_loopback()  # away mode ON: ask_human blocks
+	conv = make_active_conversation(conversation_id="conv-timeout-race", member_session_id="s-timeout-race", sender="Claude")
+	registry.conversations["conv-timeout-race"] = conv
+	registry.bind_session("s-timeout-race", "conv-timeout-race")
+	backend = CancelTrackingBackend()
+	logger = JsonlLogger(cfg.log_path)
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	observed = {}
+	original = backend.mark_question_cancelled
+
+	async def spy(conv_id, req_id):
+		observed["pending_at_mark"] = registry.pending_count
+		await original(conv_id, req_id)
+
+	backend.mark_question_cancelled = spy
+
+	result = await handlers.ask_human(
+		"Q", "Claude",
+		cli_session_id="s-timeout-race", cwd="c:/work/sw",
+	)
+
+	assert json.loads(result) == {"status": "timeout"}
+	assert observed["pending_at_mark"] == 0
 	assert registry.pending_count == 0
