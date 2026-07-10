@@ -39,6 +39,13 @@ from server.registry import (
 	Registry,
 )
 
+# The message types live code appends to conv.messages (cli_session_end,
+# conversation_ops, dispatch, handlers, spawn). Questions, answers, notifies
+# and documents are persisted for the phone but never enter the in-memory
+# log - hydration must not reload them, or len(conv.messages), wake deltas
+# and last_seen_seq cursors change meaning across a restart (DT-4).
+_LIVE_MESSAGE_TYPES = {"system", "agent_msg", "parting"}
+
 
 async def hydrate_from_firebase(registry: Registry, backend, logger, session_registry=None) -> None:
 	"""Restore registry state from Firebase. Called once at server startup,
@@ -146,6 +153,41 @@ async def hydrate_from_firebase(registry: Registry, backend, logger, session_reg
 	except Exception as exc:
 		await logger.surface_error(f"hydration_cli_sessions_failed: {exc}")
 
+	# 3b. Reconcile duplicate alive members (REV-104): a crash between the
+	# halves of a pre-atomic member move could leave the same cli_session_id
+	# alive in two Active conversations, and the binding derivation below
+	# would resolve it silently by iteration order. Keep the copy with the
+	# later joined_at (exact ties: larger conv_id string - deterministic,
+	# never restart-order); demote every other copy to that conversation's
+	# members_history, mirror the demotion to Firebase, and say so loudly.
+	sightings: dict[str, list] = {}
+	for conv_id, conv in registry.conversations.items():
+		if conv.state != "active":
+			continue
+		for member in conv.members_active.values():
+			if member.cli_session_id and member.alive:
+				sightings.setdefault(member.cli_session_id, []).append((conv_id, member))
+	for dup_session_id, entries in sightings.items():
+		if len(entries) < 2:
+			continue
+		entries.sort(key=lambda e: (e[1].joined_at, e[0]))
+		winner_conv_id = entries[-1][0]
+		for conv_id, member in entries[:-1]:
+			loser_conv = registry.conversations[conv_id]
+			del loser_conv.members_active[dup_session_id]
+			member.alive = False
+			loser_conv.members_history.append(member)
+			if backend is not None:
+				try:
+					await backend.remove_conversation_member(conv_id, member.sender)
+					await backend.write_conversation_member_history(conv_id, member)
+				except Exception as exc:
+					await logger.surface_error(f"hydration_duplicate_member_mirror_failed: {exc}")
+			await logger.surface_error(
+				f"hydration_duplicate_member_demoted: session {dup_session_id} alive in "
+				f"{conv_id} and {winner_conv_id}; kept {winner_conv_id}"
+			)
+
 	# 4. Derive session_to_conversation_id from alive members in hydrated
 	# Active conversations ONLY. Dormant members stay unbound: the
 	# steady-state invariant is "dormant = unbound" (cli_session_end clears
@@ -249,10 +291,15 @@ def _hydrate_conversation(registry: Registry, conv_id: str, conv_node: Any) -> N
 			)
 			conv.members_history.append(departed)
 
-	# Messages — order by push key (Firebase push keys are lexicographically sortable by time)
+	# Messages - order by push key (Firebase push keys are lexicographically
+	# sortable by time); reload only the live-log subset (DT-4, see
+	# _LIVE_MESSAGE_TYPES).
 	messages_node = conv_node.get("messages") or {}
 	if isinstance(messages_node, dict):
-		sorted_messages = [v for _k, v in sorted(messages_node.items()) if isinstance(v, dict)]
+		sorted_messages = [
+			v for _k, v in sorted(messages_node.items())
+			if isinstance(v, dict) and v.get("type") in _LIVE_MESSAGE_TYPES
+		]
 		conv.messages.extend(sorted_messages)
 
 	registry.conversations[conv_id] = conv

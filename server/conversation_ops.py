@@ -311,18 +311,9 @@ async def _migrate_member(
 		source_ended = True
 	if backend is not None:
 		_spawn_bg(
-			backend.remove_conversation_member(source_id, old_sender),
-			label=f"fb_remove_member:{source_id}:{old_sender}",
+			backend.move_conversation_member(source_id, target_id, caller_member, old_sender, end_source=source_ended),
+			label=f"fb_move_member:{source_id}->{target_id}:{actual_sender}",
 		)
-		_spawn_bg(
-			backend.write_conversation_member(target_id, caller_member),
-			label=f"fb_write_member:{target_id}:{actual_sender}",
-		)
-		if source_ended:
-			_spawn_bg(
-				backend.set_conversation_state(source_id, "ended"),
-				label=f"fb_set_state:{source_id}:ended",
-			)
 
 
 async def _inject_combine_intro(registry: Registry, target: Conversation, sender: str, backend=None) -> None:
@@ -458,12 +449,8 @@ async def _perform_combine(
 				removed_from_source.append(old_sender)
 				if backend is not None:
 					_spawn_bg(
-						backend.remove_conversation_member(source_id, old_sender),
-						label=f"fb_remove_member:{source_id}:{old_sender}",
-					)
-					_spawn_bg(
-						backend.write_conversation_member(target_id, member),
-						label=f"fb_write_member:{target_id}:{actual_sender}",
+						backend.move_conversation_member(source_id, target_id, member, old_sender, end_source=False),
+						label=f"fb_move_member:{source_id}->{target_id}:{actual_sender}",
 					)
 			else:
 				# Dormant member: write the relaunch pending file, then bind
@@ -488,12 +475,8 @@ async def _perform_combine(
 				removed_from_source.append(old_sender)
 				if backend is not None:
 					_spawn_bg(
-						backend.remove_conversation_member(source_id, old_sender),
-						label=f"fb_remove_member:{source_id}:{old_sender}",
-					)
-					_spawn_bg(
-						backend.write_conversation_member(target_id, member),
-						label=f"fb_write_member:{target_id}:{actual_sender}",
+						backend.move_conversation_member(source_id, target_id, member, old_sender, end_source=False),
+						label=f"fb_move_member:{source_id}->{target_id}:{actual_sender}",
 					)
 		now_ts = time.time()
 		target_msg = {

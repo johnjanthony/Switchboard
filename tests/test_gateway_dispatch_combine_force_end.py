@@ -51,6 +51,7 @@ async def test_dispatch_combine_command_invokes_perform_combine(logger):
 	backend = MagicMock()
 	backend.remove_conversation_member = AsyncMock()
 	backend.write_conversation_member = AsyncMock()
+	backend.move_conversation_member = AsyncMock()
 	backend.write_conversation_message = AsyncMock(return_value="key-1")
 	backend.set_conversation_state = AsyncMock()
 	backend.set_conversation_last_activity = AsyncMock()
@@ -242,3 +243,65 @@ async def test_handle_force_end_clears_dormant_member_home_pointer(logger):
 	# No new conversation minted (away mode is OFF so even Alice doesn't get
 	# a create_new — she's just unbound).
 	assert len(registry.conversations) == conv_count_before
+
+
+@pytest.mark.asyncio
+async def test_force_end_sweeps_bound_but_memberless_session(tmp_path):
+	"""REV-103: a session bound during the spawn window (no member yet) must be
+	fallback-processed by force-end, not left bound to the Ended conversation.
+	Away mode OFF here -> compute_fallback says unbind."""
+	from server.gateway.dispatch import handle_force_end
+	from server.registry import Registry, Conversation
+
+	registry = Registry()
+	conv = Conversation(id="conv-fe-spawn", title="spawn-window")
+	registry.conversations["conv-fe-spawn"] = conv
+	registry.bind_session("s-spawn-window", "conv-fe-spawn")  # bound, NOT in members_active
+
+	backend = MagicMock()
+	backend.remove_conversation_member = AsyncMock()
+	backend.set_conversation_state = AsyncMock()
+	backend.write_conversation_message = AsyncMock(return_value="key-fe-spawn")
+	backend.set_session_home = AsyncMock()
+
+	await handle_force_end(registry, "conv-fe-spawn", backend=backend)
+
+	assert conv.state == "ended"
+	assert "s-spawn-window" not in registry.session_to_conversation_id, (
+		"bound-but-memberless session must be swept (REV-103)"
+	)
+
+
+@pytest.mark.asyncio
+async def test_force_end_sweeps_bound_memberless_session_into_fallback_conv_when_away(tmp_path):
+	"""REV-103 + Task 1 (REV-112): away mode ON and the bound-but-memberless
+	session's home also points at the ended conv -> create_new mints a fresh
+	home conversation WITH a member, so the spawned agent's first MCP call
+	routes into a live, hydration-safe conversation instead of staying bound
+	to the Ended one."""
+	from server.gateway.dispatch import handle_force_end
+	from server.registry import Registry, Conversation
+
+	registry = Registry()
+	conv = Conversation(id="conv-fe-spawn2", title="spawn-window")
+	registry.conversations["conv-fe-spawn2"] = conv
+	registry.global_away_mode = True
+	registry.bind_session("s-spawn-window", "conv-fe-spawn2")
+	registry.set_session_home("s-spawn-window", "conv-fe-spawn2")
+
+	backend = MagicMock()
+	backend.remove_conversation_member = AsyncMock()
+	backend.set_conversation_state = AsyncMock()
+	backend.write_conversation_message = AsyncMock(return_value="key-fe-spawn2")
+	backend.set_session_home = AsyncMock()
+	backend.write_conversation_member = AsyncMock()
+	backend.write_conversation_meta = AsyncMock()
+
+	await handle_force_end(registry, "conv-fe-spawn2", backend=backend)
+
+	assert conv.state == "ended"
+	new_id = registry.session_to_conversation_id["s-spawn-window"]
+	assert new_id != conv.id
+	new_conv = registry.conversations[new_id]
+	assert new_conv.state == "active"
+	assert "s-spawn-window" in new_conv.members_active

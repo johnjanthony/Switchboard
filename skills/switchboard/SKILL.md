@@ -47,7 +47,7 @@ Switchboard is a local MCP gateway that lets you reach John on his phone while h
 - **`notify_human(message, sender, title?, format?)`** — fire-and-forget. Returns `"ok"` when away mode is on. At-desk it still delivers the notification and returns `"ERROR: John is at his desk (notification delivered to phone anyway)."`; that is routing guidance (continue in the terminal), not a failure, and there is nothing to re-send.
 - **`send_document_human(path, sender, title?, caption?)`** — deliver a file. path relative to your cwd or absolute. Max 5 MB. Returns `"ok"` or `"ERROR: ..."`.
 - **`message_and_await_agent(sender, message, title?)`** — conversations only. `message` is required and non-empty. Send to peers and block until woken. If you are alone in the conversation your message parks until a peer joins and replies, the wait times out, or John convenes you. Returns one-line JSON: `{"status":"ok","log":"..."}` (the conversation delta since your last wake, excluding your own emissions), `{"status":"timeout"}`, or `{"status":"conversation_ended","cause":...}` (terminal). When called while NOT in any conversation it returns `"ERROR: not in any conversation. End your turn."`.
-- **`join_conversation(sender, ref?, title?)`** — join a conversation. **Never blocks; idempotent.** Pass `ref` (a conversation_id from `lookup_conversation_ids`, a convene notice, or John's prompt) to join that specific conversation — migrating you out of your current one if needed. Omit `ref` and the first ref-less joiner mints a fresh room; a second ref-less joiner within about 30 minutes lands in it while it is still solo, otherwise a ref-less join mints a new room of its own. Returns one-line JSON: `{"status":"ok","conversation_id":...,"sender":...,"peers":[...],"log":"...", "minted"?:true, "already_member"?:true}` — `log` is the history you haven't seen (full on first join; unseen delta on re-join), `sender` is your display name after any collision disambiguation. To wait for peers after joining, call `message_and_await_agent`.
+- **`join_conversation(sender, ref?, title?)`** — join a conversation. **Never blocks; idempotent.** Pass `ref` (a conversation_id from `lookup_conversation_ids`, a convene notice, or John's prompt) to join that specific conversation — migrating you out of your current one if needed. Omit `ref` and: if you are already in a conversation, you simply rejoin it (idempotent - collects unseen history; you are never moved). Otherwise the first ref-less joiner mints a fresh room; a second ref-less joiner within about 30 minutes lands in it while it is still solo, otherwise a ref-less join mints a new room of its own. Returns one-line JSON: `{"status":"ok","conversation_id":...,"sender":...,"peers":[...],"log":"...", "minted"?:true, "already_member"?:true}` — `log` is the history you haven't seen (full on first join; unseen delta on re-join), `sender` is your display name after any collision disambiguation. To wait for peers after joining, call `message_and_await_agent`.
 - **`combine_conversations(source_id, target_id)`** — move all members of `source_id` into `target_id`; source ends. Non-blocking. Returns one-line JSON: `{"status":"ok","source":...,"target":...,"detail":...}`; ERROR strings unchanged.
 - **`lookup_conversation_ids(cwd_filter?, sender_contains?, title_contains?)`** — find conversation_ids matching filters. At least one filter required. Returns one-line JSON: `{"status":"ok","conversation_ids":[...]}`; ERROR strings unchanged.
 - **`leave_conversation(sender, parting_message)`** — leave your current conversation. `parting_message` is required. Session falls back to home conversation (away on) or unbound terminal output (away off). Returns one-line JSON: `{"status":"ok","conversation_id":...}`; ERROR strings unchanged.
@@ -188,7 +188,7 @@ Conversations are the routing and persistence unit. A conversation is identified
 - **Active** — has at least one member (alive or dormant). The normal operating state.
 - **Ended** — terminal. No members remain. Persists in Firebase as history.
 
-The first ref-less `join_conversation()` call mints a room; a second ref-less joiner within about 30 minutes lands in it while it is still solo; anything else mints a new room.
+A ref-less `join_conversation()` from a session already in a conversation rejoins that conversation. For sessions with none: the first ref-less call mints a room; a second ref-less joiner within about 30 minutes lands in it while it is still solo; anything else mints a new room.
 
 ## Member states
 
@@ -227,7 +227,7 @@ Three patterns for putting multiple agents into one conversation:
 
 ## Join up
 
-Any agent calls `join_conversation(sender, title?)` — the first one mints the room; a second ref-less caller within about 30 minutes lands in it while it is still solo. To bring agents into a SPECIFIC conversation, pass `ref`:
+Any agent not already in a conversation calls `join_conversation(sender, title?)` — the first one mints the room; a second ref-less caller within about 30 minutes lands in it while it is still solo (an agent already in a conversation rejoins its own; pass `ref` to move it). To bring agents into a SPECIFIC conversation, pass `ref`:
 
 ```
 # Agent A (bootstrapping):

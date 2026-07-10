@@ -94,6 +94,28 @@ def test_apply_fallback_create_new(mock_registry):
 	assert mock_registry.session_home_conversation_id["s-1"] == new_conv_id
 
 
+def test_apply_fallback_create_new_adds_member(mock_registry):
+	"""Bound implies member (REV-112): the minted (home) conversation must
+	contain the session as an alive member, or hydration's alive-member
+	derivation loses the binding at the next restart. registry.sessions is
+	None here - the defaults must hold without a session roster."""
+	from server.session_fallback import apply_fallback
+	from server.registry import Conversation
+	mock_registry._global_away = True
+	mock_registry.set_session_home("s-1", "conv-old")
+	mock_registry.conversations["conv-old"] = Conversation(id="conv-old", title="old", state="ended")
+	mock_registry.bind_session("s-1", "conv-old")
+	apply_fallback(mock_registry, session_id="s-1")
+	new_conv_id = mock_registry.session_to_conversation_id["s-1"]
+	new_conv = mock_registry.conversations[new_conv_id]
+	member = new_conv.members_active.get("s-1")
+	assert member is not None, "create_new must mint WITH the member (REV-112)"
+	assert member.alive is True
+	assert member.sender == "Claude"  # roster-less default
+	assert member.cwd == ""
+	assert member.last_seen_seq == 0
+
+
 def test_apply_fallback_dormant_with_ended_home_clears_pointer(mock_registry):
 	"""Dormant session (unbound) with home pointer at an Ended conv:
 	home pointer is cleared; no unbind, no new conv created."""

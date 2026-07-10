@@ -238,6 +238,13 @@ class ConversationStore:
 		"""Remove a member entry under /conversations/<id>/members_active/<sender>."""
 		pass
 
+	async def move_conversation_member(self, source_id: str, target_id: str, member, old_sender: str, *, end_source: bool = False) -> None:
+		"""Atomically move a member: delete members_active/<old_sender> under
+		source, write the member under target, optionally end the source - one
+		multi-location update so a crash cannot mirror the member in both
+		conversations (REV-104). No-op default; FirebaseBackend overrides."""
+		pass
+
 	async def write_conversation_member_history(self, conv_id: str, member) -> None:
 		"""Write a departed member to /conversations/<id>/members_history/<sender>.
 		Persists parting metadata (left_at, session_ended_at, session_end_reason) so

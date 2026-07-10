@@ -127,8 +127,8 @@ async def test_hydrate_single_active_conversation():
 				title="My Session",
 				members={"Claude": member_data(cli_session_id="sess-abc", sender="Claude", alive=True)},
 				messages={
-					"-push1": {"seq": 0, "sender": "Claude", "type": "notify", "text": "hello", "timestamp": "t1"},
-					"-push2": {"seq": 1, "sender": "John", "type": "human", "text": "hi", "timestamp": "t2"},
+					"-push1": {"seq": 0, "sender": "Claude", "type": "agent_msg", "text": "hello", "timestamp": "t1"},
+					"-push2": {"seq": 1, "sender": "John", "type": "system", "text": "hi", "timestamp": "t2"},
 				},
 			)
 		},
@@ -264,9 +264,9 @@ async def test_hydrate_orders_messages_by_push_key():
 			"conv-msgs": conv_snapshot(
 				"conv-msgs",
 				messages={
-					"-zzz": {"seq": 2, "sender": "John", "type": "human", "text": "third"},
-					"-aaa": {"seq": 0, "sender": "Claude", "type": "notify", "text": "first"},
-					"-mmm": {"seq": 1, "sender": "Claude", "type": "notify", "text": "second"},
+					"-zzz": {"seq": 2, "sender": "John", "type": "agent_msg", "text": "third"},
+					"-aaa": {"seq": 0, "sender": "Claude", "type": "agent_msg", "text": "first"},
+					"-mmm": {"seq": 1, "sender": "Claude", "type": "agent_msg", "text": "second"},
 				},
 			),
 		},
@@ -665,3 +665,115 @@ async def test_hydrate_cancels_pending_under_ended_conversation():
 
 	assert registry.pending_count == 0
 	backend.mark_question_cancelled.assert_awaited_once_with("conv-9", "req-9")
+
+
+@pytest.mark.asyncio
+async def test_hydration_demotes_duplicate_alive_member_later_joined_at_wins():
+	"""REV-104: a crash between the halves of a member move left the same
+	session alive in two Active conversations; the binding derivation used
+	to resolve it silently by iteration order. The later joined_at copy
+	wins; the loser is demoted to members_history and mirrored to Firebase."""
+	registry = Registry()
+	backend = MagicMock()
+	backend.remove_conversation_member = AsyncMock()
+	backend.write_conversation_member_history = AsyncMock()
+	logger = make_logger()
+
+	snapshot = {
+		"conversations": {
+			"conv-early": conv_snapshot(
+				"conv-early",
+				members={"Claude": member_data(cli_session_id="s-dup", sender="Claude", joined_at=100.0)},
+			),
+			"conv-late": conv_snapshot(
+				"conv-late",
+				members={"Claude": member_data(cli_session_id="s-dup", sender="Claude", joined_at=200.0)},
+			),
+		},
+	}
+	with patch("server.hydration.db", make_firebase_db_mock(snapshot)):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, backend, logger)
+
+	assert "s-dup" in registry.conversations["conv-late"].members_active
+	assert "s-dup" not in registry.conversations["conv-early"].members_active
+	demoted = registry.conversations["conv-early"].members_history
+	assert any(m.cli_session_id == "s-dup" and m.alive is False for m in demoted)
+	assert registry.session_to_conversation_id["s-dup"] == "conv-late"
+	backend.remove_conversation_member.assert_awaited_once_with("conv-early", "Claude")
+	backend.write_conversation_member_history.assert_awaited_once()
+	logger.surface_error.assert_awaited()
+	assert "hydration_duplicate_member_demoted" in logger.surface_error.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_hydration_duplicate_tiebreak_is_deterministic():
+	"""Exact joined_at tie: the larger conv_id string wins - restart order
+	must never decide."""
+	registry = Registry()
+	backend = MagicMock()
+	backend.remove_conversation_member = AsyncMock()
+	backend.write_conversation_member_history = AsyncMock()
+	logger = make_logger()
+
+	snapshot = {
+		"conversations": {
+			"conv-aaa": conv_snapshot(
+				"conv-aaa",
+				members={"Claude": member_data(cli_session_id="s-dup", sender="Claude", joined_at=100.0)},
+			),
+			"conv-zzz": conv_snapshot(
+				"conv-zzz",
+				members={"Claude": member_data(cli_session_id="s-dup", sender="Claude", joined_at=100.0)},
+			),
+		},
+	}
+	with patch("server.hydration.db", make_firebase_db_mock(snapshot)):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, backend, logger)
+
+	assert "s-dup" in registry.conversations["conv-zzz"].members_active
+	assert "s-dup" not in registry.conversations["conv-aaa"].members_active
+	demoted = registry.conversations["conv-aaa"].members_history
+	assert any(m.cli_session_id == "s-dup" and m.alive is False for m in demoted)
+	assert registry.session_to_conversation_id["s-dup"] == "conv-zzz"
+	backend.remove_conversation_member.assert_awaited_once_with("conv-aaa", "Claude")
+	backend.write_conversation_member_history.assert_awaited_once()
+	logger.surface_error.assert_awaited()
+	assert "hydration_duplicate_member_demoted" in logger.surface_error.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_hydration_filters_messages_to_live_types():
+	"""DT-4: live code appends only system/agent_msg/parting to conv.messages;
+	questions, answers, notifies and documents are persisted for the phone
+	but never enter the in-memory log. Reloading them made len(conv.messages),
+	wake deltas and last_seen_seq cursors mean different things after a
+	restart than before it."""
+	registry = Registry()
+	logger = make_logger()
+
+	snapshot = {
+		"conversations": {
+			"conv-x": conv_snapshot(
+				"conv-x",
+				messages={
+					"-push1": {"seq": 0, "sender": "Claude", "type": "system", "text": "a"},
+					"-push2": {"seq": 1, "sender": "John", "type": "question", "text": "b"},
+					"-push3": {"seq": 2, "sender": "Claude", "type": "agent_msg", "text": "c"},
+					"-push4": {"seq": 3, "sender": "John", "type": "human", "text": "d"},
+					"-push5": {"seq": 4, "sender": "Claude", "type": "notify", "text": "e"},
+					"-push6": {"seq": 5, "sender": "Claude", "type": "parting", "text": "f"},
+					"-push7": {"seq": 6, "sender": "Claude", "type": "document", "text": "g"},
+				},
+			),
+		},
+	}
+	mock_db = make_firebase_db_mock(snapshot)
+
+	with patch("server.hydration.db", mock_db):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, None, logger)
+
+	conv = registry.conversations["conv-x"]
+	assert [m["type"] for m in conv.messages] == ["system", "agent_msg", "parting"]

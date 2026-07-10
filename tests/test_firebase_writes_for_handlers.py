@@ -25,6 +25,7 @@ def _make_store_backend():
 	backend.write_conversation_meta = AsyncMock()
 	backend.write_conversation_member = AsyncMock()
 	backend.remove_conversation_member = AsyncMock()
+	backend.move_conversation_member = AsyncMock()
 	backend.set_conversation_state = AsyncMock()
 	backend.set_conversation_last_activity = AsyncMock()
 	backend.set_session_home = AsyncMock()
@@ -146,8 +147,11 @@ async def test_combine_writes_both_target_member_and_source_state(tmp_path):
 
 	await _drain_bg()
 
-	backend.remove_conversation_member.assert_awaited_with("conv-src", "Agent")
-	backend.write_conversation_member.assert_awaited()
+	backend.move_conversation_member.assert_awaited_once()
+	args = backend.move_conversation_member.await_args
+	assert args.args[0] == "conv-src" and args.args[1] == "conv-tgt"
+	assert args.args[3] == "Agent"          # old_sender
+	assert args.kwargs == {"end_source": False}
 	backend.set_conversation_state.assert_awaited_once_with("conv-src", "ended")
 	backend.set_conversation_last_activity.assert_awaited_once_with("conv-tgt", pytest.approx(time.time(), abs=5))
 
@@ -216,6 +220,27 @@ async def test_apply_fallback_create_new_writes_conversation_meta():
 	assert call_kwargs[0][0] == new_conv_id
 	assert call_kwargs[1]["state"] == "active"
 	backend.set_session_home.assert_awaited_once_with("s-orphan", new_conv_id)
+
+
+@pytest.mark.asyncio
+async def test_apply_fallback_create_new_writes_member():
+	"""REV-112: the member write is the crux - it is what lets hydration
+	rebuild the binding after a restart."""
+	from server.session_fallback import apply_fallback
+	from server.registry import Registry
+
+	backend = _make_store_backend()
+	registry = Registry()
+	registry.global_away_mode = True
+	registry.bind_session("s-orphan2", "conv-gone")
+
+	apply_fallback(registry, "s-orphan2", backend=backend)
+	await _drain_bg()
+
+	backend.write_conversation_member.assert_awaited_once()
+	conv_id_arg, member_arg = backend.write_conversation_member.await_args.args
+	assert conv_id_arg == registry.session_to_conversation_id["s-orphan2"]
+	assert member_arg.cli_session_id == "s-orphan2"
 
 
 # ---------------------------------------------------------------------------

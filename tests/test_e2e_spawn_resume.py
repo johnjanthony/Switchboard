@@ -29,6 +29,7 @@ def _make_backend() -> MagicMock:
 	backend.write_conversation_message = AsyncMock(return_value="push-key-1")
 	backend.write_conversation_member = AsyncMock()
 	backend.remove_conversation_member = AsyncMock()
+	backend.move_conversation_member = AsyncMock()
 	backend.set_conversation_state = AsyncMock()
 	backend.set_conversation_last_activity = AsyncMock()
 	backend.set_session_home = AsyncMock()

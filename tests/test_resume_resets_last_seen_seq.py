@@ -18,6 +18,7 @@ class _StubBackend:
 	async def write_conversation_message(self, *a, **k): return ""
 	async def write_conversation_member(self, *a, **k): pass
 	async def remove_conversation_member(self, *a, **k): pass
+	async def move_conversation_member(self, *a, **k): pass
 	async def set_conversation_state(self, *a, **k): pass
 	async def send_text(self, *a, **k): pass
 	async def set_global_away_mode(self, *a, **k): pass

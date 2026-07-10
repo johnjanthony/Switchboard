@@ -44,6 +44,23 @@ def _increment(n: int) -> object:
 	return {".sv": {"increment": n}}
 
 
+def _member_payload(member) -> dict:
+	"""The members_active node shape (write_conversation_member and
+	move_conversation_member write the identical dict)."""
+	return {
+		"cli_session_id": member.cli_session_id,
+		"sender": member.sender,
+		"cwd": member.cwd,
+		"surface": member.surface,
+		"alive": member.alive,
+		"session_lost_permanently": member.session_lost_permanently,
+		"session_ended_at": member.session_ended_at,
+		"session_end_reason": member.session_end_reason,
+		"joined_at": member.joined_at,
+		"last_seen_seq": member.last_seen_seq,
+	}
+
+
 class FirebaseBackend(
 	MessageWriter,
 	ResponsePoller,
@@ -671,18 +688,7 @@ class FirebaseBackend(
 	async def write_conversation_member(self, conv_id: str, member) -> None:
 		"""Write a member entry under /conversations/<id>/members_active/<sender>."""
 		ref = db.reference(f"conversations/{conv_id}/members_active/{member.sender}")
-		await asyncio.to_thread(ref.set, {
-			"cli_session_id": member.cli_session_id,
-			"sender": member.sender,
-			"cwd": member.cwd,
-			"surface": member.surface,
-			"alive": member.alive,
-			"session_lost_permanently": member.session_lost_permanently,
-			"session_ended_at": member.session_ended_at,
-			"session_end_reason": member.session_end_reason,
-			"joined_at": member.joined_at,
-			"last_seen_seq": member.last_seen_seq,
-		})
+		await asyncio.to_thread(ref.set, _member_payload(member))
 
 	async def set_conversation_state(self, conv_id: str, state: str) -> None:
 		"""Update a conversation's state (active/ended) at /conversations/<id>/meta/state.
@@ -727,6 +733,22 @@ class FirebaseBackend(
 		"""Remove a member entry under /conversations/<id>/members_active/<sender>."""
 		ref = db.reference(f"conversations/{conv_id}/members_active/{sender}")
 		await asyncio.to_thread(ref.delete)
+
+	async def move_conversation_member(self, source_id: str, target_id: str, member, old_sender: str, *, end_source: bool = False) -> None:
+		"""Move a member between conversations as ONE multi-location update
+		(REV-104): remove from source, add to target, optionally end the
+		source. Member nodes are keyed by the raw sender string (the same
+		convention as write/remove_conversation_member); the state path is
+		meta/state - hydration reads meta.state, the top-level path was a
+		resurrection bug."""
+		updates = {
+			f"conversations/{source_id}/members_active/{old_sender}": None,
+			f"conversations/{target_id}/members_active/{member.sender}": _member_payload(member),
+		}
+		if end_source:
+			updates[f"conversations/{source_id}/meta/state"] = "ended"
+		ref = db.reference()
+		await asyncio.to_thread(ref.update, updates)
 
 	async def write_conversation_member_history(self, conv_id: str, member) -> None:
 		"""Write a departed member to /conversations/<id>/members_history/<sender>.

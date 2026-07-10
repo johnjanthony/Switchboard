@@ -211,6 +211,13 @@ async def handle_force_end(registry, conversation_id: str, backend=None, logger=
 		# home pointer if it referenced this (now-Ended) conversation, without
 		# creating a new conversation or trying to unbind again.
 		session_ids = list(conv.members_active.keys())
+		# Also sweep sessions BOUND to this conversation without a member yet -
+		# the fresh-spawn window (REV-103). Force-end must not leave them bound
+		# to an Ended conversation with no fallback applied (T-145 territory).
+		session_ids.extend(
+			sid for sid, cid in registry.session_to_conversation_id.items()
+			if cid == conversation_id and sid not in conv.members_active
+		)
 
 		# Collect member senders for Firebase removal
 		member_senders = [m.sender for m in conv.members_active.values()]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,6 +22,7 @@ def make_backend() -> MagicMock:
 	backend.write_conversation_message = AsyncMock(return_value="push-key-1")
 	backend.write_conversation_member = AsyncMock()
 	backend.remove_conversation_member = AsyncMock()
+	backend.move_conversation_member = AsyncMock()
 	backend.set_conversation_state = AsyncMock()
 	backend.set_conversation_last_activity = AsyncMock()
 	backend.set_session_home = AsyncMock()
@@ -256,6 +258,45 @@ async def test_handle_fresh_target_conversation_joins_existing(tmp_path):
 	# session bound to existing conv
 	session_id = pending["agents"][0]["cli_session_id"]
 	assert registry.session_to_conversation_id[session_id] == "conv-existing"
+
+
+@pytest.mark.asyncio
+async def test_handle_fresh_join_existing_persists_home_pointer(tmp_path):
+	"""REV-113: the in-memory home pointer is set on both spawn branches, but the
+	Firebase persist was gated on `not join_existing` - a spawn INTO an existing
+	conversation set the home in memory only. After a restart, hydration found no
+	persisted home and apply_fallback degraded to create_new, minting a stray
+	"(home)" conversation. The persist must fire whenever home_newly_set, on both
+	branches."""
+	from server.spawn import SpawnHandler
+	from server.registry import Conversation
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	registry = Registry()
+
+	# Pre-create an active conversation to join.
+	existing_conv = Conversation(id="conv-existing", title="Existing")
+	registry.conversations["conv-existing"] = existing_conv
+
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle_fresh({
+			"type": "fresh",
+			"surface": "windows",
+			"project": "myproject",
+			"prompt": "Join and help",
+			"target_conversation_id": "conv-existing",
+			"issued_at": "2026-05-25T00:00:00Z",
+		})
+		for _ in range(5):
+			await asyncio.sleep(0)
+
+	pending = _read_pending(cfg)
+	sid = pending["agents"][0]["cli_session_id"]
+	assert registry.session_home_conversation_id[sid] == "conv-existing"
+	backend.set_session_home.assert_awaited_once_with(sid, "conv-existing")
 
 
 @pytest.mark.asyncio

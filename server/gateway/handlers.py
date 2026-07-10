@@ -249,6 +249,11 @@ def build_tool_handlers(
 		if bound_id is not None:
 			bound_conv = registry.conversations.get(bound_id)
 			if bound_conv is not None and bound_conv.state == "ended":
+				# Self-heal (REV-103): replace or clear the stale binding so the
+				# NEXT call routes correctly; this call still reports the ended
+				# conversation truthfully.
+				from server.session_fallback import apply_fallback
+				apply_fallback(registry, cli_session_id, backend=backend)
 				return _envelope("conversation_ended", cause="force-ended")
 		from server.conversation_ops import _resolve_conversation_and_member
 		conversation_id = await _resolve_conversation_and_member(
@@ -792,16 +797,40 @@ def build_tool_handlers(
 				return f"ERROR: conversation {ref} not found or not Active."
 			target_id = ref
 		else:
-			from server.conversation_ops import _find_join_candidate
-			candidate = _find_join_candidate(registry, time.time())
-			if candidate is not None:
-				target_id = candidate.id
-			else:
-				conv_id = await _create_active_conversation_for(
-					registry, cli_session_id, cwd, sender, backend=backend, title=title, origin="join",
-				)
-				await logger.info(f"join_conversation: minted conv_id={conv_id} sender={sender} origin=join")
-				return _envelope("ok", conversation_id=conv_id, minted=True, sender=sender, peers=[])
+			# Ref-less join from a bound session rejoins the bound conversation
+			# (REV-110): the candidate rule is never consulted, so a freshly
+			# spawned agent's reflexive join lands exactly where the spawn put
+			# it instead of being hijacked into another room. A binding to an
+			# Ended/missing conversation is stale - apply fallback first (the
+			# same self-heal as the ask_human T-145 guard), then honor whatever
+			# binding remains; if none, fall through to candidate/mint, which
+			# now genuinely mints (the stale binding was just cleared, so
+			# _create_active_conversation_for cannot short-circuit to it).
+			target_id = None
+			if bound_id is not None:
+				bound_conv = registry.conversations.get(bound_id)
+				if bound_conv is not None and bound_conv.state == "active":
+					target_id = bound_id
+				else:
+					from server.session_fallback import apply_fallback
+					apply_fallback(registry, cli_session_id, backend=backend)
+					target_id = registry.session_to_conversation_id.get(cli_session_id)
+			if target_id is None:
+				from server.conversation_ops import _find_join_candidate
+				candidate = _find_join_candidate(registry, time.time())
+				if candidate is not None:
+					target_id = candidate.id
+				else:
+					conv_id = await _create_active_conversation_for(
+						registry, cli_session_id, cwd, sender, backend=backend, title=title, origin="join",
+					)
+					await logger.info(f"join_conversation: minted conv_id={conv_id} sender={sender} origin=join")
+					return _envelope("ok", conversation_id=conv_id, minted=True, sender=sender, peers=[])
+
+		# bound_id may be stale after the branch above (fallback may have
+		# rebound the session): re-read so bound_id == target_id routes to
+		# ensure-membership below rather than the migrate branch.
+		bound_id = registry.session_to_conversation_id.get(cli_session_id)
 
 		conv = registry.conversations[target_id]
 		already_member = False

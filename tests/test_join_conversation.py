@@ -326,3 +326,84 @@ async def test_bound_elsewhere_migrates(cfg, logger):
 # the absence of any await-a-future pattern in the handler is the proof.
 
 
+@pytest.mark.asyncio
+async def test_ref_less_join_from_bound_session_rejoins_bound_conv(cfg, logger):
+	"""REV-110: a bound caller's ref-less join rejoins its bound conversation;
+	the candidate rule is never consulted - a fresh solo join-origin
+	candidate exists here precisely so it CANNOT hijack the caller."""
+	backend = RecordingBackend()
+	r = make_registry_with_loopback()
+
+	spawn_conv = Conversation(id="conv-spawn", title="spawn", origin="spawn")
+	caller = ConversationMember(
+		cli_session_id="s-r1", sender="Claude", cwd="C:/Work/X", surface="windows", joined_at=0.0,
+	)
+	spawn_conv.members_active["s-r1"] = caller
+	r.conversations["conv-spawn"] = spawn_conv
+	r.bind_session("s-r1", "conv-spawn")
+
+	cand_conv = Conversation(id="conv-cand", title="cand", origin="join")
+	cand_conv.created_at = time.time()
+	other = ConversationMember(
+		cli_session_id="s-other", sender="Other", cwd="C:/Work/O", surface="windows", joined_at=0.0,
+	)
+	cand_conv.members_active["s-other"] = other
+	r.conversations["conv-cand"] = cand_conv
+
+	handlers = _handlers(cfg, r, backend, logger)
+
+	result = await handlers.join_conversation("Claude", cli_session_id="s-r1", cwd="C:/Work/X")
+	data = json.loads(result)
+	assert data["status"] == "ok"
+	assert data["conversation_id"] == "conv-spawn"
+	assert "minted" not in data
+	assert r.session_to_conversation_id["s-r1"] == "conv-spawn"
+	assert "s-r1" not in r.conversations["conv-cand"].members_active
+
+
+@pytest.mark.asyncio
+async def test_ref_less_join_bound_but_memberless_ensures_membership(cfg, logger):
+	"""The spawn window: bound by handle_fresh, no member yet. The ref-less
+	join must land the caller IN its bound conversation with an honest
+	envelope (previously: false minted=true with the old id, REV-110)."""
+	backend = RecordingBackend()
+	r = make_registry_with_loopback()
+
+	fresh_conv = Conversation(id="conv-fresh", title="fresh", origin="spawn")
+	r.conversations["conv-fresh"] = fresh_conv
+	r.bind_session("s-r2", "conv-fresh")
+
+	handlers = _handlers(cfg, r, backend, logger)
+
+	result = await handlers.join_conversation("Claude", cli_session_id="s-r2", cwd="C:/Work/X")
+	data = json.loads(result)
+	assert data["status"] == "ok"
+	assert data["conversation_id"] == "conv-fresh"
+	assert "minted" not in data
+	assert "s-r2" in r.conversations["conv-fresh"].members_active
+
+
+@pytest.mark.asyncio
+async def test_ref_less_join_bound_to_ended_conv_applies_fallback_then_joins(cfg, logger):
+	"""Stale binding to an Ended conversation: fallback first (away ON, no
+	home -> create_new mints a home conv WITH a member), then the join
+	lands in that home conversation - never in the ended one, and never a
+	false mint of the ended id."""
+	backend = RecordingBackend()
+	r = make_registry_with_loopback()
+
+	dead_conv = Conversation(id="conv-dead", title="dead", state="ended")
+	r.conversations["conv-dead"] = dead_conv
+	r.bind_session("s-r3", "conv-dead")
+
+	handlers = _handlers(cfg, r, backend, logger)
+
+	result = await handlers.join_conversation("Claude", cli_session_id="s-r3", cwd="C:/Work/X")
+	data = json.loads(result)
+	assert data["status"] == "ok"
+	assert data["conversation_id"] != "conv-dead"
+	new_conv = r.conversations[data["conversation_id"]]
+	assert new_conv.state == "active"
+	assert "s-r3" in new_conv.members_active
+
+

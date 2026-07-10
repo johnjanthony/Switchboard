@@ -370,14 +370,18 @@ class SpawnHandler:
 		if home_newly_set:
 			self._registry.set_session_home(new_session_id, conv_id)
 
-		# Firebase: set session home
-		if not join_existing:
+		# Firebase: persist the home pointer whenever it was newly set. The
+		# invariant (REV-113): an in-memory home-pointer mutation is always
+		# accompanied by its Firebase persist - hydration reads
+		# cli_sessions/<id>/home_conversation_id, and an unpersisted home
+		# degrades apply_fallback to create_new after a restart, minting a
+		# stray "(home)" conversation.
+		if home_newly_set:
 			from server.gateway.bg_tasks import _spawn_bg as _sbg
-			if home_newly_set:
-				_sbg(
-					self._backend.set_session_home(new_session_id, conv_id),
-					label=f"fb_set_session_home:{new_session_id}:{conv_id}",
-				)
+			_sbg(
+				self._backend.set_session_home(new_session_id, conv_id),
+				label=f"fb_set_session_home:{new_session_id}:{conv_id}",
+			)
 
 		# Build prompt
 		prompt = self._format_fresh_prompt(cmd, conv, join_existing=join_existing)
@@ -538,12 +542,8 @@ class SpawnHandler:
 			})
 			# Firebase: move member from source to new conv
 			_sbg(
-				self._backend.remove_conversation_member(source_id, m.sender),
-				label=f"fb_remove_member:{source_id}:{m.sender}",
-			)
-			_sbg(
-				self._backend.write_conversation_member(new_id, m),
-				label=f"fb_write_member:{new_id}:{m.sender}",
+				self._backend.move_conversation_member(source_id, new_id, m, m.sender, end_source=False),
+				label=f"fb_move_member:{source_id}->{new_id}:{m.sender}",
 			)
 
 		# If source has no remaining members (all were resumable), end it

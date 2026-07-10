@@ -113,12 +113,13 @@ async def test_ask_human_returns_force_end_sentinel_without_treating_as_answer(c
 
 
 @pytest.mark.asyncio
-async def test_ask_human_bound_to_ended_conversation_returns_sentinel_without_minting(cfg, logger):
+async def test_ask_human_bound_to_ended_conversation_returns_sentinel_and_self_heals(cfg, logger):
 	"""Defensive guard (T-145): if an agent retries ask_human in the race window
 	where its conversation was force-ended but session-fallback has not yet
 	rebound it, the session is still bound to the Ended conversation. ask_human
-	must return the terminal sentinel rather than minting orphan state or
-	re-adding the session as a member of the Ended conversation."""
+	must return the terminal sentinel AND self-heal the stale binding (REV-103)
+	so the agent's next call routes correctly instead of hitting this guard
+	forever."""
 	backend = RecordingBackend()
 	registry = make_registry_with_loopback()  # away ON
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
@@ -134,11 +135,15 @@ async def test_ask_human_bound_to_ended_conversation_returns_sentinel_without_mi
 	data = json.loads(result)
 	assert data["status"] == "conversation_ended"
 	assert data["cause"] == "force-ended"
-	# No pending question registered.
 	assert registry.pending_count == 0
-	# No orphan conversation minted: only the Ended one exists.
-	assert list(registry.conversations) == ["conv-ended"]
-	# The session was not re-added as a member of the Ended conversation.
-	assert conv.members_active == {}
-	# No question write went out.
 	assert backend.sent_questions == []
+	# Self-heal (REV-103): the guard applied fallback. Away is ON and the
+	# session has no home, so create_new minted a fresh home conversation WITH
+	# a member (REV-112) and rebound the session to it - the NEXT call routes
+	# correctly instead of hitting this guard forever.
+	new_id = registry.session_to_conversation_id["s-ended-001"]
+	assert new_id != "conv-ended"
+	assert registry.conversations[new_id].state == "active"
+	assert "s-ended-001" in registry.conversations[new_id].members_active
+	# The Ended conversation itself was not touched.
+	assert conv.members_active == {}
