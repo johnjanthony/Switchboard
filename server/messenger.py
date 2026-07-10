@@ -266,6 +266,7 @@ class ConversationStore:
 		filename: str | None = None,
 		attached_to_msg_id: str | None = None,
 		rejected: bool = False,
+		suppress_push: bool = False,
 	):
 		"""Append a message to /conversations/<id>/messages.
 

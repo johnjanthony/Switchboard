@@ -34,6 +34,7 @@ from server.gateway.dispatch import (
 	dispatch_session_sweep,
 )
 from server.gateway.bg_tasks import BG_FAILURE_AUDIT_LABEL, _spawn_bg, set_bg_failure_hook
+from server.http_auth import TokenAuthMiddleware
 from server.hydration import hydrate_from_firebase
 from server.logging_jsonl import JsonlLogger
 from server.registry import Registry
@@ -41,6 +42,7 @@ from server.session_registry import SessionRegistry
 from server.rate_limiter import RateLimiter
 from server.firebase import FirebaseBackend
 from server.firebase_supervisor import LoopSupervisor
+from server.rules_audit import audit_rtdb_rules
 from server.widget_snapshot import WidgetSnapshotStore
 from server.claude_status import ClaudeStatusService
 
@@ -118,9 +120,18 @@ def _build_session_start_route(session_registry: SessionRegistry, logger):
 
 
 def _build_sessions_route(session_registry: SessionRegistry):
-	"""GET /sessions — the roster as JSON (localhost trust, like /stats)."""
+	"""GET /sessions - the roster as JSON (localhost trust, like /stats).
+	cli_session_id is redacted to an 8-char prefix (REV-003): the full id is
+	the forgeable routing identity, and this route's only consumer is a human
+	debugging - the Firebase mirror keeps full ids for the phone surfaces."""
+	def _redact(payload: dict) -> dict:
+		sid = payload.get("cli_session_id") or ""
+		if len(sid) > 8:
+			payload["cli_session_id"] = sid[:8] + "..."
+		return payload
+
 	async def sessions(request: Request):
-		return JSONResponse({"sessions": [r.to_payload() for r in session_registry.snapshot()]})
+		return JSONResponse({"sessions": [_redact(r.to_payload()) for r in session_registry.snapshot()]})
 	return sessions
 
 
@@ -208,6 +219,21 @@ def _build_stats_route(registry: Registry, backend, loop_sups: dict, session_reg
 			},
 		})
 	return stats
+
+
+def _with_route_limit(handler, limiter, path: str, logger):
+	"""Coarse per-route token bucket for the unauthenticated POST routes
+	(REV-109). Legitimate traffic is at most a few events per second (hooks +
+	Watchtower), so the generous default (SWITCHBOARD_ROUTE_RATE_LIMIT, 600/min
+	per route) never throttles it - this only stops a runaway or abusive flood
+	from becoming unbounded RTDB writes. 429 is safe: all three HTTP hooks and
+	Watchtower fail open on non-200."""
+	async def limited(request: Request):
+		if not limiter.consume(path):
+			await logger.rate_limited(path, "http_route")
+			return JSONResponse({"error": "rate limited"}, status_code=429)
+		return await handler(request)
+	return limited
 
 
 def _build_widget_snapshot_route(store, backend, logger, session_registry=None):
@@ -686,7 +712,13 @@ async def _run(config: Config) -> None:
 	except Exception as exc:
 		await logger.surface_error(f"set_global_wsl_available_failed: {exc}")
 
+	# REV-004: verify the DEPLOYED RTDB rules are real (not placeholder or
+	# test-mode) - the whole phone command channel rests on them. Loud but
+	# non-fatal by design (see server/rules_audit.py).
+	await audit_rtdb_rules(backend, logger)
+
 	limiter = RateLimiter(config.rate_limit)
+	route_limiter = RateLimiter(config.route_rate_limit)
 	handlers = build_tool_handlers(config, registry, backend, logger, limiter, session_registry=session_registry)
 
 	from server.spawn import SpawnHandler
@@ -744,7 +776,10 @@ async def _run(config: Config) -> None:
 	app.add_route("/healthz", healthz, methods=["GET"])
 	app.add_route(
 		"/widget-snapshot",
-		_build_widget_snapshot_route(widget_store, backend, logger, session_registry),
+		_with_route_limit(
+			_build_widget_snapshot_route(widget_store, backend, logger, session_registry),
+			route_limiter, "/widget-snapshot", logger,
+		),
 		methods=["POST"],
 	)
 	app.add_route("/widget-status", _build_widget_status_route(claude_status_service), methods=["GET", "POST"])
@@ -755,12 +790,29 @@ async def _run(config: Config) -> None:
 		methods=["GET"],
 	)
 	app.add_route("/document", _build_document_route(backend), methods=["GET"])
-	app.add_route("/session_start", _build_session_start_route(session_registry, logger), methods=["POST"])
+	app.add_route(
+		"/session_start",
+		_with_route_limit(
+			_build_session_start_route(session_registry, logger), route_limiter, "/session_start", logger,
+		),
+		methods=["POST"],
+	)
 	app.add_route("/sessions", _build_sessions_route(session_registry), methods=["GET"])
-	app.add_route("/agent_status", _build_agent_status_route(handlers, session_registry), methods=["POST"])
+	app.add_route(
+		"/agent_status",
+		_with_route_limit(
+			_build_agent_status_route(handlers, session_registry), route_limiter, "/agent_status", logger,
+		),
+		methods=["POST"],
+	)
 	app.add_route(
 		"/cli-session/end",
-		_build_cli_session_end_route(registry, backend=backend, logger=logger, session_registry=session_registry),
+		_with_route_limit(
+			_build_cli_session_end_route(
+				registry, backend=backend, logger=logger, session_registry=session_registry,
+			),
+			route_limiter, "/cli-session/end", logger,
+		),
 		methods=["POST"],
 	)
 
@@ -768,7 +820,7 @@ async def _run(config: Config) -> None:
 	app.mount("/dashboard", StaticFiles(directory=str(dashboard_dir), html=True), name="dashboard")
 
 	uv_config = uvicorn.Config(
-		app,
+		TokenAuthMiddleware(app, token=config.auth_token),
 		host=config.host,
 		port=config.port,
 		log_level="info",

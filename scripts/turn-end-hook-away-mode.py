@@ -48,8 +48,13 @@ def _fetch_state(url: str, cwd: str, session_id: str) -> tuple[bool, list]:
 	if session_id:
 		params["session_id"] = session_id
 	full_url = f"{url}?{urlencode(params)}"
+	headers = {}
+	token = os.environ.get("SWITCHBOARD_TOKEN")
+	if token:
+		headers["Authorization"] = f"Bearer {token}"
+	req = urllib.request.Request(full_url, headers=headers)
 	try:
-		with urllib.request.urlopen(full_url, timeout=TIMEOUT_SECONDS) as resp:
+		with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
 			if resp.status != 200:
 				return False, []
 			data = json.loads(resp.read())

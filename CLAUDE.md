@@ -21,6 +21,7 @@ server/
   __init__.py          Package marker
   __main__.py          Enables `python -m server`
   main.py              Entry point — wires config, registry, backend, MCP, uvicorn
+  http_auth.py         TokenAuthMiddleware - shared-secret Bearer gate (loopback peers and /healthz exempt; active when SWITCHBOARD_TOKEN is set)
   config.py            Env-based Config loader (dotenv fallback)
   registry.py          PendingRequest + Registry (in-memory); conversations dict with members/pendings keyed by cli_session_id; session_to_conversation_id routing map; per-session asyncio.Lock for race-free first-call conv creation; global away-mode flag
   session_registry.py  SessionRecord + SessionRegistry (session roster; push-fed; sweeper rules)
@@ -33,13 +34,14 @@ server/
   canonicalization.py  Canonical-cwd normalization + Firebase key encoding
   logging_jsonl.py     JSONL audit log
   hydration.py         Rebuilds Registry state from Firebase on startup (conversations survive restart)
+  rules_audit.py       Startup audit of the deployed RTDB rules (placeholder/test-mode detection; loud, non-fatal)
   firebase_supervisor.py  SupervisedListener + LoopSupervisor (Firebase-listener / dispatch-loop supervision for /healthz)
   session_fallback.py  Session-to-conversation fallback resolution (home-conversation rebind / unbind)
   command_freshness.py Staleness gate for queued Firebase command entries (COMMAND_TTL_SECONDS)
   gateway/             Tool handlers + dispatch loops
     handlers.py          ask_human, notify_human, send_document_human, message_and_await_agent, join_conversation, combine_conversations, lookup_conversation_ids, leave_conversation, set_away_mode tool closures; JSON status envelopes (_envelope/_terminal_envelope/_wrap_wait_result)
     dispatch.py          dispatch_responses, dispatch_combine_commands, dispatch_force_end_commands, dispatch_spawn_commands, dispatch_away_mode_commands, dispatch_status_request_commands, dispatch_session_end_markers, dispatch_session_sweep, handle_force_end
-    document.py          _validate_path + denylist + sha256 helpers
+    document.py          _validate_path + extension allowlist + secret-name denylist + sha256 helpers
     bulk_respond.py      _apply_bulk_respond_decision (used by exit_global to drain pending questions)
     parked.py            finish_parked_resolve - bookkeeping for resolving a future-less parked pending (record cleanup + session notices)
     pending_lifecycle.py terminate_pending - single terminal-path owner for pending ask_humans (pop + future settlement + Firebase cancel + benign-replay memory); ask arms, force-end, combine, session-end, spawn cleanup, and the TTL sweep all route through it
@@ -164,15 +166,16 @@ The plugin install wires the skill and the turn-end + agent-status hooks. Two th
     claude mcp add switchboard --scope user --transport http http://localhost:9876/mcp
 
     # WSL (replace <windows-host-ip> with the value from `/etc/resolv.conf` or `ip route show default | awk '{print $3}'`)
-    claude mcp add switchboard --scope user --transport http http://<windows-host-ip>:9876/mcp
+    claude mcp add switchboard --scope user --transport http http://<windows-host-ip>:9876/mcp --header "Authorization: Bearer <SWITCHBOARD_TOKEN value>"
     ```
 
-    WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` and a firewall inbound rule for TCP 9876 from the WSL subnet.
+    WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` AND `SWITCHBOARD_TOKEN` set - the server refuses to start non-loopback without a token (REV-003 fail-closed), and every non-loopback client must send `Authorization: Bearer <token>` on all routes except `/healthz` (loopback callers are exempt). The firewall inbound rule for TCP 9876 from the WSL subnet remains recommended as defense-in-depth; the token is the enforced control.
 
     For WSL agents, also point the hook scripts at the Windows host so their HTTP callbacks don't fall back to `127.0.0.1` (unreachable from WSL). Set these in the WSL environment (e.g. in `~/.bashrc`):
 
-    - `SWITCHBOARD_BASE_URL=http://<windows-host-ip>:9876` — read by both HTTP hooks (`agent-status-hook.py` POSTs to `/agent_status`; `turn-end-hook-away-mode.py` GETs `/away-mode`).
-    - `SWITCHBOARD_MARKER_DIR=<path>` — read by `cli-session-end-hook.py`, which writes a SessionEnd marker FILE (not an HTTP POST) that the server sweeps; point it at the server's `<logs>/session-end` dir when the hook runs on a different host.
+    - `SWITCHBOARD_BASE_URL=http://<windows-host-ip>:9876` - read by the three HTTP hooks (`agent-status-hook.py` POSTs to `/agent_status`; `turn-end-hook-away-mode.py` GETs `/away-mode`; `cli-session-start-hook.py` POSTs to `/session_start`).
+    - `SWITCHBOARD_TOKEN=<same value as the server's .env>` - read by the same three hooks; they attach `Authorization: Bearer <token>` when it is set. Required for WSL agents once the server has a token.
+    - `SWITCHBOARD_MARKER_DIR=<path>` - read by `cli-session-end-hook.py`, which writes a SessionEnd marker FILE (not an HTTP POST) that the server sweeps; point it at the server's `<logs>/session-end` dir when the hook runs on a different host.
 
 2. **The Python server (NSSM Windows service).** Install with `scripts/install-service.ps1`. The plugin's MCP connection is useless until this is running.
 

@@ -544,11 +544,12 @@ Switchboard ships as a Claude Code plugin. From any Claude Code session:
 /plugin install switchboard@switchboard
 ```
 
-The plugin install wires the skill and four hooks. The MCP server connection itself is bootstrapped separately per-host (chezmoi dotfiles, or `claude mcp add switchboard --scope user --transport http http://<host>:9876/mcp`). WSL agents require bridge networking (not mirrored), `SWITCHBOARD_HOST=0.0.0.0` on the server, and a Windows firewall inbound rule for TCP 9876 from the WSL subnet.
+The plugin install wires the skill and four hooks. The MCP server connection itself is bootstrapped separately per-host (chezmoi dotfiles, or `claude mcp add switchboard --scope user --transport http http://<host>:9876/mcp --header "Authorization: Bearer <SWITCHBOARD_TOKEN value>"` for non-loopback hosts). WSL agents require bridge networking (not mirrored), `SWITCHBOARD_HOST=0.0.0.0` on the server, and a Windows firewall inbound rule for TCP 9876 from the WSL subnet. A non-loopback bind also requires `SWITCHBOARD_TOKEN` set: the server refuses to start without one (REV-003 fail-closed), and non-loopback clients must send `Authorization: Bearer <token>` on every route except `/healthz`.
 
 WSL agents also need env vars pointing their hook scripts at the Windows host (the IP from `/etc/resolv.conf` or `ip route show default | awk '{print $3}'`):
 
-- `SWITCHBOARD_BASE_URL` -- both HTTP hooks (`agent-status-hook.py` -> `/agent_status`, `turn-end-hook-away-mode.py` -> `/away-mode`).
+- `SWITCHBOARD_BASE_URL` -- the three HTTP hooks (`agent-status-hook.py` -> `/agent_status`, `turn-end-hook-away-mode.py` -> `/away-mode`, `cli-session-start-hook.py` -> `/session_start`).
+- `SWITCHBOARD_TOKEN` -- the same three hooks; attached as `Authorization: Bearer <token>` when set. Required for WSL agents once the server enforces a token.
 - `SWITCHBOARD_MARKER_DIR` -- `cli-session-end-hook.py` (marker-file path, not HTTP).
 
 Gemini CLI gets a separate AfterAgent hook installed via `scripts/install-turn-end-hook.ps1`.
@@ -570,6 +571,8 @@ Gemini CLI gets a separate AfterAgent hook installed via `scripts/install-turn-e
 | `SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT` | No | `work` | Segment appended to resolved WSL home for WSL project paths. |
 | `SWITCHBOARD_WSL_HOME` | No | (probed via wsl.exe) | Escape hatch overriding the resolved WSL home path; first-priority source in resolve_wsl_home; used when the NSSM service runs in Session 0 where the wsl.exe probe fails. |
 | `SWITCHBOARD_RATE_LIMIT` | No | `30` | Per-conversation rate limit for `ask_human` + `notify_human` + `send_document_human` (tokens/min). |
+| `SWITCHBOARD_TOKEN` | For non-loopback | — | Shared-secret for the Bearer gate; required when `SWITCHBOARD_HOST` is non-loopback (server refuses to start without it). Loopback callers and `/healthz` are exempt. |
+| `SWITCHBOARD_ROUTE_RATE_LIMIT` | No | `600` | Coarse per-route rate limit for the unauthenticated POST routes (tokens/min per route; `0` disables). |
 
 ---
 
@@ -590,9 +593,9 @@ Gemini CLI gets a separate AfterAgent hook installed via `scripts/install-turn-e
 
 ### 15.3 Security
 
-- **Localhost bind by default.** `SWITCHBOARD_HOST=127.0.0.1` keeps the server unreachable off-host. WSL setups must explicitly set `0.0.0.0` and gate via firewall to the WSL subnet only.
+- **Layered network exposure control.** Loopback bind (`SWITCHBOARD_HOST=127.0.0.1`) by default keeps the server unreachable off-host. A non-loopback bind (`0.0.0.0`, for WSL) requires `SWITCHBOARD_TOKEN`: `load_config` raises `ConfigError` at startup if it's unset (REV-003 fail-closed). Once set, `TokenAuthMiddleware` gates every route except `/healthz` behind `Authorization: Bearer <token>`, exempting loopback peers regardless of bind. The WSL-subnet firewall rule remains recommended as defense-in-depth, not the enforced control.
 - **No sandboxing.** Spawned agents run with `--dangerously-skip-permissions`; safety is governed by the agent's `SKILL.md` instructions, which gate destructive actions behind `ask_human`. Switchboard enforces the protocol (no terminal leaks while away), not the execution.
-- **Document path validation.** `send_document_human` denylist matches `.env*`, `*token*`, `*secret*`, `*.pem`, `*.key`. Path-traversal (`..`) rejected. 5 MB cap. SHA-256 logged.
+- **Document path validation.** `send_document_human` runs a secret-name denylist first (`.env`, `service-account.json`, `credentials.json` exact; `*token*`, `*secret*`, `*.pem`, `*.key`, `.env*`, `*.env` globs), then an extension allowlist (`.md` `.markdown` `.txt` `.log` `.csv` `.tsv` `.diff` `.patch` `.pdf` `.png` `.jpg` `.jpeg` `.gif` `.webp`; extensionless files refused). Path-traversal (`..`) rejected. 5 MB cap. SHA-256 logged.
 - **Rate limiting.** `ask_human` + `notify_human` + `send_document_human` bucket per conversation, default 30 tokens/min.
 
 ### 15.4 Modalities

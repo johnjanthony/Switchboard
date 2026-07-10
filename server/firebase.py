@@ -77,6 +77,7 @@ class FirebaseBackend(
 		logger: JsonlLogger | None = None,
 	) -> None:
 		self._logger = logger
+		self._database_url = database_url
 		if storage_bucket and storage_bucket.startswith("gs://"):
 			self._storage_bucket = storage_bucket[5:]
 		else:
@@ -401,6 +402,20 @@ class FirebaseBackend(
 		msg = messaging.Message(topic=topic, data=fcm_data, android=android_cfg)
 
 		await asyncio.to_thread(lambda: messaging.send(msg))
+
+	async def fetch_database_rules(self) -> str:
+		"""Read the DEPLOYED RTDB rules via the REST management endpoint
+		(<database_url>/.settings/rules.json), authenticated with the admin
+		credential's OAuth token. Read-only; used by the startup rules audit
+		(server/rules_audit.py, REV-004)."""
+		def _do_fetch() -> str:
+			import urllib.request
+			app = firebase_admin.get_app()
+			token = app.credential.get_access_token().access_token
+			url = f"{self._database_url.rstrip('/')}/.settings/rules.json?access_token={token}"
+			with urllib.request.urlopen(url, timeout=10) as resp:
+				return resp.read().decode("utf-8")
+		return await asyncio.to_thread(_do_fetch)
 
 	async def read_document(self, conv_id: str, msg_id: str) -> tuple[bytes, str]:
 		"""Return (bytes, filename) for a document message, downloading the blob via
@@ -785,6 +800,7 @@ class FirebaseBackend(
 		filename: str | None = None,
 		attached_to_msg_id: str | None = None,
 		rejected: bool = False,
+		suppress_push: bool = False,
 	):
 		"""Append a message to /conversations/<id>/messages.
 
@@ -899,8 +915,10 @@ class FirebaseBackend(
 			"preview": preview,
 		}))
 
-		# FCM notification (same topics / payload as write_channel_message)
-		if message_type != "human":
+		# FCM notification (same topics / payload as write_channel_message).
+		# suppress_push (REV-109): a rate-limited agent_msg still writes and
+		# bumps unread, but must not buzz the phone.
+		if message_type != "human" and not suppress_push:
 			fcm_data: dict = {
 				"conv_id": conv_id,
 				"sb_message_type": message_type,

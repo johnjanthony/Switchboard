@@ -20,6 +20,8 @@ def _clear_env(monkeypatch):
 		"SWITCHBOARD_RATE_LIMIT",
 		"SWITCHBOARD_SESSION_LOST_AFTER_SECONDS",
 		"SWITCHBOARD_SESSION_RETENTION_HOURS",
+		"SWITCHBOARD_TOKEN",
+		"SWITCHBOARD_ROUTE_RATE_LIMIT",
 	]:
 		monkeypatch.delenv(key, raising=False)
 
@@ -159,3 +161,56 @@ def test_session_retention_hours_configurable_via_env(monkeypatch, tmp_path):
 	monkeypatch.setenv("SWITCHBOARD_SESSION_RETENTION_HOURS", "24")
 	cfg = load_config(dotenv_path=tmp_path / "no.env")
 	assert cfg.session_retention_hours == 24
+
+
+def test_auth_token_default_none(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	cfg = load_config(dotenv_path=tmp_path / "does-not-exist.env")
+	assert cfg.auth_token is None
+
+
+def test_auth_token_via_env(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	monkeypatch.setenv("SWITCHBOARD_TOKEN", "sekrit-abc")
+	cfg = load_config(dotenv_path=tmp_path / "does-not-exist.env")
+	assert cfg.auth_token == "sekrit-abc"
+
+
+def test_route_rate_limit_default(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	cfg = load_config(dotenv_path=tmp_path / "does-not-exist.env")
+	assert cfg.route_rate_limit == 600
+
+
+def test_route_rate_limit_via_env(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	monkeypatch.setenv("SWITCHBOARD_ROUTE_RATE_LIMIT", "0")
+	cfg = load_config(dotenv_path=tmp_path / "does-not-exist.env")
+	assert cfg.route_rate_limit == 0
+
+
+def test_nonloopback_host_without_token_raises(monkeypatch, tmp_path):
+	# REV-003: a non-loopback bind exposes /mcp and the HTTP routes to the
+	# network - the shared-secret gate is a hard prerequisite there.
+	from server.config import ConfigError
+	_clear_env(monkeypatch)
+	monkeypatch.setenv("SWITCHBOARD_HOST", "0.0.0.0")
+	with pytest.raises(ConfigError, match="SWITCHBOARD_TOKEN"):
+		load_config(dotenv_path=tmp_path / "does-not-exist.env")
+
+
+def test_nonloopback_host_with_token_ok(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	monkeypatch.setenv("SWITCHBOARD_HOST", "0.0.0.0")
+	monkeypatch.setenv("SWITCHBOARD_TOKEN", "sekrit-abc")
+	cfg = load_config(dotenv_path=tmp_path / "does-not-exist.env")
+	assert cfg.host == "0.0.0.0"
+	assert cfg.auth_token == "sekrit-abc"
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
+def test_loopback_hosts_do_not_require_token(monkeypatch, tmp_path, host):
+	_clear_env(monkeypatch)
+	monkeypatch.setenv("SWITCHBOARD_HOST", host)
+	cfg = load_config(dotenv_path=tmp_path / "does-not-exist.env")
+	assert cfg.auth_token is None

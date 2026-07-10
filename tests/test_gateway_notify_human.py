@@ -31,6 +31,7 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLif
 		self.sent_timeouts: list[tuple] = []
 		self.sent_confirmations: list[tuple] = []
 		self.agent_status_writes: list[tuple] = []
+		self.push_suppressed: list = []
 		self._next_correlation = 1000
 
 	async def write_conversation_message(
@@ -48,6 +49,7 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLif
 		title=None,
 		rejected=False,
 		attached_to_msg_id=None,
+		suppress_push=False,
 	):
 		"""Record conversation-message writes. Handles both the legacy dict form
 		and the expanded positional form so all migrated callers are captured."""
@@ -71,6 +73,7 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLif
 				"attached_to_msg_id": None,
 			}
 			self.channel_messages.append(data)
+			self.push_suppressed.append(suppress_push)
 			return msg_id
 
 		# Expanded positional form: write_conversation_message(conv_id, sender, type, text, ...)
@@ -92,6 +95,7 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLif
 			"attached_to_msg_id": attached_to_msg_id,
 		}
 		self.channel_messages.append(data)
+		self.push_suppressed.append(suppress_push)
 		if message_type == "question":
 			correlation = self._next_correlation
 			self._next_correlation += 1

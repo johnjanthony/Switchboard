@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from server.config import Config
 from server.gateway import build_tool_handlers
 from server.logging_jsonl import JsonlLogger
+from server.rate_limiter import RateLimiter
 from server.registry import Conversation, ConversationMember, Registry
 from tests.test_gateway_notify_human import RecordingBackend
 
@@ -520,3 +522,57 @@ async def test_last_seen_seq_updated_after_wake(cfg, logger):
 		await task_b
 	except asyncio.CancelledError:
 		pass
+
+
+# ---------------------------------------------------------------------------
+# Tests: rate-limiter push suppression (REV-109)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_rate_limited_agent_msg_still_delivers_but_suppresses_push(cfg, logger):
+	"""REV-109: message_and_await_agent shares the per-conversation bucket, but
+	degrades by suppressing FCM - a collab ping-pong storm stops buzzing the
+	phone without breaking delivery or wake semantics."""
+	registry, _ = _make_registry_with_two_alive_members()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger, limiter=RateLimiter(1))
+
+	task_a = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-A", "first message", cli_session_id="s-A", cwd="C:/X"))
+	await asyncio.sleep(0.05)
+	task_b = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-B", "second message", cli_session_id="s-B", cwd="C:/Y"))
+	await asyncio.sleep(0.05)
+
+	result_a = json.loads(await task_a)
+	assert result_a["status"] == "ok"
+	assert "second message" in result_a["log"]
+	# Both messages were written - delivery is never dropped by the limiter.
+	assert len(backend.channel_messages) == 2
+	# The second write exceeded the bucket (capacity 1): push suppressed.
+	assert backend.push_suppressed == [False, True]
+
+	task_b.cancel()
+	with contextlib.suppress(asyncio.CancelledError):
+		await task_b
+
+
+@pytest.mark.asyncio
+async def test_agent_msgs_within_limit_push_normally(cfg, logger):
+	registry, _ = _make_registry_with_two_alive_members()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger, limiter=RateLimiter(30))
+
+	task_a = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-A", "hello", cli_session_id="s-A", cwd="C:/X"))
+	await asyncio.sleep(0.05)
+	task_b = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-B", "reply", cli_session_id="s-B", cwd="C:/Y"))
+	await asyncio.sleep(0.05)
+
+	assert json.loads(await task_a)["status"] == "ok"
+	assert backend.push_suppressed == [False, False]
+
+	task_b.cancel()
+	with contextlib.suppress(asyncio.CancelledError):
+		await task_b

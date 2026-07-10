@@ -507,6 +507,15 @@ def build_tool_handlers(
 		if caller_member is None:
 			return "ERROR: session bound to conversation but not a member."
 
+		# REV-109: consume the same per-conversation bucket the other tools use,
+		# but degrade by suppressing the FCM push instead of rejecting - a collab
+		# ping-pong storm must not break the wake protocol, only stop buzzing
+		# the phone past the limit. The message still writes and wakes peers.
+		suppress_push = False
+		if limiter is not None and not limiter.consume(conversation_id):
+			await logger.rate_limited(conversation_id, "message_and_await_agent")
+			suppress_push = True
+
 		from server.conversation_ops import _wake_one_from
 		import time
 
@@ -535,7 +544,7 @@ def build_tool_handlers(
 			_spawn_bg(
 				backend.write_conversation_message(
 					conversation_id, caller_member.sender, "agent_msg", message,
-					format="markdown", title=title,
+					format="markdown", title=title, suppress_push=suppress_push,
 				),
 				label=f"fb_write_agent_msg:{conversation_id}:{caller_member.sender}",
 			)

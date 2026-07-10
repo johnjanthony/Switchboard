@@ -42,10 +42,14 @@ def main() -> int:
 	}
 
 	base_url = os.environ.get("SWITCHBOARD_BASE_URL", DEFAULT_BASE_URL)
+	headers = {"Content-Type": "application/json"}
+	token = os.environ.get("SWITCHBOARD_TOKEN")
+	if token:
+		headers["Authorization"] = f"Bearer {token}"
 	req = urllib.request.Request(
 		base_url + SESSION_START_PATH,
 		data=json.dumps(body).encode("utf-8"),
-		headers={"Content-Type": "application/json"},
+		headers=headers,
 		method="POST",
 	)
 	try:

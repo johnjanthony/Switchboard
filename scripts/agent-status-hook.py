@@ -64,10 +64,14 @@ def _build_detail(tool_name: str, tool_input: dict) -> str | None:
 
 def _post(url: str, body: dict) -> dict:
 	data = json.dumps(body).encode("utf-8")
+	headers = {"Content-Type": "application/json"}
+	token = os.environ.get("SWITCHBOARD_TOKEN")
+	if token:
+		headers["Authorization"] = f"Bearer {token}"
 	req = urllib.request.Request(
 		url,
 		data=data,
-		headers={"Content-Type": "application/json"},
+		headers=headers,
 		method="POST",
 	)
 	with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:

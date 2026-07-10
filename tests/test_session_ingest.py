@@ -170,6 +170,28 @@ def test_get_sessions_returns_recorded_payloads(cfg, logger):
 	assert ids == {"s1", "s2"}
 
 
+def test_get_sessions_redacts_long_session_ids(cfg, logger):
+	# REV-003: the full cli_session_id is the (forgeable) routing identity and
+	# exactly what the /away-mode drain and POST /cli-session/end attacks need.
+	# The roster route has no runtime consumer that needs the full id.
+	registry = Registry()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	session_registry = SessionRegistry()
+	app = _build_app(handlers, session_registry)
+
+	full_id = "abcdef1234567890-uuid-tail"
+	with TestClient(app) as client:
+		client.post("/session_start", json={"session_id": full_id, "cwd": "C:/Work/X", "source": "startup"})
+		body = client.get("/sessions").json()
+
+	ids = [s["cli_session_id"] for s in body["sessions"]]
+	assert ids == ["abcdef12..."]
+	assert full_id not in str(body)
+	# The registry itself keeps the full id - only the route payload redacts.
+	assert session_registry.get(full_id) is not None
+
+
 def test_away_mode_delivers_and_pops_queued_notice_for_session(cfg, logger):
 	registry = Registry()
 	registry.global_away_mode = True

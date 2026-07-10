@@ -14,7 +14,12 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "turn-end-hook-away-m
 _DEFAULT_CWD_PAYLOAD = json.dumps({"cwd": "c:/work/switchboard"})
 
 
-def _run(cli: str, stdin: str = _DEFAULT_CWD_PAYLOAD, url_env: str | None = None) -> subprocess.CompletedProcess:
+def _run(
+	cli: str,
+	stdin: str = _DEFAULT_CWD_PAYLOAD,
+	url_env: str | None = None,
+	extra_env: dict | None = None,
+) -> subprocess.CompletedProcess:
 	"""url_env may be either a full away-mode URL (e.g. http://host:port/away-mode)
 	or a bare base URL. The hook reads SWITCHBOARD_BASE_URL and appends /away-mode,
 	so this helper strips a trailing /away-mode if present."""
@@ -22,8 +27,11 @@ def _run(cli: str, stdin: str = _DEFAULT_CWD_PAYLOAD, url_env: str | None = None
 	if url_env is not None:
 		import os
 		env = os.environ.copy()
+		env.pop("SWITCHBOARD_TOKEN", None)
 		base = url_env[:-len("/away-mode")] if url_env.endswith("/away-mode") else url_env
 		env["SWITCHBOARD_BASE_URL"] = base
+		if extra_env:
+			env.update(extra_env)
 	return subprocess.run(
 		[sys.executable, str(SCRIPT), "--cli", cli],
 		input=stdin,
@@ -49,6 +57,7 @@ class _FakeServer:
 		self._httpd = None
 		self.port = None
 		self.received_paths: list[str] = []
+		self.received_auth: list = []
 
 	def __enter__(self):
 		import http.server
@@ -58,9 +67,11 @@ class _FakeServer:
 		status = self.status
 		hang = self.hang
 		received_paths = self.received_paths
+		received_auth = self.received_auth
 
 		class Handler(http.server.BaseHTTPRequestHandler):
 			def do_GET(self):
+				received_auth.append(self.headers.get("Authorization"))
 				received_paths.append(self.path)
 				if hang:
 					import time
@@ -414,3 +425,17 @@ def test_inactive_no_notices_silent_exit():
 		r = _run("claude", url_env=srv.url)
 	assert r.returncode == 0
 	assert r.stdout.strip() == ""
+
+
+def test_turn_end_hook_sends_bearer_token_when_env_set():
+	with _FakeServer({"active": False}) as srv:
+		r = _run("claude", url_env=srv.url, extra_env={"SWITCHBOARD_TOKEN": "sekrit-123"})
+	assert r.returncode == 0
+	assert srv.received_auth == ["Bearer sekrit-123"]
+
+
+def test_turn_end_hook_no_auth_header_without_token():
+	with _FakeServer({"active": False}) as srv:
+		r = _run("claude", url_env=srv.url)
+	assert r.returncode == 0
+	assert srv.received_auth == [None]

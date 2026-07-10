@@ -15,8 +15,10 @@ HOOK = Path(__file__).resolve().parent.parent / "scripts" / "agent-status-hook.p
 class _Capture(http.server.BaseHTTPRequestHandler):
 	posts: list[dict] = []
 	response_payload: dict | None = None
+	auth_headers: list = []
 
 	def do_POST(self):
+		_Capture.auth_headers.append(self.headers.get("Authorization"))
 		length = int(self.headers.get("Content-Length", "0"))
 		raw = self.rfile.read(length)
 		try:
@@ -40,6 +42,7 @@ class _Capture(http.server.BaseHTTPRequestHandler):
 def _start_server():
 	_Capture.posts = []
 	_Capture.response_payload = None
+	_Capture.auth_headers = []
 	srv = socketserver.TCPServer(("127.0.0.1", 0), _Capture)
 	port = srv.server_address[1]
 	thread = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -50,6 +53,7 @@ def _start_server():
 def _run_hook(stdin_payload: dict, port: int, env_overrides: dict | None = None):
 	import os
 	env = dict(os.environ)
+	env.pop("SWITCHBOARD_TOKEN", None)
 	# The hook reads SWITCHBOARD_BASE_URL and appends /agent_status itself.
 	env["SWITCHBOARD_BASE_URL"] = f"http://127.0.0.1:{port}"
 	if env_overrides:
@@ -283,13 +287,38 @@ def test_pre_tool_use_does_not_print_notices():
 	assert result.stdout == b""
 
 
+def test_agent_status_hook_sends_bearer_token_when_env_set():
+	srv, port = _start_server()
+	try:
+		_run_hook(
+			{"session_id": "s1", "hook_event_name": "Stop", "cwd": "C:/Work/X"},
+			port,
+			env_overrides={"SWITCHBOARD_TOKEN": "sekrit-123"},
+		)
+		assert _Capture.auth_headers == ["Bearer sekrit-123"]
+	finally:
+		srv.shutdown()
+
+
+def test_agent_status_hook_no_auth_header_without_token():
+	srv, port = _start_server()
+	try:
+		_run_hook({"session_id": "s1", "hook_event_name": "Stop", "cwd": "C:/Work/X"}, port)
+		assert _Capture.auth_headers == [None]
+	finally:
+		srv.shutdown()
+
+
 START_HOOK = Path(__file__).resolve().parent.parent / "scripts" / "cli-session-start-hook.py"
 
 
-def _run_start_hook(stdin_payload, port, raw_stdin=None):
+def _run_start_hook(stdin_payload, port, raw_stdin=None, env_overrides: dict | None = None):
 	import os
 	env = dict(os.environ)
+	env.pop("SWITCHBOARD_TOKEN", None)
 	env["SWITCHBOARD_BASE_URL"] = f"http://127.0.0.1:{port}"
+	if env_overrides:
+		env.update(env_overrides)
 	data = raw_stdin if raw_stdin is not None else json.dumps(stdin_payload).encode("utf-8")
 	result = subprocess.run(
 		[sys.executable, str(START_HOOK)],
@@ -335,3 +364,16 @@ def test_session_start_malformed_stdin_exits_zero_no_post():
 		srv.shutdown()
 	assert result.returncode == 0
 	assert _Capture.posts == []
+
+
+def test_session_start_hook_sends_bearer_token_when_env_set():
+	srv, port = _start_server()
+	try:
+		_run_start_hook(
+			{"session_id": "s1", "cwd": "C:/Work/X", "source": "startup"},
+			port,
+			env_overrides={"SWITCHBOARD_TOKEN": "sekrit-123"},
+		)
+		assert _Capture.auth_headers == ["Bearer sekrit-123"]
+	finally:
+		srv.shutdown()
