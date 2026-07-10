@@ -297,6 +297,26 @@ def build_tool_handlers(
 			)
 			if prior_request_id is not None:
 				await _safe_mark_cancelled(backend, conversation_id, prior_request_id, logger)
+			# REV-002 residual window: this ask passed the away gate, then
+			# suspended in the question write (and possibly the supersede
+			# cleanup) above. If an away-mode exit ran in that gap, its drain
+			# snapshotted the pending set BEFORE registry.add registered this
+			# record - nothing will ever resolve it. Re-check the flag: gone
+			# at-desk with our future still unsettled means we withdraw the
+			# pending (pop + Firebase cancel, so the phone question greys out)
+			# and take the same at-desk redirect the gate would have taken. A
+			# done future means the drain DID catch us (the supersede await
+			# suspended after add) - fall through and collect John's bulk
+			# reply from wait_for as normal. Placed before the
+			# pending-record spawn so a withdrawn ask never writes one.
+			if not registry.global_away_mode and not future.done():
+				record = registry.find_by_request_id(conversation_id, request_id)
+				if record is not None:
+					await terminate_pending(registry, backend, logger, record)
+				await logger.info(
+					f"ask_human_at_desk_after_add: request_id={request_id} conversation_id={conversation_id}"
+				)
+				return "ERROR: John is at his desk. Ask this question via the terminal."
 			# Persist pending_questions record per 2026-05-19 spec lines 349-355
 			_spawn_bg(
 				backend.add_pending_question_record(

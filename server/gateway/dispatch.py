@@ -424,6 +424,19 @@ async def dispatch_away_mode_commands(registry, backend, logger, supervisor, ses
 						# without breaking older app builds (M07).
 						if decision is None and default_text:
 							decision = "send_default"
+						# Flip the in-memory flag BEFORE the drain's await points
+						# (REV-002, parity with set_away_mode in handlers.py): the
+						# drain snapshots the pending set at entry, so an ask_human
+						# that passed the away gate but is still suspended in its
+						# question write would otherwise register a pending the
+						# snapshot never covers, with away mode already off -
+						# stranded until the 24h timeout. Flipping first routes it
+						# to the at-desk redirect (or ask_human's post-add
+						# re-check) instead. Restored below if the decision does
+						# not commit; the cancel path is await-free inside the
+						# drain, so its flip-and-restore is unobservable.
+						was_away = registry.global_away_mode
+						registry.global_away_mode = False
 						commit = False
 						try:
 							commit = await _apply_bulk_respond_decision(
@@ -435,11 +448,12 @@ async def dispatch_away_mode_commands(registry, backend, logger, supervisor, ses
 						except Exception as exc:
 							await logger.surface_error(f"bulk_respond_failed: {exc}")
 						if commit:
-							registry.global_away_mode = False
 							try:
 								await backend.set_global_away_mode(False)
 							except Exception as exc:
 								await logger.surface_error(f"away_mode_exit_persist_failed: {exc}")
+						else:
+							registry.global_away_mode = was_away
 						await logger.info(
 							f"away_mode_exit_global decision={decision!r} committed={commit}"
 						)
