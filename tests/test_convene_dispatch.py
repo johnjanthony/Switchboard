@@ -13,6 +13,13 @@ from server.session_registry import SessionRegistry
 from tests.conftest import make_registry_with_loopback
 
 
+def _make_supervisor():
+	supervisor = MagicMock()
+	supervisor.record_success = MagicMock()
+	supervisor.record_crash = AsyncMock()
+	return supervisor
+
+
 @pytest.mark.asyncio
 async def test_dispatch_convene_command_invokes_perform_convene_and_logs(tmp_path):
 	"""_handle inside dispatch_convene_commands calls _perform_convene with the
@@ -46,7 +53,8 @@ async def test_dispatch_convene_command_invokes_perform_convene_and_logs(tmp_pat
 
 	backend.start_convene_command_listener = fake_start_listener
 
-	await dispatch_convene_commands(registry, session_registry, backend, logger, supervisor=None)
+	supervisor = _make_supervisor()
+	await dispatch_convene_commands(registry, session_registry, backend, logger, supervisor)
 
 	assert registered_handler is not None, "handler should have been registered"
 
@@ -67,6 +75,7 @@ async def test_dispatch_convene_command_invokes_perform_convene_and_logs(tmp_pat
 	events = [json.loads(line) for line in log_path.read_text().splitlines() if line]
 	infos = [e for e in events if e["event"] == "info"]
 	assert any("convene_command_handled" in e["detail"] for e in infos)
+	supervisor.record_success.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -90,7 +99,8 @@ async def test_dispatch_convene_command_missing_or_empty_session_ids(tmp_path):
 
 	backend.start_convene_command_listener = fake_start_listener
 
-	await dispatch_convene_commands(registry, session_registry, backend, logger, supervisor=None)
+	supervisor = _make_supervisor()
+	await dispatch_convene_commands(registry, session_registry, backend, logger, supervisor)
 	assert registered_handler is not None
 
 	# Missing key entirely.
@@ -153,7 +163,8 @@ async def test_dispatch_convene_command_all_skipped_notifies_phone(tmp_path):
 
 	backend.start_convene_command_listener = fake_start_listener
 
-	await dispatch_convene_commands(registry, session_registry, backend, logger, supervisor=None)
+	supervisor = _make_supervisor()
+	await dispatch_convene_commands(registry, session_registry, backend, logger, supervisor)
 	assert registered_handler is not None
 
 	await registered_handler({
@@ -209,7 +220,8 @@ async def test_convene_all_resuming_no_phone_noop_notice(tmp_path):
 	backend.start_convene_command_listener = fake_start_listener
 	spawn_handler = FakeSpawnHandler()
 
-	await dispatch_convene_commands(registry, session_registry, backend, logger, supervisor=None, spawn_handler=spawn_handler)
+	supervisor = _make_supervisor()
+	await dispatch_convene_commands(registry, session_registry, backend, logger, supervisor, spawn_handler=spawn_handler)
 	assert registered_handler is not None
 
 	await registered_handler({

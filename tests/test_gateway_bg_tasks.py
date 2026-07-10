@@ -11,10 +11,13 @@ from server.gateway.bg_tasks import _BG_TASKS, _spawn_bg
 
 @pytest.fixture(autouse=True)
 def _clean_bg_tasks():
-	"""Ensure each test starts with an empty tracking set."""
+	"""Ensure each test starts with an empty tracking set and no failure hook."""
+	from server.gateway.bg_tasks import set_bg_failure_hook
 	_BG_TASKS.clear()
+	set_bg_failure_hook(None)
 	yield
 	_BG_TASKS.clear()
+	set_bg_failure_hook(None)
 
 
 @pytest.mark.asyncio
@@ -157,3 +160,69 @@ def test_spawn_bg_requires_running_loop():
 	finally:
 		# Close the unawaited coroutine to suppress the ResourceWarning.
 		coro.close()
+
+
+@pytest.mark.asyncio
+async def test_bg_failure_hook_receives_label_and_exception():
+	"""REV-105: a failing background task must reach the installed failure hook
+	(main.py wires it to the JSONL audit log) with its label and exception."""
+	from server.gateway.bg_tasks import set_bg_failure_hook
+
+	seen: list[tuple[str, BaseException]] = []
+	set_bg_failure_hook(lambda label, exc: seen.append((label, exc)))
+
+	async def _boom():
+		raise ValueError("kaboom-hook")
+
+	task = _spawn_bg(_boom(), label="test:hook")
+	with pytest.raises(ValueError):
+		await task
+	await asyncio.sleep(0)
+
+	assert len(seen) == 1
+	label, exc = seen[0]
+	assert label == "test:hook"
+	assert isinstance(exc, ValueError) and "kaboom-hook" in str(exc)
+
+
+@pytest.mark.asyncio
+async def test_bg_failure_hook_not_invoked_for_audit_task_itself():
+	"""Recursion guard: a failing audit-write task (the one the hook itself
+	spawns) must not re-invoke the hook, or a broken log path loops forever."""
+	from server.gateway.bg_tasks import BG_FAILURE_AUDIT_LABEL, set_bg_failure_hook
+
+	seen: list[str] = []
+	set_bg_failure_hook(lambda label, exc: seen.append(label))
+
+	async def _boom():
+		raise OSError("disk full")
+
+	task = _spawn_bg(_boom(), label=BG_FAILURE_AUDIT_LABEL)
+	with pytest.raises(OSError):
+		await task
+	await asyncio.sleep(0)
+
+	assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_bg_failure_hook_exception_is_swallowed(caplog):
+	"""A raising hook must not propagate out of the done-callback."""
+	import logging
+	from server.gateway.bg_tasks import set_bg_failure_hook
+
+	def _bad_hook(label, exc):
+		raise RuntimeError("hook exploded")
+
+	set_bg_failure_hook(_bad_hook)
+
+	async def _boom():
+		raise ValueError("original")
+
+	with caplog.at_level(logging.ERROR, logger="server.gateway.bg_tasks"):
+		task = _spawn_bg(_boom(), label="test:bad_hook")
+		with pytest.raises(ValueError):
+			await task
+		await asyncio.sleep(0)
+
+	assert any("bg_failure_hook raised" in r.getMessage() for r in caplog.records)

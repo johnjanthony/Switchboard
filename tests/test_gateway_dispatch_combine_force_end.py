@@ -15,6 +15,14 @@ def logger(tmp_path):
 	return JsonlLogger(str(tmp_path / "log.jsonl"))
 
 
+def _make_supervisor():
+	from unittest.mock import AsyncMock, MagicMock
+	supervisor = MagicMock()
+	supervisor.record_success = MagicMock()
+	supervisor.record_crash = AsyncMock()
+	return supervisor
+
+
 # ---------------------------------------------------------------------------
 # dispatch_combine_commands
 # ---------------------------------------------------------------------------
@@ -63,7 +71,8 @@ async def test_dispatch_combine_command_invokes_perform_combine(logger):
 
 	backend.start_combine_command_listener = fake_start_listener
 
-	await dispatch_combine_commands(registry, backend, logger, supervisor=None)
+	supervisor = _make_supervisor()
+	await dispatch_combine_commands(registry, backend, logger, supervisor)
 
 	assert registered_handler is not None, "handler should have been registered"
 
@@ -76,6 +85,8 @@ async def test_dispatch_combine_command_invokes_perform_combine(logger):
 	# _perform_combine should have ended source and moved the member to target
 	assert registry.conversations["conv-src"].state == "ended"
 	assert "s-1" in registry.conversations["conv-tgt"].members_active
+	supervisor.record_success.assert_called_once()
+	supervisor.record_crash.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -98,7 +109,8 @@ async def test_dispatch_combine_command_logs_missing_ids(logger, tmp_path):
 
 	backend.start_combine_command_listener = fake_start_listener
 
-	await dispatch_combine_commands(registry, backend, logger, supervisor=None)
+	supervisor = _make_supervisor()
+	await dispatch_combine_commands(registry, backend, logger, supervisor)
 	assert registered_handler is not None
 
 	await registered_handler({"issued_at": "2026-05-25T00:00:00+00:00"})
@@ -106,6 +118,7 @@ async def test_dispatch_combine_command_logs_missing_ids(logger, tmp_path):
 	events = [json.loads(line) for line in log_path.read_text().splitlines() if line]
 	errors = [e for e in events if e["event"] == "surface_error"]
 	assert any("combine_command_missing_ids" in e["detail"] for e in errors)
+	supervisor.record_success.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +160,8 @@ async def test_dispatch_force_end_command_invokes_handle_force_end(logger):
 
 	backend.start_force_end_command_listener = fake_start_listener
 
-	await dispatch_force_end_commands(registry, backend, logger, supervisor=None)
+	supervisor = _make_supervisor()
+	await dispatch_force_end_commands(registry, backend, logger, supervisor)
 
 	assert registered_handler is not None
 
@@ -156,6 +170,8 @@ async def test_dispatch_force_end_command_invokes_handle_force_end(logger):
 	# handle_force_end should have ended the conversation
 	assert conv.state == "ended"
 	assert conv.ended_at is not None
+	supervisor.record_success.assert_called_once()
+	supervisor.record_crash.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -178,7 +194,8 @@ async def test_dispatch_force_end_command_logs_missing_id(logger, tmp_path):
 
 	backend.start_force_end_command_listener = fake_start_listener
 
-	await dispatch_force_end_commands(registry, backend, logger, supervisor=None)
+	supervisor = _make_supervisor()
+	await dispatch_force_end_commands(registry, backend, logger, supervisor)
 	assert registered_handler is not None
 
 	await registered_handler({"issued_at": "2026-05-25T00:00:00+00:00"})
@@ -186,6 +203,7 @@ async def test_dispatch_force_end_command_logs_missing_id(logger, tmp_path):
 	events = [json.loads(line) for line in log_path.read_text().splitlines() if line]
 	errors = [e for e in events if e["event"] == "surface_error"]
 	assert any("force_end_command_missing_id" in e["detail"] for e in errors)
+	supervisor.record_success.assert_called_once()
 
 
 @pytest.mark.asyncio

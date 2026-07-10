@@ -27,24 +27,46 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Coroutine
+from typing import Callable, Coroutine
 
 
 _BG_TASKS: set[asyncio.Task] = set()
 
 _log = logging.getLogger(__name__)
 
+BG_FAILURE_AUDIT_LABEL = "bg_failure_audit"
+
+_FAILURE_HOOK: Callable[[str, BaseException], None] | None = None
+
+
+def set_bg_failure_hook(hook: Callable[[str, BaseException], None] | None) -> None:
+	"""Install a process-wide callback invoked on the loop thread when a tracked
+	background task fails (REV-105: stdlib logging alone leaves fire-and-forget
+	failures invisible to the JSONL audit trail). main.py wires this to the
+	JsonlLogger at startup. The hook must not block; exceptions it raises are
+	logged and swallowed. Tasks labelled BG_FAILURE_AUDIT_LABEL are exempt so a
+	failing audit write cannot recurse."""
+	global _FAILURE_HOOK
+	_FAILURE_HOOK = hook
+
 
 def _on_task_done(task: asyncio.Task) -> None:
 	"""Done-callback: drop the strong ref, and log any exception. These tasks are
 	fire-and-forget (mostly Firebase writes), so a failure here previously
-	vanished with no trace; logging it makes a failed background write visible."""
+	vanished with no trace; logging it makes a failed background write visible.
+	The optional failure hook additionally routes the failure to the JSONL
+	audit log (wired in main.py, REV-105)."""
 	_BG_TASKS.discard(task)
 	if task.cancelled():
 		return
 	exc = task.exception()
 	if exc is not None:
 		_log.error("background task %s failed: %r", task.get_name(), exc, exc_info=exc)
+		if _FAILURE_HOOK is not None and task.get_name() != BG_FAILURE_AUDIT_LABEL:
+			try:
+				_FAILURE_HOOK(task.get_name(), exc)
+			except Exception:
+				_log.exception("bg_failure_hook raised")
 
 
 def _spawn_bg(coro: Coroutine, *, label: str) -> asyncio.Task:

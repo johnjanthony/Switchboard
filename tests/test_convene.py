@@ -8,6 +8,8 @@ scope here - _wake_convened is a no-op stub until Task 6.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from server.conversation_ops import _convene_sender_for, _perform_convene
@@ -431,13 +433,83 @@ async def test_convene_fork_launch_failure_skips(logger):
 	assert result["resuming"] == []
 	assert result["skipped"] == [{"session_id": "s-failed", "reason": "resume launch failed"}]
 	assert len(spawn_handler.calls) == 1
-	# The target is minted before the launch attempt (the prompt must name a
-	# real conversation id), so a failed launch still leaves conv_id set -
-	# the assertion that matters is that the session never became a member.
+	# REV-115: the id is reserved for the prompt, but the conversation is
+	# materialized only after a successful launch - an all-failed convene
+	# leaves no orphan Active conversation anywhere.
+	assert result["conversation_id"] is None
+	assert registry.conversations == {}
+	assert "s-failed" not in registry.session_to_conversation_id
+
+
+@pytest.mark.asyncio
+async def test_convene_fork_all_failed_writes_no_firebase_meta(logger):
+	"""REV-115: the orphan was visible in Firebase too - write_conversation_meta
+	must not fire when every resume launch fails."""
+	from unittest.mock import AsyncMock, MagicMock
+
+	registry = make_registry_with_loopback()
+	session_registry = SessionRegistry()
+	registry.sessions = session_registry
+
+	session_registry.record_session_start("s-failed-fb", cwd="C:/Work/F")
+	session_registry.record_session_end("s-failed-fb", reason="logout", ended_at="2026-07-06T00:00:00+00:00")
+
+	backend = MagicMock()
+	backend.write_conversation_meta = AsyncMock()
+	backend.write_conversation_member = AsyncMock()
+	backend.write_conversation_message = AsyncMock(return_value="key-1")
+	backend.set_conversation_last_activity = AsyncMock()
+	backend.set_session_home = AsyncMock()
+
+	spawn_handler = FakeSpawnHandler(ok=False)
+	cmd = {"session_ids": ["s-failed-fb"], "target": "new", "title": None, "issued_at": "x"}
+	result = await _perform_convene(registry, session_registry, cmd, logger, backend=backend, spawn_handler=spawn_handler)
+
+	for _ in range(5):
+		await asyncio.sleep(0)  # settle any _spawn_bg writes (loop-pump memory)
+	assert result["conversation_id"] is None
+	backend.write_conversation_meta.assert_not_called()
+
+
+class SequencedSpawnHandler(FakeSpawnHandler):
+	"""FakeSpawnHandler whose launches succeed/fail per the given sequence."""
+
+	def __init__(self, oks):
+		super().__init__()
+		self._oks = list(oks)
+
+	async def launch_resume_agent(self, **kwargs):
+		self.calls.append(kwargs)
+		return self._oks.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_convene_fork_failed_then_successful_launch_mints_once(logger):
+	"""With two ended sessions where the first launch fails and the second
+	succeeds, exactly one conversation is minted, holding only the second
+	session; both prompts embedded the same (reserved) id."""
+	registry = make_registry_with_loopback()
+	session_registry = SessionRegistry()
+	registry.sessions = session_registry
+
+	for sid, cwd in (("s-fail1", "C:/Work/A"), ("s-ok2", "C:/Work/B")):
+		session_registry.record_session_start(sid, cwd=cwd)
+		session_registry.record_session_end(sid, reason="logout", ended_at="2026-07-06T00:00:00+00:00")
+
+	spawn_handler = SequencedSpawnHandler([False, True])
+	cmd = {"session_ids": ["s-fail1", "s-ok2"], "target": "new", "title": None, "issued_at": "x"}
+	result = await _perform_convene(registry, session_registry, cmd, logger, spawn_handler=spawn_handler)
+
+	assert result["skipped"] == [{"session_id": "s-fail1", "reason": "resume launch failed"}]
 	conv_id = result["conversation_id"]
 	assert conv_id is not None
-	assert "s-failed" not in registry.conversations[conv_id].members_active
-	assert "s-failed" not in registry.session_to_conversation_id
+	assert set(registry.conversations) == {conv_id}
+	conv = registry.conversations[conv_id]
+	assert set(conv.members_active) == {"s-ok2"}
+	assert "s-fail1" not in registry.session_to_conversation_id
+	# The reserved id is stable across the loop: both prompts named it.
+	assert all(conv_id in c["prompt"] for c in spawn_handler.calls)
+	assert result["resuming"] == [conv.members_active["s-ok2"].sender]
 
 
 @pytest.mark.asyncio

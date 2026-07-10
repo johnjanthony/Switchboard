@@ -33,7 +33,7 @@ from server.gateway.dispatch import (
 	dispatch_status_request_commands,
 	dispatch_session_sweep,
 )
-from server.gateway.bg_tasks import _spawn_bg
+from server.gateway.bg_tasks import BG_FAILURE_AUDIT_LABEL, _spawn_bg, set_bg_failure_hook
 from server.hydration import hydrate_from_firebase
 from server.logging_jsonl import JsonlLogger
 from server.registry import Registry
@@ -612,6 +612,17 @@ async def resolve_wsl_home(logger=None) -> str | None:
 
 async def _run(config: Config) -> None:
 	logger = JsonlLogger(config.log_path)
+
+	# Route background-task failures into the JSONL audit log (REV-105): the
+	# done-callback's stdlib logging reaches nssm-stderr only; this makes a
+	# failed fire-and-forget write visible in logs/switchboard.jsonl too.
+	def _bg_failure_audit(label: str, exc: BaseException) -> None:
+		_spawn_bg(
+			logger.surface_error(f"bg_task_failed:{label}: {exc!r}"),
+			label=BG_FAILURE_AUDIT_LABEL,
+		)
+	set_bg_failure_hook(_bg_failure_audit)
+
 	registry = Registry()
 	session_registry = SessionRegistry()
 	registry.sessions = session_registry

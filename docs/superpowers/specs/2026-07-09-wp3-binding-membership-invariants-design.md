@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-09
 **Findings:** REV-103, REV-104, REV-110, REV-112, REV-113, DT-2, DT-4 (`docs/2026-07-08-technical-review-findings.md`)
-**Status:** Approved by John 2026-07-09 (brainstorm rounds; all recommended options ratified). Implementation plan to follow (`docs/superpowers/plans/`).
+**Status:** Approved by John 2026-07-09 (brainstorm rounds; all recommended options ratified). IMPLEMENTED same day — committed as `b1fd87f`, deployed, plugin 1.4.2; suite 759. One as-built refinement: section 1's bind-site enumeration gained the `rebind_home` transient (found by the final whole-branch review).
 
 ## Problem
 

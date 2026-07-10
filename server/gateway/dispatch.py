@@ -272,6 +272,20 @@ async def handle_force_end(registry, conversation_id: str, backend=None, logger=
 		apply_fallback(registry, sid, backend=backend)
 
 
+async def _report_command_failure(backend, logger, supervisor, exc, *, kind: str, notice: str) -> None:
+	"""Shared failure path for the four listener-driven command dispatchers
+	(REV-105/DT-6): JSONL audit line, phone notice, supervisor crash record.
+	The caller re-raises afterwards so the firebase-side wrapper skips the
+	command delete (at-least-once replay) and _on_task_done logs the task."""
+	await logger.surface_error(f"{kind}_command_failed: {exc!r}")
+	if hasattr(backend, "send_text"):
+		try:
+			await backend.send_text(notice)
+		except Exception as notice_exc:
+			await logger.surface_error(f"{kind}_failure_notice_failed: {notice_exc!r}")
+	await supervisor.record_crash(exc)
+
+
 async def dispatch_combine_commands(registry, backend, logger, supervisor, pending_dir=None):
 	"""Watch /combine_commands for new entries; route to _perform_combine.
 
@@ -290,13 +304,26 @@ async def dispatch_combine_commands(registry, backend, logger, supervisor, pendi
 	from server.conversation_ops import _perform_combine as _conv_perform_combine
 
 	async def _handle(cmd: dict, ack=None):
-		source_id = cmd.get("source_conversation_id")
-		target_id = cmd.get("target_conversation_id")
-		if not source_id or not target_id:
-			await logger.surface_error(f"combine_command_missing_ids: {cmd}")
-			return
-		result = await _conv_perform_combine(registry, source_id, target_id, logger, pending_dir=pending_dir, backend=backend)
-		await logger.info(f"combine_command_handled: {result}")
+		try:
+			source_id = cmd.get("source_conversation_id")
+			target_id = cmd.get("target_conversation_id")
+			if not source_id or not target_id:
+				await logger.surface_error(f"combine_command_missing_ids: {cmd}")
+				supervisor.record_success()
+				return
+			result = await _conv_perform_combine(registry, source_id, target_id, logger, pending_dir=pending_dir, backend=backend)
+			await logger.info(f"combine_command_handled: {result}")
+		except asyncio.CancelledError:
+			raise
+		except Exception as exc:
+			await _report_command_failure(
+				backend, logger, supervisor, exc,
+				kind="combine",
+				notice=f"Combine failed: {exc}. The command stays queued and replays on the next service restart; check logs.",
+			)
+			raise
+		else:
+			supervisor.record_success()
 
 	if hasattr(backend, "start_combine_command_listener"):
 		await backend.start_combine_command_listener(_handle)
@@ -308,23 +335,37 @@ async def dispatch_convene_commands(registry, session_registry, backend, logger,
 	"""Watch /convene_commands for phone/Operator convene requests.
 
 	Command shape: {session_ids: [...], target: "new" | "<conv-id>", title, issued_at}.
-	The listener deletes entries after dispatch, so outcomes are recorded in the
+	The listener deletes entries after successful dispatch (a failed handler leaves
+	the entry to replay on the next restart), so outcomes are recorded in the
 	target conversation's intro message; an all-skipped convene additionally
 	notifies the phone so a no-op tap is never silent."""
 	from server.conversation_ops import _perform_convene
 
 	async def _handle(cmd: dict, ack=None):
-		if not isinstance(cmd.get("session_ids"), list) or not cmd.get("session_ids"):
-			await logger.surface_error(f"convene_command_missing_sessions: {cmd}")
-			return
-		result = await _perform_convene(registry, session_registry, cmd, logger, backend=backend, spawn_handler=spawn_handler)
-		if not result["convened"] and not result.get("resuming") and result["skipped"] and hasattr(backend, "send_text"):
-			reasons = "; ".join(f"{s['session_id'][:8]}: {s['reason']}" for s in result["skipped"])
-			try:
-				await backend.send_text(f"Convene did nothing - every selected session was skipped ({reasons}).")
-			except Exception as exc:
-				await logger.surface_error(f"convene_noop_notice_failed: {exc}")
-		await logger.info(f"convene_command_handled: {result}")
+		try:
+			if not isinstance(cmd.get("session_ids"), list) or not cmd.get("session_ids"):
+				await logger.surface_error(f"convene_command_missing_sessions: {cmd}")
+				supervisor.record_success()
+				return
+			result = await _perform_convene(registry, session_registry, cmd, logger, backend=backend, spawn_handler=spawn_handler)
+			if not result["convened"] and not result.get("resuming") and result["skipped"] and hasattr(backend, "send_text"):
+				reasons = "; ".join(f"{s['session_id'][:8]}: {s['reason']}" for s in result["skipped"])
+				try:
+					await backend.send_text(f"Convene did nothing - every selected session was skipped ({reasons}).")
+				except Exception as exc:
+					await logger.surface_error(f"convene_noop_notice_failed: {exc}")
+			await logger.info(f"convene_command_handled: {result}")
+		except asyncio.CancelledError:
+			raise
+		except Exception as exc:
+			await _report_command_failure(
+				backend, logger, supervisor, exc,
+				kind="convene",
+				notice=f"Convene failed: {exc}. The command stays queued and replays on the next service restart; check logs.",
+			)
+			raise
+		else:
+			supervisor.record_success()
 
 	if hasattr(backend, "start_convene_command_listener"):
 		await backend.start_convene_command_listener(_handle)
@@ -340,12 +381,25 @@ async def dispatch_force_end_commands(registry, backend, logger, supervisor):
 	pass-through no-op until the full listener implementation is wired.
 	"""
 	async def _handle(cmd: dict, ack=None):
-		conv_id = cmd.get("conversation_id")
-		if not conv_id:
-			await logger.surface_error(f"force_end_command_missing_id: {cmd}")
-			return
-		await handle_force_end(registry, conv_id, backend=backend, logger=logger)
-		await logger.info(f"force_end_command_handled: conv_id={conv_id}")
+		try:
+			conv_id = cmd.get("conversation_id")
+			if not conv_id:
+				await logger.surface_error(f"force_end_command_missing_id: {cmd}")
+				supervisor.record_success()
+				return
+			await handle_force_end(registry, conv_id, backend=backend, logger=logger)
+			await logger.info(f"force_end_command_handled: conv_id={conv_id}")
+		except asyncio.CancelledError:
+			raise
+		except Exception as exc:
+			await _report_command_failure(
+				backend, logger, supervisor, exc,
+				kind="force_end",
+				notice=f"End conversation failed for {cmd.get('conversation_id')}: {exc}. The command stays queued and replays on the next service restart.",
+			)
+			raise
+		else:
+			supervisor.record_success()
 
 	if hasattr(backend, "start_force_end_command_listener"):
 		await backend.start_force_end_command_listener(_handle)
@@ -362,17 +416,30 @@ async def dispatch_spawn_commands(spawn_handler, backend, logger, supervisor):
 	"""
 
 	async def _handle(cmd: dict, ack=None):
-		cmd_type = cmd.get("type")
-		if cmd_type == "fresh":
-			await spawn_handler.handle_fresh(cmd)
-		elif cmd_type == "resume":
-			await spawn_handler.handle_resume(cmd)
-		elif cmd_type == "resume_session":
-			await spawn_handler.handle_resume_session(cmd)
+		try:
+			cmd_type = cmd.get("type")
+			if cmd_type == "fresh":
+				await spawn_handler.handle_fresh(cmd)
+			elif cmd_type == "resume":
+				await spawn_handler.handle_resume(cmd)
+			elif cmd_type == "resume_session":
+				await spawn_handler.handle_resume_session(cmd)
+			else:
+				await logger.surface_error(f"spawn_command_unknown_type: {cmd_type}")
+				supervisor.record_success()
+				return
+			await logger.info(f"spawn_command_handled: type={cmd_type}")
+		except asyncio.CancelledError:
+			raise
+		except Exception as exc:
+			await _report_command_failure(
+				backend, logger, supervisor, exc,
+				kind="spawn",
+				notice=f"Spawn ({cmd.get('type')}) crashed: {exc}. The command was consumed (at-most-once) - re-issue from the phone if nothing launched.",
+			)
+			raise
 		else:
-			await logger.surface_error(f"spawn_command_unknown_type: {cmd_type}")
-			return
-		await logger.info(f"spawn_command_handled: type={cmd_type}")
+			supervisor.record_success()
 
 	if hasattr(backend, "start_spawn_command_listener"):
 		await backend.start_spawn_command_listener(_handle)

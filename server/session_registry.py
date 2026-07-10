@@ -166,6 +166,16 @@ class SessionRegistry:
 		cwd: str | None = None, event: str | None = None, in_tool: bool | None = None,
 	) -> SessionRecord:
 		rec = self._ensure(cli_session_id, source="hook")
+		if rec.state == "ended":
+			# REV-114: an explicit SessionEnd is authoritative. A straggler
+			# hook POST (Stop hook racing the end-marker sweep at session exit)
+			# must not resurrect the record - that would hide the phone Resume
+			# affordance until the sweeper falsely re-marks the session lost.
+			# A genuine new life for this id arrives as a SessionStart
+			# (record_session_start), which still resets state. "lost" is
+			# deliberately not guarded: it is the sweeper's presumption, and a
+			# live hook event is proof of life.
+			return rec
 		if cwd and not rec.cwd:
 			from server.conversation_ops import _infer_surface
 			rec.cwd = cwd
@@ -214,13 +224,22 @@ class SessionRegistry:
 	def apply_rings(self, rings: dict) -> None:
 		"""Enrich known sessions from a Watchtower snapshot; discover unknown ones.
 		A ring sighting bumps last_event_at (a second, hook-independent liveness
-		signal) but never changes state - state is the hooks' story."""
+		signal) but never changes state - state is the hooks' story. Terminal
+		(ended/lost) records are skipped entirely: a transcript ring is not
+		proof of life and must not defer retention pruning (REV-114)."""
 		for session_id, ring in (rings or {}).items():
 			if not isinstance(ring, dict):
 				continue
 			rec = self._records.get(session_id)
 			if rec is None:
 				rec = self._ensure(session_id, source="rings")
+			elif rec.state in TERMINAL_STATES:
+				# REV-114: a ring is a transcript-file sighting, not proof of
+				# life - transcripts outlive their sessions. Bumping
+				# last_event_at here would defer the retention prune for as
+				# long as Watchtower keeps sighting the file. Skip terminal
+				# records entirely (no enrichment, no mirror churn).
+				continue
 			model = ring.get("model")
 			pct = ring.get("pct")
 			if isinstance(model, str) and model:

@@ -132,14 +132,19 @@ class SupervisedListener:
 		try:
 			self._user_callback(event)
 		except Exception as exc:
+			# Deferred import: a module-level import would cycle through
+			# server.gateway.__init__ -> dispatch -> this module (mirror of
+			# firebase.py's deferred SupervisedListener imports).
+			from server.gateway.bg_tasks import _spawn_bg
 			# Schedule the error log on the event loop; we're off-loop here.
 			# Capture exc as a default arg to avoid the late-binding closure trap —
 			# by the time the lambda fires, the except block scope is gone.
 			self._loop.call_soon_threadsafe(
-				lambda _exc=exc: self._loop.create_task(
+				lambda _exc=exc: _spawn_bg(
 					self._error_logger(
 						f"listener_callback_error:{self._name}: {_exc}"
-					)
+					),
+					label=f"listener_callback_error:{self._name}",
 				)
 			)
 

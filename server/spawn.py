@@ -593,8 +593,8 @@ class SpawnHandler:
 				"prior_sender": prior_sender,
 			}],
 		}
-		self._write_pending_file(pending)
 		try:
+			self._write_pending_file(pending)
 			await self._invoke_launcher()
 		except Exception as exc:
 			await self._logger.surface_error(f"resume_session_launch_failed: {exc}")

@@ -327,3 +327,56 @@ def test_no_liveness_info_preserves_blanket_exemption():
 	reg.upsert_from_hook("s1", state="awaiting_human", detail=None, event="PreToolUse")
 	_sweep(reg)
 	assert reg.get("s1").state == "awaiting_human"
+
+def test_late_hook_event_does_not_resurrect_ended_record():
+	# REV-114: a straggler /agent_status POST (Stop hook racing the SessionEnd
+	# marker sweep) must not flip an ended record back to live - that hides the
+	# phone Resume affordance until the sweeper falsely re-marks it lost.
+	reg = _reg()
+	reg.record_session_start("sess-A", cwd="C:/Work/X")
+	reg.record_session_end("sess-A", reason="logout", ended_at="2026-07-06T11:59:00+00:00")
+	rec = reg.upsert_from_hook("sess-A", state="idle", event="Stop")
+	assert rec.state == "ended"
+	assert rec.end_reason == "logout"
+	assert rec.last_event_at == "2026-07-06T11:59:00+00:00"
+
+
+def test_hook_event_still_revives_lost_record():
+	# Complement of the ended-guard: "lost" is the sweeper's presumption, and a
+	# live hook event is proof of life (pins decided semantics alongside the
+	# existing test_revival_after_lost).
+	reg = _reg()
+	rec = reg.record_session_start("sess-A", cwd="C:/Work/X")
+	rec.state = "lost"
+	rec.end_reason = "presumed-dead"
+	out = reg.upsert_from_hook("sess-A", state="active")
+	assert out.state == "active"
+	assert out.end_reason is None
+
+
+def test_ring_sighting_leaves_terminal_record_untouched():
+	# REV-114: a transcript ring is a file sighting, not proof of life - it
+	# must not refresh last_event_at (which would defer pruning) nor enrich.
+	reg = _reg()
+	reg.record_session_start("sess-A", cwd="C:/Work/X")
+	reg.record_session_end("sess-A", reason="logout", ended_at="2026-07-06T10:00:00+00:00")
+	reg.apply_rings({"sess-A": {"pct": 50.0, "model": "opus"}})
+	rec = reg.get("sess-A")
+	assert rec.last_event_at == "2026-07-06T10:00:00+00:00"
+	assert rec.model is None
+	assert rec.state == "ended"
+
+
+def test_ringed_terminal_record_still_prunes_at_retention():
+	# The full REV-114(b) scenario: end -> ring sightings -> sweep past the
+	# retention horizon must prune anyway.
+	reg = SessionRegistry(now=lambda: "2026-07-06T12:00:00+00:00")
+	reg.record_session_start("sess-A", cwd="C:/Work/X")
+	reg.record_session_end("sess-A", reason="logout", ended_at="2026-07-06T12:00:00+00:00")
+	reg.apply_rings({"sess-A": {"pct": 10.0}})
+	import datetime as _dt
+	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
+	pruned = reg.sweep(now_ts=last + 73 * 3600, lost_after_seconds=900,
+		retention_seconds=72 * 3600, rings_fresh=True, ring_ids={"sess-A"})
+	assert pruned == ["sess-A"]
+	assert reg.get("sess-A") is None

@@ -178,6 +178,49 @@ async def test_supervised_listener_swallows_user_callback_exceptions(fake_regist
 
 
 @pytest.mark.asyncio
+async def test_listener_callback_error_log_routes_through_spawn_bg(fake_registrations, monkeypatch):
+	"""REV-105: the off-thread error-log bounce must go through _spawn_bg
+	(strong ref + logged failure), not a bare loop.create_task the loop only
+	weak-references."""
+	import server.gateway.bg_tasks as bg_tasks_mod
+
+	registrations, last_callback = fake_registrations
+	messages, log = _logger_collector()
+	loop = asyncio.get_running_loop()
+
+	labels: list[str] = []
+	real_spawn = bg_tasks_mod._spawn_bg
+
+	def _spy(coro, *, label):
+		labels.append(label)
+		return real_spawn(coro, label=label)
+
+	monkeypatch.setattr(bg_tasks_mod, "_spawn_bg", _spy)
+
+	def _bad_callback(_event):
+		raise RuntimeError("boom")
+
+	supervisor = SupervisedListener(
+		name="bad2",
+		path="x",
+		callback=_bad_callback,
+		error_logger=log,
+		loop=loop,
+		watchdog_interval_seconds=0.05,
+	)
+	supervisor.start()
+	await asyncio.sleep(0.1)
+
+	last_callback[0]("event")
+	await asyncio.sleep(0.05)
+
+	assert labels == ["listener_callback_error:bad2"]
+	assert any("listener_callback_error:bad2" in m for m in messages)
+
+	await supervisor.stop()
+
+
+@pytest.mark.asyncio
 async def test_loop_supervisor_resets_on_success():
 	messages, log = _logger_collector()
 

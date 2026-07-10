@@ -707,11 +707,21 @@ async def _perform_convene(registry, session_registry, cmd: dict, logger, backen
 		conv_id = target
 		result["conversation_id"] = conv_id
 
+	def _reserve_target_id() -> str:
+		# Reserve the id without materializing (REV-115): the resume prompt
+		# must embed a real conversation id BEFORE the fallible launch, but an
+		# all-failed convene must leave no orphan Active conversation, so
+		# creation is deferred to _ensure_target() after a launch succeeds.
+		nonlocal conv_id
+		if conv_id is None:
+			conv_id = "conv-" + uuid.uuid4().hex
+		return conv_id
+
 	def _ensure_target():
-		nonlocal conv, conv_id
+		nonlocal conv
 		if conv is not None:
 			return
-		conv_id = "conv-" + uuid.uuid4().hex
+		_reserve_target_id()
 		now = time.time()
 		conv = Conversation(id=conv_id, title=title or f"Convened {len(session_ids)} agents", origin="convene")
 		conv.created_at = now
@@ -741,7 +751,7 @@ async def _perform_convene(registry, session_registry, cmd: dict, logger, backen
 			if not rec.cwd:
 				result["skipped"].append({"session_id": sid, "reason": "no cwd recorded"})
 				continue
-			_ensure_target()
+			_reserve_target_id()
 			sender = _convene_sender_for(registry, session_registry, sid)
 			prompt = (
 				f"John convened you (by resume) into conversation {conv_id}. "
@@ -757,6 +767,11 @@ async def _perform_convene(registry, session_registry, cmd: dict, logger, backen
 			if not ok:
 				result["skipped"].append({"session_id": sid, "reason": "resume launch failed"})
 				continue
+			# Materialize only after the launch succeeded (REV-115): the agent
+			# takes seconds to start, and the conversation must exist before
+			# its join_conversation(ref=...) lands - immediately after launch
+			# is early enough and never orphans on an all-failed convene.
+			_ensure_target()
 			async with conv.lock:
 				if sid not in conv.members_active:
 					await _add_member(registry, conv_id, sid, sender, rec.cwd, backend=backend)
@@ -765,7 +780,10 @@ async def _perform_convene(registry, session_registry, cmd: dict, logger, backen
 		sender = _convene_sender_for(registry, session_registry, sid)
 		cwd = rec.cwd or ""
 		bound_id = registry.session_to_conversation_id.get(sid)
-		if conv_id is not None and bound_id == conv_id:
+		# conv (not conv_id) is the materialization test: a reserved-but-unmade
+		# id from a failed resume can never equal a real binding, and the body
+		# below dereferences conv.
+		if conv is not None and bound_id == conv_id:
 			member = conv.members_active.get(sid)
 			if member is None:
 				async with conv.lock:

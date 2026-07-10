@@ -338,8 +338,8 @@ async def test_listener_callback_never_calls_run_in_executor(monkeypatch):
 	sup.callback(_Event("put", "/-Nbridge1", cmd))
 
 	fake_loop.run_in_executor.assert_not_called()
-	assert fake_loop.call_soon_threadsafe.call_count >= 2, \
-		"both the dispatch and the delete must bounce via call_soon_threadsafe"
+	assert fake_loop.call_soon_threadsafe.call_count == 1, \
+		"the dispatch (which owns the post-success delete) must bounce via call_soon_threadsafe"
 
 
 @pytest.mark.asyncio
@@ -360,3 +360,85 @@ async def test_schedule_command_delete_bridges_from_a_foreign_thread(monkeypatch
 	from server import firebase as fb_module
 	assert any(c.args == ("combine_commands/cmd-x",) for c in fb_module.db.reference.call_args_list)
 	fb_module.db.reference.return_value.delete.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_command_deleted_only_after_handler_completes(monkeypatch):
+	"""REV-105: at-least-once was illusory - the delete used to be scheduled at
+	task-creation time, racing the handler. It must run only after the handler
+	returns cleanly."""
+	from datetime import datetime, timezone
+
+	loop = asyncio.get_running_loop()
+	be = _make_backend(monkeypatch, loop)
+
+	from server import firebase as fb_module
+	order: list[tuple] = []
+
+	def _ref(path):
+		m = MagicMock()
+		m.delete.side_effect = lambda p=path: order.append(("delete", p))
+		return m
+
+	fb_module.db.reference.side_effect = _ref
+
+	import server.firebase_supervisor as sup_mod
+	_FakeSupervised.instances.clear()
+	monkeypatch.setattr(sup_mod, "SupervisedListener", _FakeSupervised)
+
+	handler_gate = asyncio.Event()
+
+	async def _handler(cmd, ack=None):
+		await handler_gate.wait()
+		order.append(("handler", cmd["source_conversation_id"]))
+
+	await be.start_combine_command_listener(_handler)
+	sup = _FakeSupervised.instances[0]
+
+	cmd = {"source_conversation_id": "a", "target_conversation_id": "b",
+		"issued_at": datetime.now(timezone.utc).isoformat()}
+	sup.callback(_Event("put", "/-Nok1", cmd))
+	await asyncio.sleep(0.05)  # handler task is parked on the gate
+	assert order == [], "delete must not fire while the handler is still running"
+
+	handler_gate.set()
+	await asyncio.sleep(0.05)  # drain handler completion + to_thread delete
+	assert order[0] == ("handler", "a")
+	assert order[1] == ("delete", "combine_commands/-Nok1")
+
+
+@pytest.mark.asyncio
+async def test_failed_handler_leaves_command_for_restart_replay(monkeypatch):
+	"""REV-105: a raising handler must leave the command entry in Firebase so
+	the next restart's snapshot re-delivers it (true at-least-once)."""
+	from datetime import datetime, timezone
+
+	loop = asyncio.get_running_loop()
+	be = _make_backend(monkeypatch, loop)
+
+	from server import firebase as fb_module
+	deletes: list[str] = []
+
+	def _ref(path):
+		m = MagicMock()
+		m.delete.side_effect = lambda p=path: deletes.append(p)
+		return m
+
+	fb_module.db.reference.side_effect = _ref
+
+	import server.firebase_supervisor as sup_mod
+	_FakeSupervised.instances.clear()
+	monkeypatch.setattr(sup_mod, "SupervisedListener", _FakeSupervised)
+
+	async def _handler(cmd, ack=None):
+		raise RuntimeError("combine exploded")
+
+	await be.start_combine_command_listener(_handler)
+	sup = _FakeSupervised.instances[0]
+
+	cmd = {"source_conversation_id": "a", "target_conversation_id": "b",
+		"issued_at": datetime.now(timezone.utc).isoformat()}
+	sup.callback(_Event("put", "/-Nfail1", cmd))
+	await asyncio.sleep(0.05)
+
+	assert deletes == [], "failed handler must not delete the command entry"

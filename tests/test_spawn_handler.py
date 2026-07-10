@@ -849,3 +849,29 @@ async def test_launch_resume_agent_no_login(tmp_path):
 
 	assert ok is False
 	assert _find_pending_files(cfg) == []
+
+
+@pytest.mark.asyncio
+async def test_launch_resume_agent_pending_file_write_failure_returns_false(tmp_path):
+	"""launch_resume_agent's contract is returns-bool-never-raises: a pending-file
+	write failure (AV-locked logs dir) must surface as resume_session_launch_failed
+	plus False, not raise through to convene's loop (double-launch-on-replay risk)."""
+	from server.spawn import SpawnHandler
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	registry = Registry()
+
+	with patch.object(SpawnHandler, "_user_has_interactive_session", new=AsyncMock(return_value=True)), \
+		patch.object(SpawnHandler, "_write_pending_file", side_effect=OSError("locked")):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		ok = await handler.launch_resume_agent(
+			session_id="s-x", surface="windows", cwd=str(spawn_root / "myproject"),
+			prompt="p", prior_sender=None,
+		)
+
+	assert ok is False
+	assert _find_pending_files(cfg) == []
+	log_contents = Path(cfg.log_path).read_text(encoding="utf-8")
+	assert "resume_session_launch_failed" in log_contents

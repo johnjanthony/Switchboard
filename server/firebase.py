@@ -951,12 +951,13 @@ class FirebaseBackend(
 		  older than COMMAND_TTL_SECONDS are deleted WITH a phone-visible
 		  notice, never executed and never silently dropped (decided
 		  2026-06-11). Missing/unparseable stamps fail open (dispatch).
-		- Delivery is at-least-once for idempotent handlers (combine/force_end,
-		  which consume Ended state): the delete is scheduled after dispatch,
-		  so a crash in between re-delivers on the next snapshot; a per-run
-		  processed-id set dedupes redeliveries within this process. A
-		  deduped redelivery is not re-deleted; if its original delete
-		  failed it lingers until the next restart's TTL pass.
+		- Delivery is at-least-once for idempotent handlers (combine/
+		  force_end/convene): the delete runs only after the handler completes
+		  without raising, so a crash or a raising handler leaves the entry to
+		  re-deliver on the next restart snapshot; a per-run processed-id set
+		  dedupes redeliveries within this process. A deduped redelivery is
+		  not re-deleted; a lingering entry is executed or TTL-dropped by a
+		  later restart.
 		- delete_before_dispatch=True switches to at-most-once for a
 		  NON-idempotent handler (spawn mints a conversation and launches a
 		  process every run, so a replay double-spawns). The command is
@@ -1002,13 +1003,20 @@ class FirebaseBackend(
 					lambda: _spawn_bg(_delete_then_handle(), label=f"fb_command:{node}/{cmd_id}"),
 				)
 				return
-			# Route via _spawn_bg so a hanging or raising handler shows up
-			# in logs and the task isn't GC-eligible mid-execution.
-			coro = handler(cmd)
+			# Route via _spawn_bg so a hanging or raising handler shows up in
+			# logs and the task isn't GC-eligible mid-execution. The delete runs
+			# only AFTER the handler returns cleanly (REV-105): a raising
+			# handler leaves the command entry in Firebase, so the next
+			# restart's snapshot re-delivers it (real at-least-once). Within
+			# this process the `processed` set suppresses a replay; a
+			# re-delivered entry older than the TTL takes the stale branch
+			# above instead.
+			async def _handle_then_delete(c=cmd, cid=cmd_id):
+				await handler(c)
+				await asyncio.to_thread(lambda: db.reference(f"{node}/{cid}").delete())
 			self._loop.call_soon_threadsafe(
-				lambda c=coro: _spawn_bg(c, label=f"fb_command:{node}/{cmd_id}"),
+				lambda: _spawn_bg(_handle_then_delete(), label=f"fb_command:{node}/{cmd_id}"),
 			)
-			self._schedule_command_delete(node, cmd_id)
 
 		def _on_event(event):
 			if event.event_type != "put" or not event.data:
