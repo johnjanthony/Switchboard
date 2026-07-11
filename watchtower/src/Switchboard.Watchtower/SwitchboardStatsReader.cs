@@ -30,7 +30,6 @@ internal sealed class SwitchboardStatsReader
 			var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
 			return SwitchboardStats.Parse(json);
 		}
-		catch (OperationCanceledException) { throw; }
 		catch (Exception ex) { _error?.Invoke("switchboard-stats", ex); return null; }
 	}
 }

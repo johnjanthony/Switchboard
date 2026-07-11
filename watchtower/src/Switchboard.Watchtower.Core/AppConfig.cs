@@ -1,9 +1,16 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Threading;
 
 namespace Switchboard.Watchtower.Core;
 
 public sealed class AppConfig
 {
+	[JsonIgnore] public bool LoadDegraded { get; private set; }
+
+	const int MaxReadRetries = 3;
+	const int ReadRetryDelayMs = 100;
+
 	public int PollIntervalSeconds { get; set; } = 60;
 	public int ActiveWindowMinutes { get; set; } = 5;
 	public int LiveThresholdSeconds { get; set; } = 90;
@@ -44,24 +51,30 @@ public sealed class AppConfig
 
 	public static AppConfig LoadFrom(string path)
 	{
-		try
+		if (!File.Exists(path)) return new AppConfig();               // absent -> defaults, savable
+		for (int attempt = 0; attempt <= MaxReadRetries; attempt++)
 		{
-			if (!File.Exists(path)) return new AppConfig();
-			var json = File.ReadAllText(path);
-			return JsonSerializer.Deserialize<AppConfig>(json, Options) ?? new AppConfig();
+			try
+			{
+				var parsed = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(path), Options);
+				return parsed ?? new AppConfig { LoadDegraded = true };  // null parse == do not adopt defaults over it
+			}
+			catch (IOException) when (attempt < MaxReadRetries) { Thread.Sleep(ReadRetryDelayMs); }
+			catch { return new AppConfig { LoadDegraded = true }; }      // present but unreadable/unparseable
 		}
-		catch
-		{
-			return new AppConfig();
-		}
+		return new AppConfig { LoadDegraded = true };                    // IO retries exhausted
 	}
 
-	public void Save() => SaveTo(DefaultPath);
+	public bool Save() => SaveTo(DefaultPath);
 
-	public void SaveTo(string path)
+	public bool SaveTo(string path)
 	{
+		if (LoadDegraded) return false;                              // never clobber a config we could not read
 		Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-		File.WriteAllText(path, JsonSerializer.Serialize(this, Options));
+		var tmp = path + ".tmp";
+		File.WriteAllText(tmp, JsonSerializer.Serialize(this, Options));
+		File.Move(tmp, path, overwrite: true);                       // atomic replace; handles first-write
+		return true;
 	}
 }
 

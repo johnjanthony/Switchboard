@@ -114,7 +114,7 @@ Ordering rationale: REV-005 first (multiplier); REV-201 before REV-203 so messag
   - REV-206: declining sign-in shows the error + retry; retry recovers.
   - REV-207: pinch-zoom is smooth (no per-frame reparse).
   - REV-208: a background message to a previously-open, now-unselected conversation does not zero its unread.
-- **Emulator hygiene:** re-run `adb -s <serial> shell getprop ro.build.characteristics` immediately before every targeted `adb install`/`shell` (the phone and wear apps share `applicationId` `com.redpoint.switchboard`, so a wrong-target install silently clobbers the other app); confirm `dumpsys package … | grep lastUpdateTime` advanced on the intended device to prove a real reinstall versus a relaunch.
+- **Emulator hygiene:** re-run `adb -s <serial> shell getprop ro.build.characteristics` immediately before every targeted `adb install`/`shell` (the phone and wear apps share `applicationId` `io.github.johnjanthony.switchboard`, so a wrong-target install silently clobbers the other app); confirm `dumpsys package … | grep lastUpdateTime` advanced on the intended device to prove a real reinstall versus a relaunch.
 
 ## Conventions
 

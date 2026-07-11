@@ -29,27 +29,37 @@ Severity colors: green below 50%, amber 50 to 80%, red above 80%.
 - Claude Code, which writes session transcripts under `~/.claude/projects/`.
 - WSL is optional; if present, sessions in running distros are surfaced automatically.
 
-## Build and run
+All commands run from the `watchtower/` directory (the repo root has no top-level solution).
 
-From the `watchtower/` directory (the repo root has no top-level solution):
+**Dev run (Debug, for quick iteration):**
 
 ```
 dotnet run --project src\Switchboard.Watchtower\Switchboard.Watchtower.csproj
 ```
 
-Run the tests (the pure logic is fully unit-tested):
+**Tests** (the pure logic is fully unit-tested):
 
 ```
 dotnet test
 ```
 
-Publish a portable, self-contained single EXE:
+### Release build (the widget you actually run)
+
+The day-to-day widget is a portable, self-contained single EXE at `publish\Switchboard.Watchtower.exe`. Build it with:
 
 ```
 dotnet publish src\Switchboard.Watchtower\Switchboard.Watchtower.csproj -c Release -r win-x64 -p:PublishSingleFile=true --self-contained true -o publish
 ```
 
-Only one instance runs at a time (enforced by a named mutex). To pick up a rebuild, quit the running instance first (its EXE is otherwise locked).
+Then launch that EXE directly:
+
+```
+publish\Switchboard.Watchtower.exe
+```
+
+On first launch it registers itself under `HKCU\...\Run` (autostart is on by default), so after a reboot Windows relaunches this same published EXE.
+
+**To update the running Release widget** (e.g. to pick up a rebuild): quit the running instance first via the tray icon's **Quit** — only one instance runs at a time (enforced by a named mutex), and the running EXE is otherwise locked — then re-run the `dotnet publish` above and relaunch `publish\Switchboard.Watchtower.exe`.
 
 ## Configuration
 

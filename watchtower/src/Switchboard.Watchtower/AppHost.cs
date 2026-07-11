@@ -18,12 +18,13 @@ internal sealed class AppHost : IDisposable
 	readonly QuotaService _quotaService;
 	readonly IDistroLister _distroLister = new WslDistroLister();
 	readonly string _logPath;
-	volatile bool _scanning;
+	readonly ScanGate _scanGate = new(TimeSpan.FromMinutes(2));
 	volatile bool _quotaScanning;
 	readonly System.Windows.Forms.Timer _switchboardTimer = new();
 	readonly SwitchboardStatsReader? _switchboardReader;
 	volatile bool _switchboardScanning;
 	readonly WidgetSnapshotPusher? _snapshotPusher;
+	volatile bool _snapshotPushing;
 	IReadOnlyList<SessionModel> _lastSessions = Array.Empty<SessionModel>();
 	QuotaUsage? _lastQuota;
 	IReadOnlyDictionary<string, string> _lastTitleStates = new Dictionary<string, string>();
@@ -131,9 +132,8 @@ internal sealed class AppHost : IDisposable
 	// Fire-and-forget background scan; results marshaled back to the UI thread.
 	void Scan()
 	{
-		if (_scanning) return;
-		_scanning = true;
 		var now = DateTime.UtcNow;
+		if (!_scanGate.TryEnter(now)) return;
 		var cfg = _config;
 
 		Task.Run(() =>
@@ -186,7 +186,7 @@ internal sealed class AppHost : IDisposable
 			return (result, lastActivityUtc, titleStates);
 		}).ContinueWith(t =>
 		{
-			_scanning = false;
+			_scanGate.Exit();
 			if (t.IsFaulted) { LogError("scan-continuation", t.Exception!); return; }
 			ApplyToUi(t.Result.Item1, t.Result.Item2, t.Result.Item3);
 		}, TaskScheduler.FromCurrentSynchronizationContext());
@@ -199,30 +199,15 @@ internal sealed class AppHost : IDisposable
 		_panel.UpdateSessions(sessions, light, lastActivityUtc);
 
 		// Tray ring gauge mirrors the busiest session (same rule the widget's % label uses).
-		bool anyError = false;
-		double max = 0;
-		Severity maxSev = Severity.Green;
-		foreach (var s in sessions)
-		{
-			anyError |= s.IsError;
-			if (!s.IsError && s.Pct >= max) { max = s.Pct; maxSev = s.Severity; }
-		}
-		_tray.SetGauge(max, anyError, maxSev, light);
+		var gauge = TrayGauge.From(sessions);
+		_tray.SetGauge(gauge.Max, gauge.AnyError, gauge.MaxSeverity, light);
 
 		_lastSessions = sessions;
 		_lastTitleStates = titleStates;
 		PushSnapshot();
 	}
 
-	void LogError(string source, Exception ex)
-	{
-		try
-		{
-			Directory.CreateDirectory(Path.GetDirectoryName(_logPath)!);
-			File.AppendAllText(_logPath, $"{DateTime.Now:s} [{source}] {ex.GetType().Name}: {ex.Message}{Environment.NewLine}");
-		}
-		catch { /* logging must never crash the widget */ }
-	}
+	void LogError(string source, Exception ex) => WatchtowerLog.Error(source, ex, _logPath);
 
 	// Fire-and-forget quota poll; result marshaled back to the UI thread. Keeps last-known data on
 	// any non-Ok status (rate-limited / auth / failure) and simply waits for the next interval.
@@ -272,10 +257,12 @@ internal sealed class AppHost : IDisposable
 	// tick is cheap. Null pusher == Switchboard integration disabled.
 	void PushSnapshot()
 	{
-		if (_snapshotPusher is null) return;
+		if (_snapshotPusher is null || _snapshotPushing) return;
+		_snapshotPushing = true;
 		var payload = WidgetSnapshotBuilder.Build(_lastSessions, _lastQuota, DateTimeOffset.Now, _lastTitleStates);
 		_snapshotPusher.PushAsync(payload, CancellationToken.None).ContinueWith(t =>
 		{
+			_snapshotPushing = false;
 			if (t.IsFaulted) LogError("widget-snapshot-push", t.Exception!);
 		}, TaskScheduler.Default);
 	}
@@ -340,17 +327,13 @@ internal sealed class AppHost : IDisposable
 		else { _quotaTimer.Stop(); _countdownTimer.Stop(); }
 	}
 
-	void LogInfo(string source, string message)
-	{
-		try
-		{
-			Directory.CreateDirectory(Path.GetDirectoryName(_logPath)!);
-			File.AppendAllText(_logPath, $"{DateTime.Now:s} [{source}] {message}{Environment.NewLine}");
-		}
-		catch { /* logging must never crash the widget */ }
-	}
+	void LogInfo(string source, string message) => WatchtowerLog.Info(source, message, _logPath);
 
-	void SafeSaveConfig() { try { _config.Save(); } catch (Exception ex) { LogError("config-save", ex); } }
+	void SafeSaveConfig()
+	{
+		try { if (!_config.Save()) LogInfo("config-save", "skipped: config load was degraded; not overwriting"); }
+		catch (Exception ex) { LogError("config-save", ex); }
+	}
 
 	// Open the Operator dashboard in the default browser. conversationId, when supplied, deep-links via #conv=.
 	void OpenDashboard(string? conversationId = null)

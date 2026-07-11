@@ -5,4 +5,7 @@
 		<Nullable>enable</Nullable>
 		<RootNamespace>Switchboard.Watchtower.Core</RootNamespace>
 	</PropertyGroup>
+	<ItemGroup>
+		<InternalsVisibleTo Include="Switchboard.Watchtower.Core.Tests" />
+	</ItemGroup>
 </Project>

@@ -71,4 +71,32 @@ public class TranscriptTitleTests
 		}
 		finally { File.Delete(path); }
 	}
+
+	[Fact]
+	public void Partial_trailing_line_is_not_consumed_until_its_newline_arrives()
+	{
+		var path = Path.Combine(Path.GetTempPath(), "cctitle-partial-" + Guid.NewGuid().ToString("N") + ".jsonl");
+		File.WriteAllText(path,
+			"{\"type\":\"ai-title\",\"sessionId\":\"p1\",\"aiTitle\":\"First\"}\n" +
+			"{\"type\":\"ai-title\",\"sessionId\":\"p1\",\"aiTitle\":\"Second\"}");   // no trailing newline
+		try
+		{
+			Assert.Equal("First", TranscriptTitles.Read(path, "p1").Name);           // partial line skipped
+			File.AppendAllText(path, "\n");                                          // complete the line
+			Assert.Equal("Second", TranscriptTitles.Read(path, "p1").Name);          // now consumed
+		}
+		finally { File.Delete(path); }
+	}
+
+	[Fact]
+	public void Cache_is_bounded()
+	{
+		for (int i = 0; i < TranscriptTitles.MaxCacheEntries + 50; i++)
+		{
+			var path = Path.Combine(Path.GetTempPath(), $"cctitle-bound-{i}-" + Guid.NewGuid().ToString("N") + ".jsonl");
+			File.WriteAllText(path, $"{{\"type\":\"ai-title\",\"sessionId\":\"b{i}\",\"aiTitle\":\"T{i}\"}}\n");
+			try { TranscriptTitles.Read(path, $"b{i}"); } finally { File.Delete(path); }
+		}
+		Assert.True(TranscriptTitles.CacheEntryCount <= TranscriptTitles.MaxCacheEntries);
+	}
 }

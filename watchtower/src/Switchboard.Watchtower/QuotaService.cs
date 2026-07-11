@@ -121,6 +121,10 @@ internal sealed class QuotaService
 
 			using var p = Process.Start(psi);
 			if (p is null) return;
+			// Drain both streams concurrently; unread redirected output over the ~4KB pipe buffer
+			// would otherwise block the child and stall this call for the full 30s timeout.
+			var drainOut = p.StandardOutput.ReadToEndAsync();
+			var drainErr = p.StandardError.ReadToEndAsync();
 			p.StandardInput.Close();
 			if (!p.WaitForExit(30000)) { try { p.Kill(true); } catch { /* already gone */ } }
 		}
@@ -142,8 +146,10 @@ internal sealed class QuotaService
 				};
 				using var p = Process.Start(psi);
 				if (p is null) continue;
-				string output = p.StandardOutput.ReadToEnd();
-				p.WaitForExit(5000);
+				var outTask = p.StandardOutput.ReadToEndAsync();
+				var errTask = p.StandardError.ReadToEndAsync();   // drained so it can't block; unused
+				if (!p.WaitForExit(5000)) { try { p.Kill(true); } catch { /* already gone */ } continue; }
+				string output = outTask.Result;
 				if (p.ExitCode == 0)
 				{
 					var first = output.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.Length > 0);

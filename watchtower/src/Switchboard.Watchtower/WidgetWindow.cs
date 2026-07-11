@@ -54,6 +54,7 @@ internal sealed class WidgetWindow : Form
 	bool _embedded;                                // true once reparented as a WS_CHILD of the taskbar
 	readonly uint _taskbarCreatedMsg;
 	readonly Native.WinEventProc _winEventCb; // kept in a field so the GC cannot collect the callback
+	System.Drawing.Rectangle _lastTbRect = System.Drawing.Rectangle.Empty;  // taskbar rect at last reposition
 
 	public event Action<int>? PositionChanged;    // new screen X persisted by the host
 	public Action<string>? Diagnostic;             // optional sink for embed/lifecycle diagnostics
@@ -100,13 +101,18 @@ internal sealed class WidgetWindow : Form
 		if (_taskbar != IntPtr.Zero)
 			TryEmbed();
 
-		if (_winEventHook == IntPtr.Zero && _taskbar != IntPtr.Zero)
+		// The hook dies with explorer's thread but the handle stays non-zero, so always
+		// unhook before re-registering against the (possibly new) taskbar thread.
+		if (_winEventHook != IntPtr.Zero) { Native.UnhookWinEvent(_winEventHook); _winEventHook = IntPtr.Zero; }
+		if (_taskbar != IntPtr.Zero)
 		{
 			uint thread = Native.GetWindowThreadProcessId(_taskbar, out _);
 			_winEventHook = Native.SetWinEventHook(
 				Native.EVENT_OBJECT_LOCATIONCHANGE, Native.EVENT_OBJECT_LOCATIONCHANGE,
 				IntPtr.Zero, _winEventCb, 0, thread, Native.WINEVENT_OUTOFCONTEXT);
 		}
+		// Explorer-restart recovery of the embedded child otherwise rides the implicit
+		// WinForms child-HWND recreation path (TaskbarCreated does not reach an embedded child).
 		PositionOverTaskbar();
 	}
 
@@ -118,12 +124,13 @@ internal sealed class WidgetWindow : Form
 	{
 		if (_embedded && Native.GetParent(Handle) == _taskbar) return;
 
-		uint ex = (uint)Native.GetWindowLongPtr(Handle, Native.GWL_EXSTYLE);
-		Native.SetWindowLongPtr(Handle, Native.GWL_EXSTYLE,
-			(nint)(ex | (uint)Native.WS_EX_TOOLWINDOW | (uint)Native.WS_EX_NOACTIVATE));
+		uint origEx = (uint)Native.GetWindowLongPtr(Handle, Native.GWL_EXSTYLE);
+		uint origStyle = (uint)Native.GetWindowLongPtr(Handle, Native.GWL_STYLE);
 
-		uint style = (uint)Native.GetWindowLongPtr(Handle, Native.GWL_STYLE);
-		uint newStyle = (style & ~unchecked((uint)Native.WS_POPUP)) | (uint)Native.WS_CHILD | (uint)Native.WS_CLIPSIBLINGS;
+		Native.SetWindowLongPtr(Handle, Native.GWL_EXSTYLE,
+			(nint)(origEx | (uint)Native.WS_EX_TOOLWINDOW | (uint)Native.WS_EX_NOACTIVATE));
+
+		uint newStyle = (origStyle & ~unchecked((uint)Native.WS_POPUP)) | (uint)Native.WS_CHILD | (uint)Native.WS_CLIPSIBLINGS;
 		Native.SetWindowLongPtr(Handle, Native.GWL_STYLE, (nint)newStyle);
 
 		// Force the frame change to take effect before reparenting (the Rust app gets away without this
@@ -132,8 +139,19 @@ internal sealed class WidgetWindow : Form
 			Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_FRAMECHANGED | Native.SWP_NOACTIVATE);
 
 		Native.SetParent(Handle, _taskbar);
-		_embedded = Native.GetParent(Handle) == _taskbar;
-		if (_embedded) TopMost = false; // meaningless and counter-productive for a child window
+		_embedded = Native.GetParent(Handle) == _taskbar;  // reliable success test; SetParent's NULL return is ambiguous here
+		if (_embedded)
+		{
+			TopMost = false; // meaningless and counter-productive for a child window
+		}
+		else
+		{
+			// SetParent failed: restore the original styles so the top-most overlay fallback behaves correctly.
+			Native.SetWindowLongPtr(Handle, Native.GWL_EXSTYLE, (nint)origEx);
+			Native.SetWindowLongPtr(Handle, Native.GWL_STYLE, (nint)origStyle);
+			Native.SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
+				Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_FRAMECHANGED | Native.SWP_NOACTIVATE);
+		}
 
 		Diagnostic?.Invoke($"embed attempt: taskbar={_taskbar:X} embedded={_embedded} style=0x{newStyle:X8}");
 	}
@@ -169,6 +187,7 @@ internal sealed class WidgetWindow : Form
 	public void PositionOverTaskbar()
 	{
 		if (!TaskbarLocator.TryGetTaskbarRect(out var tb)) { if (!_embedded) Raise(); Render(); return; }
+		_lastTbRect = tb;
 
 		int? trayLeft = TaskbarLocator.TryGetTrayRect(out var tray) ? tray.Left : null;
 		var place = TaskbarPlacement.Compute(tb, trayLeft, Width, Height, PreferredX, _embedded);
@@ -191,8 +210,16 @@ internal sealed class WidgetWindow : Form
 
 	void OnTrayLocationChanged(IntPtr hHook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
 	{
-		try { if (IsHandleCreated) BeginInvoke(new Action(PositionOverTaskbar)); }
+		try { if (IsHandleCreated) BeginInvoke(new Action(RepositionIfTaskbarMoved)); }
 		catch { /* shutting down */ }
+	}
+
+	// LOCATIONCHANGE is scoped to the whole explorer thread, so it fires per tooltip/animation.
+	// Only reposition (and rebuild the layered bitmap) when the taskbar rect actually changed.
+	void RepositionIfTaskbarMoved()
+	{
+		if (TaskbarLocator.TryGetTaskbarRect(out var tb) && tb == _lastTbRect) return;
+		PositionOverTaskbar();
 	}
 
 	protected override void WndProc(ref Message m)
