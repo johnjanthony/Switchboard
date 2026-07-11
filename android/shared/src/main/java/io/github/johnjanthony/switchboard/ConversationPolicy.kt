@@ -2,6 +2,7 @@ package io.github.johnjanthony.switchboard
 
 import io.github.johnjanthony.switchboard.network.ConversationMember
 import io.github.johnjanthony.switchboard.network.ConversationRow
+import io.github.johnjanthony.switchboard.network.ConversationSummary
 import io.github.johnjanthony.switchboard.network.WidgetRing
 
 /**
@@ -126,3 +127,13 @@ fun listRowContextRing(members: List<ConversationMember>, ringsBySessionId: Map<
 	val top = members.mapNotNull { ringForMember(it, ringsBySessionId) }.maxByOrNull { it.pct }
 	return top?.takeIf { it.pct > 0.50 }
 }
+
+/**
+ * Conversations offered as a combine/spawn/convene target: active only, with an optional
+ * conversation to exclude (the combine source). Ended conversations are never valid targets
+ * (the server rejects them after the round-trip), so they are filtered out of the pickers
+ * (REV-204). Filter only where a list feeds a picker; other call sites still need ended
+ * conversations for title lookups.
+ */
+fun pickerTargets(all: List<ConversationSummary>, excludeId: String? = null): List<ConversationSummary> =
+	all.filter { it.state == "active" && it.id != excludeId }

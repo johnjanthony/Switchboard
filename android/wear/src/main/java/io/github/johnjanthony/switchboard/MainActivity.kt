@@ -2,6 +2,7 @@ package io.github.johnjanthony.switchboard
 
 import android.Manifest
 import android.app.Activity
+import android.net.Uri
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -91,11 +92,19 @@ fun WearApp(viewModel: MainViewModel, pendingDeepLinkConvId: MutableState<String
 	val navController = rememberSwipeDismissableNavController()
 	val conversationRows by viewModel.conversationRows.collectAsState()
 
-	// Automatic Google Sign-In on first start.
-	LaunchedEffect(Unit) {
-		if (FirebaseAuth.getInstance().currentUser == null) {
-			GoogleAuthHelper.signInWithGoogle(context)
-		}
+	// Automatic Google Sign-In on first start, with a retryable failure state (REV-206).
+	var authState by remember {
+		mutableStateOf(
+			if (FirebaseAuth.getInstance().currentUser != null) AuthUiState.SIGNED_IN
+			else AuthUiState.IN_PROGRESS
+		)
+	}
+	var retryTick by remember { mutableStateOf(0) }
+	LaunchedEffect(retryTick) {
+		if (FirebaseAuth.getInstance().currentUser != null) { authState = AuthUiState.SIGNED_IN; return@LaunchedEffect }
+		authState = AuthUiState.IN_PROGRESS
+		val ok = GoogleAuthHelper.signInWithGoogle(context)
+		authState = if (ok) AuthUiState.SIGNED_IN else AuthUiState.FAILED
 	}
 
 	// FCM deep-link: navigate to the conversation once it is present in the rows.
@@ -123,17 +132,16 @@ fun WearApp(viewModel: MainViewModel, pendingDeepLinkConvId: MutableState<String
 				startDestination = "conversation_list"
 			) {
 				composable("conversation_list") {
-					ConversationListScreen(viewModel, navController)
+					ConversationListScreen(viewModel, navController, authState, { retryTick++ })
 				}
 				composable("message_view/{convId}") { backStackEntry ->
 					val convId = backStackEntry.arguments?.getString("convId") ?: ""
 					MessageViewScreen(convId, viewModel, navController)
 				}
-				composable("reply/{convId}/{requestId}/{sender}") { backStackEntry ->
+				composable("reply/{convId}/{requestId}") { backStackEntry ->
 					val convId = backStackEntry.arguments?.getString("convId") ?: ""
 					val requestId = backStackEntry.arguments?.getString("requestId") ?: ""
-					val sender = backStackEntry.arguments?.getString("sender") ?: ""
-					ReplyScreen(convId, requestId, sender, viewModel, navController)
+					ReplyScreen(convId, requestId, viewModel, navController)
 				}
 			}
 		}
@@ -141,10 +149,14 @@ fun WearApp(viewModel: MainViewModel, pendingDeepLinkConvId: MutableState<String
 }
 
 @Composable
-fun ConversationListScreen(viewModel: MainViewModel, navController: NavHostController) {
+fun ConversationListScreen(
+	viewModel: MainViewModel,
+	navController: NavHostController,
+	authState: AuthUiState,
+	onRetry: () -> Unit,
+) {
 	val rows by viewModel.conversationRows.collectAsState()
 	val (needsReply, others) = remember(rows) { partitionConversationsForWatch(rows.values) }
-	val signedIn = rememberFirebaseSignedIn()
 
 	val listState = rememberScalingLazyListState()
 
@@ -162,7 +174,8 @@ fun ConversationListScreen(viewModel: MainViewModel, navController: NavHostContr
 				// Never show a bare black screen: signed-out / connecting / genuinely-empty
 				// all land here with a hint instead of nothing (the message view has its
 				// own loading branch; the list needs one too).
-				item { WearListEmptyState(signedIn) }
+				val kind = emptyStateFor(needsReply.isNotEmpty() || others.isNotEmpty(), authState)
+				item { WearListEmptyState(kind, onRetry) }
 			} else {
 				if (needsReply.isNotEmpty()) {
 					item { SectionHeader("Needs reply") }
@@ -222,41 +235,30 @@ private fun ConversationRowButton(
 	)
 }
 
-/** Observe Firebase auth state reactively so the empty list can distinguish
- * "not signed in / connecting" from "signed in but no conversations". */
 @Composable
-private fun rememberFirebaseSignedIn(): Boolean {
-	val auth = remember { FirebaseAuth.getInstance() }
-	var signedIn by remember { mutableStateOf(auth.currentUser != null) }
-	DisposableEffect(auth) {
-		// IdTokenListener, not AuthStateListener: a saved-login restore notifies only
-		// id-token listeners, so an AuthStateListener can stay silent and leave this
-		// stuck at "not signed in". IdTokenListener fires on sign-in / restore / refresh.
-		val listener = FirebaseAuth.IdTokenListener { signedIn = it.currentUser != null }
-		auth.addIdTokenListener(listener)
-		onDispose { auth.removeIdTokenListener(listener) }
-	}
-	return signedIn
-}
-
-@Composable
-private fun WearListEmptyState(signedIn: Boolean) {
+private fun WearListEmptyState(kind: EmptyStateKind, onRetry: () -> Unit) {
 	Column(
 		modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 24.dp),
 		horizontalAlignment = Alignment.CenterHorizontally,
 	) {
-		Text(
-			text = if (signedIn) "No conversations" else "Connecting...",
-			style = MaterialTheme.typography.titleSmall,
-			textAlign = TextAlign.Center,
-		)
-		Text(
-			text = if (signedIn) "Conversations will appear here." else "Waiting for Google sign-in.",
-			style = MaterialTheme.typography.bodySmall,
-			color = MaterialTheme.colorScheme.onSurfaceVariant,
-			textAlign = TextAlign.Center,
-			modifier = Modifier.padding(top = 4.dp),
-		)
+		when (kind) {
+			EmptyStateKind.SIGN_IN_FAILED -> {
+				Text("Sign-in failed", style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center)
+				Button(onClick = onRetry, modifier = Modifier.padding(top = 8.dp)) { Text("Sign in") }
+			}
+			EmptyStateKind.NO_CONVERSATIONS -> {
+				Text("No conversations", style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center)
+				Text("Conversations will appear here.", style = MaterialTheme.typography.bodySmall,
+					color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center,
+					modifier = Modifier.padding(top = 4.dp))
+			}
+			else -> {
+				Text("Connecting…", style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center)
+				Text("Waiting for Google sign-in.", style = MaterialTheme.typography.bodySmall,
+					color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center,
+					modifier = Modifier.padding(top = 4.dp))
+			}
+		}
 	}
 }
 
@@ -268,7 +270,10 @@ fun MessageViewScreen(convId: String, viewModel: MainViewModel, navController: N
 	val listState = rememberScalingLazyListState()
 
 	// Opening a conversation clears its unread badge (sentinel-guarded for _admin).
-	LaunchedEffect(convId) { viewModel.selectConversation(convId) }
+	DisposableEffect(convId) {
+		viewModel.selectConversation(convId)
+		onDispose { viewModel.clearSelectedChannel() }
+	}
 
 	if (row == null) {
 		// Cold-start race or unknown conv: show a loading state, do not dead-end (F-90).
@@ -278,23 +283,23 @@ fun MessageViewScreen(convId: String, viewModel: MainViewModel, navController: N
 		return
 	}
 
-	val sortedMessages = remember(row.messages) { row.messages.sortedBy { it.second.timestamp } }
-	val answeredMsgIds = remember(sortedMessages) {
-		sortedMessages.mapNotNull { (_, m) -> m.attached_to_msg_id }.toSet()
-	}
+	// Consume the shared VM's spliced order and authoritative answered set directly; no
+	// local re-derivation (REV-205).
+	val messages = row.messages
+	val answeredMsgIds = row.answeredQuestionMsgIds
 
-	LaunchedEffect(pendingMessageId, sortedMessages.size) {
+	LaunchedEffect(pendingMessageId, messages.size) {
 		val targetId = pendingMessageId
 		if (targetId != null) {
-			val idx = sortedMessages.indexOfFirst { it.first == targetId }
+			val idx = messages.indexOfFirst { it.first == targetId }
 			if (idx >= 0) {
 				listState.scrollToItem(idx + 1)  // index 0 is the header
 				viewModel.clearPendingDeepLinkMessageId()
 			}
 			return@LaunchedEffect
 		}
-		if (sortedMessages.isNotEmpty()) {
-			listState.scrollToItem(sortedMessages.size)
+		if (messages.isNotEmpty()) {
+			listState.scrollToItem(messages.size)
 		}
 	}
 
@@ -316,11 +321,14 @@ fun MessageViewScreen(convId: String, viewModel: MainViewModel, navController: N
 					modifier = Modifier.padding(bottom = 6.dp),
 				)
 			}
-			items(sortedMessages) { (msgId, msg) ->
-				val answerable = isAnswerableQuestion(msg.type, msgId, answeredMsgIds, msg.cancelled, msg.rejected)
+			items(messages) { (msgId, msg) ->
+				val answerable = msg.request_id != null &&
+					isAnswerableQuestion(msg.type, msgId, answeredMsgIds, msg.cancelled, msg.rejected)
 				if (answerable) {
 					Card(
-						onClick = { navController.navigate("reply/${convId}/${msg.request_id}/${msg.sender}") },
+						onClick = {
+							navController.navigate("reply/${Uri.encode(convId)}/${Uri.encode(msg.request_id)}")
+						},
 						modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
 						colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary),
 					) {
@@ -352,10 +360,11 @@ fun MessageViewScreen(convId: String, viewModel: MainViewModel, navController: N
 }
 
 @Composable
-fun ReplyScreen(convId: String, requestId: String, sender: String, viewModel: MainViewModel, navController: NavHostController) {
+fun ReplyScreen(convId: String, requestId: String, viewModel: MainViewModel, navController: NavHostController) {
 	val rows by viewModel.conversationRows.collectAsState()
 	val row = rows[convId]
 	val pending = row?.pendingQuestions?.get(requestId)
+	val sender = pending?.sender ?: "user"
 	val recap = pending?.questionText ?: "Reply"
 	val suggestions = row?.messages?.find { it.first == pending?.msgId }?.second?.suggestions
 		?: listOf("Yes", "No", "Maybe", "On it!", "Done")
@@ -426,6 +435,17 @@ fun ReplyScreen(convId: String, requestId: String, sender: String, viewModel: Ma
 fun MarkdownText(content: String, format: String, color: Color = Color.Unspecified) {
 	if (format == "markdown") {
 		val textColor = color.toArgb()
+		val ctx = LocalContext.current
+		val markwon = remember(ctx) {
+			io.noties.markwon.Markwon.builder(ctx)
+				.usePlugin(io.noties.markwon.html.HtmlPlugin.create())
+				.usePlugin(io.noties.markwon.ext.tables.TablePlugin.create(ctx))
+				.usePlugin(io.noties.markwon.ext.tasklist.TaskListPlugin.create(ctx))
+				.usePlugin(io.noties.markwon.ext.strikethrough.StrikethroughPlugin.create())
+				.usePlugin(io.noties.markwon.simple.ext.SimpleExtPlugin.create())
+				.build()
+		}
+		val lastRendered = remember { mutableStateOf<Pair<String, Int>?>(null) }
 		AndroidView(
 			factory = { ctx ->
 				TextView(ctx).apply {
@@ -433,17 +453,12 @@ fun MarkdownText(content: String, format: String, color: Color = Color.Unspecifi
 				}
 			},
 			update = { view ->
-				if (color != Color.Unspecified) {
-					view.setTextColor(textColor)
+				val token = content to textColor
+				if (lastRendered.value != token) {
+					if (color != Color.Unspecified) view.setTextColor(textColor)
+					markwon.setMarkdown(view, content)
+					lastRendered.value = token
 				}
-				val markwon = io.noties.markwon.Markwon.builder(view.context)
-					.usePlugin(io.noties.markwon.html.HtmlPlugin.create())
-					.usePlugin(io.noties.markwon.ext.tables.TablePlugin.create(view.context))
-					.usePlugin(io.noties.markwon.ext.tasklist.TaskListPlugin.create(view.context))
-					.usePlugin(io.noties.markwon.ext.strikethrough.StrikethroughPlugin.create())
-					.usePlugin(io.noties.markwon.simple.ext.SimpleExtPlugin.create())
-					.build()
-				markwon.setMarkdown(view, content)
 			}
 		)
 	} else {

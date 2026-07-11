@@ -35,6 +35,7 @@ import io.github.johnjanthony.switchboard.isSessionSelectable
 import io.github.johnjanthony.switchboard.network.ConversationSummary
 import io.github.johnjanthony.switchboard.network.RegistrySession
 import io.github.johnjanthony.switchboard.partitionSessionBoard
+import io.github.johnjanthony.switchboard.pickerTargets
 import io.github.johnjanthony.switchboard.sessionNeedsAttention
 import io.github.johnjanthony.switchboard.sessionWakeLabel
 
@@ -215,7 +216,7 @@ fun SessionsBoardScreen(
 	if (showConveneSheet) {
 		ConveneTargetSheet(
 			selectedCount = selectedIds.size,
-			activeConversations = activeConversations,
+			activeConversations = pickerTargets(activeConversations),
 			onDismiss = { showConveneSheet = false },
 			onConvene = { target, title ->
 				onConvene(selectedIds.toList(), target, title)

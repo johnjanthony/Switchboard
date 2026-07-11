@@ -34,11 +34,13 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.MutableState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -50,6 +52,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.google.firebase.auth.FirebaseAuth
 import io.github.johnjanthony.switchboard.fcm.SwitchboardFirebaseMessagingService
+import io.github.johnjanthony.switchboard.pickerTargets
 import io.github.johnjanthony.switchboard.shared.GoogleAuthHelper
 import android.widget.Toast
 import io.github.johnjanthony.switchboard.ui.BulkRespondDialog
@@ -143,11 +146,22 @@ private fun SwitchboardNavHost(
 		mutableStateOf<io.github.johnjanthony.switchboard.network.RegistrySession?>(null)
 	}
 
-	// Automatic Google Sign-In on first start
-	LaunchedEffect(Unit) {
-		if (FirebaseAuth.getInstance().currentUser == null) {
-			GoogleAuthHelper.signInWithGoogle(context)
+	// Automatic Google Sign-In on first start, with a retryable failure state (REV-206).
+	var authState by remember {
+		mutableStateOf(
+			if (FirebaseAuth.getInstance().currentUser != null) AuthUiState.SIGNED_IN
+			else AuthUiState.IN_PROGRESS
+		)
+	}
+	var retryTick by remember { mutableStateOf(0) }
+	LaunchedEffect(retryTick) {
+		if (FirebaseAuth.getInstance().currentUser != null) {
+			authState = AuthUiState.SIGNED_IN
+			return@LaunchedEffect
 		}
+		authState = AuthUiState.IN_PROGRESS
+		val ok = GoogleAuthHelper.signInWithGoogle(context)
+		authState = if (ok) AuthUiState.SIGNED_IN else AuthUiState.FAILED
 	}
 
 	// FCM deep-link: server emits conv_id (Fix #9). Navigate directly to session/<convId>
@@ -214,6 +228,8 @@ private fun SwitchboardNavHost(
 				pushedAt = widgetPushedAt,
 				onCheckStatus = { viewModel.requestClaudeStatusCheck() },
 				onStopStatus = { viewModel.stopClaudeStatusWatch() },
+				authState = authState,
+				onRetrySignIn = { retryTick++ },
 			)
 		}
 		composable("sessions") {
@@ -338,7 +354,7 @@ private fun SwitchboardNavHost(
 	if (showSpawnDialog) {
 		SpawnSessionDialog(
 			mruList = projectMru,
-			activeConversations = activeConversations,
+			activeConversations = pickerTargets(activeConversations),
 			wslAvailable = wslAvailable,
 			onDismiss = { showSpawnDialog = false },
 			onSpawn = { surface, project, prompt, targetConversationId ->
@@ -370,7 +386,7 @@ private fun SwitchboardNavHost(
 
 	combineConversationId?.let { sourceId ->
 		val source = activeConversations.firstOrNull { it.id == sourceId }
-		val targets = activeConversations.filter { it.id != sourceId }
+		val targets = pickerTargets(activeConversations, excludeId = sourceId)
 		if (source != null) {
 			CombineDialog(
 				sourceConversation = source,
@@ -406,7 +422,7 @@ private fun SwitchboardNavHost(
 			rec = rec,
 			boardLabel = sessionBoardLabel(rec),
 			oldConversation = rec.conversationId?.let { id -> activeConversations.firstOrNull { it.id == id } },
-			activeConversations = activeConversations,
+			activeConversations = pickerTargets(activeConversations),
 			onDismiss = { resumeSheetSession = null },
 			onResume = { targetId, prompt ->
 				val wasAwayOff = viewModel.resumeSession(rec.cliSessionId, targetId, prompt)
@@ -467,6 +483,50 @@ fun MarkdownText(
 ) {
 	if (format == "markdown") {
 		val textColor = color.toArgb()
+		val ctx = LocalContext.current
+		val currentLink = rememberUpdatedState(onInternalLinkClick)
+		val codePadPx = (12 * ctx.resources.displayMetrics.density).toInt()
+		val codeRadiusPx = 8f * ctx.resources.displayMetrics.density
+		val markwon = remember(ctx) {
+			io.noties.markwon.Markwon.builder(ctx)
+				.usePlugin(io.noties.markwon.html.HtmlPlugin.create())
+				.usePlugin(io.noties.markwon.ext.tables.TablePlugin.create(ctx))
+				.usePlugin(io.noties.markwon.ext.tasklist.TaskListPlugin.create(ctx))
+				.usePlugin(io.noties.markwon.ext.strikethrough.StrikethroughPlugin.create())
+				.usePlugin(io.noties.markwon.simple.ext.SimpleExtPlugin.create())
+				.usePlugin(io.github.johnjanthony.switchboard.ui.SwitchboardSyntaxHighlightPlugin())
+				.usePlugin(object : io.noties.markwon.AbstractMarkwonPlugin() {
+					override fun configureSpansFactory(builder: io.noties.markwon.MarkwonSpansFactory.Builder) {
+						val codeBlockFactory = io.noties.markwon.SpanFactory { config, _ ->
+							io.github.johnjanthony.switchboard.ui.RoundedCodeBlockSpan(
+								config.theme(), 0xFF0E1014.toInt(), codeRadiusPx,
+							)
+						}
+						builder.setFactory(org.commonmark.node.FencedCodeBlock::class.java, codeBlockFactory)
+						builder.setFactory(org.commonmark.node.IndentedCodeBlock::class.java, codeBlockFactory)
+					}
+				})
+				.usePlugin(object : io.noties.markwon.AbstractMarkwonPlugin() {
+					override fun configureTheme(builder: io.noties.markwon.core.MarkwonTheme.Builder) {
+						builder.codeBlockBackgroundColor(0xFF0E1014.toInt())
+						builder.codeBackgroundColor(0xFF0E1014.toInt())
+						builder.codeBlockMargin(codePadPx)
+					}
+				})
+				.usePlugin(object : io.noties.markwon.AbstractMarkwonPlugin() {
+					override fun configureConfiguration(builder: io.noties.markwon.MarkwonConfiguration.Builder) {
+						builder.linkResolver(object : io.noties.markwon.LinkResolver {
+							override fun resolve(v: android.view.View, link: String) {
+								val cb = currentLink.value
+								if (link.startsWith("#") && cb != null) cb(v as TextView, link)
+								else io.noties.markwon.LinkResolverDef().resolve(v, link)
+							}
+						})
+					}
+				})
+				.build()
+		}
+		val lastRendered = remember { androidx.compose.runtime.mutableStateOf<Triple<String, Float, Int>?>(null) }
 		AndroidView(
 			modifier = Modifier.fillMaxWidth(),
 			factory = { ctx ->
@@ -511,55 +571,12 @@ fun MarkdownText(
 				if (color != Color.Unspecified) {
 					view.setTextColor(textColor)
 				}
-				// Apply fontScale BEFORE markwon.setMarkdown so RelativeSizeSpan-based
-				// header/code sizing scales with the base.
-				view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f * fontScale)
-				val codePadPx = (12 * view.resources.displayMetrics.density).toInt()
-				val codeRadiusPx = 8f * view.resources.displayMetrics.density
-				val markwon = io.noties.markwon.Markwon.builder(view.context)
-					.usePlugin(io.noties.markwon.html.HtmlPlugin.create())
-					.usePlugin(io.noties.markwon.ext.tables.TablePlugin.create(view.context))
-					.usePlugin(io.noties.markwon.ext.tasklist.TaskListPlugin.create(view.context))
-					.usePlugin(io.noties.markwon.ext.strikethrough.StrikethroughPlugin.create())
-					.usePlugin(io.noties.markwon.simple.ext.SimpleExtPlugin.create())
-					.usePlugin(io.github.johnjanthony.switchboard.ui.SwitchboardSyntaxHighlightPlugin())
-					.usePlugin(object : io.noties.markwon.AbstractMarkwonPlugin() {
-						override fun configureSpansFactory(builder: io.noties.markwon.MarkwonSpansFactory.Builder) {
-							val codeBlockFactory = io.noties.markwon.SpanFactory { config, _ ->
-								io.github.johnjanthony.switchboard.ui.RoundedCodeBlockSpan(
-									config.theme(),
-									0xFF0E1014.toInt(),
-									codeRadiusPx,
-								)
-							}
-							builder.setFactory(org.commonmark.node.FencedCodeBlock::class.java, codeBlockFactory)
-							builder.setFactory(org.commonmark.node.IndentedCodeBlock::class.java, codeBlockFactory)
-						}
-					})
-					.usePlugin(object : io.noties.markwon.AbstractMarkwonPlugin() {
-						override fun configureTheme(builder: io.noties.markwon.core.MarkwonTheme.Builder) {
-							// Code fences + inline code sit in a near-black well (Well #0E1014), matching Operator.
-							builder.codeBlockBackgroundColor(0xFF0E1014.toInt())
-							builder.codeBackgroundColor(0xFF0E1014.toInt())
-							// Span the full content width of the bubble (no extra side inset).
-							builder.codeBlockMargin(codePadPx)
-						}
-					})
-					.usePlugin(object : io.noties.markwon.AbstractMarkwonPlugin() {
-						override fun configureConfiguration(builder: io.noties.markwon.MarkwonConfiguration.Builder) {
-							builder.linkResolver(object : io.noties.markwon.LinkResolver {
-								override fun resolve(v: android.view.View, link: String) {
-									if (link.startsWith("#") && onInternalLinkClick != null) {
-										onInternalLinkClick(v as TextView, link)
-									} else {
-										io.noties.markwon.LinkResolverDef().resolve(v, link)
-									}
-								}
-							})
-						}
-					})
-					.build()
-				markwon.setMarkdown(view, content)
+				val token = Triple(content, fontScale, textColor)
+				if (lastRendered.value != token) {
+					view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 14f * fontScale)
+					markwon.setMarkdown(view, content)
+					lastRendered.value = token
+				}
 			}
 		)
 	} else {

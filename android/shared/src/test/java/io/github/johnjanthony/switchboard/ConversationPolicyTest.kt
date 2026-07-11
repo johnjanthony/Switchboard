@@ -153,4 +153,20 @@ class ConversationPolicyTest {
 	fun `listRowContextRing returns null when no member has a ring`() {
 		assertEquals(null, listRowContextRing(listOf(member("x"), member("y")), mapOf("s1" to ring(0.9))))
 	}
+
+	private fun conv(id: String, state: String) = ConversationSummary(
+		id = id, title = id, state = state, members = emptyList(), lastActivityAt = "",
+	)
+
+	@Test
+	fun `pickerTargets keeps only active conversations`() {
+		val all = listOf(conv("a", "active"), conv("b", "ended"), conv("c", "active"))
+		assertEquals(listOf("a", "c"), pickerTargets(all).map { it.id })
+	}
+
+	@Test
+	fun `pickerTargets excludes the given id`() {
+		val all = listOf(conv("a", "active"), conv("b", "active"))
+		assertEquals(listOf("b"), pickerTargets(all, excludeId = "a").map { it.id })
+	}
 }

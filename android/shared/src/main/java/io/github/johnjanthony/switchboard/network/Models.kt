@@ -26,7 +26,7 @@ data class Pending(
 	val requestId: String,
 	val questionText: String,
 	val cancelled: Boolean = false,
-	val msgId: String,
+	val msgId: String? = null,
 	val suggestions: List<String>? = null,
 )
 

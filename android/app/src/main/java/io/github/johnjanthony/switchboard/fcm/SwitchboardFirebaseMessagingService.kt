@@ -75,7 +75,7 @@ class SwitchboardFirebaseMessagingService : FirebaseMessagingService() {
 
 	private fun showNotification(title: String, body: String, channelId: String?, messageId: String?, messageType: String) {
 		val intent = Intent(this, MainActivity::class.java).apply {
-			addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+			addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
 			if (channelId != null) putExtra(EXTRA_AGENT_ID, channelId)
 			if (messageId != null) putExtra(EXTRA_MESSAGE_ID, messageId)
 		}

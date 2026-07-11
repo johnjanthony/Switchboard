@@ -66,6 +66,8 @@ fun ConversationListScreen(
 	pushedAt: String? = null,
 	onCheckStatus: () -> Unit = {},
 	onStopStatus: () -> Unit = {},
+	authState: io.github.johnjanthony.switchboard.AuthUiState = io.github.johnjanthony.switchboard.AuthUiState.SIGNED_IN,
+	onRetrySignIn: () -> Unit = {},
 ) {
 	var menuExpanded by remember { mutableStateOf(false) }
 
@@ -115,47 +117,59 @@ fun ConversationListScreen(
 			onStop = onStopStatus,
 		)
 		val displayed = if (showHidden) (rows + hiddenRows) else rows
-		val nothingToShow = displayed.isEmpty() && adminRow == null
-		if (nothingToShow) {
-			Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-				Column(
-					horizontalAlignment = Alignment.CenterHorizontally,
-					verticalArrangement = Arrangement.spacedBy(12.dp),
-				) {
-					Text("No conversations yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-					Button(onClick = onSpawnClick) {
-						Text("Spawn new session")
+		val hasContent = displayed.isNotEmpty() || adminRow != null
+		when (io.github.johnjanthony.switchboard.emptyStateFor(hasContent, authState)) {
+			io.github.johnjanthony.switchboard.EmptyStateKind.SIGN_IN_FAILED ->
+				Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+					Column(
+						horizontalAlignment = Alignment.CenterHorizontally,
+						verticalArrangement = Arrangement.spacedBy(12.dp),
+					) {
+						Text("Sign-in failed", style = MaterialTheme.typography.titleMedium)
+						Text(
+							"Couldn't reach Google sign-in.",
+							color = MaterialTheme.colorScheme.onSurfaceVariant,
+						)
+						Button(onClick = onRetrySignIn) { Text("Sign in") }
 					}
 				}
-			}
-		} else {
-			LazyColumn(modifier = Modifier.fillMaxSize()) {
-				// Admin row stays at the top: it's a system-broadcast pseudo-conversation
-				// rendered as a synthetic ConversationRow with id "_admin" (R3).
-				if (adminRow != null) {
-					item(key = "_admin_row") {
-						AdminRow(
-							row = adminRow,
-							onClick = { onAdminClick(adminRow) },
+			io.github.johnjanthony.switchboard.EmptyStateKind.LOADING ->
+				Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+					Text("Connecting…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+				}
+			io.github.johnjanthony.switchboard.EmptyStateKind.NO_CONVERSATIONS ->
+				Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+					Column(
+						horizontalAlignment = Alignment.CenterHorizontally,
+						verticalArrangement = Arrangement.spacedBy(12.dp),
+					) {
+						Text("No conversations yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+						Button(onClick = onSpawnClick) { Text("Spawn new session") }
+					}
+				}
+			io.github.johnjanthony.switchboard.EmptyStateKind.NONE ->
+				LazyColumn(modifier = Modifier.fillMaxSize()) {
+					if (adminRow != null) {
+						item(key = "_admin_row") {
+							AdminRow(row = adminRow, onClick = { onAdminClick(adminRow) })
+							Divider()
+						}
+					}
+					items(displayed, key = { it.id }) { row ->
+						ConversationRow(
+							row = row,
+							resumable = resumableByConvId[row.id] ?: false,
+							onClick = { onSessionClick(row) },
+							onHide = { onHideConversation(row) },
+							onUnhide = { onUnhideConversation(row) },
+							onResumeClick = onResumeClick,
+							onCombineClick = onCombineClick,
+							onEndClick = onEndClick,
+							contextRing = listRowContextRing(row.members, rings),
 						)
 						Divider()
 					}
 				}
-				items(displayed, key = { it.id }) { row ->
-					ConversationRow(
-						row = row,
-						resumable = resumableByConvId[row.id] ?: false,
-						onClick = { onSessionClick(row) },
-						onHide = { onHideConversation(row) },
-						onUnhide = { onUnhideConversation(row) },
-						onResumeClick = onResumeClick,
-						onCombineClick = onCombineClick,
-						onEndClick = onEndClick,
-						contextRing = listRowContextRing(row.members, rings),
-					)
-					Divider()
-				}
-			}
 		}
 		}
 	}

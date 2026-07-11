@@ -130,7 +130,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val adminNotificationsRef = database.getReference("admin_notifications")
 
 	private val conversationMessageListeners = mutableMapOf<String, ChildEventListener>()
+	private val conversationPendingListeners = mutableMapOf<String, ValueEventListener>()
+	// Latest authoritative pending per conversation, applied when the row appears (the
+	// pending listener can fire before the summary builds the row).
+	private val latestPendingByConv = mutableMapOf<String, Map<String, Pending>>()
+	// request_ids answered locally and optimistically removed; suppressed from the
+	// authoritative set until the server deletes the node record, to avoid a flicker-back.
+	private val locallyAnswered = mutableSetOf<String>()
 	private var adminListener: ChildEventListener? = null
+	private val subscriptions = Subscriptions()
+	private val messageBuffer = PendingMessageBuffer()
+	private val rejectedToastTracker = RejectedToastTracker()
+	private val messageListenerAttachedAt = mutableMapOf<String, String>()
 
 	init {
 		loadProjectMru()
@@ -151,8 +162,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	 * keeps attachment idempotent across the repeated fires.
 	 */
 	private fun attachFirebaseListenersWhenAuthed() {
-		FirebaseAuth.getInstance().addIdTokenListener(FirebaseAuth.IdTokenListener { auth ->
-			if (shouldAttachFirebaseListeners(auth.currentUser != null, firebaseListenersAttached)) {
+		val auth = FirebaseAuth.getInstance()
+		val idListener = FirebaseAuth.IdTokenListener { a ->
+			if (shouldAttachFirebaseListeners(a.currentUser != null, firebaseListenersAttached)) {
 				firebaseListenersAttached = true
 				setupAwayModeListener()
 				startWslAvailableListener()
@@ -162,7 +174,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 				startWidgetListeners()
 				startSessionRegistryListeners()
 			}
-		})
+		}
+		auth.addIdTokenListener(idListener)
+		subscriptions.add { auth.removeIdTokenListener(idListener) }
+	}
+
+	override fun onCleared() {
+		super.onCleared()
+		subscriptions.dispose()
+		// Detach the dynamic per-conversation message listeners.
+		for ((convId, listener) in conversationMessageListeners) {
+			conversationsRef.child(convId).child("messages").removeEventListener(listener)
+		}
+		conversationMessageListeners.clear()
+		for ((convId, listener) in conversationPendingListeners) {
+			conversationsRef.child(convId).child("pending_questions").removeEventListener(listener)
+		}
+		conversationPendingListeners.clear()
 	}
 
 	private fun loadProjectMru() {
@@ -225,6 +253,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		}
 		adminNotificationsRef.addChildEventListener(listener)
 		adminListener = listener
+		subscriptions.add { adminNotificationsRef.removeEventListener(listener) }
 	}
 
 	/** Ensure the synthetic _admin ConversationRow exists in _conversationRows (R3). */
@@ -264,11 +293,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 	/**
 	 * Merge a freshly-arrived message into the per-conversation row's runtime state,
-	 * deriving displayMessages, answeredSet, and pendingQuestions. Replaces the
-	 * legacy addMessage(cwdKey, ...) routing.
+	 * deriving displayMessages and answeredSet. Replaces the legacy addMessage(cwdKey, ...)
+	 * routing. pendingQuestions is owned by the authoritative pending_questions listener
+	 * (REV-203), not derived here.
 	 */
 	private fun addMessageToConversation(convId: String, msgId: String, msg: ChannelMessage) {
-		val row = _conversationRows.value[convId] ?: return
+		val row = _conversationRows.value[convId]
+		if (row == null) {
+			// Row not present yet (summary not loaded, or a transient parse failure).
+			// Buffer so the message is applied when the row appears (REV-201).
+			if (!isSyntheticConversation(convId)) messageBuffer.buffer(convId, msgId, msg)
+			return
+		}
 
 		// Maintain raw arrival-order list. Firebase push keys are time-ordered, so
 		// sortedBy { it.first } gives deterministic arrival order regardless of in-list
@@ -281,47 +317,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		// Apply splice to produce display order.
 		val displayMessages = applySpliceOrder(sortedRaw)
 
-		// Derive answered-set: any message whose attached_to_msg_id names a known message
-		// marks that named message as answered.
-		val answeredSet: Set<String> = sortedRaw
-			.mapNotNull { (_, m) -> m.attached_to_msg_id }
-			.filter { targetId -> sortedRaw.any { it.first == targetId } }
-			.toSet()
-
-		// pendingQuestions: a question is "no longer pending" when it's cancelled, rejected,
-		// OR has a reply attached.
-		var newPending = row.pendingQuestions.toMutableMap()
-		if (isQuestionType(msg.type) && msg.request_id != null) {
-			val isAnsweredViaSplice = msgId in answeredSet
-			if (msg.cancelled || msg.rejected || isAnsweredViaSplice) {
-				if (newPending.containsKey(msg.request_id)) {
-					newPending.remove(msg.request_id!!)
-				}
-			} else {
-				newPending[msg.request_id!!] = Pending(
-					sender = msg.sender,
-					requestId = msg.request_id!!,
-					questionText = msg.text,
-					cancelled = msg.cancelled,
-					msgId = msgId,
-					suggestions = msg.suggestions,
-				)
-			}
-		}
-		// Also: when the new message itself is a reply (has attached_to_msg_id), the
-		// question it points at must drop out of pending.
-		msg.attached_to_msg_id?.let { targetMsgId ->
-			val targetQuestion = sortedRaw.firstOrNull { it.first == targetMsgId }?.second
-			val targetRequestId = targetQuestion?.request_id
-			if (targetRequestId != null && newPending.containsKey(targetRequestId)) {
-				newPending.remove(targetRequestId)
-			}
-		}
-
 		val updated = row.copy(
 			messages = displayMessages,
-			pendingQuestions = newPending,
-			answeredQuestionMsgIds = answeredSet,
+			answeredQuestionMsgIds = answeredQuestionMsgIds(sortedRaw),
 		)
 		val newMap = _conversationRows.value.toMutableMap()
 		newMap[convId] = updated
@@ -332,7 +330,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			conversationsRef.child(convId).child("unread_count").setValue(0)
 		}
 
-		if (msg.rejected) {
+		val attachedAt = messageListenerAttachedAt[convId] ?: nowIso()
+		if (rejectedToastTracker.shouldToast(msgId, msg.rejected, msg.timestamp, attachedAt)) {
 			Handler(Looper.getMainLooper()).post {
 				Toast.makeText(getApplication(), msg.text, Toast.LENGTH_LONG).show()
 			}
@@ -341,24 +340,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 	private fun setupAwayModeListener() {
 		// Away mode is global-only. Listen to the global flag.
-		globalAwayRef.addValueEventListener(object : ValueEventListener {
+		val listener = object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
 				_globalAway.value = snapshot.getValue(Boolean::class.java) == true
 			}
 			override fun onCancelled(error: DatabaseError) {}
-		})
+		}
+		globalAwayRef.addValueEventListener(listener)
+		subscriptions.add { globalAwayRef.removeEventListener(listener) }
 	}
 
 	private fun startWslAvailableListener() {
 		val ref = database.getReference("global_settings/wsl_available")
-		ref.addValueEventListener(object : ValueEventListener {
+		val listener = object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
 				_wslAvailable.value = snapshot.getValue(Boolean::class.java) ?: true
 			}
 			override fun onCancelled(error: DatabaseError) {
 				android.util.Log.w("MainViewModel", "wsl_available listener cancelled: $error")
 			}
-		})
+		}
+		ref.addValueEventListener(listener)
+		subscriptions.add { ref.removeEventListener(listener) }
 	}
 
 	/**
@@ -368,7 +371,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	 * skipped rather than dropping the whole map.
 	 */
 	private fun startWidgetListeners() {
-		database.getReference("widget/rings").addValueEventListener(object : ValueEventListener {
+		val ringsRef = database.getReference("widget/rings")
+		val ringsListener = object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
 				val map = mutableMapOf<String, WidgetRing>()
 				for (child in snapshot.children) {
@@ -384,8 +388,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			override fun onCancelled(error: DatabaseError) {
 				android.util.Log.w("MainViewModel", "widget/rings listener cancelled: $error")
 			}
-		})
-		database.getReference("widget/quota").addValueEventListener(object : ValueEventListener {
+		}
+		ringsRef.addValueEventListener(ringsListener)
+		subscriptions.add { ringsRef.removeEventListener(ringsListener) }
+
+		val quotaRef = database.getReference("widget/quota")
+		val quotaListener = object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
 				_widgetQuota.value = try {
 					snapshot.getValue(WidgetQuota::class.java)
@@ -397,8 +405,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			override fun onCancelled(error: DatabaseError) {
 				android.util.Log.w("MainViewModel", "widget/quota listener cancelled: $error")
 			}
-		})
-		database.getReference("widget/status").addValueEventListener(object : ValueEventListener {
+		}
+		quotaRef.addValueEventListener(quotaListener)
+		subscriptions.add { quotaRef.removeEventListener(quotaListener) }
+
+		val statusRef = database.getReference("widget/status")
+		val statusListener = object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
 				_widgetStatus.value = try {
 					snapshot.getValue(WidgetStatus::class.java)
@@ -410,15 +422,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			override fun onCancelled(error: DatabaseError) {
 				android.util.Log.w("MainViewModel", "widget/status listener cancelled: $error")
 			}
-		})
-		database.getReference("widget/pushed_at").addValueEventListener(object : ValueEventListener {
+		}
+		statusRef.addValueEventListener(statusListener)
+		subscriptions.add { statusRef.removeEventListener(statusListener) }
+
+		val pushedAtRef = database.getReference("widget/pushed_at")
+		val pushedAtListener = object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
 				_widgetPushedAt.value = snapshot.getValue(String::class.java)
 			}
 			override fun onCancelled(error: DatabaseError) {
 				android.util.Log.w("MainViewModel", "widget/pushed_at listener cancelled: $error")
 			}
-		})
+		}
+		pushedAtRef.addValueEventListener(pushedAtListener)
+		subscriptions.add { pushedAtRef.removeEventListener(pushedAtListener) }
 	}
 
 	/**
@@ -428,7 +446,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	 * than dropping the whole map, matching the widget/rings pattern.
 	 */
 	private fun startSessionRegistryListeners() {
-		database.getReference("sessions").addValueEventListener(object : ValueEventListener {
+		val sessionsRef = database.getReference("sessions")
+		val sessionsListener = object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
 				val map = mutableMapOf<String, RegistrySession>()
 				for (child in snapshot.children) {
@@ -444,8 +463,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			override fun onCancelled(error: DatabaseError) {
 				android.util.Log.w("MainViewModel", "sessions listener cancelled: $error")
 			}
-		})
-		database.getReference("session_acks").addValueEventListener(object : ValueEventListener {
+		}
+		sessionsRef.addValueEventListener(sessionsListener)
+		subscriptions.add { sessionsRef.removeEventListener(sessionsListener) }
+
+		val sessionAcksRef = database.getReference("session_acks")
+		val sessionAcksListener = object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
 				val map = mutableMapOf<String, String>()
 				for (child in snapshot.children) {
@@ -461,12 +484,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			override fun onCancelled(error: DatabaseError) {
 				android.util.Log.w("MainViewModel", "session_acks listener cancelled: $error")
 			}
-		})
+		}
+		sessionAcksRef.addValueEventListener(sessionAcksListener)
+		subscriptions.add { sessionAcksRef.removeEventListener(sessionAcksListener) }
 	}
 
 	private fun startConversationListener() {
 		val ref = database.getReference("conversations")
-		ref.addValueEventListener(object : ValueEventListener {
+		val listener = object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
 				val failures = mutableMapOf<String, String>()
 				val summaries = snapshot.children.mapNotNull { convNode ->
@@ -551,7 +576,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			override fun onCancelled(error: DatabaseError) {
 				android.util.Log.w("MainViewModel", "conversations listener cancelled: $error")
 			}
-		})
+		}
+		ref.addValueEventListener(listener)
+		subscriptions.add { ref.removeEventListener(listener) }
 	}
 
 	/**
@@ -578,11 +605,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		// (Anything in `current` whose key is NOT in incomingIds is implicitly excluded.)
 		_conversationRows.value = next
 
-		// If the previously-selected conv is gone, clear the selection so the
-		// phone nav can fall back gracefully.
+		// Flush any messages buffered while these conversations had no row yet (REV-201).
+		val appeared = next.keys - current.keys
+		for (convId in appeared) {
+			if (isSyntheticConversation(convId)) continue
+			val buffered = messageBuffer.drain(convId)
+			for ((msgId, msg) in buffered) addMessageToConversation(convId, msgId, msg)
+			latestPendingByConv[convId]?.let { applyAuthoritativePending(convId, it) }
+		}
+
+		// Vanished selection falls back to null, not an arbitrary row: the Page B route's
+		// DisposableEffect owns real selection, so an arbitrary pick would zero that row's
+		// unread on every arriving message (REV-208).
 		val sel = _selectedConversationId.value
 		if (sel != null && sel !in incomingIds) {
-			_selectedConversationId.value = next.values.firstOrNull { !it.hidden && it.state == "active" }?.id
+			_selectedConversationId.value = null
 		}
 	}
 
@@ -591,25 +628,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	 * Messages route directly into the per-conversation row via addMessageToConversation.
 	 */
 	private fun startConversationMessageSubscriptions() {
-		conversationsRef.addChildEventListener(object : ChildEventListener {
+		val listener = object : ChildEventListener {
 			override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
 				val convId = snapshot.key ?: return
 				attachConversationMessageListener(convId)
+				attachConversationPendingListener(convId)
 			}
 			override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {}
 			override fun onChildRemoved(snapshot: DataSnapshot) {
 				val convId = snapshot.key ?: return
 				detachConversationMessageListener(convId)
+				detachConversationPendingListener(convId)
 			}
 			override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
 			override fun onCancelled(error: DatabaseError) {
 				android.util.Log.w("MainViewModel", "conversations child listener cancelled: $error")
 			}
-		})
+		}
+		conversationsRef.addChildEventListener(listener)
+		subscriptions.add { conversationsRef.removeEventListener(listener) }
 	}
 
 	private fun attachConversationMessageListener(convId: String) {
 		if (conversationMessageListeners.containsKey(convId)) return
+		messageListenerAttachedAt[convId] = nowIso()
 		val messagesRef = conversationsRef.child(convId).child("messages")
 		val listener = object : ChildEventListener {
 			override fun onChildAdded(snap: DataSnapshot, prev: String?) {
@@ -631,6 +673,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private fun detachConversationMessageListener(convId: String) {
 		val listener = conversationMessageListeners.remove(convId) ?: return
 		conversationsRef.child(convId).child("messages").removeEventListener(listener)
+	}
+
+	private fun attachConversationPendingListener(convId: String) {
+		if (conversationPendingListeners.containsKey(convId)) return
+		val ref = conversationsRef.child(convId).child("pending_questions")
+		val listener = object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				val parsed = mutableMapOf<String, Pending>()
+				for (child in snapshot.children) {
+					val requestId = child.key ?: continue
+					val p = pendingFromNode(
+						requestId = requestId,
+						sender = child.child("sender").getValue(String::class.java),
+						questionText = child.child("questionText").getValue(String::class.java),
+						cancelled = child.child("cancelled").getValue(Boolean::class.java) ?: false,
+						msgId = child.child("msgId").getValue(String::class.java),
+						suggestions = child.child("suggestions").getValue(object :
+							com.google.firebase.database.GenericTypeIndicator<List<String>>() {}),
+					)
+					if (p != null) parsed[requestId] = p
+				}
+				applyAuthoritativePending(convId, parsed)
+			}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "pending_questions listener cancelled ($convId): $error")
+			}
+		}
+		conversationPendingListeners[convId] = listener
+		ref.addValueEventListener(listener)
+	}
+
+	private fun detachConversationPendingListener(convId: String) {
+		val listener = conversationPendingListeners.remove(convId) ?: return
+		conversationsRef.child(convId).child("pending_questions").removeEventListener(listener)
+		latestPendingByConv.remove(convId)
+	}
+
+	private fun applyAuthoritativePending(convId: String, parsed: Map<String, Pending>) {
+		// The node is truth: an answered/cancelled question is DELETED server-side, so
+		// presence == pending. Drop any local-answer suppression the node has caught up on.
+		locallyAnswered.retainAll { it !in parsed.keys || it in latestPendingByConv[convId].orEmpty().keys }
+		latestPendingByConv[convId] = parsed
+		val effective = parsed.filterKeys { it !in locallyAnswered }
+		val row = _conversationRows.value[convId] ?: return
+		val newMap = _conversationRows.value.toMutableMap()
+		newMap[convId] = row.copy(pendingQuestions = effective)
+		_conversationRows.value = newMap
 	}
 
 	private fun routeConversationMessage(convId: String, msgId: String, snap: DataSnapshot) {
@@ -695,6 +784,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			"written_at" to nowIso(),
 		))
 		// Optimistically remove from pending so the row indicator clears immediately.
+		locallyAnswered.add(requestId)
 		val row = _conversationRows.value[convId] ?: return
 		val newPending = row.pendingQuestions.filterKeys { it != requestId }
 		val newMap = _conversationRows.value.toMutableMap()
