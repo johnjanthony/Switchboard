@@ -84,6 +84,9 @@ dashboard/                  Switchboard Operator: zero-build Preact+htm web cock
   commands.js              Pure write-command builders, each returning {path, value}
   store.js                 Reactive view-model store (the single owner of projected state)
   markdown.js              Markdown renderer wrapping vendored markdown-it + highlight.js (GFM + syntax coloring, link-scheme validation)
+  document.js              Document message pill + preview-page URL helpers (documentPillHtml)
+  doc-view.js              Standalone document preview page (opened from a document pill)
+  statusControl.js         Claude status control (POST /widget-status) + status-lamp color mapping
   app.js                   Boot wiring + /healthz poll + rollUpHealth (parity with /stats)
   components/              Preact+htm components: App, StatusBar, ConversationList, ConversationDetail, SessionsRail, PaneBanner
   vendor/                  Pinned Preact + hooks + htm ESM + the htm-preact binding

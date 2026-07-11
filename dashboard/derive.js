@@ -57,19 +57,14 @@ export function predecessorTitle(conv, conversations) {
 	return predecessor && predecessor.meta ? (predecessor.meta.title || null) : null;
 }
 
-export function oldestPendingAgeSeconds(pendingsFlat, messageTimestampResolver, nowMs) {
+export function oldestPendingAgeSeconds(pendingsFlat, nowMs) {
 	if (!pendingsFlat || pendingsFlat.length === 0) {
 		return null;
 	}
 	let oldestAge = null;
 	for (const pending of pendingsFlat) {
-		const isoTs = pending.msgId != null ? messageTimestampResolver[pending.msgId] : undefined;
-		let originMs;
-		if (isoTs !== undefined && isoTs !== null) {
-			originMs = Date.parse(isoTs);
-		} else {
-			originMs = pending.firstObservedMs;
-		}
+		const askedMs = pending.askedAt != null ? Date.parse(pending.askedAt) : NaN;
+		const originMs = Number.isNaN(askedMs) ? pending.firstObservedMs : askedMs;
 		const ageSeconds = (nowMs - originMs) / 1000;
 		if (oldestAge === null || ageSeconds > oldestAge) {
 			oldestAge = ageSeconds;

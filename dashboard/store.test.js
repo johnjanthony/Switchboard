@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { createStore } from './store.js';
 import * as paths from './schema.js';
 import { pendingCountFor } from './derive.js';
-import { conveneCmd, ackSessionCmd } from './commands.js';
+import {
+	answerCmd, resumeCmd, combineCmd, forceEndCmd, conveneCmd, ackSessionCmd,
+	spawnFreshCmd, awayOnCmd, awayOffCmd, setHiddenCmd,
+} from './commands.js';
 
 function makeFakeStorage(initial = {}) {
 	const map = new Map(Object.entries(initial));
@@ -43,7 +46,8 @@ function makeStore(overrides = {}) {
 	const fb = overrides.fb || makeFakeFb();
 	const storage = overrides.storage || makeFakeStorage(overrides.storageInit || {});
 	const nowMs = overrides.nowMs || (() => 1000);
-	const store = createStore({ fb, paths, storage, nowMs });
+	const requestStatus = overrides.requestStatus || (() => Promise.resolve({ ok: true, status: 200 }));
+	const store = createStore({ fb, paths, storage, nowMs, requestStatus });
 	return { store, fb, storage };
 }
 
@@ -62,7 +66,6 @@ test('initialState shape is exactly the contract', () => {
 		widget: { rings: {}, quota: null, status: null, pushedAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
-		messageTimestampResolver: {},
 		health: { reachable: false, healthy: false, totalAnswered: null },
 		ui: {
 			leftCollapsed: false, rightCollapsed: false, leftWidth: 280, awayOffDialogOpen: false,
@@ -234,13 +237,6 @@ test('upsertAdminNotification stores by key', () => {
 	assert.deepEqual(store.getState().adminNotifications.k1, { text: 'hi', type: 'notify' });
 });
 
-test('mergeConversationMessages updates messageTimestampResolver for the selected conv', () => {
-	const { store } = makeStore();
-	store.upsertConversationMeta('c1', { state: 'active' });
-	store.selectConversation('c1');
-	store.mergeConversationMessages('c1', { m1: { timestamp: '2026-06-15T00:00:00.000Z' } });
-	assert.equal(store.getState().messageTimestampResolver.m1, '2026-06-15T00:00:00.000Z');
-});
 test('selectConversation attaches three onValue listeners and detaches prior ones on switch', () => {
 	const { store, fb } = makeStore();
 	store.upsertConversationMeta('c1', { state: 'active' });
@@ -345,7 +341,7 @@ test('mergeConversationPending builds pendingsFlat from camelCase keys, dropping
 	const { store } = makeStore({ nowMs: () => 5000 });
 	store.upsertConversationMeta('c1', { state: 'active' });
 	store.mergeConversationPending('c1', {
-		r1: { sender: 'John', questionText: 'q?', msgId: 'm1', cancelled: false, suggestions: ['a'] },
+		r1: { sender: 'John', questionText: 'q?', msgId: 'm1', cancelled: false, suggestions: ['a'], askedAt: '2026-06-15T00:00:00.000Z' },
 		r2: { sender: 'John', questionText: 'gone', msgId: 'm2', cancelled: true, suggestions: null },
 	});
 	const flat = store.getState().pendingsFlat;
@@ -357,6 +353,7 @@ test('mergeConversationPending builds pendingsFlat from camelCase keys, dropping
 		questionText: 'q?',
 		suggestions: ['a'],
 		msgId: 'm1',
+		askedAt: '2026-06-15T00:00:00.000Z',
 		firstObservedMs: 5000,
 	});
 });
@@ -441,12 +438,141 @@ test('ackSession writes ackSessionCmd via fb.setValue', () => {
 	assert.deepEqual(fb.calls.set, [expected]);
 });
 
-test('conveneSelected pushes conveneCmd with the selected ids and clears selection', () => {
+test('conveneSelected pushes conveneCmd and clears selection on success', async () => {
 	const { store, fb } = makeStore();
 	store.toggleSessionSelected('sess-a');
 	store.toggleSessionSelected('sess-b');
-	store.conveneSelected({ target: 'new', title: 'Pairing' });
-	const expected = conveneCmd({ sessionIds: ['sess-a', 'sess-b'], target: 'new', title: 'Pairing' }, fb.nowIso);
-	assert.deepEqual(fb.calls.pushed, [expected]);
+	const ok = await store.conveneSelected({ target: 'new', title: 'Pairing' });
+	assert.equal(ok, true);
+	assert.deepEqual(fb.calls.pushed, [conveneCmd({ sessionIds: ['sess-a', 'sess-b'], target: 'new', title: 'Pairing' }, fb.nowIso)]);
 	assert.deepEqual(store.getState().ui.selectedSessionIds, []);
+});
+
+test('conveneSelected keeps the selection and surfaces to global on failure', async () => {
+	const fb = makeFakeFb();
+	fb.pushValue = () => Promise.reject(new Error('DENIED'));
+	const { store } = makeStore({ fb });
+	store.toggleSessionSelected('sess-a');
+	assert.equal(await store.conveneSelected({ target: 'new' }), false);
+	assert.deepEqual(store.getState().ui.selectedSessionIds, ['sess-a']);
+	assert.ok(store.getState().paneErrors.global);
+});
+
+test('spawnFresh / awayOn / awayOff / setHidden push and return true', async () => {
+	const { store, fb } = makeStore();
+	assert.equal(await store.spawnFresh({ surface: 'windows', project: 'X' }), true);
+	assert.equal(await store.awayOn(), true);
+	assert.equal(await store.awayOff({ decision: 'skip' }), true);
+	assert.equal(await store.setHidden('c1', true), true);
+	assert.deepEqual(fb.calls.pushed, [
+		spawnFreshCmd({ surface: 'windows', project: 'X' }, fb.nowIso),
+		awayOnCmd(fb.nowIso),
+		awayOffCmd({ decision: 'skip' }, fb.nowIso),
+	]);
+	assert.deepEqual(fb.calls.set, [setHiddenCmd('c1', true)]);
+});
+
+test('a rejected global write surfaces to the global pane', async () => {
+	const fb = makeFakeFb();
+	fb.pushValue = () => Promise.reject(new Error('DENIED'));
+	const { store } = makeStore({ fb });
+	assert.equal(await store.awayOn(), false);
+	assert.ok(store.getState().paneErrors.global);
+});
+
+test('requestClaudeStatus calls requestStatus and returns true on ok', async () => {
+	let called = null;
+	const { store } = makeStore({ requestStatus: (a) => { called = a; return Promise.resolve({ ok: true, status: 200 }); } });
+	assert.equal(await store.requestClaudeStatus('check'), true);
+	assert.equal(called, 'check');
+});
+
+test('requestClaudeStatus surfaces a non-ok response to the global pane', async () => {
+	const { store } = makeStore({ requestStatus: () => Promise.resolve({ ok: false, status: 503 }) });
+	assert.equal(await store.requestClaudeStatus('check'), false);
+	assert.ok(store.getState().paneErrors.global);
+});
+
+test('retrySignIn surfaces a rejected popup as an auth error', async () => {
+	const fb = makeFakeFb();
+	fb.signIn = () => Promise.reject(new Error('popup-blocked'));
+	const { store } = makeStore({ fb });
+	await store.retrySignIn();
+	assert.ok(store.getState().authError);
+});
+
+test('a denied pending-questions read surfaces to the global pane, not the sign-in gate', () => {
+	const { store, fb } = makeStore();
+	store.setAuthed(true, { email: 'ok@example.com' });
+	store.upsertConversationMeta('c1', { state: 'active' });
+	const entry = fb.calls.onValue.find((e) => e.path === 'conversations/c1/pending_questions');
+	assert.ok(entry, 'pending listener attached');
+	entry.errCb(new Error('PERMISSION_DENIED'));
+	assert.equal(store.getState().authed, true, 'still authed - one conv error must not blank the app');
+	assert.ok(store.getState().paneErrors.global);
+});
+
+test('mergeConversationMembers replaces the members map so server-side deletions propagate', () => {
+	const { store } = makeStore();
+	store.upsertConversationMeta('c1', { state: 'active' });
+	store.mergeConversationMembers('c1', { a: { alive: true }, b: { alive: true } });
+	assert.deepEqual(Object.keys(store.getState().conversations.c1.members), ['a', 'b']);
+	store.mergeConversationMembers('c1', { a: { alive: true } });
+	assert.deepEqual(Object.keys(store.getState().conversations.c1.members), ['a']);
+});
+
+test('mergeConversationAgentStatus replaces the map so a cleared status disappears', () => {
+	const { store } = makeStore();
+	store.upsertConversationMeta('c1', { state: 'active' });
+	store.mergeConversationAgentStatus('c1', { a: { state: 'working' } });
+	assert.deepEqual(store.getState().conversations.c1.agentStatus, { a: { state: 'working' } });
+	store.mergeConversationAgentStatus('c1', {});
+	assert.deepEqual(store.getState().conversations.c1.agentStatus, {});
+});
+
+test('startGlobalListeners is idempotent: a second call detaches the first set', () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const unsubsBefore = fb.calls.unsubs.length;
+	store.startGlobalListeners();
+	const detached = fb.calls.unsubs.slice(unsubsBefore).map((u) => u.path);
+	assert.ok(detached.includes('conversations'), 'prior conversations listener detached before re-attach');
+	assert.ok(detached.includes('global_settings/away_mode'), 'prior away-mode listener detached');
+	assert.equal(detached.length, 13, 'all 13 global listeners detached before re-attach - update this count when adding a listener');
+});
+
+test('sendAnswer writes answerCmd and returns true on success', async () => {
+	const { store, fb } = makeStore();
+	const ok = await store.sendAnswer('c1', 'r1', 'hi', 'John');
+	assert.equal(ok, true);
+	assert.deepEqual(fb.calls.set, [answerCmd('c1', 'r1', 'hi', 'John', fb.nowIso)]);
+});
+
+test('sendAnswer surfaces a rejected write to the detail pane and returns false', async () => {
+	const fb = makeFakeFb();
+	fb.setValue = () => Promise.reject(new Error('PERMISSION_DENIED'));
+	const { store } = makeStore({ fb });
+	const ok = await store.sendAnswer('c1', 'r1', 'hi', 'John');
+	assert.equal(ok, false);
+	assert.ok(store.getState().paneErrors.detail);
+});
+
+test('restoreLine / patchLine / dropLine push their commands and return true', async () => {
+	const { store, fb } = makeStore();
+	assert.equal(await store.restoreLine('c1', 'go'), true);
+	assert.equal(await store.patchLine('c1', 'c2'), true);
+	assert.equal(await store.dropLine('c1'), true);
+	assert.deepEqual(fb.calls.pushed, [
+		resumeCmd({ sourceConversationId: 'c1', prompt: 'go' }, fb.nowIso),
+		combineCmd({ sourceConversationId: 'c1', targetConversationId: 'c2' }, fb.nowIso),
+		forceEndCmd({ conversationId: 'c1' }, fb.nowIso),
+	]);
+});
+
+test('a rejected detail write surfaces to the detail pane', async () => {
+	const fb = makeFakeFb();
+	fb.pushValue = () => Promise.reject(new Error('DENIED'));
+	const { store } = makeStore({ fb });
+	assert.equal(await store.dropLine('c1'), false);
+	assert.ok(store.getState().paneErrors.detail);
 });

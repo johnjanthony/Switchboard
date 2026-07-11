@@ -59,33 +59,30 @@ test('globalPendingCount: empty convs is 0', () => {
 	assert.equal(globalPendingCount({}), 0);
 });
 
-test('oldestPendingAgeSeconds: resolves msgId to message timestamp', () => {
+test('oldestPendingAgeSeconds: age from askedAt', () => {
 	const nowMs = Date.parse('2026-06-15T00:00:30.000Z');
-	const resolver = { m1: '2026-06-15T00:00:00.000Z' };
-	const pendings = [{ convId: 'a', requestId: 'r1', msgId: 'm1', firstObservedMs: nowMs }];
-	assert.equal(oldestPendingAgeSeconds(pendings, resolver, nowMs), 30);
+	const pendings = [{ convId: 'a', requestId: 'r1', askedAt: '2026-06-15T00:00:00.000Z', firstObservedMs: nowMs }];
+	assert.equal(oldestPendingAgeSeconds(pendings, nowMs), 30);
 });
 
-test('oldestPendingAgeSeconds: unresolved msgId falls back to firstObservedMs', () => {
+test('oldestPendingAgeSeconds: missing askedAt falls back to firstObservedMs', () => {
 	const nowMs = Date.parse('2026-06-15T00:00:30.000Z');
 	const firstObservedMs = Date.parse('2026-06-15T00:00:20.000Z');
-	const resolver = {};
-	const pendings = [{ convId: 'a', requestId: 'r1', msgId: 'mX', firstObservedMs }];
-	assert.equal(oldestPendingAgeSeconds(pendings, resolver, nowMs), 10);
+	const pendings = [{ convId: 'a', requestId: 'r1', askedAt: undefined, firstObservedMs }];
+	assert.equal(oldestPendingAgeSeconds(pendings, nowMs), 10);
 });
 
 test('oldestPendingAgeSeconds: returns the largest age across pendings', () => {
 	const nowMs = Date.parse('2026-06-15T00:01:00.000Z');
-	const resolver = { m1: '2026-06-15T00:00:50.000Z', m2: '2026-06-15T00:00:10.000Z' };
 	const pendings = [
-		{ convId: 'a', requestId: 'r1', msgId: 'm1', firstObservedMs: nowMs },
-		{ convId: 'a', requestId: 'r2', msgId: 'm2', firstObservedMs: nowMs },
+		{ convId: 'a', requestId: 'r1', askedAt: '2026-06-15T00:00:50.000Z', firstObservedMs: nowMs },
+		{ convId: 'a', requestId: 'r2', askedAt: '2026-06-15T00:00:10.000Z', firstObservedMs: nowMs },
 	];
-	assert.equal(oldestPendingAgeSeconds(pendings, resolver, nowMs), 50);
+	assert.equal(oldestPendingAgeSeconds(pendings, nowMs), 50);
 });
 
 test('oldestPendingAgeSeconds: null when no pendings', () => {
-	assert.equal(oldestPendingAgeSeconds([], {}, Date.now()), null);
+	assert.equal(oldestPendingAgeSeconds([], Date.now()), null);
 });
 
 test('predecessorTitle: no continued_from pointer yields null', () => {

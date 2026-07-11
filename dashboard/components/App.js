@@ -2,6 +2,7 @@ import { html } from "../vendor/htm-preact.js";
 import { StatusBar } from "./StatusBar.js";
 import { ConversationList } from "./ConversationList.js";
 import { ConversationDetail } from "./ConversationDetail.js";
+import { PaneBanner } from "./PaneBanner.js";
 
 // Dragging the left resizer narrower than this (well past the 180px min width)
 // collapses the rail entirely instead of sticking at the min.
@@ -79,6 +80,10 @@ export function App({ store }) {
 	return html`
 		<div class="app-root">
 			<${StatusBar} store=${store} />
+			${state.paneErrors.global
+				? html`<${PaneBanner} message=${state.paneErrors.global}
+						onRetry=${() => store.setPaneError('global', null)} actionLabel="Dismiss" />`
+				: null}
 			<${AdminStrip} notifications=${state.adminNotifications} />
 			<div class=${shellClass} style=${"--left-rail-width:" + state.ui.leftWidth + "px"}>
 				<${ConversationList} store=${store} />

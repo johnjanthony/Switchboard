@@ -1,7 +1,5 @@
 import { html, useState } from "../vendor/htm-preact.js";
-import * as fb from "../firebase.js";
 import { pendingCountFor, isActive } from "../derive.js";
-import { setHiddenCmd } from "../commands.js";
 import { SessionsRail } from "./SessionsRail.js";
 
 // Relative "last traffic" age from meta.last_activity_at (float epoch SECONDS,
@@ -39,8 +37,7 @@ export function ConversationList({ store }) {
 	const rows = visibleRows.concat(hiddenRows);
 
 	const onHideToggle = (id, currentlyHidden) => {
-		const { path, value } = setHiddenCmd(id, !currentlyHidden);
-		fb.setValue(path, value);
+		store.setHidden(id, !currentlyHidden);
 	};
 
 	const renderRow = (r) => {

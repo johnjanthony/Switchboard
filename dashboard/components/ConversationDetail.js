@@ -1,14 +1,8 @@
 import { html, useState } from "../vendor/htm-preact.js";
-import * as fb from "../firebase.js";
 import { memberState, isActive, predecessorTitle, ringForMember, ringSeverity } from "../derive.js";
 import { renderMarkdown } from "../markdown.js";
 import { documentPillHtml } from "../document.js";
-import { answerCmd, resumeCmd, combineCmd, forceEndCmd } from "../commands.js";
 import { PaneBanner } from "./PaneBanner.js";
-
-function push(cmd) {
-	fb.pushValue(cmd.path, cmd.value);
-}
 
 function escapePlain(s) {
 	return String(s == null ? "" : s)
@@ -100,16 +94,15 @@ function Transcript({ conv, convId, pendingMsgIds }) {
 	`;
 }
 
-function AnswerBox({ convId, pending }) {
+function AnswerBox({ store, convId, pending }) {
 	const [text, setText] = useState("");
 	// Single send path: the Send button submits the textarea; a suggestion submits
 	// itself directly (one click, no intermediate edit step).
-	const sendText = (value) => {
+	const sendText = async (value) => {
 		const v = String(value == null ? "" : value).trim();
 		if (!v) return;
-		const cmd = answerCmd(convId, pending.requestId, v, pending.sender, fb.nowIso);
-		fb.setValue(cmd.path, cmd.value);
-		setText("");
+		const ok = await store.sendAnswer(convId, pending.requestId, v, pending.sender);
+		if (ok) setText("");
 	};
 	return html`
 		<div class="answer-box" key=${pending.requestId}>
@@ -130,7 +123,7 @@ function AnswerBox({ convId, pending }) {
 
 // --- Line lifecycle dialogs (act on the SELECTED line, in place) -------------
 
-function RestoreDialog({ conv, convId, onClose }) {
+function RestoreDialog({ store, conv, convId, onClose }) {
 	const members = (conv && conv.members) || {};
 	const memberList = Object.values(members);
 	// A line is restorable when it has members and all of them are dormant
@@ -138,7 +131,7 @@ function RestoreDialog({ conv, convId, onClose }) {
 	const restorable = memberList.length > 0 && memberList.every((m) => memberState(m) === "dormant");
 	const [prompt, setPrompt] = useState("");
 	const submit = () => {
-		push(resumeCmd({ sourceConversationId: convId, prompt: prompt || undefined }, fb.nowIso));
+		store.restoreLine(convId, prompt || undefined);
 		onClose();
 	};
 	return html`
@@ -166,7 +159,7 @@ function PatchDialog({ store, convId, onClose }) {
 	const [target, setTarget] = useState(targets.length ? targets[0].id : "");
 	const [confirming, setConfirming] = useState(false);
 	const submit = () => {
-		push(combineCmd({ sourceConversationId: convId, targetConversationId: target }, fb.nowIso));
+		store.patchLine(convId, target);
 		onClose();
 	};
 	return html`
@@ -191,9 +184,9 @@ function PatchDialog({ store, convId, onClose }) {
 	`;
 }
 
-function DropDialog({ convId, onClose }) {
+function DropDialog({ store, convId, onClose }) {
 	const submit = () => {
-		push(forceEndCmd({ conversationId: convId }, fb.nowIso));
+		store.dropLine(convId);
 		onClose();
 	};
 	return html`
@@ -271,14 +264,14 @@ export function ConversationDetail({ store }) {
 				</div>
 				${predTitle ? html`<${PredecessorBanner} title=${predTitle} onOpen=${() => store.selectConversation(predecessorId)} />` : null}
 				<${Roster} conv=${conv} rings=${state.widget.rings} />
-				${dialog === "restore" ? html`<${RestoreDialog} conv=${conv} convId=${id} onClose=${close} />` : null}
+				${dialog === "restore" ? html`<${RestoreDialog} store=${store} conv=${conv} convId=${id} onClose=${close} />` : null}
 				${dialog === "patch" ? html`<${PatchDialog} store=${store} convId=${id} onClose=${close} />` : null}
-				${dialog === "drop" ? html`<${DropDialog} convId=${id} onClose=${close} />` : null}
+				${dialog === "drop" ? html`<${DropDialog} store=${store} convId=${id} onClose=${close} />` : null}
 			</div>
 			<div class="detail-body">
 				<${Transcript} conv=${conv} convId=${id} pendingMsgIds=${pendingMsgIds} />
 				<div class="pending-stack">
-					${pendings.map((p) => html`<${AnswerBox} key=${p.requestId} convId=${id} pending=${p} />`)}
+					${pendings.map((p) => html`<${AnswerBox} key=${p.requestId} store=${store} convId=${id} pending=${p} />`)}
 				</div>
 			</div>
 		</section>

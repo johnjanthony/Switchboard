@@ -8,10 +8,14 @@
 //   storage - localStorage-like { getItem, setItem }
 //   nowMs   - () => epoch ms, used to stamp pendingsFlat firstObservedMs
 
-import { conveneCmd, ackSessionCmd } from './commands.js';
+import {
+	answerCmd, resumeCmd, combineCmd, forceEndCmd,
+	spawnFreshCmd, awayOnCmd, awayOffCmd, setHiddenCmd,
+	conveneCmd, ackSessionCmd,
+} from './commands.js';
 
 export function createStore(deps) {
-	const { fb, paths, storage, nowMs } = deps;
+	const { fb, paths, storage, nowMs, requestStatus } = deps;
 
 	const state = initialState(storage);
 	const subscribers = new Set();
@@ -21,6 +25,9 @@ export function createStore(deps) {
 	const firstObservedByKey = new Map();
 	// Lazy per-selection listener unsubscribes, detached on the next selection.
 	let selectionUnsubs = [];
+	// Global (non-selection) listener unsubscribes, detached before re-attach so
+	// an auth re-fire or account switch never leaves a duplicate listener set.
+	let globalUnsubs = [];
 	// Per-active-conversation pending listener unsubscribes, keyed by convId.
 	const pendingUnsubsByConv = new Map();
 
@@ -68,7 +75,9 @@ export function createStore(deps) {
 	function retrySignIn() {
 		state.authError = null;
 		notify();
-		fb.signIn();
+		return fb.signIn().catch((err) => {
+			setAuthError(`Sign-in failed${err && err.message ? ': ' + err.message : ''}. Try again.`);
+		});
 	}
 
 	function setGlobalAway(value) {
@@ -190,13 +199,45 @@ export function createStore(deps) {
 
 	function ackSession(sessionId) {
 		const c = ackSessionCmd(sessionId, fb.nowIso);
-		fb.setValue(c.path, c.value);
+		return guardedWrite('global', () => fb.setValue(c.path, c.value));
 	}
 
-	function conveneSelected({ target, title } = {}) {
+	async function conveneSelected({ target, title } = {}) {
 		const c = conveneCmd({ sessionIds: state.ui.selectedSessionIds, target, title }, fb.nowIso);
-		fb.pushValue(c.path, c.value);
-		clearSessionSelection();
+		const ok = await guardedWrite('global', () => fb.pushValue(c.path, c.value));
+		if (ok) {
+			clearSessionSelection();
+		}
+		return ok;
+	}
+
+	function spawnFresh(opts) {
+		const c = spawnFreshCmd(opts, fb.nowIso);
+		return guardedWrite('global', () => fb.pushValue(c.path, c.value));
+	}
+
+	function awayOn() {
+		const c = awayOnCmd(fb.nowIso);
+		return guardedWrite('global', () => fb.pushValue(c.path, c.value));
+	}
+
+	function awayOff(opts) {
+		const c = awayOffCmd(opts || {}, fb.nowIso);
+		return guardedWrite('global', () => fb.pushValue(c.path, c.value));
+	}
+
+	function setHidden(convId, hidden) {
+		const c = setHiddenCmd(convId, hidden);
+		return guardedWrite('global', () => fb.setValue(c.path, c.value));
+	}
+
+	function requestClaudeStatus(action) {
+		return guardedWrite('global', async () => {
+			const resp = await requestStatus(action);
+			if (!resp || !resp.ok) {
+				throw new Error(resp ? `HTTP ${resp.status}` : 'no response');
+			}
+		});
 	}
 
 	// Drag-to-resize the left conversation list. Width is clamped to a sane range
@@ -211,21 +252,18 @@ export function createStore(deps) {
 		const conv = state.conversations[id] || {};
 		const messages = { ...(conv.messages || {}), ...(map || {}) };
 		state.conversations[id] = { ...conv, messages };
-		if (id === state.selectedConversationId) {
-			rebuildMessageTimestampResolver(messages);
-		}
 		notify();
 	}
 
 	function mergeConversationMembers(id, map) {
 		const conv = state.conversations[id] || {};
-		state.conversations[id] = { ...conv, members: { ...(conv.members || {}), ...(map || {}) } };
+		state.conversations[id] = { ...conv, members: map || {} };
 		notify();
 	}
 
 	function mergeConversationAgentStatus(id, map) {
 		const conv = state.conversations[id] || {};
-		state.conversations[id] = { ...conv, agentStatus: { ...(conv.agentStatus || {}), ...(map || {}) } };
+		state.conversations[id] = { ...conv, agentStatus: map || {} };
 		notify();
 	}
 
@@ -239,7 +277,6 @@ export function createStore(deps) {
 	function selectConversation(id) {
 		detachSelectionListeners();
 		state.selectedConversationId = id;
-		state.messageTimestampResolver = {};
 		notify();
 		if (id === null || id === undefined) {
 			return;
@@ -266,44 +303,37 @@ export function createStore(deps) {
 		// A denied read on any global listener means this account cannot read the
 		// database at all; surface it (back to the sign-in gate) rather than
 		// silently blanking the dashboard (M4).
+		for (const unsub of globalUnsubs) {
+			unsub();
+		}
+		globalUnsubs = [];
 		const onReadError = (err) => setGlobalReadError(err);
-		fb.onChildAdded(paths.conversations(), (val, key) => {
+		globalUnsubs.push(fb.onChildAdded(paths.conversations(), (val, key) => {
 			if (val && val.meta) {
 				upsertConversationMeta(key, val.meta);
 			}
-		}, onReadError);
-		fb.onChildChanged(paths.conversations(), (val, key) => {
+		}, onReadError));
+		globalUnsubs.push(fb.onChildChanged(paths.conversations(), (val, key) => {
 			if (val && val.meta) {
 				upsertConversationMeta(key, val.meta);
 			}
-		}, onReadError);
-		fb.onChildRemoved(paths.conversations(), (_val, key) => {
+		}, onReadError));
+		globalUnsubs.push(fb.onChildRemoved(paths.conversations(), (_val, key) => {
 			removeConversation(key);
-		}, onReadError);
-		fb.onValue(paths.globalAway(), (val) => setGlobalAway(!!val), onReadError);
-		fb.onValue(paths.wslAvailable(), (val) => setWslAvailable(!!val), onReadError);
-		fb.onValue(paths.widgetRings(), (val) => setWidgetRings(val || {}), onReadError);
-		fb.onValue(paths.widgetQuota(), (val) => setWidgetQuota(val || null), onReadError);
-		fb.onValue(paths.widgetStatus(), (val) => setWidgetStatus(val || null), onReadError);
-		fb.onValue(paths.widgetPushedAt(), (val) => setWidgetPushedAt(val || null), onReadError);
-		fb.onValue(paths.sessions(), (val) => setSessions(val || {}), onReadError);
-		fb.onValue(paths.sessionAcks(), (val) => setSessionAcks(val || {}), onReadError);
-		fb.onChildAdded(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError);
-		fb.onChildChanged(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError);
+		}, onReadError));
+		globalUnsubs.push(fb.onValue(paths.globalAway(), (val) => setGlobalAway(!!val), onReadError));
+		globalUnsubs.push(fb.onValue(paths.wslAvailable(), (val) => setWslAvailable(!!val), onReadError));
+		globalUnsubs.push(fb.onValue(paths.widgetRings(), (val) => setWidgetRings(val || {}), onReadError));
+		globalUnsubs.push(fb.onValue(paths.widgetQuota(), (val) => setWidgetQuota(val || null), onReadError));
+		globalUnsubs.push(fb.onValue(paths.widgetStatus(), (val) => setWidgetStatus(val || null), onReadError));
+		globalUnsubs.push(fb.onValue(paths.widgetPushedAt(), (val) => setWidgetPushedAt(val || null), onReadError));
+		globalUnsubs.push(fb.onValue(paths.sessions(), (val) => setSessions(val || {}), onReadError));
+		globalUnsubs.push(fb.onValue(paths.sessionAcks(), (val) => setSessionAcks(val || {}), onReadError));
+		globalUnsubs.push(fb.onChildAdded(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError));
+		globalUnsubs.push(fb.onChildChanged(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError));
 	}
 
 	// --- private helpers -------------------------------------------------
-
-	function rebuildMessageTimestampResolver(messages) {
-		const resolver = {};
-		for (const msgId of Object.keys(messages || {})) {
-			const message = messages[msgId];
-			if (message && message.timestamp !== undefined) {
-				resolver[msgId] = message.timestamp;
-			}
-		}
-		state.messageTimestampResolver = resolver;
-	}
 
 	function syncPendingListeners() {
 		for (const id of Object.keys(state.conversations)) {
@@ -313,7 +343,7 @@ export function createStore(deps) {
 				const unsub = fb.onValue(
 					paths.pendingQuestions(id),
 					(val) => mergeConversationPending(id, val || {}),
-					(err) => setGlobalReadError(err),
+					(err) => setPaneError('global', String(err && err.message ? err.message : err)),
 				);
 				pendingUnsubsByConv.set(id, unsub);
 			} else if (!active && pendingUnsubsByConv.has(id)) {
@@ -373,6 +403,7 @@ export function createStore(deps) {
 					questionText: record.questionText,
 					suggestions: record.suggestions,
 					msgId: record.msgId,
+					askedAt: record.askedAt,
 					firstObservedMs,
 				});
 			}
@@ -385,6 +416,38 @@ export function createStore(deps) {
 			}
 		}
 		state.pendingsFlat = flat;
+	}
+
+	// Run a write, surfacing any failure to the given pane. Resolves true iff the
+	// write committed, so a caller (e.g. AnswerBox) can clear its input on success only.
+	async function guardedWrite(pane, thunk) {
+		try {
+			await thunk();
+			return true;
+		} catch (err) {
+			setPaneError(pane, String(err && err.message ? err.message : err));
+			return false;
+		}
+	}
+
+	function sendAnswer(convId, requestId, text, sender) {
+		const c = answerCmd(convId, requestId, text, sender, fb.nowIso);
+		return guardedWrite('detail', () => fb.setValue(c.path, c.value));
+	}
+
+	function restoreLine(convId, prompt) {
+		const c = resumeCmd({ sourceConversationId: convId, prompt: prompt || undefined }, fb.nowIso);
+		return guardedWrite('detail', () => fb.pushValue(c.path, c.value));
+	}
+
+	function patchLine(sourceId, targetId) {
+		const c = combineCmd({ sourceConversationId: sourceId, targetConversationId: targetId }, fb.nowIso);
+		return guardedWrite('detail', () => fb.pushValue(c.path, c.value));
+	}
+
+	function dropLine(convId) {
+		const c = forceEndCmd({ conversationId: convId }, fb.nowIso);
+		return guardedWrite('detail', () => fb.pushValue(c.path, c.value));
 	}
 
 	return {
@@ -407,6 +470,11 @@ export function createStore(deps) {
 		clearSessionSelection,
 		ackSession,
 		conveneSelected,
+		spawnFresh,
+		awayOn,
+		awayOff,
+		setHidden,
+		requestClaudeStatus,
 		upsertConversationMeta,
 		removeConversation,
 		upsertAdminNotification,
@@ -424,6 +492,10 @@ export function createStore(deps) {
 		mergeConversationMembers,
 		mergeConversationAgentStatus,
 		mergeConversationPending,
+		sendAnswer,
+		restoreLine,
+		patchLine,
+		dropLine,
 	};
 }
 
@@ -460,7 +532,6 @@ function initialState(storage) {
 		widget: { rings: {}, quota: null, status: null, pushedAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
-		messageTimestampResolver: {},
 		health: { reachable: false, healthy: false, totalAnswered: null },
 		ui: {
 			leftCollapsed: storage.getItem('sb.leftCollapsed') === 'true',

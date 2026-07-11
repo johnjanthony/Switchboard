@@ -4,6 +4,7 @@ import * as paths from "./schema.js";
 import { createStore } from "./store.js";
 import { FIREBASE_CONFIG } from "./dashboard-config.js";
 import { App } from "./components/App.js";
+import * as statusControl from "./statusControl.js";
 
 // Health roll-up: identical definition to the server's /stats _build_stats_route.
 // A listener is unhealthy iff state === 'reconnecting' ('stopped' is an intentional
@@ -41,7 +42,10 @@ async function pollHealth(store) {
 
 function main() {
 	fb.initFirebase(FIREBASE_CONFIG);
-	const store = createStore({ fb, paths, storage: window.localStorage, nowMs: () => Date.now() });
+	const store = createStore({
+		fb, paths, storage: window.localStorage,
+		nowMs: () => Date.now(), requestStatus: statusControl.requestStatus,
+	});
 
 	const mount = document.getElementById("app");
 	const draw = () => render(html`<${App} store=${store} />`, mount);
@@ -57,6 +61,8 @@ function main() {
 			store.setAuthed(false, null);
 		}
 	});
+
+	window.addEventListener("hashchange", () => consumeDeepLink(store));
 
 	pollHealth(store);
 	setInterval(() => pollHealth(store), 5000);
