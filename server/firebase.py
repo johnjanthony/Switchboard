@@ -19,7 +19,6 @@ from server.messenger import (
 	MessageWriter,
 	ResponsePoller,
 	AwayModeMirror,
-	ChannelLifecycle,
 	ConversationStore,
 	IncomingResponse,
 	CorrelationToken,
@@ -65,7 +64,6 @@ class FirebaseBackend(
 	MessageWriter,
 	ResponsePoller,
 	AwayModeMirror,
-	ChannelLifecycle,
 	ConversationStore,
 	Backend,
 ):
@@ -103,9 +101,7 @@ class FirebaseBackend(
 		from server.firebase_supervisor import SupervisedListener  # type: ignore
 		self._supervised: dict[str, SupervisedListener] = {}
 		self._away_mode_cmd_queue: asyncio.Queue[dict] = asyncio.Queue()
-		self._away_mode_processed: set[str] = set()
 		self._status_request_queue: asyncio.Queue[dict] = asyncio.Queue()
-		self._status_request_processed: set[str] = set()
 
 	async def aclose(self) -> None:
 		# Stop supervised listeners first so their watchdogs don't try to
@@ -228,9 +224,6 @@ class FirebaseBackend(
 			format="plain",
 			rejected=True,
 		)
-
-	async def set_conversation_hidden(self, conv_id: str, hidden: bool) -> None:
-		await asyncio.to_thread(lambda: db.reference(f'conversations/{conv_id}/meta/hidden').set(hidden))
 
 	async def load_away_mode_snapshot(self, registry) -> None:
 		def _read():
@@ -459,81 +452,19 @@ class FirebaseBackend(
 				db.reference(slot).delete()
 		await self._loop.run_in_executor(None, _delete)
 
-	def _on_away_mode_command(self, event):
-		if event.event_type != 'put' or not event.data:
-			return
-		path = event.path.strip('/')
-		data = event.data
-		if not path and isinstance(data, dict):
-			for cmd_id, entry in data.items():
-				if isinstance(entry, dict) and 'type' in entry:
-					self._loop.call_soon_threadsafe(
-						self._enqueue_away_mode_cmd, cmd_id, entry
-					)
-		elif path and isinstance(data, dict) and 'type' in data:
-			self._loop.call_soon_threadsafe(
-				self._enqueue_away_mode_cmd, path, data
-			)
-
-	def _enqueue_away_mode_cmd(self, cmd_id: str, entry: dict):
-		if cmd_id in self._away_mode_processed:
-			return
-		self._away_mode_processed.add(cmd_id)
-		_spawn_bg(self._away_mode_cmd_queue.put(entry), label=f"away_mode_cmd_enqueue:{cmd_id}")
-		# Uniform with the command-queue listeners (M32 audit): delete via the
-		# bridged worker-thread helper. This method already runs on the loop
-		# (bounced by _on_away_mode_command), so this is consistency, not a
-		# thread-safety fix.
-		self._schedule_command_delete("away_mode_commands", cmd_id)
-
 	async def poll_away_mode_commands(self) -> AsyncIterator[dict]:
-		from server.firebase_supervisor import SupervisedListener
-		if "away_mode_commands" not in self._supervised:
-			err = self._logger.surface_error if self._logger else _no_op_async_logger
-			sup = SupervisedListener(
-				name="away_mode_commands",
-				path="away_mode_commands",
-				callback=self._on_away_mode_command,
-				error_logger=err,
-				loop=self._loop,
-			)
-			self._supervised["away_mode_commands"] = sup
-			sup.start()
+		async def _enqueue(cmd: dict) -> None:
+			await self._away_mode_cmd_queue.put(cmd)
+		self._start_command_listener("away_mode_commands", _enqueue)
 		while True:
 			yield await self._away_mode_cmd_queue.get()
 
-	def _on_status_request_command(self, event):
-		if event.event_type != 'put' or not event.data:
-			return
-		path = event.path.strip('/')
-		data = event.data
-		if not path and isinstance(data, dict):
-			for cmd_id, entry in data.items():
-				if isinstance(entry, dict) and 'type' in entry:
-					self._loop.call_soon_threadsafe(self._enqueue_status_request_cmd, cmd_id, entry)
-		elif path and isinstance(data, dict) and 'type' in data:
-			self._loop.call_soon_threadsafe(self._enqueue_status_request_cmd, path, data)
-
-	def _enqueue_status_request_cmd(self, cmd_id: str, entry: dict):
-		if cmd_id in self._status_request_processed:
-			return
-		self._status_request_processed.add(cmd_id)
-		_spawn_bg(self._status_request_queue.put(entry), label=f"status_request_cmd_enqueue:{cmd_id}")
-		self._schedule_command_delete("widget/status_request", cmd_id)
-
 	async def poll_status_request_commands(self) -> AsyncIterator[dict]:
-		from server.firebase_supervisor import SupervisedListener
-		if "status_request" not in self._supervised:
-			err = self._logger.surface_error if self._logger else _no_op_async_logger
-			sup = SupervisedListener(
-				name="status_request",
-				path="widget/status_request",
-				callback=self._on_status_request_command,
-				error_logger=err,
-				loop=self._loop,
-			)
-			self._supervised["status_request"] = sup
-			sup.start()
+		async def _enqueue(cmd: dict) -> None:
+			await self._status_request_queue.put(cmd)
+		self._start_command_listener(
+			"widget/status_request", _enqueue, name="status_request", stale_notice=False,
+		)
 		while True:
 			yield await self._status_request_queue.get()
 
@@ -543,13 +474,6 @@ class FirebaseBackend(
 		# drains the queue.
 		while True:
 			yield await self._response_queue.get()
-
-	async def send_spawn_ack(self, conversation_id: str, prompt: str | None) -> None:
-		# The message lands in the conversation itself, so the conv_id in the body
-		# would be redundant. Show the prompt preview when present; otherwise just
-		# a one-line confirmation.
-		msg = f"Spawned.\n{prompt[:80]}" if prompt else "Spawned."
-		await self.write_conversation_message(conversation_id, "system", "notify", msg, format="markdown")
 
 	async def write_admin_notification(self, text: str) -> None:
 		"""Push a system broadcast to /admin_notifications/<push_key>.
@@ -616,8 +540,7 @@ class FirebaseBackend(
 
 	async def write_session_record(self, cli_session_id: str, payload: dict) -> None:
 		"""Publish one session record under /sessions/<cli_session_id>. Ids are
-		uuid-like and RTDB-safe as-is; if that assumption ever breaks, route
-		through canonicalization.to_firebase_key."""
+		uuid-like and RTDB-safe as-is."""
 		await asyncio.to_thread(lambda: db.reference(f"sessions/{cli_session_id}").set(payload))
 
 	async def delete_session_record(self, cli_session_id: str) -> None:
@@ -638,17 +561,6 @@ class FirebaseBackend(
 			await asyncio.to_thread(ref.delete)
 		else:
 			await asyncio.to_thread(ref.set, conv_id)
-
-	async def write_combine_command(self, source_id: str, target_id: str) -> str:
-		"""Push a combine command to /combine_commands; returns the push key."""
-		from datetime import datetime, timezone
-		push_ref = db.reference("combine_commands").push()
-		await asyncio.to_thread(push_ref.set, {
-			"source_conversation_id": source_id,
-			"target_conversation_id": target_id,
-			"issued_at": datetime.now(timezone.utc).isoformat(),
-		})
-		return push_ref.key
 
 	async def write_conversation_member(self, conv_id: str, member) -> None:
 		"""Write a member entry under /conversations/<id>/members_active/<sender>."""
@@ -752,7 +664,7 @@ class FirebaseBackend(
 		rejected: bool = False,
 		suppress_push: bool = False,
 	):
-		"""Append a message to /messages/<id>.
+		"""Append a message to /messages/<conv_id>.
 
 		Two call forms are accepted:
 
@@ -908,17 +820,24 @@ class FirebaseBackend(
 			lambda: _spawn_bg(asyncio.to_thread(_delete), label=f"fb_command_delete:{node}/{cmd_id}"),
 		)
 
-	def _start_command_listener(self, node: str, handler, *, delete_before_dispatch: bool = False) -> None:
+	def _start_command_listener(
+		self, node: str, handler, *, name: str | None = None,
+		delete_before_dispatch: bool = False, stale_notice: bool = True,
+	) -> None:
 		"""Shared listener for the /<node> command queues (combine_commands,
-		force_end_commands, spawn_commands).
+		force_end_commands, spawn_commands, away_mode_commands, widget/status_request).
 
+		- `name` overrides the /healthz supervisor key (defaults to node).
+		- `stale_notice` suppresses the phone notice for transient idempotent
+		  commands (the drop is still logged and deleted).
 		- Processes the initial snapshot as well as incremental puts, so
 		  commands written while the server was down are dispatched on
 		  (re)connect (H12/M13; T-015 queue-until-online).
 		- Gates every dispatch on the command's issued_at freshness: commands
-		  older than COMMAND_TTL_SECONDS are deleted WITH a phone-visible
-		  notice, never executed and never silently dropped (decided
-		  2026-06-11). Missing/unparseable stamps fail open (dispatch).
+		  older than COMMAND_TTL_SECONDS are deleted with a phone-visible
+		  notice (unless stale_notice=False), never executed and never silently
+		  dropped, and always logged (decided 2026-06-11). Missing/unparseable
+		  stamps fail open (dispatch).
 		- Delivery is at-least-once for idempotent handlers (combine/
 		  force_end/convene): the delete runs only after the handler completes
 		  without raising, so a crash or a raising handler leaves the entry to
@@ -938,7 +857,8 @@ class FirebaseBackend(
 		  is bridged via call_soon_threadsafe (M32).
 		"""
 		from server.firebase_supervisor import SupervisedListener
-		if node in self._supervised:
+		key = name or node
+		if key in self._supervised:
 			return
 
 		processed: set[str] = set()
@@ -949,15 +869,23 @@ class FirebaseBackend(
 			processed.add(cmd_id)
 			age = command_age_seconds(cmd.get("issued_at"))
 			if age is not None and age > COMMAND_TTL_SECONDS:
-				notice = (
-					f"Dropped stale {node[:-1].replace('_', ' ')} from {cmd.get('issued_at')}: "
-					f"the server was offline when it was sent and it is older than "
-					f"{COMMAND_TTL_SECONDS // 60} minutes. Re-send it if still wanted."
-				)
-				coro = self.send_text(notice)
-				self._loop.call_soon_threadsafe(
-					lambda c=coro: _spawn_bg(c, label=f"fb_stale_command_notice:{node}/{cmd_id}"),
-				)
+				if self._logger:
+					log_coro = self._logger.surface_error(
+						f"stale_command_dropped: {key}/{cmd_id} issued_at={cmd.get('issued_at')}"
+					)
+					self._loop.call_soon_threadsafe(
+						lambda c=log_coro: _spawn_bg(c, label=f"fb_stale_command_log:{key}/{cmd_id}"),
+					)
+				if stale_notice:
+					notice = (
+						f"Dropped stale {node[:-1].replace('_', ' ')} from {cmd.get('issued_at')}: "
+						f"the server was offline when it was sent and it is older than "
+						f"{COMMAND_TTL_SECONDS // 60} minutes. Re-send it if still wanted."
+					)
+					coro = self.send_text(notice)
+					self._loop.call_soon_threadsafe(
+						lambda c=coro: _spawn_bg(c, label=f"fb_stale_command_notice:{node}/{cmd_id}"),
+					)
 				self._schedule_command_delete(node, cmd_id)
 				return
 			if delete_before_dispatch:
@@ -1005,13 +933,13 @@ class FirebaseBackend(
 
 		err = self._logger.surface_error if self._logger else _no_op_async_logger
 		sup = SupervisedListener(
-			name=node,
+			name=key,
 			path=node,
 			callback=_on_event,
 			error_logger=err,
 			loop=self._loop,
 		)
-		self._supervised[node] = sup
+		self._supervised[key] = sup
 		sup.start()
 
 	async def start_combine_command_listener(self, handler) -> None:
@@ -1052,6 +980,18 @@ class FirebaseBackend(
 			text = data.get("text")
 			sender = data.get("sender")
 			if not isinstance(text, str) or not isinstance(sender, str):
+				# Malformed writes must not vanish silently. This runs on the
+				# Firebase listener thread, so bounce the log write to the loop
+				# with per-call bindings (the lambda default pins THIS event's
+				# coroutine, not the loop variable).
+				if self._logger:
+					log_coro = self._logger.surface_error(
+						f"malformed_answer_dropped: answers/{conv_id}/{request_id} "
+						f"text_type={type(text).__name__} sender_type={type(sender).__name__}"
+					)
+					self._loop.call_soon_threadsafe(
+						lambda c=log_coro: _spawn_bg(c, label=f"malformed_answer_log:{conv_id}:{request_id}"),
+					)
 				return
 			slot = f"answers/{conv_id}/{request_id}"  # full path for the slot delete
 			resp = IncomingResponse(correlation=conv_id, text=text, slot=slot, request_id=request_id, sender=sender)

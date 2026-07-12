@@ -18,14 +18,13 @@ from server.messenger import (
 	MessageWriter,
 	ResponsePoller,
 	AwayModeMirror,
-	ChannelLifecycle,
 	ConversationStore,
 )
 from server.rate_limiter import RateLimiter
 from server.registry import Registry
 
 
-class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle, ConversationStore, Backend):
+class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ConversationStore, Backend):
 	def __init__(self) -> None:
 		self.channel_messages: list[dict] = []
 		self.sent_timeouts: list[tuple] = []

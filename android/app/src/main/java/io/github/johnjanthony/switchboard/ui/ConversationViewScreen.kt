@@ -75,11 +75,9 @@ fun ConversationViewScreen(
 	val activePending = currentPending.filterValues { !it.cancelled }
 	var selectedRequestId by remember(row.id) { mutableStateOf<String?>(null) }
 
-	val answeredSet: Set<String> = remember(messages) {
-		messages.mapNotNull { (_, m) -> m.attached_to_msg_id }
-			.filter { targetId -> messages.any { it.first == targetId } }
-			.toSet()
-	}
+	// Consume the shared VM's authoritative answered set directly; no local
+	// re-derivation (matches wear).
+	val answeredSet: Set<String> = row.answeredQuestionMsgIds
 
 	val context = androidx.compose.ui.platform.LocalContext.current
 	var feedFontScale by remember { androidx.compose.runtime.mutableFloatStateOf(context.feedFontScale()) }

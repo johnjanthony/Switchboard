@@ -18,7 +18,6 @@ from server.registry import Registry
 from tests.test_gateway_notify_human import RecordingBackend
 
 _CWD = "c:/work/sw"
-_SESSION_ID = "test-session-id-abc"
 
 
 @pytest.fixture

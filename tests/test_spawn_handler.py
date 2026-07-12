@@ -17,7 +17,6 @@ from server.registry import Registry
 def make_backend() -> MagicMock:
 	backend = MagicMock()
 	backend.send_text = AsyncMock()
-	backend.send_spawn_ack = AsyncMock()
 	backend.write_conversation_meta = AsyncMock()
 	backend.write_conversation_message = AsyncMock(return_value="push-key-1")
 	backend.write_conversation_member = AsyncMock()

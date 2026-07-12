@@ -73,13 +73,6 @@ class Config:
 	conversation_retention_hours: int = 72
 
 
-def _require(name: str) -> str:
-	value = os.environ.get(name)
-	if not value:
-		raise ConfigError(f"Missing required env var: {name}")
-	return value
-
-
 def load_config(dotenv_path: str | Path | None = None) -> Config:
 	if dotenv_path is None:
 		dotenv_path = Path.cwd() / ".env"

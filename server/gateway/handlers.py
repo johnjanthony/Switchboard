@@ -12,9 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
+from server.clock import now_iso
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
-from server.messenger import MessageWriter, ChannelLifecycle, ConversationStore
+from server.messenger import MessageWriter, ConversationStore
 from server.rate_limiter import RateLimiter
 from server.registry import Registry, SUPERSEDED_SENTINEL
 from server.gateway.document import _validate_path, _sha256_hex
@@ -67,9 +68,6 @@ def _wrap_wait_result(conversation_id: str, text: str) -> str:
 
 _SESSION_START = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
-
-def _now_iso() -> str:
-	return datetime.now(timezone.utc).isoformat()
 
 def _new_request_id() -> str:
 	return uuid.uuid4().hex[:8]
@@ -153,7 +151,7 @@ class ToolHandlers:
 	join_conversation: Callable[..., Coroutine[None, None, str]]
 	handle_agent_status: Callable[..., Coroutine[None, None, None]]
 
-class _ToolHandlersBackend(MessageWriter, ChannelLifecycle, ConversationStore):
+class _ToolHandlersBackend(MessageWriter, ConversationStore):
 	"""Backend surface used by build_tool_handlers (and its closures)."""
 
 def build_tool_handlers(
@@ -646,7 +644,7 @@ def build_tool_handlers(
 				"sender": caller_member.sender,
 				"type": "parting",
 				"text": parting_message,
-				"timestamp": _now_iso(),
+				"timestamp": now_iso(),
 			}
 			conv.messages.append(parting_msg)
 			conv.last_activity_at = now_ts

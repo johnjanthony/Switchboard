@@ -20,6 +20,8 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from typing import Callable
 
+from server.clock import now_iso
+
 SESSION_STATES = ("active", "idle", "awaiting_human", "awaiting_agent", "ended", "lost")
 TERMINAL_STATES = ("ended", "lost")
 # awaiting_* sessions may be legitimately silent for hours - but only while an
@@ -28,10 +30,6 @@ TERMINAL_STATES = ("ended", "lost")
 # conditional (T-001): a hydrated awaiting_* record with no live structure is
 # lost-markable on the normal silence threshold.
 SWEEP_EXEMPT_STATES = ("awaiting_human", "awaiting_agent")
-
-
-def _now_iso() -> str:
-	return datetime.now(timezone.utc).isoformat()
 
 
 def map_hook_event_to_state(event: str, state: str) -> str | None:
@@ -83,7 +81,7 @@ class SessionRecord:
 
 
 class SessionRegistry:
-	def __init__(self, now: Callable[[], str] = _now_iso, mono: Callable[[], float] | None = None) -> None:
+	def __init__(self, now: Callable[[], str] = now_iso, mono: Callable[[], float] | None = None) -> None:
 		self._records: dict[str, SessionRecord] = {}
 		self._now = now
 		self._mono = mono or time.monotonic

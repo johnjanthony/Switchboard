@@ -37,7 +37,7 @@ Local host (Windows)                              │ Cloud / Mobile
 
 **Components.**
 
-- **MCP server** (Python 3.11+, FastMCP with `stateless_http=False`). Serves the streamable HTTP transport on `127.0.0.1:9876` by default (`SWITCHBOARD_HOST` defaults to `127.0.0.1`; set to `0.0.0.0` for WSL-reachable; `SWITCHBOARD_PORT` defaults to `9876`). Plus five HTTP endpoints (`/healthz`, `/away-mode`, `/stats`, `/agent_status`, `/cli-session/end`) for hook callbacks and health checks.
+- **MCP server** (Python 3.11+, FastMCP with `stateless_http=False`). Serves the streamable HTTP transport on `127.0.0.1:9876` by default (`SWITCHBOARD_HOST` defaults to `127.0.0.1`; set to `0.0.0.0` for WSL-reachable; `SWITCHBOARD_PORT` defaults to `9876`). Plus four HTTP endpoints (`/healthz`, `/away-mode`, `/stats`, `/agent_status`) for hook callbacks and health checks.
 - **Firebase Realtime Database** — the persistence and phone-side synchronization surface. The server writes; the Android app reads + writes replies.
 - **Firebase Cloud Messaging (FCM)** — delivers push notifications. Three channels (Asks / Updates / Documents) drive separate notification priorities.
 - **Android app** (`android/app/`) and Wear OS app (`android/wear/`) — the human surface. Kotlin/Compose. Notifications, conversation list, conversation view, reply input, spawn dialog, resume dialog, combine dialog, global away pill.
@@ -193,7 +193,7 @@ Sets `registry.global_away_mode` to `bool(value)` and mirrors to Firebase at `/g
 
 ## 5. HTTP endpoints
 
-Five routes mounted on the Starlette app:
+Four routes mounted on the Starlette app:
 
 | Route | Method | Purpose |
 |---|---|---|
@@ -201,7 +201,6 @@ Five routes mounted on the Starlette app:
 | `/away-mode` | GET | Returns the current global away-mode flag. Consumed by `turn-end-hook-away-mode.py` to gate turn-end. Query param `cwd` is informational only (logged). |
 | `/stats` | GET | Widget/Watchtower roll-up: active_conversations, pending_count, oldest_pending_age_seconds, away_mode, healthy. |
 | `/agent_status` | POST | Hook-driven status writes. Body: `{session_id, state, detail}`. Server resolves the session to a conversation and writes per-sender entries to `/conversations/<id>/agent_status/<sender>` (gated on global away mode; `state == "clear"` deletes). |
-| `/cli-session/end` | POST | SessionEnd-hook callback. Body: `{session_id, reason}` where reason ∈ {`logout`, `clear`, `compact`, `other`}. Server marks the matching member dormant; for `clear`/`compact` additionally sets `session_lost_permanently=True`; wakes blocked waiters with a dormancy system message; cancels any open `ask_human` futures owned by the departed member. |
 
 A StaticFiles mount at `/dashboard` serves the Operator cockpit.
 
@@ -216,7 +215,7 @@ Four Python hook scripts bundled with the Claude Code plugin. Registered via `ho
 | Hook | Event | Purpose |
 |---|---|---|
 | `cli-session-injector-hook.py` | PreToolUse | Self-filters on `tool_name.startswith("mcp__switchboard__")`. Reads `session_id` and `cwd` from the hook payload, merges them into the tool's input via `hookSpecificOutput.updatedInput`. The agent never passes either field directly. **`updatedInput` replaces the input** (despite docs claiming merge), so the hook explicitly carries forward every original `tool_input` field. **Stdin must be read as raw bytes** (`sys.stdin.buffer.read()` + `json.loads(bytes)`) — `json.load(sys.stdin)` uses a TextIOWrapper that on Windows defaults to cp1252+surrogateescape and mangles UTF-8 (em-dashes, emojis) into surrogate codepoints. |
-| `cli-session-end-hook.py` | SessionEnd | Writes a SessionEnd marker FILE under `SWITCHBOARD_MARKER_DIR` (atomic temp + `os.replace`), which the server's `dispatch_session_end_markers` loop sweeps to mark the member dormant (T-146: the marker file wins the process-exit race a synchronous POST loses; see section 13.3). The legacy `POST /cli-session/end` route remains for manual/testing use. Fires on orderly Claude exit (`/exit`, Ctrl+D, terminal closed); does NOT fire on SIGKILL / BSOD / network loss, which leave the member stale-alive. |
+| `cli-session-end-hook.py` | SessionEnd | Writes a SessionEnd marker FILE under `SWITCHBOARD_MARKER_DIR` (atomic temp + `os.replace`), which the server's `dispatch_session_end_markers` loop sweeps to mark the member dormant (T-146: the marker file wins the process-exit race a synchronous POST loses; see section 13.3). Fires on orderly Claude exit (`/exit`, Ctrl+D, terminal closed); does NOT fire on SIGKILL / BSOD / network loss, which leave the member stale-alive. |
 | `agent-status-hook.py` | PreToolUse, PostToolUse, UserPromptSubmit, Stop | POSTs `{session_id, state, detail}` to `POST /agent_status` to surface "thinking" / "tool:X" indicators on the phone. Server gated on global away mode; writes are dropped at-desk. |
 | `turn-end-hook-away-mode.py` | Stop | Calls `GET /away-mode`. If the response says away mode is on, returns a `BLOCK` decision (Claude) so the agent's turn cannot end until output has been routed through `ask_human` / `notify_human`. |
 

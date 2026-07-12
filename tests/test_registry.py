@@ -161,9 +161,9 @@ class TestAwayModeCache:
 		async def run():
 			r = Registry()
 			r.update_global_away_cache(True)
-			assert r.global_away() is True
+			assert r.global_away_mode is True
 			r.update_global_away_cache(False)
-			assert r.global_away() is False
+			assert r.global_away_mode is False
 		asyncio.run(run())
 
 

@@ -136,37 +136,6 @@ class JsonlLogger:
 			"resolved_path": resolved_path,
 		})
 
-	async def spawn_failed(
-		self,
-		project_key: str,
-		project_path: str,
-		argv: list[str],
-		error: str,
-	) -> None:
-		await self._write({
-			"event": "spawn_failed",
-			"project_key": project_key,
-			"project_path": project_path,
-			"argv": argv,
-			"error": error,
-		})
-
-	async def collab_message_sent(self, conversation_id: str, sender: str, message: str) -> None:
-		await self._write({
-			"event": "collab_message_sent",
-			"conversation_id": conversation_id,
-			"sender": sender,
-			"message_preview": _preview(message),
-		})
-
-	async def collab_message_received(self, conversation_id: str, sender: str, result: str) -> None:
-		await self._write({
-			"event": "collab_message_received",
-			"conversation_id": conversation_id,
-			"sender": sender,
-			"response_preview": _preview(result),
-		})
-
 	async def document_sent(
 		self,
 		conversation_id: str,

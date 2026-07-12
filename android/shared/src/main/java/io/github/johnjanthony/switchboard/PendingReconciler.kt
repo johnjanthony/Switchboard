@@ -6,7 +6,8 @@ import io.github.johnjanthony.switchboard.network.Pending
 /**
  * The answered-question set for the per-message checkmark affordance: any message whose
  * attached_to_msg_id names another message present in the list marks that target as
- * answered. Derived from the display (spliced) message list. This is the single source
+ * answered. Derived from the arrival-ordered raw list; splicing reorders but never adds or
+ * removes ids, so the set matches the display list. This is the single source
  * for the checkmark set on both phone and wear (REV-205). Pending state itself is NOT
  * derived here — it comes from the authoritative pending_questions node (REV-203).
  */

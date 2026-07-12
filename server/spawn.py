@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from server.config import Config
 from server.logging_jsonl import JsonlLogger
-from server.messenger import ChannelLifecycle, MessageWriter, ConversationStore
+from server.messenger import MessageWriter, ConversationStore
 from server.registry import Registry
 
 _TASK_NAME = "SwitchboardSpawn"
@@ -96,7 +96,7 @@ async def user_has_interactive_session() -> bool:
 	return False
 
 
-class _SpawnBackend(MessageWriter, ChannelLifecycle, ConversationStore):
+class _SpawnBackend(MessageWriter, ConversationStore):
 	"""Backend surface used by SpawnHandler."""
 
 
@@ -262,7 +262,7 @@ class SpawnHandler:
 		"""
 		import uuid
 		from server.registry import Conversation
-		from server.conversation_ops import _now_iso
+		from server.clock import now_iso
 
 		surface = cmd.get("surface", "windows")
 		project = cmd.get("project")
@@ -270,7 +270,7 @@ class SpawnHandler:
 			await self._logger.surface_error("spawn_fresh: missing project")
 			return
 		if err := _validate_project(project):
-			await self._logger.surface_error(f"spawn_fresh: {err}")
+			await self._logger.spawn_invalid_path(project, err)
 			return
 
 		# Validate WSL availability if surface is wsl
@@ -305,7 +305,7 @@ class SpawnHandler:
 			try:
 				candidate.relative_to(root)
 			except ValueError:
-				await self._logger.surface_error(f"spawn_fresh: project escapes spawn root: {project!r}")
+				await self._logger.spawn_invalid_path(project, str(candidate))
 				return
 			project_path = str(candidate)
 		else:  # wsl
@@ -334,7 +334,7 @@ class SpawnHandler:
 				"sender": "<system>",
 				"type": "system",
 				"text": f"Spawning Claude in {project} ({surface})",
-				"timestamp": _now_iso(),
+				"timestamp": now_iso(),
 			}
 			conv.messages.append(spawn_msg)
 			conv.created_at = datetime.now(timezone.utc).timestamp()
@@ -474,7 +474,7 @@ class SpawnHandler:
 
 		# Mint new conversation with continued_from
 		from server.registry import Conversation
-		from server.conversation_ops import _now_iso
+		from server.clock import now_iso
 		from server.gateway.bg_tasks import _spawn_bg as _sbg
 		new_id = "conv-" + uuid.uuid4().hex
 		new_conv = Conversation(id=new_id, title=source.title, continued_from=source_id, origin="resume")
@@ -483,7 +483,7 @@ class SpawnHandler:
 			"sender": "<system>",
 			"type": "system",
 			"text": f"Resuming '{source.title}' (continued from {source_id}).",
-			"timestamp": _now_iso(),
+			"timestamp": now_iso(),
 		}
 		new_conv.messages.append(resume_msg)
 		new_conv.created_at = datetime.now(timezone.utc).timestamp()
@@ -644,7 +644,8 @@ class SpawnHandler:
 			except Exception as exc:
 				await self._logger.surface_error(f"resume_session_away_mode_persist_failed: {exc}")
 
-		from server.conversation_ops import _add_member, _convene_sender_for, _now_iso
+		from server.conversation_ops import _add_member, _convene_sender_for
+		from server.clock import now_iso
 		from server.gateway.bg_tasks import _spawn_bg as _sbg
 		sender = _convene_sender_for(self._registry, sessions, session_id)
 		other_alive = 0
@@ -659,7 +660,7 @@ class SpawnHandler:
 				"sender": "<system>",
 				"type": "system",
 				"text": f"John resumed {sender} into this conversation.",
-				"timestamp": _now_iso(),
+				"timestamp": now_iso(),
 			}
 			target.messages.append(msg)
 			if self._backend is not None:

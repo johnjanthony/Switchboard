@@ -10,7 +10,6 @@ import asyncio
 import pytest
 
 from server.firebase import FirebaseBackend
-from server.canonicalization import to_firebase_key
 
 
 class _FakeBackend(FirebaseBackend):

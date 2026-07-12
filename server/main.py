@@ -61,40 +61,6 @@ def _build_away_mode_route(registry: Registry, session_registry):
 	return away_mode
 
 
-def _build_cli_session_end_route(registry, backend=None, logger=None, session_registry=None):
-	"""POST /cli-session/end - marks the matching conversation member dormant.
-	Retained for manual/testing use; the reliable path is now marker files swept
-	by dispatch_session_end_markers. Best-effort: returns 200 even on bad input
-	or unknown session."""
-	from datetime import datetime, timezone
-	from server.cli_session_end import handle_session_end
-
-	async def cli_session_end(request: Request):
-		try:
-			body = await request.json()
-		except Exception:
-			return JSONResponse({}, status_code=200)
-		session_id = body.get("session_id")
-		reason = body.get("reason", "other")
-		if not isinstance(session_id, str) or not session_id:
-			return JSONResponse({}, status_code=200)
-		try:
-			await handle_session_end(
-				registry=registry,
-				session_id=session_id,
-				reason=reason if isinstance(reason, str) else "other",
-				now=lambda: datetime.now(timezone.utc).isoformat(),
-				backend=backend,
-				logger=logger,
-				session_registry=session_registry,
-			)
-		except Exception:
-			# Don't surface server errors to the hook — best-effort.
-			pass
-		return JSONResponse({}, status_code=200)
-	return cli_session_end
-
-
 def _build_session_start_route(session_registry: SessionRegistry, logger):
 	"""POST /session_start — SessionStart hook ingest. Always 200 (hook contract)."""
 	async def session_start(request: Request):
@@ -807,17 +773,6 @@ async def _run(config: Config) -> None:
 		),
 		methods=["POST"],
 	)
-	app.add_route(
-		"/cli-session/end",
-		_with_route_limit(
-			_build_cli_session_end_route(
-				registry, backend=backend, logger=logger, session_registry=session_registry,
-			),
-			route_limiter, "/cli-session/end", logger,
-		),
-		methods=["POST"],
-	)
-
 	dashboard_dir = _Path(__file__).resolve().parent.parent / "dashboard"
 	app.mount("/dashboard", StaticFiles(directory=str(dashboard_dir), html=True), name="dashboard")
 

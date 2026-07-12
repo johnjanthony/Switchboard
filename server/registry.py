@@ -323,9 +323,6 @@ class Registry:
 		"""Listener entry point: update the in-memory cache to reflect a Firebase change."""
 		self._global_away = bool(active)
 
-	def global_away(self) -> bool:
-		return self._global_away
-
 	def set_pending_mirror(self, callback) -> None:
 		"""Callback fires synchronously with (conversation_id, delta) on every pending-count
 		mutation. Implementations typically schedule an asyncio task to write

@@ -1,4 +1,4 @@
-"""Tests for the cli-session/end handler that marks members dormant on SessionEnd."""
+"""Tests for handle_session_end, which marks members dormant on SessionEnd."""
 
 import asyncio
 

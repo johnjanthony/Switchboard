@@ -112,27 +112,6 @@ async def test_set_session_home_writes_to_cli_sessions(backend):
 
 
 @pytest.mark.asyncio
-async def test_write_combine_command_returns_push_key(backend):
-	"""write_combine_command pushes to /combine_commands and returns the push key."""
-	be, mock_db = backend
-	fake_push_ref = MagicMock()
-	fake_push_ref.key = "push-key-42"
-	mock_db.reference.return_value.push.return_value = fake_push_ref
-
-	result = await be.write_combine_command("conv-src", "conv-tgt")
-
-	assert result == "push-key-42"
-	calls = [str(c) for c in mock_db.reference.call_args_list]
-	assert any("combine_commands" in c for c in calls)
-	# Verify payload shape
-	set_call = fake_push_ref.set.call_args
-	payload = set_call.args[0]
-	assert payload["source_conversation_id"] == "conv-src"
-	assert payload["target_conversation_id"] == "conv-tgt"
-	assert "issued_at" in payload
-
-
-@pytest.mark.asyncio
 async def test_set_conversation_state_writes_state(backend):
 	"""set_conversation_state writes state string to conversations/<id>/meta/state.
 	Hydration reads from meta.state — writing top-level /state would leave ended
@@ -286,31 +265,6 @@ async def test_mark_question_cancelled_reads_from_conversations_not_channels(bac
 	calls = [str(c) for c in mock_db.reference.call_args_list]
 	assert any("messages/conv-cancel" in c for c in calls)
 	assert not any("channels/" in c and "/messages" in c for c in calls)
-
-
-# ---------------------------------------------------------------------------
-# Fix 5: set_conversation_hidden writes to /conversations/<id>/meta/hidden
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_set_conversation_hidden_writes_to_conversations_path(backend):
-	"""set_conversation_hidden writes to /conversations/<conv_id>/meta/hidden, NOT /channels/<key>/hidden."""
-	be, mock_db = backend
-	await be.set_conversation_hidden("conv-abc123", True)
-	calls = [str(c) for c in mock_db.reference.call_args_list]
-	assert any("conversations/conv-abc123/meta/hidden" in c for c in calls)
-	assert not any("channels/" in c and "/hidden" in c for c in calls)
-	mock_db.reference.return_value.set.assert_called_with(True)
-
-
-@pytest.mark.asyncio
-async def test_set_conversation_hidden_false_writes_false(backend):
-	"""set_conversation_hidden(False) writes False to the conversation path."""
-	be, mock_db = backend
-	await be.set_conversation_hidden("conv-xyz", False)
-	calls = [str(c) for c in mock_db.reference.call_args_list]
-	assert any("conversations/conv-xyz/meta/hidden" in c for c in calls)
-	mock_db.reference.return_value.set.assert_called_with(False)
 
 
 # ---------------------------------------------------------------------------

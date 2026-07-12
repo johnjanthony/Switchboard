@@ -24,7 +24,6 @@ from tests.test_gateway_notify_human import RecordingBackend
 def _make_backend() -> MagicMock:
 	backend = MagicMock()
 	backend.send_text = AsyncMock()
-	backend.send_spawn_ack = AsyncMock()
 	backend.write_conversation_meta = AsyncMock()
 	backend.write_conversation_message = AsyncMock(return_value="push-key-1")
 	backend.write_conversation_member = AsyncMock()

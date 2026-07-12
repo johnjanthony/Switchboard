@@ -1,5 +1,5 @@
 """Contract tests for the trait surfaces (Backend, MessageWriter, ResponsePoller,
-AwayModeMirror, ChannelLifecycle).
+AwayModeMirror).
 """
 
 import asyncio
@@ -12,7 +12,6 @@ from server.messenger import (
 	MessageWriter,
 	ResponsePoller,
 	AwayModeMirror,
-	ChannelLifecycle,
 	IncomingResponse,
 )
 
@@ -23,7 +22,7 @@ def test_incoming_response_is_simple_dataclass():
 	assert r.text == "yes"
 
 
-class _StubBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle, Backend):
+class _StubBackend(MessageWriter, ResponsePoller, AwayModeMirror, Backend):
 	"""Minimal concrete subclass implementing only the abstract methods."""
 
 	async def send_timeout_followup(self, *a, **k):
@@ -51,7 +50,7 @@ class TestBackendContract:
 
 class TestMessageWriterContract:
 	"""Contract tests for MessageWriter (send_timeout_followup,
-	send_text, send_spawn_ack, send_stale_reply_notice,
+	send_text, send_stale_reply_notice,
 	mark_question_cancelled).
 
 	write_channel_message has been retired; write_conversation_message is the
@@ -69,7 +68,6 @@ class TestMessageWriterContract:
 	def test_no_op_methods_exist(self):
 		for method_name in (
 			"send_text",
-			"send_spawn_ack",
 			"send_stale_reply_notice",
 			"mark_question_cancelled",
 		):
@@ -123,6 +121,7 @@ class TestResponsePollerContract:
 	def test_no_op_methods_exist(self):
 		for method_name in (
 			"poll_away_mode_commands",
+			"poll_status_request_commands",
 			"delete_response_slot",
 			"reset_all_pending_responses",
 		):
@@ -144,18 +143,4 @@ class TestAwayModeMirrorContract:
 			"delete_legacy_away_mode_node",
 		):
 			assert hasattr(AwayModeMirror, method_name), f"Missing: {method_name}"
-
-
-class TestChannelLifecycleContract:
-	"""Contract tests for ChannelLifecycle (set_conversation_hidden).
-	The legacy cwd-keyed channel meta read was retired — Page A now reads
-	/conversations/<id>/meta directly."""
-
-	def test_methods_exist(self):
-		# No @abstractmethod; the surviving method is a no-op default.
-		for method_name in (
-			"set_conversation_hidden",
-		):
-			assert hasattr(ChannelLifecycle, method_name), f"Missing: {method_name}"
-
 

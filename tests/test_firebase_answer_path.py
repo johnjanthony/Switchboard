@@ -146,3 +146,35 @@ async def test_initial_snapshot_replays_undelivered_answers(backend):
 	assert resp.text == "yes do it"
 	assert resp.slot == "answers/conv-1/req-1"
 	assert be._loop.call_soon_threadsafe.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_malformed_answer_is_logged_not_silently_dropped(backend):
+	"""A malformed answer (non-str text/sender) must be logged, not silently
+	dropped: surface_error records the drop and the response queue is untouched."""
+	be, mock_db = backend
+	be._logger = MagicMock()
+	captured = []
+
+	class CapturingSupervisedListener:
+		def __init__(self, *, name, path, callback, error_logger, loop):
+			self.callback = callback
+			captured.append(self)
+		def start(self):
+			pass
+
+	with patch("server.firebase_supervisor.SupervisedListener", CapturingSupervisedListener):
+		await be.start_conversation_answers_listener()
+
+	on_answer = captured[0].callback
+	event = MagicMock()
+	event.event_type = "put"
+	event.path = "/conv-1/req-1"
+	event.data = {"text": 123, "sender": "john"}
+	on_answer(event)
+
+	assert be._logger.surface_error.call_count == 1
+	logged_msg = be._logger.surface_error.call_args.args[0]
+	assert "malformed_answer_dropped" in logged_msg
+	assert be._response_queue.put.call_count == 0
+	assert be._loop.call_soon_threadsafe.call_count == 1

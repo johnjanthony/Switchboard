@@ -13,6 +13,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING
 
+from server.clock import now_iso
 from server.registry import Conversation, ConversationMember, Registry
 
 
@@ -330,7 +331,7 @@ async def _inject_combine_intro(registry: Registry, target: Conversation, sender
 		"sender": "<system>",
 		"type": "system",
 		"text": f"{sender} joined via combine. Call join_conversation(sender='{sender}') to collect the conversation history.",
-		"timestamp": _now_iso(),
+		"timestamp": now_iso(),
 	}
 	target.messages.append(msg)
 	if backend is not None:
@@ -484,7 +485,7 @@ async def _perform_combine(
 			"sender": "<system>",
 			"type": "system",
 			"text": f"Merged with '{source.title}'. New members: {', '.join(moved_names) or '(none)'}",
-			"timestamp": _now_iso(),
+			"timestamp": now_iso(),
 		}
 		target.messages.append(target_msg)
 		target.last_activity_at = now_ts
@@ -493,7 +494,7 @@ async def _perform_combine(
 			"sender": "<system>",
 			"type": "system",
 			"text": f"Merged into '{target.title}'",
-			"timestamp": _now_iso(),
+			"timestamp": now_iso(),
 		}
 		source.messages.append(source_msg)
 		# Migrate waiters from source.wait_queue. Members were updated in-place
@@ -572,11 +573,6 @@ async def _perform_combine(
 	async with target.lock:
 		_wake_one_from(target)
 	return f"ok. combined {source_id} into {target_id} ({len(moved_names)} member(s))"
-
-
-def _now_iso() -> str:
-	from datetime import datetime, timezone
-	return datetime.now(timezone.utc).isoformat()
 
 
 def _wake_one_from(conversation: Conversation) -> bool:
@@ -833,7 +829,7 @@ async def _perform_convene(registry, session_registry, cmd: dict, logger, backen
 			"sender": "<system>",
 			"type": "system",
 			"text": text,
-			"timestamp": _now_iso(),
+			"timestamp": now_iso(),
 		}
 		conv.messages.append(msg)
 		conv.last_activity_at = time.time()

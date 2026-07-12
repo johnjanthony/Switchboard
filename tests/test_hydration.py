@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import MagicMock, patch, AsyncMock
 
 import pytest
@@ -32,10 +31,6 @@ def make_logger():
 	logger.surface_error = AsyncMock()
 	logger.info = AsyncMock()
 	return logger
-
-
-def _run(coro):
-	return asyncio.get_event_loop().run_until_complete(coro)
 
 
 def member_data(**kwargs):

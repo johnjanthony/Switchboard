@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 
-def _now_iso() -> str:
-	"""Return the current UTC time as an ISO-8601 string (fresh, within TTL)."""
-	return datetime.now(timezone.utc).isoformat()
+from server.clock import now_iso as _now_iso
 
 from server.gateway.dispatch import dispatch_away_mode_commands
 from server.logging_jsonl import JsonlLogger

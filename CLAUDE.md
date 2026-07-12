@@ -29,15 +29,17 @@ server/
   firebase.py          FirebaseBackend (implements every messenger surface); Firebase admin logic (FCM, Realtime DB)
   spawn.py             Agent session spawner (triggered from Android app)
   conversation_ops.py  Conversation lifecycle helpers (create, add/migrate member, queue-for-intro, wake, combine, session-fallback); sender-collision auto-disambiguation ('Claude Win' -> 'Claude Win 2' etc.)
-  cli_session_end.py   handle_session_end: marks a member dormant on session end; invoked by the marker-file sweep (dispatch_session_end_markers) and the retained-for-testing POST /cli-session/end route
+  cli_session_end.py   handle_session_end: marks a member dormant on session end; invoked by the marker-file sweep (dispatch_session_end_markers)
   rate_limiter.py      Per-channel token-bucket rate limiter for notify_human and send_document_human
-  canonicalization.py  Canonical-cwd normalization + Firebase key encoding
+  canonicalization.py  Canonical-cwd normalization (display-only; cwd is a display tag)
   logging_jsonl.py     JSONL audit log
   hydration.py         Rebuilds Registry state from Firebase on startup (conversations survive restart)
   rules_audit.py       Startup audit of the deployed RTDB rules (placeholder/test-mode detection; loud, non-fatal)
   firebase_supervisor.py  SupervisedListener + LoopSupervisor (Firebase-listener / dispatch-loop supervision for /healthz)
   session_fallback.py  Session-to-conversation fallback resolution (home-conversation rebind / unbind)
   command_freshness.py Staleness gate for queued Firebase command entries (COMMAND_TTL_SECONDS)
+  claude_status.py     Claude service-status watch (poll loop + status parse published to widget/status)
+  widget_snapshot.py   WidgetSnapshotStore for the /widget-snapshot POST payload (canonical de-dup)
   gateway/             Tool handlers + dispatch loops
     handlers.py          ask_human, notify_human, send_document_human, message_and_await_agent, join_conversation, combine_conversations, lookup_conversation_ids, leave_conversation, set_away_mode tool closures; JSON status envelopes (_envelope/_terminal_envelope/_wrap_wait_result)
     dispatch.py          dispatch_responses, dispatch_combine_commands, dispatch_force_end_commands, dispatch_spawn_commands, dispatch_away_mode_commands, dispatch_status_request_commands, dispatch_session_end_markers, dispatch_session_sweep, dispatch_conversation_sweep, handle_force_end
@@ -189,7 +191,7 @@ The Switchboard plugin wires six Claude Code hook events automatically:
 - `Stop` (two handlers) — `turn-end-hook-away-mode.py` for the away-mode enforcement check; `agent-status-hook.py` for the per-conversation activity indicator.
 - `UserPromptSubmit`, `PreToolUse`, `PostToolUse` — `agent-status-hook.py` for the activity indicator. `PreToolUse` also runs `cli-session-injector-hook.py`, which injects `cli_session_id` + `cwd` into every `mcp__switchboard__*` call.
 - `SessionStart` — `cli-session-start-hook.py` POSTs the session's birth (`session_id`, `cwd`, `source`) to the server's `/session_start` route so the SessionRegistry records the session; a missed birth self-heals on the first MCP call or agent-status event.
-- `SessionEnd` — `cli-session-end-hook.py` writes a SessionEnd marker file (under `SWITCHBOARD_MARKER_DIR`, the server's `<logs>/session-end` dir) that the server's `dispatch_session_end_markers` sweep applies to mark the session's member dormant on orderly exit (the marker write wins the process-exit race a synchronous POST loses). The legacy `POST /cli-session/end` route is retained for manual/testing use only.
+- `SessionEnd` — `cli-session-end-hook.py` writes a SessionEnd marker file (under `SWITCHBOARD_MARKER_DIR`, the server's `<logs>/session-end` dir) that the server's `dispatch_session_end_markers` sweep applies to mark the session's member dormant on orderly exit (the marker write wins the process-exit race a synchronous POST loses).
 
 See `hooks/hooks.json` for the canonical wiring.
 

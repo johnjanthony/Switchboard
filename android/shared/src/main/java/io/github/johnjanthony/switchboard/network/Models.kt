@@ -76,7 +76,6 @@ data class ConversationMember(
 	val sessionEndedAt: String? = null,  // ISO-8601
 	val sessionEndReason: String? = null,
 	val joinedAt: Double = 0.0,
-	val leftAt: Double? = null,
 	val lastSeenSeq: Int = 0,
 )
 

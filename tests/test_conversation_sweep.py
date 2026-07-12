@@ -72,6 +72,15 @@ async def test_sweep_skips_missing_timestamps_and_degenerate_meta():
 
 
 @pytest.mark.asyncio
+async def test_sweep_skips_non_numeric_ended_at():
+	# A non-numeric ended_at string must not crash the sweep: the ValueError arm
+	# of the except (TypeError, ValueError) catches it and the conversation is skipped.
+	backend = _SweepBackend({"conv-bad": {"state": "ended", "ended_at": "not-a-timestamp"}})
+	deleted = await _conversation_sweep_once(Registry(), backend, make_logger(), retention_hours=72)
+	assert deleted == []
+
+
+@pytest.mark.asyncio
 async def test_sweep_skips_when_in_memory_copy_is_active():
 	# RTDB says ended but the live registry disagrees: never delete under a
 	# conversation the server believes is active.

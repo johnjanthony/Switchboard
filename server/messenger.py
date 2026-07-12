@@ -1,7 +1,7 @@
 """Messenger backend trait surfaces and shared types.
 
 Defines the abstract trait classes (Backend, MessageWriter, ResponsePoller,
-AwayModeMirror, ChannelLifecycle) that backend implementations must satisfy.
+AwayModeMirror) that backend implementations must satisfy.
 The transport layer can evolve without touching the gateway core, since
 gateway handlers depend on specific traits rather than a god-interface.
 """
@@ -77,10 +77,6 @@ class MessageWriter(ABC):
 		"""Send a simple text notification to the primary administrative channel."""
 		pass
 
-	async def send_spawn_ack(self, conversation_id: str, prompt: str | None) -> None:
-		"""Acknowledge a successful spawn command. No-op by default."""
-		pass
-
 	async def send_stale_reply_notice(self, conversation_id: str, sender: str) -> None:
 		"""Write a system message indicating a stale reply landed.
 		No-op default; FirebaseBackend overrides."""
@@ -142,6 +138,11 @@ class ResponsePoller(ABC):
 		if False:
 			yield
 
+	async def poll_status_request_commands(self) -> "AsyncIterator[dict]":
+		"""Yield widget/status_request queue entries as they arrive. No-op by default."""
+		if False:
+			yield
+
 	async def delete_response_slot(self, slot: str) -> None:
 		"""Delete an answer entry by its full RTDB path (`answers/<conv_id>/<request_id>`).
 		Called by the dispatcher after resolution or for a stale / unroutable
@@ -185,14 +186,6 @@ class AwayModeMirror(ABC):
 	async def delete_open_conversation_node(self) -> None:
 		"""Delete the legacy /open_conversation top-level node (one-shot migration).
 		No-op default."""
-		pass
-
-
-class ChannelLifecycle(ABC):
-	"""Channel-state CRUD plus spawn-collision sub-flow."""
-
-	async def set_conversation_hidden(self, conv_id: str, hidden: bool) -> None:
-		"""Set the hidden flag on the conversation at /conversations/<conv_id>/meta/hidden."""
 		pass
 
 

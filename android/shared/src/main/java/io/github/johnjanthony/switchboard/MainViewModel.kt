@@ -118,11 +118,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _pendingDeepLinkMessageId = MutableStateFlow<String?>(null)
 	val pendingDeepLinkMessageId: StateFlow<String?> = _pendingDeepLinkMessageId.asStateFlow()
 
-	// Maps requestId → convId so submitReplyForConversation can write to the
-	// top-level /answers/<convId>/<requestId> path. Populated by routeConversationMessage
-	// as questions arrive; consumed by submitReplyForConversation when answers go out.
-	private val requestIdToConvId = mutableMapOf<String, String>()
-
 	private val database = FirebaseDatabase.getInstance()
 	private val awayCommandsRef = database.getReference("away_mode_commands")
 	private val globalAwayRef = database.getReference("global_settings/away_mode")
@@ -136,8 +131,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val latestPendingByConv = mutableMapOf<String, Map<String, Pending>>()
 	// request_ids answered locally and optimistically removed; suppressed from the
 	// authoritative set until the server deletes the node record, to avoid a flicker-back.
-	private val locallyAnswered = mutableSetOf<String>()
-	private var adminListener: ChildEventListener? = null
+	private val localAnswers = LocalAnswerSuppression()
 	private val subscriptions = Subscriptions()
 	private val messageBuffer = PendingMessageBuffer()
 	private val rejectedToastTracker = RejectedToastTracker()
@@ -252,7 +246,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			}
 		}
 		adminNotificationsRef.addChildEventListener(listener)
-		adminListener = listener
 		subscriptions.add { adminNotificationsRef.removeEventListener(listener) }
 	}
 
@@ -285,10 +278,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		val newMap = _conversationRows.value.toMutableMap()
 		newMap[ADMIN_CONVERSATION_ID] = updated
 		_conversationRows.value = newMap
-	}
-
-	private fun isQuestionType(type: String): Boolean {
-		return type == "question" || type == "ask_human"
 	}
 
 	/**
@@ -520,7 +509,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 									sessionEndedAt = memberNode.child("session_ended_at").getValue(String::class.java),
 									sessionEndReason = memberNode.child("session_end_reason").getValue(String::class.java),
 									joinedAt = memberNode.child("joined_at").getValue(Double::class.java) ?: 0.0,
-									leftAt = memberNode.child("left_at").getValue(Double::class.java),
 									lastSeenSeq = memberNode.child("last_seen_seq").getValue(Int::class.java) ?: 0,
 								)
 							} catch (e: Exception) {
@@ -708,14 +696,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		val listener = conversationPendingListeners.remove(convId) ?: return
 		conversationsRef.child(convId).child("pending_questions").removeEventListener(listener)
 		latestPendingByConv.remove(convId)
+		localAnswers.clear(convId)
 	}
 
 	private fun applyAuthoritativePending(convId: String, parsed: Map<String, Pending>) {
 		// The node is truth: an answered/cancelled question is DELETED server-side, so
-		// presence == pending. Drop any local-answer suppression the node has caught up on.
-		locallyAnswered.retainAll { it !in parsed.keys || it in latestPendingByConv[convId].orEmpty().keys }
+		// presence == pending. Locally-answered entries the node still lists are
+		// suppressed until it catches up (see LocalAnswerSuppression).
+		val previous = latestPendingByConv[convId].orEmpty()
+		val effective = localAnswers.reconcile(convId, parsed, previous)
 		latestPendingByConv[convId] = parsed
-		val effective = parsed.filterKeys { it !in locallyAnswered }
 		val row = _conversationRows.value[convId] ?: return
 		val newMap = _conversationRows.value.toMutableMap()
 		newMap[convId] = row.copy(pendingQuestions = effective)
@@ -725,11 +715,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private fun routeConversationMessage(convId: String, msgId: String, snap: DataSnapshot) {
 		try {
 			val msg = snap.getValue(ChannelMessage::class.java) ?: return
-			// Track requestId → convId so submitReplyForConversation can write to the conversation-scoped
-			// answer path even after the row's pendingQuestions entry is gone.
-			if ((msg.type == "question" || msg.type == "ask_human") && msg.request_id != null) {
-				requestIdToConvId[msg.request_id!!] = convId
-			}
 			addMessageToConversation(convId, msgId, msg)
 		} catch (e: Exception) {
 			android.util.Log.e("MainViewModel", "MALFORMED MESSAGE at messages/$convId/$msgId: ${e.message}")
@@ -770,11 +755,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	/**
-	 * Phone-side: submit a reply for a specific conversation. `requestId` must be non-null —
-	 * the phone UI's ReplyInputBar only opens when an active pending question is selected,
-	 * which always carries a request_id. A null requestId here would fall through to a
-	 * /responses slot the server can't recover (slot parser expects `cwd_key`, not the
-	 * conversation_id we'd write); we don't enter that path at all.
+	 * Phone-side: submit a reply for a specific conversation. `requestId` is non-null by
+	 * construction: the ReplyInputBar only opens when an active pending question is
+	 * selected, and every pending question carries a request_id. The reply lands at
+	 * /answers/<convId>/<requestId>, the conversation-scoped path the server watches.
 	 */
 	fun submitReplyForConversation(convId: String, sender: String, text: String, requestId: String) {
 		database.getReference("answers/$convId/$requestId").setValue(mapOf(
@@ -784,13 +768,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			"written_at" to nowIso(),
 		))
 		// Optimistically remove from pending so the row indicator clears immediately.
-		locallyAnswered.add(requestId)
+		localAnswers.add(convId, requestId)
 		val row = _conversationRows.value[convId] ?: return
 		val newPending = row.pendingQuestions.filterKeys { it != requestId }
 		val newMap = _conversationRows.value.toMutableMap()
 		newMap[convId] = row.copy(pendingQuestions = newPending)
 		_conversationRows.value = newMap
-		requestIdToConvId.remove(requestId)
 	}
 
 	fun requestAwayModeToggle(cwdKey: String?, desired: Boolean) {

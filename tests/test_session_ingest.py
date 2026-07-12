@@ -172,7 +172,7 @@ def test_get_sessions_returns_recorded_payloads(cfg, logger):
 
 def test_get_sessions_redacts_long_session_ids(cfg, logger):
 	# REV-003: the full cli_session_id is the (forgeable) routing identity and
-	# exactly what the /away-mode drain and POST /cli-session/end attacks need.
+	# exactly what the /away-mode drain attack needs.
 	# The roster route has no runtime consumer that needs the full id.
 	registry = Registry()
 	backend = RecordingBackend()
