@@ -4,8 +4,9 @@ Routing keys are session_id / conversation_id; cwd is informational.
 canonicalize_cwd normalizes raw cwd strings into a stable display form
 (Windows, Git-Bash /c/..., and WSL-mount /mnt/c/... forms of the same
 directory all map to one canonical string). No production path is wired
-to it yet; the utility and its tests are kept for backlog T-026, whose
-remaining work is the display-path wiring decision.
+to it yet; whether display surfaces should route cwd labels through it
+is a pending design decision, and the utility and its tests are kept
+for that. Do not delete as dead code while that decision is open.
 """
 
 from __future__ import annotations
