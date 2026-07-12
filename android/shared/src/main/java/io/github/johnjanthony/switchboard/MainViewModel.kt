@@ -118,8 +118,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _pendingDeepLinkMessageId = MutableStateFlow<String?>(null)
 	val pendingDeepLinkMessageId: StateFlow<String?> = _pendingDeepLinkMessageId.asStateFlow()
 
-	// Maps requestId → convId so submitReplyForConversation can write to the new
-	// /conversations/<convId>/answers/<requestId> path. Populated by routeConversationMessage
+	// Maps requestId → convId so submitReplyForConversation can write to the
+	// top-level /answers/<convId>/<requestId> path. Populated by routeConversationMessage
 	// as questions arrive; consumed by submitReplyForConversation when answers go out.
 	private val requestIdToConvId = mutableMapOf<String, String>()
 
@@ -184,7 +184,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		subscriptions.dispose()
 		// Detach the dynamic per-conversation message listeners.
 		for ((convId, listener) in conversationMessageListeners) {
-			conversationsRef.child(convId).child("messages").removeEventListener(listener)
+			database.getReference("messages/$convId").removeEventListener(listener)
 		}
 		conversationMessageListeners.clear()
 		for ((convId, listener) in conversationPendingListeners) {
@@ -624,7 +624,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	/**
-	 * Subscribe to /conversations/<id>/messages for each conversation as it appears/disappears.
+	 * Watch the conversations root; attach a per-conversation messages/<id> listener as each appears/disappears.
 	 * Messages route directly into the per-conversation row via addMessageToConversation.
 	 */
 	private fun startConversationMessageSubscriptions() {
@@ -652,7 +652,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private fun attachConversationMessageListener(convId: String) {
 		if (conversationMessageListeners.containsKey(convId)) return
 		messageListenerAttachedAt[convId] = nowIso()
-		val messagesRef = conversationsRef.child(convId).child("messages")
+		val messagesRef = database.getReference("messages/$convId")
 		val listener = object : ChildEventListener {
 			override fun onChildAdded(snap: DataSnapshot, prev: String?) {
 				val msgId = snap.key ?: return
@@ -672,7 +672,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 	private fun detachConversationMessageListener(convId: String) {
 		val listener = conversationMessageListeners.remove(convId) ?: return
-		conversationsRef.child(convId).child("messages").removeEventListener(listener)
+		database.getReference("messages/$convId").removeEventListener(listener)
 	}
 
 	private fun attachConversationPendingListener(convId: String) {
@@ -732,7 +732,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			}
 			addMessageToConversation(convId, msgId, msg)
 		} catch (e: Exception) {
-			android.util.Log.e("MainViewModel", "MALFORMED MESSAGE at conversations/$convId/messages/$msgId: ${e.message}")
+			android.util.Log.e("MainViewModel", "MALFORMED MESSAGE at messages/$convId/$msgId: ${e.message}")
 		}
 	}
 
@@ -766,7 +766,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	/** Phone-side: mark a message opened given the convId (no bridge lookup needed). */
 	fun markMessageOpened(convId: String, msgId: String) {
 		if (isSyntheticConversation(convId)) return  // no Firebase node for _admin (R3)
-		conversationsRef.child(convId).child("messages").child(msgId).child("opened").setValue(true)
+		database.getReference("messages/$convId/$msgId/opened").setValue(true)
 	}
 
 	/**
@@ -777,7 +777,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	 * conversation_id we'd write); we don't enter that path at all.
 	 */
 	fun submitReplyForConversation(convId: String, sender: String, text: String, requestId: String) {
-		database.getReference("conversations/$convId/answers/$requestId").setValue(mapOf(
+		database.getReference("answers/$convId/$requestId").setValue(mapOf(
 			"text" to text,
 			"sender" to sender,
 			"request_id" to requestId,

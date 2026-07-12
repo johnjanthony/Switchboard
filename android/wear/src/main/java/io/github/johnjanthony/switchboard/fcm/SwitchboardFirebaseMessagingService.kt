@@ -64,6 +64,9 @@ class SwitchboardFirebaseMessagingService : FirebaseMessagingService() {
 			com.google.firebase.database.FirebaseDatabase.getInstance()
 				.getReference("conversations/$convId")
 				.keepSynced(true)
+			com.google.firebase.database.FirebaseDatabase.getInstance()
+				.getReference("messages/$convId")
+				.keepSynced(true)
 		}
 
 		showNotification(title, body, convId, messageId, messageType)

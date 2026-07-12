@@ -29,7 +29,6 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLif
 	def __init__(self) -> None:
 		self.channel_messages: list[dict] = []
 		self.sent_timeouts: list[tuple] = []
-		self.sent_confirmations: list[tuple] = []
 		self.agent_status_writes: list[tuple] = []
 		self.push_suppressed: list = []
 		self._next_correlation = 1000
@@ -104,9 +103,6 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLif
 
 	async def send_timeout_followup(self, request_id, channel_id, timeout_seconds, correlation):
 		self.sent_timeouts.append((request_id, channel_id, timeout_seconds, correlation))
-
-	async def send_resolution_confirmation(self, request_id, channel_id, correlation, response_text=None):
-		self.sent_confirmations.append((request_id, channel_id, correlation, response_text))
 
 	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
 		if False:

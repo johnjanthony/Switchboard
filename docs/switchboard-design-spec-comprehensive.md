@@ -343,24 +343,6 @@ conversations/<conversation_id>/
   members_history/<sender>/     # explicit-leave + force-end + auto-leave departures
     (same fields as members_active, plus left_at)
 
-  messages/<push_id>/           # Firebase push keys, lexicographically time-ordered
-    seq                         (int -- only on server-internal dict-form messages such as force-end/combine/spawn notices; absent on question/notify/document/agent_msg/parting; the Android client does not read it)
-    sender                      (str)
-    type                        "agent_msg" | "question" | "human" | "notify"
-                                | "document" | "parting" | "system"
-    text                        (str)
-    url                         (str | null)
-    filename                    (str | null)
-    request_id                  (str | null — links question to response)
-    attached_to_msg_id          (str | null — phone-side in-line reply linkage)
-    timestamp                   (iso-8601)
-    format                      "plain" | "markdown"
-    suggestions                 (list[str] | null)
-    cancelled                   (bool)
-    rejected                    (bool)
-    title                       (str | null — snapshot)
-    opened                      (bool)
-
   pending_questions/<request_id>/
     sender                        (str)
     questionText                  (str)
@@ -368,16 +350,34 @@ conversations/<conversation_id>/
     suggestions                   (list[str] | null)
     cancelled                     (bool)
 
-  answers/<request_id>/         # phone -> server: John's reply to a pending ask_human
-    text
-    sender
-    request_id
-    written_at
-
   agent_status/<sender>/        # per-member; written only while away mode is on
     state                       "thinking" | "tool:<name>" | ...
     detail                      (str | null)
     updated_at                  (Firebase server-timestamp sentinel)
+
+messages/<conversation_id>/<push_id>/  # Firebase push keys, lexicographically time-ordered
+  seq                         (int -- only on server-internal dict-form messages such as force-end/combine/spawn notices; absent on question/notify/document/agent_msg/parting; the Android client does not read it)
+  sender                      (str)
+  type                        "agent_msg" | "question" | "human" | "notify"
+                              | "document" | "parting" | "system"
+  text                        (str)
+  url                         (str | null)
+  filename                    (str | null)
+  request_id                  (str | null — links question to response)
+  attached_to_msg_id          (str | null — phone-side in-line reply linkage)
+  timestamp                   (iso-8601)
+  format                      "plain" | "markdown"
+  suggestions                 (list[str] | null)
+  cancelled                   (bool)
+  rejected                    (bool)
+  title                       (str | null — snapshot)
+  opened                      (bool)
+
+answers/<conversation_id>/<request_id>/  # phone -> server: John's reply to a pending ask_human
+  text
+  sender
+  request_id
+  written_at
 
 cli_sessions/<session_id>/
   home_conversation_id          (conversation_id)
@@ -419,6 +419,8 @@ admin_notifications/<push_id>/
   timestamp
 ```
 
+Once a conversation is Ended, its `conversations/<id>/` index card plus its companion `/messages/<id>` and `/answers/<id>` nodes are deleted by an hourly retention sweep after `SWITCHBOARD_CONVERSATION_RETENTION_HOURS` (default 72).
+
 ### 10.1 Clear-write convention
 
 Setting a Firebase node to `None` via `ref.set(None)` raises `ValueError('Value must not be None.')` in `firebase_admin`. All Switchboard setters that accept a nullable value (e.g., `set_open_conversation_id`, `set_session_home`) route the `None` case through `ref.delete()`. The node is **absent** after a clear, not `null`-valued.
@@ -442,7 +444,7 @@ Setting a Firebase node to `None` via `ref.set(None)` raises `ValueError('Value 
 On startup, `server/hydration.py:hydrate_from_firebase` rebuilds the in-memory registry from Firebase:
 
 1. **Global settings** — `away_mode`, `open_conversation_id`.
-2. **Conversations** — every `conversations/<id>/` node whose `meta/state == "active"` is restored. Ended conversations are skipped (they live in Firebase as history but aren't loaded into memory).
+2. **Conversations** — every `conversations/<id>/` node whose `meta/state == "active"` is restored. Ended conversations are skipped (they live in Firebase as history but aren't loaded into memory). For each hydrated Active conversation, messages are additionally read from the companion top-level `messages/<id>` node.
 3. **Open-pointer validation** — if `_open_conversation_id` is set but the referenced conv wasn't hydrated (Ended or missing), hydration clears the pointer in-memory AND calls `backend.set_open_conversation_id(None)` to delete the Firebase node. The system self-heals from dangling pointers without requiring manual intervention.
 4. **Session home pointers** — `cli_sessions/<session_id>/home_conversation_id`, skipping any pointer whose home isn't in the hydrated set (avoids re-binding to Ended homes).
 5. **Session-to-conversation bindings** — derived from each Active conversation's members: only ALIVE members are re-bound. Dormant members are deliberately left unbound (the steady-state invariant is "dormant = unbound"); resume re-binds and flips a member alive only when it actually relaunches. Re-binding dormant members at hydration previously broke phone Resume permanently after a restart (H03/M21).
@@ -485,7 +487,7 @@ Title bar shows the conversation title followed by the comma-joined member sende
 
 Bubble feed renders messages chronologically; right-aligned for John, left for agents, system messages styled distinctly. Markdown rendering when `format == "markdown"`. Suggestion buttons under questions. A horizontal pull (drag left/right) reveals message timestamps; pinch zooms text scale.
 
-Reply input visible when a pending `ask_human` exists in the conv; routed via `conversations/<conv_id>/answers/<request_id>/`. Suggestion-chip taps short-circuit the typing path.
+Reply input visible when a pending `ask_human` exists in the conv; routed via `answers/<conv_id>/<request_id>/`. Suggestion-chip taps short-circuit the typing path.
 
 ### 12.3 Spawn dialog
 

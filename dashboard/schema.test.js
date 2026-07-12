@@ -19,7 +19,7 @@ test('agentStatus(id) targets agent_status', () => {
 });
 
 test('messages(id) targets messages', () => {
-	assert.equal(schema.messages('c1'), 'conversations/c1/messages');
+	assert.equal(schema.messages('c1'), 'messages/c1');
 });
 
 test('globalAway() targets global_settings/away_mode', () => {

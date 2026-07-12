@@ -24,7 +24,7 @@ export function agentStatus(id) {
 }
 
 export function messages(id) {
-	return `conversations/${id}/messages`;
+	return `messages/${id}`;
 }
 
 export function globalAway() {

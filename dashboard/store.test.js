@@ -245,7 +245,7 @@ test('selectConversation attaches three onValue listeners and detaches prior one
 	const afterFirst = fb.calls.onValue.length;
 	const selectionPaths = fb.calls.onValue.slice(afterFirst - 3).map((e) => e.path);
 	assert.deepEqual(selectionPaths, [
-		'conversations/c1/messages',
+		'messages/c1',
 		'conversations/c1/members_active',
 		'conversations/c1/agent_status',
 	]);
@@ -253,7 +253,7 @@ test('selectConversation attaches three onValue listeners and detaches prior one
 	store.selectConversation('c2');
 	const detached = fb.calls.unsubs.slice(unsubsBefore).map((u) => u.path);
 	assert.deepEqual(detached, [
-		'conversations/c1/messages',
+		'messages/c1',
 		'conversations/c1/members_active',
 		'conversations/c1/agent_status',
 	]);
@@ -295,7 +295,7 @@ test('a denied conversation read surfaces a detail pane error (M4)', () => {
 	store.upsertConversationMeta('c1', { state: 'active' });
 	store.selectConversation('c1');
 
-	const entry = fb.calls.onValue.find((e) => e.path === 'conversations/c1/messages');
+	const entry = fb.calls.onValue.find((e) => e.path === 'messages/c1');
 	assert.ok(entry, 'selection listener attached');
 	assert.equal(typeof entry.errCb, 'function', 'selection listener must register an error callback');
 

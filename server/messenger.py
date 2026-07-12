@@ -24,8 +24,7 @@ class IncomingResponse:
 	`correlation` is the conversation_id string on every live path. The
 	gateway uses it to look up the pending request_id in the registry.
 
-	`slot` is the literal storage key the response was read from (e.g. the
-	Firebase RTDB child under `conversations/<id>/answers/`). Carried so the
+	`slot` is the Firebase RTDB path under `answers/<id>/`. Carried so the
 	dispatcher can clean up unroutable / stale responses without having to
 	reconstruct the key from correlation fields.
 
@@ -61,8 +60,7 @@ class MessageWriter(ABC):
 	Anything that produces or annotates a message bubble in the conversation.
 	write_conversation_message is the canonical write method (declared in
 	ConversationStore). MessageWriter is retained as a mixin for backends
-	that also implement send_timeout_followup, send_resolution_confirmation,
-	and the various send_* helpers.
+	that also implement send_timeout_followup and the various send_* helpers.
 	"""
 
 	@abstractmethod
@@ -74,16 +72,6 @@ class MessageWriter(ABC):
 		correlation: "CorrelationToken",
 	) -> None:
 		"""Inform the developer a pending question has timed out."""
-
-	@abstractmethod
-	async def send_resolution_confirmation(
-		self,
-		request_id: str,
-		conversation_id: str,
-		correlation: "CorrelationToken",
-		response_text: str | None = None,
-	) -> None:
-		"""Confirm to the developer that their response was received."""
 
 	async def send_text(self, text: str) -> None:
 		"""Send a simple text notification to the primary administrative channel."""
@@ -155,9 +143,10 @@ class ResponsePoller(ABC):
 			yield
 
 	async def delete_response_slot(self, slot: str) -> None:
-		"""Delete a response entry under `responses/` by its literal storage key.
-		Called by the dispatcher after a stale / unroutable response so the
-		listener doesn't re-fire it forever. No-op default; FirebaseBackend overrides."""
+		"""Delete an answer entry by its full RTDB path (`answers/<conv_id>/<request_id>`).
+		Called by the dispatcher after resolution or for a stale / unroutable
+		response so the listener doesn't re-fire it forever. No-op default;
+		FirebaseBackend overrides."""
 		pass
 
 	async def reset_all_pending_responses(self) -> None:
@@ -268,7 +257,7 @@ class ConversationStore:
 		rejected: bool = False,
 		suppress_push: bool = False,
 	):
-		"""Append a message to /conversations/<id>/messages.
+		"""Append a message to /messages/<id>.
 
 		Two call forms:
 		- Legacy dict form: write_conversation_message(conv_id, message_dict) -> str push key

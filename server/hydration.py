@@ -71,6 +71,24 @@ async def hydrate_from_firebase(registry: Registry, backend, logger, session_reg
 					await logger.surface_error(
 						f"hydration_conversation_failed: conv_id={conv_id} {exc}"
 					)
+				conv = registry.conversations.get(conv_id)
+				if conv is None:
+					continue
+				# Messages live in the top-level /messages/<conv_id> node
+				# (WP-10). Read per hydrated Active conversation; reload only
+				# the live-log subset (DT-4), ordered by push key.
+				try:
+					messages_node = await _read_path(f"messages/{conv_id}")
+				except Exception as exc:
+					await logger.surface_error(
+						f"hydration_messages_read_failed: conv_id={conv_id} {exc}"
+					)
+					continue
+				if isinstance(messages_node, dict):
+					conv.messages.extend(
+						v for _k, v in sorted(messages_node.items())
+						if isinstance(v, dict) and v.get("type") in _LIVE_MESSAGE_TYPES
+					)
 	except Exception as exc:
 		await logger.surface_error(f"hydration_conversations_read_failed: {exc}")
 
@@ -290,17 +308,6 @@ def _hydrate_conversation(registry: Registry, conv_id: str, conv_node: Any) -> N
 				last_seen_seq=int(member_data.get("last_seen_seq", 0) or 0),
 			)
 			conv.members_history.append(departed)
-
-	# Messages - order by push key (Firebase push keys are lexicographically
-	# sortable by time); reload only the live-log subset (DT-4, see
-	# _LIVE_MESSAGE_TYPES).
-	messages_node = conv_node.get("messages") or {}
-	if isinstance(messages_node, dict):
-		sorted_messages = [
-			v for _k, v in sorted(messages_node.items())
-			if isinstance(v, dict) and v.get("type") in _LIVE_MESSAGE_TYPES
-		]
-		conv.messages.extend(sorted_messages)
 
 	registry.conversations[conv_id] = conv
 

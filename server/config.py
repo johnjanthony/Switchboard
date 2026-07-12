@@ -67,6 +67,10 @@ class Config:
 	# How long a terminal (ended/lost) session record survives before the sweeper
 	# prunes it. Env: SWITCHBOARD_SESSION_RETENTION_HOURS, default 72.
 	session_retention_hours: int = 72
+	# How long an ENDED conversation (its index card plus /messages and
+	# /answers nodes) survives before the conversation sweep deletes it.
+	# Env: SWITCHBOARD_CONVERSATION_RETENTION_HOURS, default 72.
+	conversation_retention_hours: int = 72
 
 
 def _require(name: str) -> str:
@@ -108,6 +112,7 @@ def load_config(dotenv_path: str | Path | None = None) -> Config:
 		wsl_spawn_root_segment=os.environ.get("SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT", "work"),
 		session_lost_after_seconds=int(os.environ.get("SWITCHBOARD_SESSION_LOST_AFTER_SECONDS", "900")),
 		session_retention_hours=int(os.environ.get("SWITCHBOARD_SESSION_RETENTION_HOURS", "72")),
+		conversation_retention_hours=int(os.environ.get("SWITCHBOARD_CONVERSATION_RETENTION_HOURS", "72")),
 	)
 	require_token_for_nonloopback(cfg.host, cfg.auth_token)
 	return cfg

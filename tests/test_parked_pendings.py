@@ -74,9 +74,6 @@ class _AnswerBackend:
 	async def remove_pending_question_record(self, conversation_id, request_id):
 		self.pending_removed.append((conversation_id, request_id))
 
-	async def send_resolution_confirmation(self, request_id, conversation_id, correlation, response_text=None):
-		pass
-
 
 async def _pump(ticks=25):
 	"""Real-time pump: asyncio.to_thread logger writes in the dispatch loop and
@@ -107,7 +104,7 @@ async def test_parked_record_resolves_with_history_notice_and_cleanup(tmp_path):
 	registry.find_by_request_id(_CONV, "req-1").notices.append("JOIN NOTICE: John convened you")
 
 	backend = _AnswerBackend([
-		IncomingResponse(correlation=_CONV, text="yes, ship it", slot=f"{_CONV}/answers/req-1",
+		IncomingResponse(correlation=_CONV, text="yes, ship it", slot=f"answers/{_CONV}/req-1",
 			request_id="req-1", sender="John"),
 	])
 	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
@@ -122,7 +119,7 @@ async def test_parked_record_resolves_with_history_notice_and_cleanup(tmp_path):
 	assert registry.was_recently_resolved(_CONV, "req-1")
 	assert (_CONV, "John", "human", "yes, ship it", "m-q") in backend.history
 	assert (_CONV, "req-1") in backend.pending_removed
-	assert f"{_CONV}/answers/req-1" in backend.deleted_slots
+	assert f"answers/{_CONV}/req-1" in backend.deleted_slots
 	notices = session_registry.pop_notices("sess-A")
 	assert notices == [
 		"JOIN NOTICE: John convened you",
@@ -142,7 +139,7 @@ async def test_replay_after_parked_resolve_is_quiet(tmp_path):
 	session_registry.record_session_start("sess-A", cwd="C:/Work/X")
 	registry.add_parked(_CONV, "sess-A", "Claude", "req-1", msg_id="m-q", question="Deploy?")
 
-	answer = IncomingResponse(correlation=_CONV, text="yes", slot=f"{_CONV}/answers/req-1",
+	answer = IncomingResponse(correlation=_CONV, text="yes", slot=f"answers/{_CONV}/req-1",
 		request_id="req-1", sender="John")
 	backend = _AnswerBackend([answer, answer])
 	logger = JsonlLogger(str(tmp_path / "log.jsonl"))

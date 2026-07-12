@@ -47,8 +47,6 @@ async def test_tool_side_away_exit_resolves_pendings_with_notice(tmp_path):
 	assert future.done() and not future.cancelled()
 	assert future.result() == AT_DESK_NOTICE
 	assert registry.pending_count == 0
-	# The reply is recorded like other bulk flows (resolution confirmation sent)
-	assert len(backend.sent_confirmations) == 1
 	assert "1 pending" in result, f"return should report the resolution count, got: {result!r}"
 
 

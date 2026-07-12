@@ -661,3 +661,55 @@ async def dispatch_session_sweep(
 		except Exception as exc:
 			await supervisor.record_crash(exc)
 		await asyncio.sleep(interval)
+
+
+async def _conversation_sweep_once(registry, backend, logger, *, retention_hours, now_ts=None):
+	"""One retention tick (WP-10): delete ended conversations older than the
+	horizon. RTDB meta decides ended/age; the in-memory registry is a veto -
+	if the live server believes the conversation is active, never delete."""
+	import time as _time
+	now = now_ts if now_ts is not None else _time.time()
+	horizon = retention_hours * 3600
+	deleted: list[str] = []
+	for conv_id in await backend.list_conversation_ids():
+		meta = await backend.get_conversation_meta(conv_id)
+		if not isinstance(meta, dict):
+			continue
+		if meta.get("state", "active") == "active":
+			continue
+		conv = registry.conversations.get(conv_id)
+		if conv is not None and conv.state == "active":
+			continue
+		ended_at = meta.get("ended_at") or meta.get("last_activity_at")
+		try:
+			ended_at = float(ended_at)
+		except (TypeError, ValueError):
+			continue
+		if now - ended_at <= horizon:
+			continue
+		await backend.delete_conversation_nodes(conv_id)
+		if conv is not None:
+			del registry.conversations[conv_id]
+		deleted.append(conv_id)
+	return deleted
+
+
+async def dispatch_conversation_sweep(
+	registry, backend, logger, supervisor, *,
+	retention_hours, interval: float = 3600.0,
+):
+	"""Hourly retention judge for ended conversations (WP-10). The body runs
+	a pass immediately at startup, then hourly."""
+	while True:
+		try:
+			deleted = await _conversation_sweep_once(
+				registry, backend, logger, retention_hours=retention_hours,
+			)
+			if deleted:
+				await logger.info(f"conversation_sweep_deleted: {deleted}")
+			supervisor.record_success()
+		except asyncio.CancelledError:
+			raise
+		except Exception as exc:
+			await supervisor.record_crash(exc)
+		await asyncio.sleep(interval)

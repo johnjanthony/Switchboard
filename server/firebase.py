@@ -95,7 +95,6 @@ class FirebaseBackend(
 			})
 			self._initialized = True
 
-		self._resp_ref = db.reference('responses')
 		self._response_queue: asyncio.Queue[IncomingResponse] = asyncio.Queue()
 		self._loop = asyncio.get_running_loop()
 		# SupervisedListener instances, keyed by listener name. Populated by
@@ -107,53 +106,6 @@ class FirebaseBackend(
 		self._away_mode_processed: set[str] = set()
 		self._status_request_queue: asyncio.Queue[dict] = asyncio.Queue()
 		self._status_request_processed: set[str] = set()
-
-	def _on_response(self, event):
-		if event.event_type == 'put' and event.data:
-			path = event.path.strip('/')
-			if not path:
-				if isinstance(event.data, dict):
-					for slot, data in event.data.items():
-						if isinstance(data, dict) and 'text' in data:
-							self._loop.call_soon_threadsafe(
-								self._enqueue_response, slot, data
-							)
-						elif self._logger:
-							self._loop.call_soon_threadsafe(
-								lambda s=slot, d=data: _spawn_bg(self._logger.surface_error(f"firebase_malformed_response_entry: {s} -> {type(d)}"), label="firebase_malformed_response_entry")
-							)
-				else:
-					if self._logger:
-						self._loop.call_soon_threadsafe(
-							lambda: _spawn_bg(self._logger.surface_error(f"firebase_malformed_response_root: {type(event.data)}"), label="firebase_malformed_response_root")
-						)
-			elif path:
-				if isinstance(event.data, dict) and 'text' in event.data:
-					self._loop.call_soon_threadsafe(
-						self._enqueue_response, path, event.data
-					)
-				else:
-					if self._logger:
-						self._loop.call_soon_threadsafe(
-							lambda: _spawn_bg(self._logger.surface_error(f"firebase_malformed_response_path: {path} -> {type(event.data)}"), label="firebase_malformed_response_path")
-						)
-
-	def _enqueue_response(self, slot: str, data: dict):
-		"""Route a response payload to the in-process queue.
-
-		Dead code path: nothing writes to the top-level /responses tree anymore
-		(Android writes /conversations/<id>/answers/<request_id>, handled by
-		start_conversation_answers_listener). Retained only so the listener
-		registered in poll_responses has a callback; any entry that lands here
-		is unroutable and is logged and dropped.
-		"""
-		if self._logger:
-			_spawn_bg(
-				self._logger.surface_error(
-					f"firebase_response_unroutable: slot={slot!r} keys={list(data.keys())}"
-				),
-				label="firebase_response_unroutable",
-			)
 
 	async def aclose(self) -> None:
 		# Stop supervised listeners first so their watchdogs don't try to
@@ -196,9 +148,9 @@ class FirebaseBackend(
 		return out
 
 	async def mark_question_cancelled(self, conversation_id: str, request_id: str) -> None:
-		# Messages live at /conversations/<conv_id>/messages.
+		# Messages live at /messages/<conv_id>.
 		conv_id = conversation_id
-		msgs_ref = db.reference(f"conversations/{conv_id}/messages")
+		msgs_ref = db.reference(f"messages/{conv_id}")
 		def _walk():
 			snapshot = msgs_ref.get()
 			if not isinstance(snapshot, dict):
@@ -322,6 +274,28 @@ class FirebaseBackend(
 			db.reference().update(updates)
 		await asyncio.to_thread(_reset)
 
+	async def list_conversation_ids(self) -> list[str]:
+		def _get():
+			snapshot = db.reference('conversations').get(shallow=True) or {}
+			return list(snapshot.keys()) if isinstance(snapshot, dict) else []
+		return await asyncio.to_thread(_get)
+
+	async def get_conversation_meta(self, conv_id: str) -> dict | None:
+		def _get():
+			return db.reference(f"conversations/{conv_id}/meta").get()
+		return await asyncio.to_thread(_get)
+
+	async def delete_conversation_nodes(self, conv_id: str) -> None:
+		"""Atomically delete a conversation's index card and its companion
+		top-level /messages and /answers nodes (multi-location update)."""
+		def _delete():
+			db.reference().update({
+				f"conversations/{conv_id}": None,
+				f"messages/{conv_id}": None,
+				f"answers/{conv_id}": None,
+			})
+		await asyncio.to_thread(_delete)
+
 	async def reset_all_away_mode(self) -> None:
 		"""Force away mode off globally.
 
@@ -425,7 +399,7 @@ class FirebaseBackend(
 		from server.gateway.document import _blob_path_from_url, _MAX_DOCUMENT_BYTES
 
 		msg = await asyncio.to_thread(
-			lambda: db.reference(f"conversations/{conv_id}/messages/{msg_id}").get()
+			lambda: db.reference(f"messages/{conv_id}/{msg_id}").get()
 		)
 		if not isinstance(msg, dict) or msg.get("type") != "document":
 			raise LookupError(f"no document message at {conv_id}/{msg_id}")
@@ -476,27 +450,13 @@ class FirebaseBackend(
 			if self._logger:
 				await self._logger.surface_error(f"firebase_timeout_notify_error: {exc}")
 
-	async def send_resolution_confirmation(
-		self,
-		request_id: str,
-		conversation_id: str,
-		correlation: CorrelationToken,
-		response_text: str | None = None,
-	) -> None:
-		# correlation is unused: the phone keys answers by request_id under
-		# /conversations/<conversation_id>/answers/<request_id>.
-		def _cleanup():
-			self._resp_ref.child(request_id).delete()
-		await self._loop.run_in_executor(None, _cleanup)
-
 	async def delete_response_slot(self, slot: str) -> None:
 		def _delete():
-			# Slots from the new path have the form "conv_id/answers/request_id";
-			# legacy slots are a simple key under /responses.
-			if "/answers/" in slot:
-				db.reference(f"conversations/{slot}").delete()
-			else:
-				self._resp_ref.child(slot).delete()
+			# Slots are full RTDB paths under the top-level answers node
+			# ("answers/<conv_id>/<request_id>"). Anything else is a bug
+			# upstream; refuse rather than delete an arbitrary path.
+			if slot.startswith("answers/"):
+				db.reference(slot).delete()
 		await self._loop.run_in_executor(None, _delete)
 
 	def _on_away_mode_command(self, event):
@@ -578,19 +538,9 @@ class FirebaseBackend(
 			yield await self._status_request_queue.get()
 
 	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
-		from server.firebase_supervisor import SupervisedListener
-		if "responses" not in self._supervised:
-			err = self._logger.surface_error if self._logger else _no_op_async_logger
-			sup = SupervisedListener(
-				name="responses",
-				path="responses",
-				callback=self._on_response,
-				error_logger=err,
-				loop=self._loop,
-			)
-			self._supervised["responses"] = sup
-			sup.start()
-		# Drop the legacy bare-registration field — it's never set now.
+		# Answers arrive via start_conversation_answers_listener, which
+		# enqueues IncomingResponse onto _response_queue; this iterator just
+		# drains the queue.
 		while True:
 			yield await self._response_queue.get()
 
@@ -802,7 +752,7 @@ class FirebaseBackend(
 		rejected: bool = False,
 		suppress_push: bool = False,
 	):
-		"""Append a message to /conversations/<id>/messages.
+		"""Append a message to /messages/<id>.
 
 		Two call forms are accepted:
 
@@ -825,7 +775,7 @@ class FirebaseBackend(
 		# ---- Legacy dict form: second arg is a dict --------------------------------
 		if isinstance(sender_or_message, dict):
 			message = sender_or_message
-			ref = db.reference(f"conversations/{conv_id}/messages").push()
+			ref = db.reference(f"messages/{conv_id}").push()
 			await asyncio.to_thread(ref.set, message)
 			return ref.key
 
@@ -889,7 +839,7 @@ class FirebaseBackend(
 		if message_type == "question":
 			await asyncio.to_thread(lambda: db.reference(f"conversations/{conv_id}/meta/hidden").set(False))
 
-		ref = db.reference(f"conversations/{conv_id}/messages").push()
+		ref = db.reference(f"messages/{conv_id}").push()
 		await asyncio.to_thread(ref.set, payload)
 		msg_id = ref.key
 
@@ -1082,14 +1032,15 @@ class FirebaseBackend(
 		self._start_command_listener("convene_commands", handler)
 
 	async def start_conversation_answers_listener(self) -> None:
-		"""Listen for answer events under /conversations/<conv_id>/answers/<request_id>.
+		"""Listen for answer events under /answers/<conv_id>/<request_id>.
 
 		correlation is the conv_id; request_id (from the answer path) is the
 		resolution key. sender rides along for display/logging only.
 
-		Answers payload written by Android: {text, sender, request_id, written_at}.
-		The slot stored in IncomingResponse is 'conv_id/answers/request_id' so
-		send_resolution_confirmation can clean up both paths.
+		Answers payload written by the phone/Operator: {text, sender,
+		request_id, written_at}. The slot stored in IncomingResponse is the
+		full RTDB path 'answers/<conv_id>/<request_id>' so
+		delete_response_slot can delete it directly.
 		"""
 		from server.firebase_supervisor import SupervisedListener
 
@@ -1102,7 +1053,7 @@ class FirebaseBackend(
 			sender = data.get("sender")
 			if not isinstance(text, str) or not isinstance(sender, str):
 				return
-			slot = f"{conv_id}/answers/{request_id}"  # cleanup path for the slot delete
+			slot = f"answers/{conv_id}/{request_id}"  # full path for the slot delete
 			resp = IncomingResponse(correlation=conv_id, text=text, slot=slot, request_id=request_id, sender=sender)
 			# Bounce to the event loop: this runs on the Firebase listener
 			# thread, and _spawn_bg / asyncio.create_task require a running loop.
@@ -1118,38 +1069,36 @@ class FirebaseBackend(
 				return
 			path = event.path.strip("/")
 			if not path:
-				# Initial/reconnect snapshot: data is the whole conversations
-				# tree. Replay any undelivered answers (H06): a reply written
-				# while the listener was detached would otherwise never be
-				# enqueued and the asker would block the full 24h. Idempotent:
-				# dispatch_responses deletes the slot on resolve and
-				# stale-notices unknown correlations.
+				# Initial/reconnect snapshot: data is the whole /answers node,
+				# {conv_id: {request_id: entry}}. Replay any undelivered
+				# answers (H06): a reply written while the listener was
+				# detached would otherwise never be enqueued and the asker
+				# would block the full 24h. Idempotent: dispatch_responses
+				# deletes the slot on resolve and stale-notices unknown
+				# correlations.
 				data = event.data
 				if not isinstance(data, dict):
 					return
-				for conv_id, conv_node in data.items():
-					if not isinstance(conv_node, dict):
-						continue
-					answers = conv_node.get("answers")
+				for conv_id, answers in data.items():
 					if not isinstance(answers, dict):
 						continue
 					for request_id, entry in answers.items():
 						if isinstance(entry, dict):
 							_enqueue_answer(conv_id, request_id, entry)
 				return
-			# Incremental put, path form: <conv_id>/answers/<request_id>
+			# Incremental put, path form: <conv_id>/<request_id>
 			parts = path.split("/")
-			if len(parts) != 3 or parts[1] != "answers":
+			if len(parts) != 2:
 				return
 			data = event.data
 			if not isinstance(data, dict):
 				return
-			_enqueue_answer(parts[0], parts[2], data)
+			_enqueue_answer(parts[0], parts[1], data)
 
 		err = self._logger.surface_error if self._logger else _no_op_async_logger
 		sup = SupervisedListener(
 			name=listener_name,
-			path="conversations",
+			path="answers",
 			callback=_on_answer,
 			error_logger=err,
 			loop=self._loop,

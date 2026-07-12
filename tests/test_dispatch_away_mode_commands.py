@@ -31,7 +31,6 @@ def _make_backend(commands):
 	raises CancelledError so the dispatcher exits cleanly."""
 	backend = MagicMock()
 	backend.set_global_away_mode = AsyncMock()
-	backend.send_resolution_confirmation = AsyncMock()
 	backend.write_conversation_message = AsyncMock(return_value="key-1")
 	backend.set_conversation_last_activity = AsyncMock()
 	backend.send_text = AsyncMock()

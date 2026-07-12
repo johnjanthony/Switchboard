@@ -419,10 +419,6 @@ def build_tool_handlers(
 		await logger.request_resolved(
 			request_id, conversation_id, response_text=result, source="unknown", duration_ms=duration_ms,
 		)
-		try:
-			await backend.send_resolution_confirmation(request_id, conversation_id, correlation, response_text=result)
-		except Exception as exc:
-			await logger.surface_error(f"resolution_confirmation_failed: {exc}", correlation=str(correlation))
 		return result
 
 	@require_cli_session_id
@@ -540,7 +536,7 @@ def build_tool_handlers(
 					label=f"fb_write_title:{conversation_id}",
 				)
 
-			# Write to /conversations/<id>/messages
+			# Write to /messages/<id>
 			_spawn_bg(
 				backend.write_conversation_message(
 					conversation_id, caller_member.sender, "agent_msg", message,
@@ -655,7 +651,7 @@ def build_tool_handlers(
 			conv.messages.append(parting_msg)
 			conv.last_activity_at = now_ts
 
-			# Write parting to /conversations/<id>/messages
+			# Write parting to /messages/<id>
 			_spawn_bg(
 				backend.write_conversation_message(conv_id, caller_member.sender, "parting", parting_message, format="plain"),
 				label=f"fb_write_parting_msg:{conv_id}:{caller_member.sender}",

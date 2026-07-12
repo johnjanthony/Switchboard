@@ -56,7 +56,7 @@ def member_data(**kwargs):
 	return base
 
 
-def conv_snapshot(conv_id, state="active", title=None, members=None, messages=None, extra_meta=None):
+def conv_snapshot(conv_id, state="active", title=None, members=None, extra_meta=None):
 	meta = {
 		"state": state,
 		"title": title or conv_id,
@@ -70,8 +70,6 @@ def conv_snapshot(conv_id, state="active", title=None, members=None, messages=No
 	node = {"meta": meta}
 	if members:
 		node["members_active"] = members
-	if messages:
-		node["messages"] = messages
 	return node
 
 
@@ -126,11 +124,11 @@ async def test_hydrate_single_active_conversation():
 				"conv-1",
 				title="My Session",
 				members={"Claude": member_data(cli_session_id="sess-abc", sender="Claude", alive=True)},
-				messages={
-					"-push1": {"seq": 0, "sender": "Claude", "type": "agent_msg", "text": "hello", "timestamp": "t1"},
-					"-push2": {"seq": 1, "sender": "John", "type": "system", "text": "hi", "timestamp": "t2"},
-				},
 			)
+		},
+		"messages/conv-1": {
+			"-push1": {"seq": 0, "sender": "Claude", "type": "agent_msg", "text": "hello", "timestamp": "t1"},
+			"-push2": {"seq": 1, "sender": "John", "type": "system", "text": "hi", "timestamp": "t2"},
 		},
 		"cli_sessions": {
 			"sess-abc": {"home_conversation_id": "conv-1"},
@@ -261,14 +259,12 @@ async def test_hydrate_orders_messages_by_push_key():
 	# Deliberately provide push keys out of alphabetical/time order
 	snapshot = {
 		"conversations": {
-			"conv-msgs": conv_snapshot(
-				"conv-msgs",
-				messages={
-					"-zzz": {"seq": 2, "sender": "John", "type": "agent_msg", "text": "third"},
-					"-aaa": {"seq": 0, "sender": "Claude", "type": "agent_msg", "text": "first"},
-					"-mmm": {"seq": 1, "sender": "Claude", "type": "agent_msg", "text": "second"},
-				},
-			),
+			"conv-msgs": conv_snapshot("conv-msgs"),
+		},
+		"messages/conv-msgs": {
+			"-zzz": {"seq": 2, "sender": "John", "type": "agent_msg", "text": "third"},
+			"-aaa": {"seq": 0, "sender": "Claude", "type": "agent_msg", "text": "first"},
+			"-mmm": {"seq": 1, "sender": "Claude", "type": "agent_msg", "text": "second"},
 		},
 	}
 	mock_db = make_firebase_db_mock(snapshot)
@@ -755,18 +751,16 @@ async def test_hydration_filters_messages_to_live_types():
 
 	snapshot = {
 		"conversations": {
-			"conv-x": conv_snapshot(
-				"conv-x",
-				messages={
-					"-push1": {"seq": 0, "sender": "Claude", "type": "system", "text": "a"},
-					"-push2": {"seq": 1, "sender": "John", "type": "question", "text": "b"},
-					"-push3": {"seq": 2, "sender": "Claude", "type": "agent_msg", "text": "c"},
-					"-push4": {"seq": 3, "sender": "John", "type": "human", "text": "d"},
-					"-push5": {"seq": 4, "sender": "Claude", "type": "notify", "text": "e"},
-					"-push6": {"seq": 5, "sender": "Claude", "type": "parting", "text": "f"},
-					"-push7": {"seq": 6, "sender": "Claude", "type": "document", "text": "g"},
-				},
-			),
+			"conv-x": conv_snapshot("conv-x"),
+		},
+		"messages/conv-x": {
+			"-push1": {"seq": 0, "sender": "Claude", "type": "system", "text": "a"},
+			"-push2": {"seq": 1, "sender": "John", "type": "question", "text": "b"},
+			"-push3": {"seq": 2, "sender": "Claude", "type": "agent_msg", "text": "c"},
+			"-push4": {"seq": 3, "sender": "John", "type": "human", "text": "d"},
+			"-push5": {"seq": 4, "sender": "Claude", "type": "notify", "text": "e"},
+			"-push6": {"seq": 5, "sender": "Claude", "type": "parting", "text": "f"},
+			"-push7": {"seq": 6, "sender": "Claude", "type": "document", "text": "g"},
 		},
 	}
 	mock_db = make_firebase_db_mock(snapshot)

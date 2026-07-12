@@ -595,10 +595,10 @@ async def test_dispatch_loop_deletes_stale_response_slot(cfg, logger):
 @pytest.mark.asyncio
 async def test_dispatch_loop_deletes_response_slot_on_success(cfg, logger):
 	"""When the response routes successfully (registry resolves), the dispatch
-	loop must delete the response slot too — the cleanup must not hinge on the
-	agent's ask_human coroutine surviving long enough to call
-	send_resolution_confirmation, since MCP streamable-HTTP transport doesn't
-	always propagate client disconnects."""
+	loop must delete the response slot too — the slot delete runs in dispatch,
+	full stop, and must not hinge on the agent's ask_human coroutine surviving
+	long enough to observe the resolution, since MCP streamable-HTTP transport
+	doesn't always propagate client disconnects."""
 	registry = make_registry_with_loopback()
 	# Pre-register a pending so registry.resolve succeeds.
 	registry.add(conversation_id=_CWD, cli_session_id="s-1", sender=_SENDER, request_id="r1", msg_id="m1")

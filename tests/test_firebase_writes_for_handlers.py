@@ -31,7 +31,6 @@ def _make_store_backend():
 	backend.set_session_home = AsyncMock()
 	backend.set_global_away_mode = AsyncMock()
 	backend.send_timeout_followup = AsyncMock()
-	backend.send_resolution_confirmation = AsyncMock()
 	backend.mark_question_cancelled = AsyncMock()
 	backend.write_agent_status = AsyncMock()
 	backend.write_conversation_member_history = AsyncMock()

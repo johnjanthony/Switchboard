@@ -29,9 +29,6 @@ class _StubBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecyc
 	async def send_timeout_followup(self, *a, **k):
 		return None
 
-	async def send_resolution_confirmation(self, *a, **k):
-		return None
-
 	async def poll_responses(self):
 		if False:
 			yield None
@@ -54,14 +51,14 @@ class TestBackendContract:
 
 class TestMessageWriterContract:
 	"""Contract tests for MessageWriter (send_timeout_followup,
-	send_resolution_confirmation, send_text, send_spawn_ack, send_stale_reply_notice,
+	send_text, send_spawn_ack, send_stale_reply_notice,
 	mark_question_cancelled).
 
 	write_channel_message has been retired; write_conversation_message is the
 	canonical write method and lives on ConversationStore."""
 
 	def test_required_abstracts_declared(self):
-		expected = {"send_timeout_followup", "send_resolution_confirmation"}
+		expected = {"send_timeout_followup"}
 		declared = {
 			name
 			for name, member in inspect.getmembers(MessageWriter)

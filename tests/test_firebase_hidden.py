@@ -116,7 +116,7 @@ class _PatchedBackend(_FakeBackend):
 		if message_type == "question":
 			self._ref_sets.append((f"conversations/{conv_id}/meta/hidden", False))
 
-		self._ref_sets.append((f"conversations/{conv_id}/messages/{msg_id}", payload))
+		self._ref_sets.append((f"messages/{conv_id}/{msg_id}", payload))
 
 		if title:
 			self._ref_sets.append((f"conversations/{conv_id}/meta/title", title[:80]))
@@ -192,7 +192,7 @@ async def test_human_message_skips_fcm():
 async def test_per_message_title_written():
 	backend = _PatchedBackend()
 	await backend.write_conversation_message("conv-proj-1", "Claude", "notify", "hi", title="My Session")
-	msg_writes = [(p, v) for p, v in backend._ref_sets if p == "conversations/conv-proj-1/messages/fake_msg_id"]
+	msg_writes = [(p, v) for p, v in backend._ref_sets if p == "messages/conv-proj-1/fake_msg_id"]
 	assert msg_writes
 	assert msg_writes[0][1]["title"] == "My Session"
 

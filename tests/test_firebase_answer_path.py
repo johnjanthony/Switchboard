@@ -1,8 +1,7 @@
-"""Integration tests for the conversation-scoped answer path (Fix 6).
+"""Integration tests for the top-level answers node path (Fix 6, WP-10 Task 1).
 
-Verifies that the Android-written path matches the server-read path:
-Android writes /conversations/<conv_id>/answers/<request_id>
-Server listener subscribes to conversations/ and routes answers/* events.
+Answers live at /answers/<conv_id>/<request_id>; the server listener
+subscribes to the top-level 'answers' node.
 """
 
 from __future__ import annotations
@@ -25,9 +24,9 @@ def backend(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_start_conversation_answers_listener_subscribes_to_conversations_path(backend):
-	"""start_conversation_answers_listener must subscribe to /conversations,
-	matching the path Android writes to: /conversations/<conv_id>/answers/<request_id>."""
+async def test_start_conversation_answers_listener_subscribes_to_answers_path(backend):
+	"""start_conversation_answers_listener must subscribe to /answers,
+	matching the path answers are written to: /answers/<conv_id>/<request_id>."""
 	be, mock_db = backend
 	created_listeners = []
 
@@ -43,8 +42,8 @@ async def test_start_conversation_answers_listener_subscribes_to_conversations_p
 		await be.start_conversation_answers_listener()
 
 	assert len(created_listeners) == 1
-	assert created_listeners[0].path == "conversations", (
-		f"Expected listener on 'conversations', got '{created_listeners[0].path}'"
+	assert created_listeners[0].path == "answers", (
+		f"Expected listener on 'answers', got '{created_listeners[0].path}'"
 	)
 	assert created_listeners[0].name == "conversation_answers"
 
@@ -77,41 +76,43 @@ async def test_conversation_answer_path_matches_android_write_pattern():
 	request_id = "req-deadbeef"
 
 	# Path Android writes to (from MainViewModel.submitReply fix)
-	android_write_path = f"conversations/{conv_id}/answers/{request_id}"
+	android_write_path = f"answers/{conv_id}/{request_id}"
 
 	# Path the server listener subscribes to (root of the subtree)
-	server_listener_root = "conversations"
+	server_listener_root = "answers"
 
-	# The event path within the subtree is /<conv_id>/answers/<request_id>
-	event_path = f"/{conv_id}/answers/{request_id}"
+	# The event path within the subtree is /<conv_id>/<request_id>
+	event_path = f"/{conv_id}/{request_id}"
 	parts = event_path.strip("/").split("/")
 
+	assert len(parts) == 2
 	assert parts[0] == conv_id
-	assert parts[1] == "answers"
-	assert parts[2] == request_id
+	assert parts[1] == request_id
 	assert android_write_path.startswith(server_listener_root + "/")
 
 
-def test_delete_response_slot_routes_answers_to_conversations_path(backend):
-	"""delete_response_slot must route conv_id/answers/request_id slots to
-	/conversations/<path> rather than /responses/<path>."""
+@pytest.mark.asyncio
+async def test_delete_response_slot_deletes_full_answers_path(backend):
+	"""delete_response_slot must delete db.reference(slot) directly for
+	slots under the top-level answers node."""
 	be, mock_db = backend
+
+	async def _run_in_executor(_executor, func):
+		func()
+
 	be._loop = MagicMock()
-	be._resp_ref = MagicMock()
+	be._loop.run_in_executor = _run_in_executor
 
-	# We can't easily test run_in_executor in a sync test, but we can verify
-	# the slot routing logic by checking the branch condition.
-	conv_answer_slot = "conv-abc/answers/req-123"
-	legacy_slot = "req-only"
+	await be.delete_response_slot("answers/conv-abc/req-123")
 
-	assert "/answers/" in conv_answer_slot, "Conv-answer slots contain /answers/"
-	assert "/answers/" not in legacy_slot, "Legacy slots do not contain /answers/"
+	mock_db.reference.assert_called_once_with("answers/conv-abc/req-123")
+	mock_db.reference.return_value.delete.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_initial_snapshot_replays_undelivered_answers(backend):
 	"""H06: a reply present in Firebase when the listener (re)attaches arrives
-	as the initial snapshot (path '/', data = whole conversations tree) and
+	as the initial snapshot (path '/', data = whole answers tree) and
 	must be enqueued like an incremental answer event."""
 	be, mock_db = backend
 	captured = []
@@ -131,16 +132,8 @@ async def test_initial_snapshot_replays_undelivered_answers(backend):
 	event.event_type = "put"
 	event.path = "/"
 	event.data = {
-		"conv-1": {
-			"meta": {"state": "active"},
-			"answers": {
-				"req-1": {"text": "yes do it", "sender": "Claude", "written_at": "x"},
-			},
-		},
-		"conv-2": {
-			"meta": {"state": "active"},
-			# no answers node: must be skipped without error
-		},
+		"conv-1": {"req-1": {"text": "yes do it", "sender": "Claude", "written_at": "x"}},
+		"conv-2": {},
 	}
 	on_answer(event)
 
@@ -151,5 +144,5 @@ async def test_initial_snapshot_replays_undelivered_answers(backend):
 	assert resp.correlation == "conv-1"
 	assert resp.sender == "Claude"
 	assert resp.text == "yes do it"
-	assert resp.slot == "conv-1/answers/req-1"
+	assert resp.slot == "answers/conv-1/req-1"
 	assert be._loop.call_soon_threadsafe.call_count == 1

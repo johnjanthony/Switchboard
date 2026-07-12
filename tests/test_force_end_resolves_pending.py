@@ -108,8 +108,6 @@ async def test_ask_human_returns_force_end_sentinel_without_treating_as_answer(c
 	data = json.loads(result)
 	assert data["status"] == "conversation_ended"
 	assert data["cause"] == "force-ended"
-	# A force-end is not an answer: no resolution confirmation must be sent.
-	assert backend.sent_confirmations == []
 
 
 @pytest.mark.asyncio

@@ -188,7 +188,7 @@ async def test_set_global_wsl_available_coerces_truthy(backend):
 
 @pytest.mark.asyncio
 async def test_write_conversation_message_writes_to_correct_path(backend):
-	"""write_conversation_message (expanded form) writes to conversations/<id>/messages."""
+	"""write_conversation_message (expanded form) writes to messages/<id>."""
 	be, mock_db = backend
 	fake_ref = MagicMock()
 	fake_ref.key = "push-key-abc"
@@ -197,7 +197,7 @@ async def test_write_conversation_message_writes_to_correct_path(backend):
 	await be.write_conversation_message("conv-test-path", "Claude", "notify", "hello")
 
 	calls = [str(c) for c in mock_db.reference.call_args_list]
-	assert any("conversations/conv-test-path/messages" in c for c in calls)
+	assert any("messages/conv-test-path" in c for c in calls)
 	# Must NOT write to /channels/<anything>/messages
 	assert not any("channels/" in c and "/messages" in c for c in calls)
 
@@ -255,7 +255,7 @@ async def test_write_conversation_message_dict_form_returns_push_key(backend):
 
 	assert result == "push-dict-key"
 	calls = [str(c) for c in mock_db.reference.call_args_list]
-	assert any("conversations/conv-dict/messages" in c for c in calls)
+	assert any("messages/conv-dict" in c for c in calls)
 
 
 @pytest.mark.asyncio
@@ -276,7 +276,7 @@ async def test_no_channels_messages_path_written_for_conversation_message(backen
 
 @pytest.mark.asyncio
 async def test_mark_question_cancelled_reads_from_conversations_not_channels(backend):
-	"""mark_question_cancelled now scans /conversations/<conv_id>/messages, not /channels/."""
+	"""mark_question_cancelled now scans /messages/<conv_id>, not /channels/."""
 	be, mock_db = backend
 	# Simulate Firebase returning no messages (empty conversations node)
 	mock_db.reference.return_value.get.return_value = None
@@ -284,7 +284,7 @@ async def test_mark_question_cancelled_reads_from_conversations_not_channels(bac
 	await be.mark_question_cancelled("conv-cancel", "req-xyz")
 
 	calls = [str(c) for c in mock_db.reference.call_args_list]
-	assert any("conversations/conv-cancel/messages" in c for c in calls)
+	assert any("messages/conv-cancel" in c for c in calls)
 	assert not any("channels/" in c and "/messages" in c for c in calls)
 
 

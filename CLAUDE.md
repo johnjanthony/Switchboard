@@ -40,7 +40,7 @@ server/
   command_freshness.py Staleness gate for queued Firebase command entries (COMMAND_TTL_SECONDS)
   gateway/             Tool handlers + dispatch loops
     handlers.py          ask_human, notify_human, send_document_human, message_and_await_agent, join_conversation, combine_conversations, lookup_conversation_ids, leave_conversation, set_away_mode tool closures; JSON status envelopes (_envelope/_terminal_envelope/_wrap_wait_result)
-    dispatch.py          dispatch_responses, dispatch_combine_commands, dispatch_force_end_commands, dispatch_spawn_commands, dispatch_away_mode_commands, dispatch_status_request_commands, dispatch_session_end_markers, dispatch_session_sweep, handle_force_end
+    dispatch.py          dispatch_responses, dispatch_combine_commands, dispatch_force_end_commands, dispatch_spawn_commands, dispatch_away_mode_commands, dispatch_status_request_commands, dispatch_session_end_markers, dispatch_session_sweep, dispatch_conversation_sweep, handle_force_end
     document.py          _validate_path + extension allowlist + secret-name denylist + sha256 helpers
     bulk_respond.py      _apply_bulk_respond_decision (used by exit_global to drain pending questions)
     parked.py            finish_parked_resolve - bookkeeping for resolving a future-less parked pending (record cleanup + session notices)
@@ -143,7 +143,7 @@ Routing is by `cli_session_id`, injected by the `cli-session-injector-hook.py` P
 
 ## Conversation model
 
-Conversations are the persistence + routing unit. States: `Active` / `Ended`. A ref-less `join_conversation()` mints a new Active conversation, or lands the caller in the single still-solo conversation another agent minted ref-less within the last ~30 minutes (the candidate rule); zero or several candidates both mint a new room. An already-bound caller's ref-less join rejoins its bound conversation (the candidate rule applies only to unbound callers). Routing key is `cli_session_id` (hook-injected), not cwd. Away mode is a single global flag (`set_away_mode(bool)`).
+Conversations are the persistence + routing unit. States: `Active` / `Ended`. A ref-less `join_conversation()` mints a new Active conversation, or lands the caller in the single still-solo conversation another agent minted ref-less within the last ~30 minutes (the candidate rule); zero or several candidates both mint a new room. An already-bound caller's ref-less join rejoins its bound conversation (the candidate rule applies only to unbound callers). Routing key is `cli_session_id` (hook-injected), not cwd. Away mode is a single global flag (`set_away_mode(bool)`). Ended conversations are retention-pruned from Firebase (index card + /messages + /answers) after 72h (SWITCHBOARD_CONVERSATION_RETENTION_HOURS); messages live at /messages/<conv_id>, answers at /answers/<conv_id>/<request_id>.
 
 ## Architectural constraints (decided)
 

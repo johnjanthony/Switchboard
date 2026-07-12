@@ -32,6 +32,7 @@ from server.gateway.dispatch import (
 	dispatch_session_end_markers,
 	dispatch_status_request_commands,
 	dispatch_session_sweep,
+	dispatch_conversation_sweep,
 )
 from server.gateway.bg_tasks import BG_FAILURE_AUDIT_LABEL, _spawn_bg, set_bg_failure_hook
 from server.http_auth import TokenAuthMiddleware
@@ -734,6 +735,7 @@ async def _run(config: Config) -> None:
 		"dispatch_session_end_markers": LoopSupervisor("dispatch_session_end_markers", backend, logger.surface_error),
 		"dispatch_status_request_commands": LoopSupervisor("dispatch_status_request_commands", backend, logger.surface_error),
 		"dispatch_session_sweep": LoopSupervisor("dispatch_session_sweep", backend, logger.surface_error),
+		"dispatch_conversation_sweep": LoopSupervisor("dispatch_conversation_sweep", backend, logger.surface_error),
 	}
 	mcp = _build_fastmcp(handlers, config.host)
 
@@ -882,6 +884,13 @@ async def _run(config: Config) -> None:
 		)
 	)
 
+	conversation_sweep_task = asyncio.create_task(
+		dispatch_conversation_sweep(
+			registry, backend, logger, loop_sups["dispatch_conversation_sweep"],
+			retention_hours=config.conversation_retention_hours,
+		)
+	)
+
 	loop = asyncio.get_running_loop()
 
 	def _request_stop() -> None:
@@ -908,6 +917,7 @@ async def _run(config: Config) -> None:
 		session_end_markers_task.cancel()
 		status_request_task.cancel()
 		session_sweep_task.cancel()
+		conversation_sweep_task.cancel()
 		with contextlib.suppress(asyncio.CancelledError):
 			await dispatch_task
 		with contextlib.suppress(asyncio.CancelledError):
@@ -926,6 +936,8 @@ async def _run(config: Config) -> None:
 			await status_request_task
 		with contextlib.suppress(asyncio.CancelledError):
 			await session_sweep_task
+		with contextlib.suppress(asyncio.CancelledError):
+			await conversation_sweep_task
 		# Flush outstanding fire-and-forget background writes (member removals,
 		# answer-history writes, pending-question cleanups, etc.) before the loop
 		# closes, so a clean shutdown doesn't drop them. Bounded so a stuck write

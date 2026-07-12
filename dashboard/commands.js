@@ -4,7 +4,7 @@
 
 export function answerCmd(convId, requestId, text, sender, nowIsoFn) {
 	return {
-		path: `conversations/${convId}/answers/${requestId}`,
+		path: `answers/${convId}/${requestId}`,
 		value: { text, sender, request_id: requestId, written_at: nowIsoFn() },
 	};
 }

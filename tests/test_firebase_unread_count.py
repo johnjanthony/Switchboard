@@ -2,7 +2,7 @@
 
 The legacy write_channel_message wrote to /channels/<cwd_key>/... with
 unread_count increments. write_conversation_message writes to
-/conversations/<conv_id>/messages and updates the conversation meta node.
+/messages/<conv_id> and updates the conversation meta node.
 These tests verify no /channels paths are touched for non-human messages,
 and that the conversations path is written correctly.
 """
@@ -43,7 +43,7 @@ async def test_question_writes_to_conversations_not_channels(backend):
 	)
 
 	path_calls = [str(c) for c in mock_db.reference.call_args_list]
-	assert any("conversations/conv-abc/messages" in c for c in path_calls)
+	assert any("messages/conv-abc" in c for c in path_calls)
 	assert not any("channels/c:__work__sw/unread_count" in c for c in path_calls)
 	assert not any("channels/c:__work__sw/pending_responses" in c for c in path_calls)
 
@@ -65,7 +65,7 @@ async def test_notify_writes_to_conversations_not_channels(backend):
 	)
 
 	path_calls = [str(c) for c in mock_db.reference.call_args_list]
-	assert any("conversations/conv-abc/messages" in c for c in path_calls)
+	assert any("messages/conv-abc" in c for c in path_calls)
 	assert not any("channels/c:__work__sw/unread_count" in c for c in path_calls)
 	assert not any("channels/c:__work__sw/pending_responses" in c for c in path_calls)
 
@@ -87,7 +87,7 @@ async def test_human_message_writes_to_conversations(backend):
 	)
 
 	path_calls = [str(c) for c in mock_db.reference.call_args_list]
-	assert any("conversations/conv-abc/messages" in c for c in path_calls)
+	assert any("messages/conv-abc" in c for c in path_calls)
 	assert not any("channels/" in c for c in path_calls if "unread_count" in c or "pending_responses" in c)
 
 

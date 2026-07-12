@@ -8,10 +8,10 @@ import {
 const FIXED_ISO = '2026-06-15T12:00:00.000Z';
 const nowIso = () => FIXED_ISO;
 
-test('answerCmd builds the answer write at conversations/<id>/answers/<request_id>', () => {
+test('answerCmd builds the answer write at answers/<id>/<request_id>', () => {
 	const cmd = answerCmd('c1', 'r9', 'hello', 'John', nowIso);
 	assert.deepEqual(cmd, {
-		path: 'conversations/c1/answers/r9',
+		path: 'answers/c1/r9',
 		value: { text: 'hello', sender: 'John', request_id: 'r9', written_at: FIXED_ISO },
 	});
 });

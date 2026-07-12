@@ -39,10 +39,10 @@ class _GatedBackend:
 		self.deleted_slots = []
 
 	async def poll_responses(self):
-		yield IncomingResponse(correlation=_CONV, text="answer-1", slot=f"{_CONV}/answers/req-1", request_id="req-1")
+		yield IncomingResponse(correlation=_CONV, text="answer-1", slot=f"answers/{_CONV}/req-1", request_id="req-1")
 		await self._gate.wait()
 		# Reconnect snapshot replay of the SAME (still-present) Q1 answer.
-		yield IncomingResponse(correlation=_CONV, text="answer-1", slot=f"{_CONV}/answers/req-1", request_id="req-1")
+		yield IncomingResponse(correlation=_CONV, text="answer-1", slot=f"answers/{_CONV}/req-1", request_id="req-1")
 		await asyncio.Event().wait()
 
 	async def delete_response_slot(self, slot):
