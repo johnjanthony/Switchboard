@@ -119,6 +119,10 @@ pytest tests/test_registry.py -v
 
 Integration tests run in-process; no external services required. The backends (Firebase, etc.) are mocked.
 
+### Live smoke harness
+
+`.venv\Scripts\python.exe scripts\smoke\smoke.py` drives the DEPLOYED service end-to-end: away-mode round-trip, at-desk redirect, live ask->answer->resolve, restart survival (parked-pending recovery), cleanup. Real Firebase, real service, real FCM — each run pings the phone 1-2 times and briefly toggles global away mode; the default run RESTARTS the service (severs every live MCP session). Use `--skip-restart` when other agents are working; `--preflight-only` is read-only and always safe. The run leaves one hidden Ended conversation for the 72h retention sweep. Exit 0 = all flows passed.
+
 ## Building the Android app
 
 The Android project lives entirely under `android/` — its own `settings.gradle`, wrapper, and `gradle.properties`. There is no Gradle build at the repo root.
