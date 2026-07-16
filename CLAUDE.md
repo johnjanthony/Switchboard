@@ -30,7 +30,7 @@ server/
   spawn.py             Agent session spawner (triggered from Android app)
   conversation_ops.py  Conversation lifecycle helpers (create, add/migrate member, queue-for-intro, wake, combine, session-fallback); sender-collision auto-disambiguation ('Claude Win' -> 'Claude Win 2' etc.)
   cli_session_end.py   handle_session_end: marks a member dormant on session end; invoked by the marker-file sweep (dispatch_session_end_markers)
-  rate_limiter.py      Per-channel token-bucket rate limiter for notify_human and send_document_human
+  rate_limiter.py      Per-conversation token-bucket rate limiter consumed by ask_human, notify_human, send_document_human, and message_and_await_agent (which degrades to FCM suppression instead of rejecting)
   canonicalization.py  Canonical-cwd normalization (display-only; cwd is a display tag)
   logging_jsonl.py     JSONL audit log
   hydration.py         Rebuilds Registry state from Firebase on startup (conversations survive restart)
@@ -122,7 +122,7 @@ Integration tests run in-process; no external services required. The backends (F
 
 ### Live smoke harness
 
-`.venv\Scripts\python.exe scripts\smoke\smoke.py` drives the DEPLOYED service end-to-end: away-mode round-trip, at-desk redirect, live ask->answer->resolve, restart survival (parked-pending recovery), cleanup. Real Firebase, real service, real FCM — each run pings the phone 1-2 times and briefly toggles global away mode; the default run RESTARTS the service (severs every live MCP session). Use `--skip-restart` when other agents are working; `--preflight-only` is read-only and always safe. The run leaves one hidden Ended conversation for the 72h retention sweep. Exit 0 = all flows passed.
+`.venv\Scripts\python.exe scripts\smoke\smoke.py` drives the DEPLOYED service end-to-end: away-mode round-trip, at-desk redirect, live ask->answer->resolve, fastest-answer round-trip, restart survival (parked-pending recovery), cleanup. Real Firebase, real service, real FCM — each run pings the phone 1-2 times and briefly toggles global away mode; the default run RESTARTS the service (severs every live MCP session). Use `--skip-restart` when other agents are working; `--preflight-only` is read-only and always safe. The run leaves one hidden Ended conversation for the 72h retention sweep. Exit 0 = all flows passed.
 
 ## Building the Android app
 

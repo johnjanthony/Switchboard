@@ -121,8 +121,11 @@ async def test_phone_exit_racing_in_flight_ask_does_not_strand(tmp_path):
 @pytest.mark.asyncio
 async def test_tool_exit_racing_in_flight_ask_does_not_strand(tmp_path):
 	# Same window, tool-side driver: set_away_mode(False) flips first and
-	# drains, but this ask is not in its snapshot either. The post-add
-	# re-check must catch it identically.
+	# drains. Register-first means this ask IS in that snapshot - registry.add
+	# ran synchronously before the write parked it - so the drain's
+	# send_default resolves it directly with John's bulk reply. The post-add
+	# re-check then finds future.done() and falls through instead of
+	# withdrawing; this is the correct post-register-first behavior.
 	registry, backend, handlers = _setup(tmp_path, "conv-r2", "s-r2")
 
 	ask_task = asyncio.create_task(
@@ -136,9 +139,9 @@ async def test_tool_exit_racing_in_flight_ask_does_not_strand(tmp_path):
 
 	backend.question_write_gate.set()
 	result = await asyncio.wait_for(ask_task, timeout=2.0)
-	assert result == AT_DESK_SENTINEL
+	assert result == AT_DESK_NOTICE
 	assert registry.pending_count == 0
-	assert len(backend.cancelled_questions) == 1
+	assert len(backend.cancelled_questions) == 0
 
 
 @pytest.mark.asyncio

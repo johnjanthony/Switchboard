@@ -534,7 +534,9 @@ class SpawnHandler:
 		# notify_human instead (T-147).
 		solo_resume = len(resumable) == 1
 		agents = []
+		flipped = []
 		for m in resumable:
+			flipped.append((m, (m.session_ended_at, m.session_end_reason, m.left_at)))
 			m.alive = True
 			m.session_ended_at = None
 			m.session_end_reason = None
@@ -585,9 +587,27 @@ class SpawnHandler:
 		try:
 			await self._invoke_launcher()
 		except Exception as exc:
+			# Roll the freshly-moved members back to dormant in the NEW
+			# conversation (do not resurrect the source: the move committed).
+			# Dormant members must be unbound (the resume eligibility filter
+			# treats a bound dormant member as drift), and the dormant state is
+			# re-persisted awaited so restart hydration cannot resurrect the
+			# optimistic alive=True.
+			async with new_conv.lock:
+				for m, (ended_at, end_reason, left_at) in flipped:
+					m.alive = False
+					m.session_ended_at = ended_at
+					m.session_end_reason = end_reason
+					m.left_at = left_at
+					self._registry.unbind_session(m.cli_session_id)
+			for m, _saved in flipped:
+				try:
+					await self._backend.write_conversation_member(new_id, m)
+				except Exception as persist_exc:
+					await self._logger.surface_error(f"resume_rollback_persist_failed: {m.sender}: {persist_exc}")
 			await self._backend.send_text(
 				f"Resume failed to launch (continued from {source_id}): {exc}. "
-				"No agent started; end the conversation from the phone and retry."
+				"The member(s) are dormant in the new conversation; resume them from the phone (long-press it > Resume)."
 			)
 
 	async def launch_resume_agent(
@@ -669,10 +689,12 @@ class SpawnHandler:
 		from server.gateway.bg_tasks import _spawn_bg as _sbg
 		sender = _convene_sender_for(self._registry, sessions, session_id)
 		other_alive = 0
+		added_member = False
 		if target is not None:
 			async with target.lock:
 				if session_id not in target.members_active:
 					await _add_member(self._registry, target.id, session_id, sender, rec.cwd, backend=self._backend)
+					added_member = True
 			sender = target.members_active[session_id].sender
 			other_alive = sum(1 for k, m in target.members_active.items() if k != session_id and m.alive)
 			msg = {
@@ -694,6 +716,24 @@ class SpawnHandler:
 		)
 		if not ok:
 			await self._backend.send_text(f"Resume of {sender} did not launch (no desktop session or launcher failure).")
+			if added_member and target is not None:
+				# Revert the member this call optimistically added: dormant and
+				# unbound (kept in the roster for visibility; John can retry the
+				# board resume - the session record stays terminal - or Resume
+				# the conversation). Awaited persist for the same hydration
+				# reason as the combine/resume rollbacks.
+				member = target.members_active.get(session_id)
+				if member is not None:
+					from server.clock import now_iso as _now_iso
+					async with target.lock:
+						member.alive = False
+						member.session_ended_at = _now_iso()
+						member.session_end_reason = "launch-failed"
+						self._registry.unbind_session(session_id)
+					try:
+						await self._backend.write_conversation_member(target.id, member)
+					except Exception as persist_exc:
+						await self._logger.surface_error(f"resume_session_revert_persist_failed: {sender}: {persist_exc}")
 
 	def _format_resume_session_prompt(self, cmd: dict, rec, sender: str, target, other_alive: int) -> str:
 		if target is None:

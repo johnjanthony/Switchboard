@@ -141,6 +141,47 @@ async def flow_live_ask_answer(ctx, rep, args):
 		raise SmokeFailure(f"notify_human expected 'ok', got {notif!r}")
 
 
+async def flow_fast_answer(ctx, rep, args):
+	"""Live bound for the register-first fix: answer the instant the question
+	message is visible - the fastest answer reality can produce. This is a
+	happy-path bound, not a deterministic race proof (that is the event-gated
+	unit test): post-fix, ANY answer speed must resolve the ask, and no
+	'withdrawn' system message may appear. Inherits away mode ON from the
+	previous flow."""
+	question = f"smoke fastest-answer probe {ctx.run_id}"
+	msgs_before = set((rtdb(ctx, f"messages/{ctx.conversation_id}").get() or {}).keys())
+	task = start_blocking_ask(ctx, question)
+
+	def _find_question_request_id():
+		msgs = rtdb(ctx, f"messages/{ctx.conversation_id}").get() or {}
+		for mid, node in msgs.items():
+			if mid in msgs_before or not isinstance(node, dict):
+				continue
+			if node.get("type") == "question" and node.get("text") == question:
+				return node.get("request_id")
+		return None
+	request_id = await poll_until("question message visible", _find_question_request_id, 15, interval=0.05)
+
+	expected_reply = f"smoke-fast-answer-{ctx.run_id}"
+	rtdb(ctx, f"answers/{ctx.conversation_id}/{request_id}").set({
+		"text": expected_reply, "sender": "John",
+		"request_id": request_id, "written_at": datetime.now(timezone.utc).isoformat(),
+	})
+
+	reply = await asyncio.wait_for(task, 20)
+	if reply != expected_reply:
+		raise SmokeFailure(f"fastest answer returned {reply!r}, expected {expected_reply!r}")
+
+	def _no_withdrawn_notice():
+		msgs = rtdb(ctx, f"messages/{ctx.conversation_id}").get() or {}
+		for node in msgs.values():
+			if isinstance(node, dict) and "withdrawn" in (node.get("text") or ""):
+				return None
+		return True
+	if await asyncio.to_thread(_no_withdrawn_notice) is None:
+		raise SmokeFailure("a 'withdrawn' system message appeared - the fast answer was discarded as unknown correlation")
+
+
 async def flow_restart_survival(ctx, rep, args):
 	question = f"smoke restart-survival probe {ctx.run_id}"
 	task = start_blocking_ask(ctx, question, suggestions=["yes", "no"])
@@ -214,6 +255,7 @@ FLOWS: list[tuple[str, callable]] = [
 	("away-mode round-trip", flow_away_mode_roundtrip),
 	("at-desk redirect + conversation discovery", flow_atdesk_redirect),
 	("live ask/answer round-trip", flow_live_ask_answer),
+	("fastest-answer round-trip", flow_fast_answer),
 	("restart survival", flow_restart_survival),
 ]
 

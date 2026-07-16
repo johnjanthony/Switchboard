@@ -21,6 +21,27 @@ _WSL_MOUNT_RE = re.compile(r"^/mnt/[a-z]/", re.IGNORECASE)
 
 JOIN_CANDIDATE_WINDOW_SECONDS = 1800.0
 
+# Firebase RTDB key-illegal characters. sender interpolates into paths like
+# conversations/<id>/members_active/<sender> and agent_status/<sender>; a '/'
+# nests the record under a child, and any of '.#$[]' makes db.reference()
+# raise inside fire-and-forget writes (member exists in memory, never
+# persists, silently erased on restart).
+_FIREBASE_KEY_ILLEGAL = set("/.#$[]")
+
+
+def illegal_sender_reason(sender: str) -> str | None:
+	"""Reason string if sender cannot be used as a Firebase key / display
+	attribution, else None. Shared by the tool-boundary validation in
+	gateway/handlers.py and the member-creation invariant guards below."""
+	if not sender or not sender.strip():
+		return "empty or whitespace-only"
+	for ch in sender:
+		if ch in _FIREBASE_KEY_ILLEGAL:
+			return f"contains Firebase-illegal character '{ch}'"
+		if ord(ch) < 0x20 or ord(ch) == 0x7F:
+			return "contains control characters"
+	return None
+
 
 def _disambiguate_sender(conv, desired: str, exclude_session_id: str | None = None) -> str:
 	"""Sender is a display label; make it unique among the conversation's members
@@ -106,6 +127,8 @@ async def _create_active_conversation_for_locked(
 	origin: str = "fallback",
 ) -> str:
 	"""Inner implementation called while holding session_create_lock. Do not call directly."""
+	if (reason := illegal_sender_reason(sender)) is not None:
+		raise ValueError(f"illegal sender name {sender!r}: {reason}")
 	from server.gateway.bg_tasks import _spawn_bg
 	conv_id = "conv-" + uuid.uuid4().hex
 	resolved_title = title if title else f"{sender} · {cwd}"
@@ -240,6 +263,8 @@ async def _add_member(
 	Caller must hold conv.lock if concurrent safety matters.
 	backend: optional ConversationStore — if provided, Firebase writes are issued.
 	"""
+	if (reason := illegal_sender_reason(sender)) is not None:
+		raise ValueError(f"illegal sender name {sender!r}: {reason}")
 	from server.gateway.bg_tasks import _spawn_bg
 	conv = registry.conversations[conversation_id]
 	actual_sender = _disambiguate_sender(conv, sender)
@@ -285,6 +310,8 @@ async def _migrate_member(
 	to target. (Migration is a explicit move, not a fallback.)
 	backend: optional ConversationStore — if provided, Firebase writes are issued.
 	"""
+	if (reason := illegal_sender_reason(sender)) is not None:
+		raise ValueError(f"illegal sender name {sender!r}: {reason}")
 	from server.gateway.bg_tasks import _spawn_bg
 	source = registry.conversations[source_id]
 	target = registry.conversations[target_id]
@@ -428,6 +455,7 @@ async def _perform_combine(
 	# Lock ordering: smaller id first to avoid AB-BA deadlock
 	locks = sorted([source, target], key=lambda c: c.id)
 	combine_resume_count = 0
+	flipped: list = []
 	async with locks[0].lock, locks[1].lock:
 		moved_names = []
 		removed_from_source: list[str] = []
@@ -475,6 +503,7 @@ async def _perform_combine(
 					# member moves as-is and stays unbound.
 					await _spawn_pending_for_combine_resume(pending_dir, member, target_id, source_id)
 					if pending_dir is not None:
+						flipped.append((member, (member.session_ended_at, member.session_end_reason, member.left_at)))
 						member.alive = True
 						member.session_ended_at = None
 						member.session_end_reason = None
@@ -570,17 +599,38 @@ async def _perform_combine(
 			await _spawn_mod.invoke_spawn_launcher(logger)
 		except Exception as exc:
 			# The combine itself already committed (members moved); only the
-			# dormant-member relaunch failed. Surface it to the phone instead of
-			# failing the combine or leaving members "alive" with no process (B4).
-			# invoke_spawn_launcher already logged the failure.
-			if backend is not None and hasattr(backend, "send_text"):
-				try:
-					await backend.send_text(
-						f"Combined conversations, but relaunching dormant member(s) failed: {exc}. "
-						"Resume them from the phone."
-					)
-				except Exception:
-					pass
+			# dormant-member relaunch failed. Roll every flipped member back to
+			# dormant so the advertised phone recovery (Resume) actually works:
+			# handle_resume's eligibility filter skips alive members, and the
+			# optimistic alive=True was already persisted, so without rollback
+			# the member would be stranded alive-with-no-process across
+			# restarts. Awaited persist (not _spawn_bg): the optimistic write
+			# completed during the launcher's subprocess round-trip, so this
+			# write deterministically lands after it.
+			target_conv = registry.conversations.get(target_id)
+			if target_conv is not None:
+				async with target_conv.lock:
+					for member, (ended_at, end_reason, left_at) in flipped:
+						member.alive = False
+						member.session_ended_at = ended_at
+						member.session_end_reason = end_reason
+						member.left_at = left_at
+						registry.unbind_session(member.cli_session_id)
+			if backend is not None:
+				for member, _saved in flipped:
+					try:
+						await backend.write_conversation_member(target_id, member)
+					except Exception as persist_exc:
+						if logger is not None:
+							await logger.surface_error(f"combine_rollback_persist_failed: {member.sender}: {persist_exc}")
+				if hasattr(backend, "send_text"):
+					try:
+						await backend.send_text(
+							f"Combined conversations, but relaunching dormant member(s) failed: {exc}. "
+							"They are dormant again; resume them from the phone (long-press the target conversation > Resume)."
+						)
+					except Exception:
+						pass
 	# Wake one waiter in target so any blocked agent sees the merge marker
 	async with target.lock:
 		_wake_one_from(target)

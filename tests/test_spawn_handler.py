@@ -941,3 +941,65 @@ async def test_launch_resume_agent_returns_false_for_antigravity(tmp_path):
 	assert ok is False
 	assert _find_pending_files(cfg) == []
 	assert "agy --conversation agy-sess-3" in backend.send_text.await_args.args[0]
+
+
+# ===========================================================================
+# Rollback-to-dormant on launcher failure
+# ===========================================================================
+
+def _registry_with_dormant_claude(session_id: str) -> Registry:
+	import time as _time
+	from server.registry import Conversation, ConversationMember
+	registry = Registry()
+	conv = Conversation(id="conv-src", title="Source")
+	conv.members_active[session_id] = ConversationMember(
+		cli_session_id=session_id, sender="Claude", cwd="C:/Work/X",
+		surface="windows", joined_at=_time.time(), alive=False,
+	)
+	registry.conversations["conv-src"] = conv
+	return registry
+
+
+def _registry_with_target_conversation(conv_id: str) -> Registry:
+	from server.registry import Conversation
+	registry = Registry()
+	registry.conversations[conv_id] = Conversation(id=conv_id, title="Target")
+	return registry
+
+
+@pytest.mark.asyncio
+async def test_handle_resume_launcher_failure_rolls_members_back(tmp_path):
+	from server.spawn import SpawnHandler
+	cfg = make_config_with_wsl(tmp_path)
+	backend = make_backend()
+	registry = _registry_with_dormant_claude("sess-d1")  # helper: dormant member, no agy session record
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock(side_effect=RuntimeError("schtasks 1"))):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle_resume({"type": "resume", "source_conversation_id": "conv-src"})
+	# The continuation conversation exists; its member is rolled back dormant + unbound.
+	new_convs = [c for cid, c in registry.conversations.items() if cid != "conv-src"]
+	assert len(new_convs) == 1
+	member = new_convs[0].members_active["sess-d1"]
+	assert member.alive is False
+	assert registry.session_to_conversation_id.get("sess-d1") is None
+	notices = " ".join(str(c.args[0]) for c in backend.send_text.await_args_list)
+	assert "long-press" in notices
+
+
+@pytest.mark.asyncio
+async def test_resume_session_launch_failure_reverts_added_member(tmp_path):
+	from server.spawn import SpawnHandler
+	from server.session_registry import SessionRegistry
+	cfg = make_config_with_wsl(tmp_path)
+	backend = make_backend()
+	registry = _registry_with_target_conversation("conv-tgt")  # helper: active conv, no member for the session
+	registry.sessions = SessionRegistry()
+	registry.sessions.record_session_start("sess-r1", cwd="C:/Work/X")
+	registry.sessions.record_session_end("sess-r1", reason="exit", ended_at="2026-07-15T00:00:00Z")
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+	with patch.object(SpawnHandler, "launch_resume_agent", new=AsyncMock(return_value=False)):
+		await handler.handle_resume_session({"session_id": "sess-r1", "target_conversation_id": "conv-tgt"})
+	member = registry.conversations["conv-tgt"].members_active.get("sess-r1")
+	assert member is not None and member.alive is False  # added member reverted to dormant, kept for visibility
+	assert member.session_end_reason == "launch-failed"
+	assert registry.session_to_conversation_id.get("sess-r1") is None

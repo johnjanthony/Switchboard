@@ -169,6 +169,9 @@ def build_tool_handlers(
 	def _validate_sender(sender: str) -> str | None:
 		if "__" in sender:
 			return f"ERROR: sender name '{sender}' contains restricted characters '__'."
+		from server.conversation_ops import illegal_sender_reason
+		if (reason := illegal_sender_reason(sender)) is not None:
+			return f"ERROR: sender name '{sender}' is not usable: {reason}. Pick a short plain name (letters, digits, spaces, hyphens)."
 		return None
 
 	def _rate_limit_error() -> str:
@@ -293,47 +296,60 @@ def build_tool_handlers(
 		request_id = _new_request_id()
 		started = datetime.now(timezone.utc)
 		correlation = None
+		# Register BEFORE the question write. registry.add is synchronous, so
+		# there is no await between the away-mode gate above and the moment the
+		# correlation exists - an answer arriving the instant the question
+		# renders always finds the pending (the old order registered only after
+		# the full write incl. unread bump, meta update, and FCM send, and a
+		# fast answer was discarded as an unknown correlation while the asker
+		# blocked for the full timeout). msg_id is patched right after the
+		# write returns; until then a delivered reply just loses its
+		# attached_to_msg_id splice (cosmetic).
+		future, prior_request_id = registry.add(
+			conversation_id=conversation_id, cli_session_id=cli_session_id, sender=sender,
+			request_id=request_id, msg_id=None, return_superseded=True,
+		)
 		try:
 			correlation, msg_id = await backend.write_conversation_message(
 				conversation_id, sender, "question", question,
 				request_id=request_id, format=format, suggestions=suggestions, title=title,
 			)
-			future, prior_request_id = registry.add(
-				conversation_id=conversation_id, cli_session_id=cli_session_id, sender=sender,
-				request_id=request_id, msg_id=msg_id, return_superseded=True,
-			)
+			record = registry.find_by_request_id(conversation_id, request_id)
+			if record is not None:
+				record.msg_id = msg_id
 			if prior_request_id is not None:
 				await _safe_mark_cancelled(backend, conversation_id, prior_request_id, logger)
-			# REV-002 residual window: this ask passed the away gate, then
-			# suspended in the question write (and possibly the supersede
-			# cleanup) above. If an away-mode exit ran in that gap, its drain
-			# snapshotted the pending set BEFORE registry.add registered this
-			# record - nothing will ever resolve it. Re-check the flag: gone
-			# at-desk with our future still unsettled means we withdraw the
-			# pending (pop + Firebase cancel, so the phone question greys out)
-			# and take the same at-desk redirect the gate would have taken. A
-			# done future means the drain DID catch us (the supersede await
-			# suspended after add) - fall through and collect John's bulk
-			# reply from wait_for as normal. Placed before the
-			# pending-record spawn so a withdrawn ask never writes one.
+			# REV-002 defense-in-depth: with the pending registered before the
+			# write, an away-exit drain that runs while this ask is suspended
+			# in the write always snapshots this record and resolves it (the
+			# wait_for below then returns John's bulk text immediately). This
+			# re-check only matters if the drain itself crashed mid-resolve:
+			# gone at-desk with our future still unsettled means nothing will
+			# ever resolve it, so withdraw the pending (pop + Firebase cancel,
+			# the phone question greys out) and take the same at-desk redirect
+			# the gate would have taken. Placed before the pending-record
+			# spawn so a withdrawn ask never writes one.
 			if not registry.global_away_mode and not future.done():
-				record = registry.find_by_request_id(conversation_id, request_id)
 				if record is not None:
 					await terminate_pending(registry, backend, logger, record)
 				await logger.info(
 					f"ask_human_at_desk_after_add: request_id={request_id} conversation_id={conversation_id}"
 				)
 				return "ERROR: John is at his desk. Ask this question via the terminal."
-			# Persist pending_questions record per 2026-05-19 spec lines 349-355
-			_spawn_bg(
-				backend.add_pending_question_record(
-					conversation_id, request_id,
-					sender=sender, msg_id=msg_id,
-					question_text=question, suggestions=suggestions,
-					cli_session_id=cli_session_id, asked_at=started.isoformat(),
-				),
-				label=f"fb_add_pending_question:{conversation_id}:{request_id}",
-			)
+			# Persist pending_questions record per 2026-05-19 spec lines 349-355.
+			# Gated on the future still being open: an ask already answered
+			# mid-write, superseded, or drain-resolved must not spawn a phone
+			# record that races the resolution's own cleanup.
+			if not future.done():
+				_spawn_bg(
+					backend.add_pending_question_record(
+						conversation_id, request_id,
+						sender=sender, msg_id=msg_id,
+						question_text=question, suggestions=suggestions,
+						cli_session_id=cli_session_id, asked_at=started.isoformat(),
+					),
+					label=f"fb_add_pending_question:{conversation_id}:{request_id}",
+				)
 			await logger.request_created(request_id, conversation_id, question)
 			await _append_session_log(config.log_path, conversation_id, "→", question, logger)
 		except asyncio.CancelledError:
@@ -343,16 +359,29 @@ def build_tool_handlers(
 			# CancelledError. Without this shield, the Firebase cleanup below
 			# never completes and the question stays cancelled=false.
 			with anyio.CancelScope(shield=True):
-				record = registry.find_by_request_id(conversation_id, request_id)
-				if record is not None:
-					await terminate_pending(registry, backend, logger, record)
+				cancel_record = registry.find_by_request_id(conversation_id, request_id)
+				if cancel_record is not None:
+					await terminate_pending(registry, backend, logger, cancel_record)
 				else:
-					# Cancel landed before registry.add ran (or the record was
-					# already superseded); the question message may still exist.
+					# Record already superseded or terminated during the write;
+					# the question message may still exist.
 					await _safe_mark_cancelled(backend, conversation_id, request_id, logger)
 			raise
 		except Exception as exc:
 			await logger.tool_error(request_id, conversation_id, str(exc))
+			# Compensating cleanup: the pending was registered before the
+			# write, so a failed write must withdraw it through the single
+			# terminal owner (mark_question_cancelled no-ops safely when the
+			# question message never landed).
+			fail_record = registry.find_by_request_id(conversation_id, request_id)
+			if fail_record is not None:
+				await terminate_pending(registry, backend, logger, fail_record)
+			# registry.add already popped any superseded prior in-memory, but the
+			# write threw before the success-path prior-cancel ran; cancel the
+			# prior's Firebase question card here too so it does not linger
+			# orphaned until the retention sweep.
+			if prior_request_id is not None:
+				await _safe_mark_cancelled(backend, conversation_id, prior_request_id, logger)
 			return f"ERROR: {exc}"
 
 		try:

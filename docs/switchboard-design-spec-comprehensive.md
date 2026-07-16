@@ -571,7 +571,7 @@ Gemini CLI gets a separate AfterAgent hook installed via `scripts/install-turn-e
 | `SWITCHBOARD_WINDOWS_SPAWN_ROOT` | For spawn | — | Windows project root (e.g. `C:\Work`). Alias: `SWITCHBOARD_SPAWN_ROOT`. |
 | `SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT` | No | `work` | Segment appended to resolved WSL home for WSL project paths. |
 | `SWITCHBOARD_WSL_HOME` | No | (probed via wsl.exe) | Escape hatch overriding the resolved WSL home path; first-priority source in resolve_wsl_home; used when the NSSM service runs in Session 0 where the wsl.exe probe fails. |
-| `SWITCHBOARD_RATE_LIMIT` | No | `30` | Per-conversation rate limit for `ask_human` + `notify_human` + `send_document_human` (tokens/min). |
+| `SWITCHBOARD_RATE_LIMIT` | No | `30` | Per-conversation rate limit for `ask_human` + `notify_human` + `send_document_human` + `message_and_await_agent` (tokens/min; the last degrades to FCM suppression instead of rejecting). |
 | `SWITCHBOARD_TOKEN` | For non-loopback | — | Shared-secret for the Bearer gate; required when `SWITCHBOARD_HOST` is non-loopback (server refuses to start without it). Loopback callers and `/healthz` are exempt. |
 | `SWITCHBOARD_ROUTE_RATE_LIMIT` | No | `600` | Coarse per-route rate limit for the unauthenticated POST routes (tokens/min per route; `0` disables). |
 
@@ -597,7 +597,7 @@ Gemini CLI gets a separate AfterAgent hook installed via `scripts/install-turn-e
 - **Layered network exposure control.** Loopback bind (`SWITCHBOARD_HOST=127.0.0.1`) by default keeps the server unreachable off-host. A non-loopback bind (`0.0.0.0`, for WSL) requires `SWITCHBOARD_TOKEN`: `load_config` raises `ConfigError` at startup if it's unset (REV-003 fail-closed). Once set, `TokenAuthMiddleware` gates every route except `/healthz` behind `Authorization: Bearer <token>`, exempting loopback peers regardless of bind. The WSL-subnet firewall rule remains recommended as defense-in-depth, not the enforced control.
 - **No sandboxing.** Spawned agents run with `--dangerously-skip-permissions`; safety is governed by the agent's `SKILL.md` instructions, which gate destructive actions behind `ask_human`. Switchboard enforces the protocol (no terminal leaks while away), not the execution.
 - **Document path validation.** `send_document_human` runs a secret-name denylist first (`.env`, `service-account.json`, `credentials.json` exact; `*token*`, `*secret*`, `*.pem`, `*.key`, `.env*`, `*.env` globs), then an extension allowlist (`.md` `.markdown` `.txt` `.log` `.csv` `.tsv` `.diff` `.patch` `.pdf` `.png` `.jpg` `.jpeg` `.gif` `.webp`; extensionless files refused). Path-traversal (`..`) rejected. 5 MB cap. SHA-256 logged.
-- **Rate limiting.** `ask_human` + `notify_human` + `send_document_human` bucket per conversation, default 30 tokens/min.
+- **Rate limiting.** `ask_human` + `notify_human` + `send_document_human` + `message_and_await_agent` bucket per conversation, default 30 tokens/min; `message_and_await_agent` degrades by suppressing the FCM push rather than rejecting.
 
 ### 15.4 Modalities
 

@@ -31,11 +31,15 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, Conversati
 		self.agent_status_writes: list[tuple] = []
 		self.push_suppressed: list = []
 		self.sent_texts: list = []
+		self.member_writes: list = []
 		self._next_correlation = 1000
 
 	async def send_text(self, text, **kwargs):
 		self.sent_texts.append(text)
 		return "push-key-text"
+
+	async def write_conversation_member(self, conv_id, member) -> None:
+		self.member_writes.append((conv_id, member))
 
 	async def write_conversation_message(
 		self,

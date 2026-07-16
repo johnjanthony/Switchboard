@@ -177,6 +177,49 @@ async def test_phone_combine_path_passes_pending_dir_and_fires_launcher(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_combine_launcher_failure_rolls_dormant_member_back(tmp_path):
+	from server.conversation_ops import _perform_combine
+	registry = _registry_with_source_and_target()  # has a dormant movable member "sess-dormant"
+	backend = RecordingBackend()
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+	member_before = registry.conversations["conv-src"].members_active["sess-dormant"]
+	saved_reason = member_before.session_end_reason
+
+	with patch("server.spawn.user_has_interactive_session", AsyncMock(return_value=True)), \
+		patch("server.spawn.invoke_spawn_launcher", AsyncMock(side_effect=RuntimeError("schtasks 1"))):
+		result = await _perform_combine(
+			registry, "conv-src", "conv-tgt", logger, pending_dir=tmp_path, backend=backend,
+		)
+	for _ in range(5):
+		await asyncio.sleep(0)
+
+	assert not result.startswith("ERROR")  # the combine itself committed
+	member = registry.conversations["conv-tgt"].members_active["sess-dormant"]
+	assert member.alive is False
+	assert member.session_end_reason == saved_reason  # captured fields restored
+	assert registry.session_to_conversation_id.get("sess-dormant") is None  # unbound
+	assert any(cid == "conv-tgt" and m.alive is False for cid, m in backend.member_writes)  # dormant re-persisted
+	assert any("long-press" in t for t in backend.sent_texts)  # working recovery advertised
+
+
+@pytest.mark.asyncio
+async def test_combine_launcher_success_keeps_flip(tmp_path):
+	from server.conversation_ops import _perform_combine
+	registry = _registry_with_source_and_target()
+	backend = RecordingBackend()
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+	with patch("server.spawn.user_has_interactive_session", AsyncMock(return_value=True)), \
+		patch("server.spawn.invoke_spawn_launcher", AsyncMock(return_value=None)):
+		result = await _perform_combine(
+			registry, "conv-src", "conv-tgt", logger, pending_dir=tmp_path, backend=backend,
+		)
+	assert not result.startswith("ERROR")
+	member = registry.conversations["conv-tgt"].members_active["sess-dormant"]
+	assert member.alive is True
+	assert registry.session_to_conversation_id.get("sess-dormant") == "conv-tgt"
+
+
+@pytest.mark.asyncio
 async def test_combine_leaves_antigravity_member_dormant_with_notice(tmp_path):
 	from server.conversation_ops import _perform_combine
 	from server.session_registry import SessionRegistry
