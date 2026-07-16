@@ -171,6 +171,7 @@ class SessionRegistry:
 	def upsert_from_hook(
 		self, cli_session_id: str, *, state: str, detail: str | None = None,
 		cwd: str | None = None, event: str | None = None, in_tool: bool | None = None,
+		cli: str | None = None,
 	) -> SessionRecord:
 		rec = self._ensure(cli_session_id, source="hook")
 		if rec.state == "ended":
@@ -183,6 +184,8 @@ class SessionRegistry:
 			# deliberately not guarded: it is the sweeper's presumption, and a
 			# live hook event is proof of life.
 			return rec
+		if cli:
+			rec.cli = cli
 		if cwd and not rec.cwd:
 			from server.conversation_ops import _infer_surface
 			rec.cwd = cwd

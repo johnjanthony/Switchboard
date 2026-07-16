@@ -413,3 +413,16 @@ def test_marker_health_check_quiet_when_markers_applied():
 	reg.presumed_dead_total = 10
 	reg.markers_applied_total = 1
 	assert reg.marker_health_check() is False
+
+
+def test_upsert_from_hook_sets_cli():
+	reg = SessionRegistry()
+	rec = reg.upsert_from_hook("s1", state="active", cwd="C:/w", event="UserPromptSubmit", cli="antigravity")
+	assert rec.cli == "antigravity"
+
+
+def test_upsert_from_hook_cli_none_preserves_existing():
+	reg = SessionRegistry()
+	reg.upsert_from_hook("s1", state="active", cli="antigravity")
+	rec = reg.upsert_from_hook("s1", state="idle")
+	assert rec.cli == "antigravity"

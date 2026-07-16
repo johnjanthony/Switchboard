@@ -114,11 +114,14 @@ def require_cli_session_id(handler):
 	"""Decorator: rejects calls missing cli_session_id.
 
 	The switchboard MCP plugin's PreToolUse hook injects cli_session_id (and
-	cwd) into every switchboard tool call. A missing cli_session_id means
-	either (a) the hook didn't fire (older or non-plugin Claude install), or
-	(b) the call originated from a non-Claude agent (e.g., Gemini). Under the
-	v2 routing model (parent design), switchboard tools require this — the
-	channel-by-cwd legacy routing has been retired.
+	cwd) into every switchboard tool call from Claude Code. Non-Claude agents
+	(e.g. Antigravity) have no such hook, so by design they pass both values
+	explicitly as tool arguments instead. A missing cli_session_id means
+	either (a) the hook didn't fire for a Claude session (plugin missing or
+	stale), or (b) a non-Claude agent omitted the explicit arguments it was
+	supposed to supply. Under the v2 routing model (parent design),
+	switchboard tools require this identity - the channel-by-cwd legacy
+	routing has been retired.
 
 	The decorator extracts cli_session_id + cwd from kwargs, checks
 	cli_session_id is non-empty, and forwards both to the handler.
@@ -128,10 +131,11 @@ def require_cli_session_id(handler):
 	async def wrapped(*args, cli_session_id: str | None = None, cwd: str | None = None, **kwargs):
 		if not cli_session_id:
 			return (
-				"ERROR: cli_session_id required. This call appears to come from a "
-				"Claude session without the switchboard plugin's PreToolUse hook "
-				"installed, or from a non-Claude agent. Switchboard tools require "
-				"hook-injected session_id under the v2 routing model."
+				"ERROR: cli_session_id required. Claude Code: this call arrived without "
+				"the switchboard plugin's PreToolUse hook injection (plugin missing or "
+				"stale). Other CLIs (e.g. Antigravity): retry the same call with "
+				"cli_session_id=<your conversation id> and cwd=<your workspace root> "
+				"added inside the tool arguments."
 			)
 		return await handler(*args, cli_session_id=cli_session_id, cwd=cwd, **kwargs)
 

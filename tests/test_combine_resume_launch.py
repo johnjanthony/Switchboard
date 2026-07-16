@@ -7,6 +7,7 @@ phone path (H14)."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -173,3 +174,28 @@ async def test_phone_combine_path_passes_pending_dir_and_fires_launcher(tmp_path
 
 	assert len(list(tmp_path.glob("spawn-pending-*.json"))) == 1
 	mock_launch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_combine_leaves_antigravity_member_dormant_with_notice(tmp_path):
+	from server.conversation_ops import _perform_combine
+	from server.session_registry import SessionRegistry
+	registry = _registry_with_source_and_target()
+	registry.sessions = SessionRegistry()
+	registry.sessions.record_session_start("sess-dormant", cwd="C:/Work/X", cli="antigravity")
+	backend = RecordingBackend()
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+
+	with patch("server.spawn.user_has_interactive_session", AsyncMock(return_value=True)):
+		result = await _perform_combine(
+			registry, "conv-src", "conv-tgt", logger, pending_dir=tmp_path, backend=backend,
+		)
+	for _ in range(5):
+		await asyncio.sleep(0)
+
+	assert not result.startswith("ERROR")
+	member = registry.conversations["conv-tgt"].members_active["sess-dormant"]
+	assert member.alive is False
+	assert registry.session_to_conversation_id.get("sess-dormant") is None
+	assert not list(tmp_path.glob("spawn-pending-*.json"))
+	assert any("agy --conversation sess-dormant" in t for t in backend.sent_texts)

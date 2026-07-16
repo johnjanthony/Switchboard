@@ -34,6 +34,13 @@ def _build_app(handlers):
 	return app
 
 
+def _build_app_with_sessions(handlers, sessions):
+	from server.main import _build_agent_status_route
+	app = Starlette()
+	app.add_route("/agent_status", _build_agent_status_route(handlers, sessions), methods=["POST"])
+	return app
+
+
 def _make_active_registry(conv_id="conv-xyz", session_id="s-1", sender="Claude", cwd="C:/Work/X"):
 	"""Return a Registry with one active conversation and a bound session."""
 	registry = Registry()
@@ -170,3 +177,30 @@ def test_handle_agent_status_drops_write_when_away_mode_off(cfg, logger):
 		assert resp.status_code == 200
 
 	assert backend.agent_status_writes == []
+
+
+def test_post_agent_status_records_cli(cfg, logger):
+	registry = Registry()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	sessions = SessionRegistry()
+	app = _build_app_with_sessions(handlers, sessions)
+	with TestClient(app) as client:
+		client.post("/agent_status", json={
+			"session_id": "agy-1", "state": "thinking", "event": "UserPromptSubmit",
+			"cwd": "C:/Work/X", "cli": "antigravity",
+		})
+	assert sessions.get("agy-1").cli == "antigravity"
+
+
+def test_post_agent_status_without_cli_keeps_default(cfg, logger):
+	registry = Registry()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	sessions = SessionRegistry()
+	app = _build_app_with_sessions(handlers, sessions)
+	with TestClient(app) as client:
+		client.post("/agent_status", json={
+			"session_id": "c-1", "state": "thinking", "event": "UserPromptSubmit", "cwd": "C:/Work/X",
+		})
+	assert sessions.get("c-1").cli == "claude"

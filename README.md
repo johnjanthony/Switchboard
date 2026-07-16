@@ -115,6 +115,12 @@ The plugin install wires the skill and the Claude turn-end + agent-status hooks.
 
 WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` AND `SWITCHBOARD_TOKEN` set - the server refuses to start non-loopback without a token (REV-003 fail-closed), and every non-loopback client must send `Authorization: Bearer <token>` on all routes except `/healthz` (loopback callers are exempt). The firewall inbound rule for TCP 9876 from the WSL subnet remains recommended as defense-in-depth; the token is the enforced control.
 
+### Antigravity CLI (agy)
+
+Antigravity CLI sessions are first-class agents (spec: `docs/superpowers/specs/2026-07-14-antigravity-cli-support-design.md`). Requirements: `agy` >= 1.1.2 on PATH. The wiring is delivered by the chezmoi dotfiles repo, not a plugin: `~/.gemini/config/mcp_config.json` (the `serverUrl` MCP entry), `~/.gemini/config/hooks.json` (PreInvocation/PreToolUse/PostToolUse/Stop hooks pointing at `scripts/agy-identity-hook.py` and `scripts/turn-end-hook-away-mode.py --cli antigravity` in this repo), and a switchboard protocol section in `~/.gemini/GEMINI.md`.
+
+Identity model: agy hooks cannot rewrite tool arguments, so the model passes `cli_session_id` (its conversation UUID) and `cwd` explicitly inside every switchboard call's Arguments; a PreInvocation ephemeral message teaches the values each turn and a PreToolUse hook denies non-compliant calls with the correction. Contrast: Claude Code wires via the plugin and gets silent hook injection.
+
 ## Android App
 
 The project includes a native Android app in the `android/` directory.

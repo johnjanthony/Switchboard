@@ -874,3 +874,70 @@ async def test_launch_resume_agent_pending_file_write_failure_returns_false(tmp_
 	assert _find_pending_files(cfg) == []
 	log_contents = Path(cfg.log_path).read_text(encoding="utf-8")
 	assert "resume_session_launch_failed" in log_contents
+
+
+def _registry_with_dormant_agy(session_id: str = "agy-sess-1") -> Registry:
+	import time as _time
+	from server.registry import Conversation, ConversationMember
+	from server.session_registry import SessionRegistry
+	registry = Registry()
+	conv = Conversation(id="conv-src", title="Source")
+	conv.members_active[session_id] = ConversationMember(
+		cli_session_id=session_id, sender="Sparkles", cwd="C:/Work/X",
+		surface="windows", joined_at=_time.time(), alive=False,
+	)
+	registry.conversations["conv-src"] = conv
+	registry.sessions = SessionRegistry()
+	registry.sessions.record_session_start(session_id, cwd="C:/Work/X", cli="antigravity")
+	return registry
+
+
+@pytest.mark.asyncio
+async def test_handle_resume_skips_antigravity_member_with_notice(tmp_path):
+	from server.spawn import SpawnHandler
+	cfg = make_config_with_wsl(tmp_path)
+	backend = make_backend()
+	registry = _registry_with_dormant_agy()
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()) as launcher:
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle_resume({"type": "resume", "source_conversation_id": "conv-src"})
+	assert _find_pending_files(cfg) == []
+	launcher.assert_not_awaited()
+	backend.send_text.assert_awaited()
+	notices = " ".join(str(c.args[0]) for c in backend.send_text.await_args_list)
+	assert "agy --conversation agy-sess-1" in notices
+
+
+@pytest.mark.asyncio
+async def test_handle_resume_session_rejects_antigravity(tmp_path):
+	from server.spawn import SpawnHandler
+	from server.session_registry import SessionRegistry
+	cfg = make_config_with_wsl(tmp_path)
+	backend = make_backend()
+	registry = Registry()
+	registry.sessions = SessionRegistry()
+	registry.sessions.record_session_start("agy-sess-2", cwd="C:/Work/X", cli="antigravity")
+	registry.sessions.record_session_end("agy-sess-2", reason="exit", ended_at="2026-07-14T00:00:00Z")
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+	await handler.handle_resume_session({"session_id": "agy-sess-2"})
+	assert _find_pending_files(cfg) == []
+	backend.send_text.assert_awaited()
+	assert "agy --conversation agy-sess-2" in backend.send_text.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_launch_resume_agent_returns_false_for_antigravity(tmp_path):
+	from server.spawn import SpawnHandler
+	from server.session_registry import SessionRegistry
+	cfg = make_config_with_wsl(tmp_path)
+	backend = make_backend()
+	registry = Registry()
+	registry.sessions = SessionRegistry()
+	registry.sessions.record_session_start("agy-sess-3", cwd="C:/Work/X", cli="antigravity")
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+	ok = await handler.launch_resume_agent(
+		session_id="agy-sess-3", surface="windows", cwd="C:/Work/X", prompt="p", prior_sender=None,
+	)
+	assert ok is False
+	assert _find_pending_files(cfg) == []
+	assert "agy --conversation agy-sess-3" in backend.send_text.await_args.args[0]

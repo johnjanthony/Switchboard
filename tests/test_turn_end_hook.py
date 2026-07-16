@@ -83,6 +83,13 @@ class _FakeServer:
 				if payload is not None:
 					self.wfile.write(json.dumps(payload).encode("utf-8"))
 
+			def do_POST(self):
+				received_paths.append("POST " + self.path)
+				self.send_response(200)
+				self.send_header("Content-Type", "application/json")
+				self.end_headers()
+				self.wfile.write(json.dumps({}).encode("utf-8"))
+
 			def log_message(self, *a, **kw):
 				pass
 
@@ -451,3 +458,61 @@ def test_turn_end_hook_no_auth_header_without_token():
 		r = _run("claude", url_env=srv.url)
 	assert r.returncode == 0
 	assert srv.received_auth == [None]
+
+
+# --- Antigravity CLI support ---
+
+_ANTIGRAVITY_PAYLOAD = json.dumps({
+	"conversationId": "7b4f7804-4ce4-4b61-8704-6c97b60d54e5",
+	"workspacePaths": ["C:/Work/agy-probe"],
+	"terminationReason": "NO_TOOL_CALL",
+	"fullyIdle": True,
+})
+
+
+def test_antigravity_inactive_emits_nothing():
+	with _FakeServer({"active": False}) as srv:
+		result = _run("antigravity", stdin=_ANTIGRAVITY_PAYLOAD, url_env=f"http://127.0.0.1:{srv.port}/away-mode")
+	assert result.returncode == 0
+	assert result.stdout.strip() == ""
+
+
+def test_antigravity_active_emits_continue_decision():
+	with _FakeServer({"active": True}, record_queries=True) as srv:
+		result = _run("antigravity", stdin=_ANTIGRAVITY_PAYLOAD, url_env=f"http://127.0.0.1:{srv.port}/away-mode")
+	out = json.loads(result.stdout)
+	assert out["decision"] == "continue"
+	assert "away mode" in out["reason"]
+	assert any(p.startswith("POST /agent_status") for p in srv.received_paths)
+
+
+def test_antigravity_query_sends_conversation_id_as_session_id():
+	"""conversationId maps to the session_id query param; cwd left the protocol
+	in chunk 2 and must not reappear for the antigravity mode."""
+	with _FakeServer({"active": False}, record_queries=True) as srv:
+		_run("antigravity", stdin=_ANTIGRAVITY_PAYLOAD, url_env=f"http://127.0.0.1:{srv.port}/away-mode")
+	get_paths = [p for p in srv.received_paths if not p.startswith("POST ")]
+	assert get_paths, "hook never queried the server"
+	assert "session_id=7b4f7804-4ce4-4b61-8704-6c97b60d54e5" in get_paths[0]
+	assert "cwd=" not in get_paths[0]
+
+
+def test_antigravity_notices_prepended_to_reason():
+	with _FakeServer({"active": True, "notices": ["A convene notice."]}) as srv:
+		result = _run("antigravity", stdin=_ANTIGRAVITY_PAYLOAD, url_env=f"http://127.0.0.1:{srv.port}/away-mode")
+	out = json.loads(result.stdout)
+	assert out["reason"].startswith("A convene notice.")
+
+
+def test_antigravity_missing_conversation_id_still_enforces():
+	"""Global enforcement (chunk 2's T-174 contract): an antigravity payload
+	without conversationId still queries the bare path and continues on active.
+	No idle POST fires (there is no session to mark idle)."""
+	with _FakeServer({"active": True}, record_queries=True) as srv:
+		result = _run("antigravity", stdin=json.dumps({"workspacePaths": []}), url_env=f"http://127.0.0.1:{srv.port}/away-mode")
+	assert result.returncode == 0
+	out = json.loads(result.stdout)
+	assert out["decision"] == "continue"
+	get_paths = [p for p in srv.received_paths if not p.startswith("POST ")]
+	assert get_paths == ["/away-mode"]
+	assert not any(p.startswith("POST ") for p in srv.received_paths)

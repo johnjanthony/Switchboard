@@ -55,6 +55,7 @@ scripts/
   register-spawn-task.ps1    Re-register SwitchboardSpawn scheduled task
   spawn-launcher.ps1         Runs in user session to open a new terminal tab
   install-client.ps1         Build and deploy the Android app to a connected phone
+  agy-identity-hook.py       Antigravity (agy) hooks: PreInvocation identity teaching + status, PreToolUse identity corrector, PostToolUse status
 skills/
   switchboard/
     SKILL.md           Agent skill instructions (MCP tool signatures + Away Mode protocol)
@@ -145,7 +146,7 @@ Requirements:
 
 Active tools: `ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `join_conversation`, `combine_conversations`, `lookup_conversation_ids`, `leave_conversation`, `set_away_mode`. Conversation tools return one-line JSON status envelopes (`ok | timeout | conversation_ended`); `ask_human` returns bare reply text with JSON terminal sentinels.
 
-Routing is by `cli_session_id`, injected by the `cli-session-injector-hook.py` PreToolUse hook. Agents pass `sender` and tool-specific args only.
+Routing is by `cli_session_id`, injected by the `cli-session-injector-hook.py` PreToolUse hook. Agents pass `sender` and tool-specific args only. Non-Claude agents (Antigravity) have no injector; they pass cli_session_id (= their agy conversation UUID) and cwd explicitly on every call, taught and enforced by the agy hooks.
 
 ## Conversation model
 
@@ -188,6 +189,8 @@ The plugin install wires the skill and the turn-end + agent-status hooks. Two th
 
 2. **The Python server (NSSM Windows service).** Install with `scripts/install-service.ps1`. The plugin's MCP connection is useless until this is running.
 
+3. **The Antigravity CLI client.** Not a plugin install - see the README's [Antigravity CLI (agy)](README.md#antigravity-cli-agy) subsection for the wiring, delivered by the chezmoi dotfiles repo.
+
 ## Hooks
 
 The Switchboard plugin wires six Claude Code hook events automatically:
@@ -200,6 +203,8 @@ The Switchboard plugin wires six Claude Code hook events automatically:
 The hook scripts share `scripts/_hook_common.py` (stdin bytes-read, base URL, Bearer helpers); the injector deliberately remains standalone.
 
 See `hooks/hooks.json` for the canonical wiring.
+
+Antigravity (agy) sessions wire four hook events - PreInvocation, PreToolUse, PostToolUse, Stop - via the chezmoi-managed `~/.gemini/config/hooks.json`, not this plugin. There are no SessionStart/SessionEnd equivalents: birth self-heals via the first hook POST or MCP call, and exits are detected by the sweeper's silence threshold rather than an explicit end signal.
 
 **Server-side gating.** Hooks fire on every lifecycle event regardless of away-mode state, but the server's `/agent_status` handler short-circuits and skips the Firebase write when the cwd is not in away mode. The phone status indicator is therefore only visible during away mode. The `/agent_status` route upserts the SessionRegistry before that away-mode gate, so the session roster always updates even when the phone-facing conversation-status write is skipped; only the phone status indicator is away-mode-gated. The HTTP layer always returns 200 so the hook contract is unchanged; the gate is invisible to the hook script.
 

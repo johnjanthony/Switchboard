@@ -454,21 +454,33 @@ async def _perform_combine(
 						label=f"fb_move_member:{source_id}->{target_id}:{actual_sender}",
 					)
 			else:
-				# Dormant member: write the relaunch pending file, then bind
-				# and flip alive TOGETHER (bound = alive-or-launching
-				# invariant; handle_resume does the same). Clearing the
-				# dormancy fields keeps message_and_await_agent's alive-peer
-				# count honest while the relaunch is in flight. With
-				# pending_dir=None (test mode) no relaunch happens, so the
-				# member moves as-is and stays unbound.
-				await _spawn_pending_for_combine_resume(pending_dir, member, target_id, source_id)
-				if pending_dir is not None:
-					member.alive = True
-					member.session_ended_at = None
-					member.session_end_reason = None
-					member.left_at = None
-					registry.bind_session(member.cli_session_id, target_id)
-					combine_resume_count += 1
+				sessions = getattr(registry, "sessions", None)
+				rec = sessions.get(sid) if sessions is not None else None
+				if rec is not None and rec.cli == "antigravity":
+					if backend is not None:
+						_spawn_bg(
+							backend.send_text(
+								f"'{actual_sender}' is an Antigravity session; auto-resume is not "
+								f"supported yet. Resume manually: agy --conversation {sid} in {member.cwd}"
+							),
+							label=f"fb_agy_manual_resume:{sid}",
+						)
+				else:
+					# Dormant member: write the relaunch pending file, then bind
+					# and flip alive TOGETHER (bound = alive-or-launching
+					# invariant; handle_resume does the same). Clearing the
+					# dormancy fields keeps message_and_await_agent's alive-peer
+					# count honest while the relaunch is in flight. With
+					# pending_dir=None (test mode) no relaunch happens, so the
+					# member moves as-is and stays unbound.
+					await _spawn_pending_for_combine_resume(pending_dir, member, target_id, source_id)
+					if pending_dir is not None:
+						member.alive = True
+						member.session_ended_at = None
+						member.session_end_reason = None
+						member.left_at = None
+						registry.bind_session(member.cli_session_id, target_id)
+						combine_resume_count += 1
 				member.last_seen_seq = 0
 				del source.members_active[sid]
 				target.members_active[sid] = member

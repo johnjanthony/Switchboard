@@ -111,6 +111,17 @@ class SpawnHandler:
 		self._logger = logger
 		self._registry = registry
 
+	def _is_antigravity_session(self, session_id: str) -> bool:
+		sessions = getattr(self._registry, "sessions", None)
+		rec = sessions.get(session_id) if sessions is not None else None
+		return rec is not None and rec.cli == "antigravity"
+
+	async def _notify_manual_resume(self, label: str, session_id: str, cwd: str) -> None:
+		await self._backend.send_text(
+			f"'{label}' is an Antigravity session; auto-resume is not supported yet. "
+			f"Resume manually: agy --conversation {session_id} in {cwd}"
+		)
+
 	async def _cancel_prior_pending(self, conversation_id: str) -> None:
 		"""Cancel any pending ask_human requests left over for this conversation before launching
 		a new agent. Without this, a prior agent that died without reaching its tool-handler
@@ -461,6 +472,9 @@ class SpawnHandler:
 		for m in source.members_active.values():
 			if m.alive or m.session_lost_permanently:
 				continue
+			if self._is_antigravity_session(m.cli_session_id):
+				await self._notify_manual_resume(m.sender, m.cli_session_id, m.cwd)
+				continue
 			bound_to = self._registry.session_to_conversation_id.get(m.cli_session_id)
 			if bound_to is not None:
 				await self._logger.surface_error(
@@ -581,6 +595,9 @@ class SpawnHandler:
 	) -> bool:
 		"""Queue one claude --resume launch. No away-mode side effect - the caller
 		owns that policy (resume paths enable it; convene never does)."""
+		if self._is_antigravity_session(session_id):
+			await self._notify_manual_resume(session_id[:8], session_id, cwd)
+			return False
 		if not await self._user_has_interactive_session():
 			return False
 		pending = {
@@ -619,6 +636,9 @@ class SpawnHandler:
 			return
 		if not rec.cwd:
 			await self._backend.send_text(f"Cannot resume {session_id[:8]}: no working directory recorded.")
+			return
+		if rec.cli == "antigravity":
+			await self._notify_manual_resume(session_id[:8], session_id, rec.cwd)
 			return
 
 		target_id = cmd.get("target_conversation_id")

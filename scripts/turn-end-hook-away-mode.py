@@ -1,4 +1,4 @@
-"""Turn-end hook for Claude Code (Stop) and Gemini CLI (AfterAgent).
+"""Turn-end hook for Claude Code (Stop), Gemini CLI (AfterAgent), and Antigravity CLI (Stop).
 
 Queries the local Switchboard gateway at turn end and, when the agent must
 not silently end its turn, emits the appropriate block/deny JSON on stdout.
@@ -7,6 +7,15 @@ Single check: `GET /away-mode`. The away-mode flag is global, so enforcement
 does not depend on any stdin payload field. When the payload carries a
 session_id it is forwarded so the server can deliver (and clear) that
 session's queued wake notices in the same response.
+
+Antigravity payloads are camelCase; the session key is conversationId (the
+agy conversation UUID that serves as cli_session_id everywhere). The block
+analog is {"decision": "continue", "reason": ...} per agy's Stop hook
+contract. The antigravity mode also POSTs the idle agent status before
+deciding (a single Stop entry does both jobs: agy's merge semantics for
+multiple Stop handlers are unverified). The idle POST carries no working
+directory; the identity hook's status POSTs own the registry record's
+working directory.
 
 When away mode is active the agent is forced to route output through the
 switchboard MCP tools instead of leaking to the terminal - John is on his
@@ -67,6 +76,22 @@ def _emit_gemini(reason: str) -> None:
 	)
 
 
+def _emit_antigravity(reason: str) -> None:
+	json.dump({"decision": "continue", "reason": reason}, sys.stdout)
+
+
+def _post_idle_status(session_id: str) -> None:
+	body = {"session_id": session_id, "state": "clear", "event": "Stop", "cli": "antigravity"}
+	data = json.dumps(body).encode("utf-8")
+	headers = {"Content-Type": "application/json", **auth_headers()}
+	req = urllib.request.Request(base_url() + "/agent_status", data=data, headers=headers, method="POST")
+	try:
+		with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS):
+			pass
+	except Exception:
+		pass
+
+
 def main() -> int:
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--cli", required=False)
@@ -74,10 +99,16 @@ def main() -> int:
 
 	payload = read_stdin_json()
 
-	if args.cli not in {"claude", "gemini"}:
+	if args.cli not in {"claude", "gemini", "antigravity"}:
 		return 0
 
-	session_id = payload.get("session_id", "") or ""
+	if args.cli == "antigravity":
+		session_id = payload.get("conversationId", "") or ""
+	else:
+		session_id = payload.get("session_id", "") or ""
+
+	if args.cli == "antigravity" and session_id:
+		_post_idle_status(session_id)
 
 	away_url = base_url() + AWAY_MODE_PATH
 	active, notices = _fetch_state(away_url, session_id)
@@ -91,8 +122,10 @@ def main() -> int:
 	reason = "\n\n".join(reason_parts)
 	if args.cli == "claude":
 		_emit_claude(reason)
-	else:
+	elif args.cli == "gemini":
 		_emit_gemini(reason)
+	else:
+		_emit_antigravity(reason)
 	return 0
 
 
