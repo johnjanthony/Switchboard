@@ -63,6 +63,8 @@ async def _sweep_session_end_markers(registry, marker_dir, backend=None, logger=
 				marker_path.unlink()
 			except OSError:
 				pass
+	if session_registry is not None and count:
+		session_registry.markers_applied_total += count
 	return count
 
 
@@ -638,9 +640,21 @@ async def _session_sweep_once(
 	)
 
 
+async def _maybe_warn_marker_health(session_registry, logger, marker_dir) -> None:
+	"""One-shot loud warning when sessions keep going presumed-dead while no
+	SessionEnd marker has ever been applied - markers are landing somewhere
+	the server does not sweep."""
+	if session_registry.marker_health_check():
+		await logger.surface_error(
+			f"session_end_markers_missing: {session_registry.presumed_dead_total} session(s) presumed "
+			f"dead with zero SessionEnd markers applied since startup - client hosts are likely writing "
+			f"markers to an unswept fallback dir (SWITCHBOARD_MARKER_DIR unset). Server sweep dir: {marker_dir}"
+		)
+
+
 async def dispatch_session_sweep(
 	session_registry, widget_store, logger, supervisor, *,
-	lost_after_seconds, retention_hours, interval: float = 60.0, registry=None, backend=None,
+	lost_after_seconds, retention_hours, interval: float = 60.0, registry=None, backend=None, marker_dir=None,
 ):
 	"""Periodic staleness judge for the session roster. Pure rules live in
 	SessionRegistry.sweep; this loop only supplies the sensor context."""
@@ -653,6 +667,7 @@ async def dispatch_session_sweep(
 			)
 			if pruned:
 				await logger.info(f"session_sweep_pruned: {len(pruned)}")
+			await _maybe_warn_marker_health(session_registry, logger, marker_dir)
 			if registry is not None and backend is not None:
 				await _parked_sweep_once(registry, backend, logger, max_age_hours=retention_hours)
 			supervisor.record_success()

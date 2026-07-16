@@ -184,38 +184,50 @@ def test_unknown_cli_exits_silently():
 	assert r.stdout.strip() == ""
 
 
-def test_hook_sends_cwd_as_query_param():
-	"""Hook includes ?cwd=... in the URL it requests."""
+def test_hook_does_not_send_cwd_query_param():
+	"""cwd left the protocol entirely - the server route reads only session_id,
+	so the hook no longer sends cwd at all."""
 	with _FakeServer({"active": True}, record_queries=True) as srv:
 		r = _run("claude", stdin=json.dumps({"cwd": "c:/work/myproj"}), url_env=srv.url)
 	assert r.returncode == 0
 	assert len(srv.received_paths) == 1
-	assert "cwd=" in srv.received_paths[0]
-	assert "myproj" in srv.received_paths[0]
+	assert "cwd=" not in srv.received_paths[0]
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
 
 
-def test_hook_missing_cwd_fail_open():
-	"""When stdin has no cwd field, hook fails open (exit 0, no block)."""
+def test_hook_missing_cwd_still_enforces():
+	"""Away-mode enforcement is global: a payload without cwd must still query
+	and block (the old missing-cwd fail-open was a fail-quiet hole)."""
 	with _FakeServer({"active": True}) as srv:
 		r = _run("claude", stdin=json.dumps({"other": "data"}), url_env=srv.url)
 	assert r.returncode == 0
-	assert r.stdout.strip() == ""
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
 
 
-def test_hook_empty_stdin_fail_open():
-	"""Empty stdin means no cwd — hook fails open."""
+def test_hook_empty_stdin_still_enforces():
 	with _FakeServer({"active": True}) as srv:
 		r = _run("claude", stdin="", url_env=srv.url)
 	assert r.returncode == 0
-	assert r.stdout.strip() == ""
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
 
 
-def test_hook_invalid_json_stdin_fail_open():
-	"""Malformed stdin JSON is treated as no cwd — hook fails open."""
+def test_hook_invalid_json_stdin_still_enforces():
 	with _FakeServer({"active": True}) as srv:
 		r = _run("claude", stdin="not json at all", url_env=srv.url)
 	assert r.returncode == 0
-	assert r.stdout.strip() == ""
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
+
+
+def test_hook_no_session_id_queries_bare_path():
+	"""Without a session_id the hook queries /away-mode with no query string."""
+	with _FakeServer({"active": False}, record_queries=True) as srv:
+		r = _run("claude", stdin=json.dumps({"cwd": "c:/x"}), url_env=srv.url)
+	assert r.returncode == 0
+	assert srv.received_paths == ["/away-mode"]
 
 
 # --- T7 / H9: collab-partner-state augmentation ---

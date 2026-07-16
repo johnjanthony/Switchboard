@@ -1,33 +1,32 @@
 """Turn-end hook for Claude Code (Stop) and Gemini CLI (AfterAgent).
 
-Reads the working directory from stdin JSON (Claude Code passes it as
-`{"cwd": "..."}` in the Stop hook payload) and queries the local Switchboard
-gateway. When the agent shouldn't be allowed to silently end its turn, emits
-the appropriate block/deny JSON on stdout.
+Queries the local Switchboard gateway at turn end and, when the agent must
+not silently end its turn, emits the appropriate block/deny JSON on stdout.
 
-Single check: `GET /away-mode?cwd=<cwd>` — when active, the agent is forced
-to route output through the switchboard MCP tools instead of leaking to the
-terminal. John is on his phone, not watching.
+Single check: `GET /away-mode`. The away-mode flag is global, so enforcement
+does not depend on any stdin payload field. When the payload carries a
+session_id it is forwarded so the server can deliver (and clear) that
+session's queued wake notices in the same response.
 
-The old /collab-partner-state endpoint was deleted in the v2 conversations
-redesign. Partner state is no longer tracked per-cwd; the talking-stick FIFO
-inside Conversation.wait_queue is the source of truth and is not exposed via HTTP.
+When away mode is active the agent is forced to route output through the
+switchboard MCP tools instead of leaking to the terminal - John is on his
+phone, not watching.
 
-Fails open: any error (connection refused, timeout, unknown --cli, malformed
-response, missing cwd) results in silent exit 0, so non-Switchboard sessions
-are unaffected.
+Fails open only on genuine errors (connection refused, timeout, non-200,
+malformed response, unknown --cli): silent exit 0, so non-Switchboard
+sessions are unaffected.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import urllib.error
 import urllib.request
 
-DEFAULT_BASE_URL = "http://127.0.0.1:9876"
+from _hook_common import auth_headers, base_url, read_stdin_json
+
 AWAY_MODE_PATH = "/away-mode"
 TIMEOUT_SECONDS = 0.5
 
@@ -42,17 +41,10 @@ REDIRECT_REASON_AWAY_MODE = (
 )
 
 
-def _fetch_state(url: str, cwd: str, session_id: str) -> tuple[bool, list]:
+def _fetch_state(url: str, session_id: str) -> tuple[bool, list]:
 	from urllib.parse import urlencode
-	params = {"cwd": cwd}
-	if session_id:
-		params["session_id"] = session_id
-	full_url = f"{url}?{urlencode(params)}"
-	headers = {}
-	token = os.environ.get("SWITCHBOARD_TOKEN")
-	if token:
-		headers["Authorization"] = f"Bearer {token}"
-	req = urllib.request.Request(full_url, headers=headers)
+	full_url = f"{url}?{urlencode({'session_id': session_id})}" if session_id else url
+	req = urllib.request.Request(full_url, headers=auth_headers())
 	try:
 		with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
 			if resp.status != 200:
@@ -80,33 +72,15 @@ def main() -> int:
 	parser.add_argument("--cli", required=False)
 	args, _unknown = parser.parse_known_args()
 
-	# Read raw bytes; json.loads handles UTF-8. See cli-session-injector-hook
-	# for why we can't use sys.stdin.read() on Windows (cp1252 + surrogateescape
-	# mangles UTF-8 multi-byte sequences).
-	stdin_data = b""
-	try:
-		stdin_data = sys.stdin.buffer.read()
-	except Exception:
-		pass
+	payload = read_stdin_json()
 
 	if args.cli not in {"claude", "gemini"}:
 		return 0
 
-	cwd = ""
-	try:
-		payload = json.loads(stdin_data) if stdin_data else {}
-		cwd = payload.get("cwd", "") or ""
-	except Exception:
-		cwd = ""
-
-	if not cwd:
-		return 0  # fail-open without cwd
-
 	session_id = payload.get("session_id", "") or ""
 
-	base_url = os.environ.get("SWITCHBOARD_BASE_URL", DEFAULT_BASE_URL)
-	away_url = base_url + AWAY_MODE_PATH
-	active, notices = _fetch_state(away_url, cwd, session_id)
+	away_url = base_url() + AWAY_MODE_PATH
+	active, notices = _fetch_state(away_url, session_id)
 	if not active and not notices:
 		return 0
 	reason_parts = []

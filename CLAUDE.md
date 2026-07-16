@@ -193,9 +193,11 @@ The plugin install wires the skill and the turn-end + agent-status hooks. Two th
 The Switchboard plugin wires six Claude Code hook events automatically:
 
 - `Stop` (two handlers) — `turn-end-hook-away-mode.py` for the away-mode enforcement check; `agent-status-hook.py` for the per-conversation activity indicator.
-- `UserPromptSubmit`, `PreToolUse`, `PostToolUse` — `agent-status-hook.py` for the activity indicator. `PreToolUse` also runs `cli-session-injector-hook.py`, which injects `cli_session_id` + `cwd` into every `mcp__switchboard__*` call.
+- `UserPromptSubmit`, `PreToolUse`, `PostToolUse` — `agent-status-hook.py` for the activity indicator. `PreToolUse` also runs `cli-session-injector-hook.py`, which injects `cli_session_id` + `cwd` into every `mcp__switchboard__*` call. A separate `matcher: "AskUserQuestion"` PreToolUse entry runs `away-mode-tool-guard-hook.py`, which denies the built-in AskUserQuestion tool while away mode is on and redirects the agent to `ask_human` (option labels become `suggestions`).
 - `SessionStart` — `cli-session-start-hook.py` POSTs the session's birth (`session_id`, `cwd`, `source`) to the server's `/session_start` route so the SessionRegistry records the session; a missed birth self-heals on the first MCP call or agent-status event.
 - `SessionEnd` — `cli-session-end-hook.py` writes a SessionEnd marker file (under `SWITCHBOARD_MARKER_DIR`, the server's `<logs>/session-end` dir) that the server's `dispatch_session_end_markers` sweep applies to mark the session's member dormant on orderly exit (the marker write wins the process-exit race a synchronous POST loses).
+
+The hook scripts share `scripts/_hook_common.py` (stdin bytes-read, base URL, Bearer helpers); the injector deliberately remains standalone.
 
 See `hooks/hooks.json` for the canonical wiring.
 
@@ -248,6 +250,7 @@ The moment the operator says they are stepping away (or any similar phrasing), s
 
 - Route **every** subsequent output (status, questions, completion) through `ask_human`, `notify_human`, or `send_document_human`.
 - Receiving a reply to `ask_human` **does not** exit away mode. Do not respond to replies in the terminal.
+- Never call the built-in `AskUserQuestion` tool in away mode — it renders only in the terminal. A PreToolUse guard denies it; use `ask_human` with `suggestions` instead.
 
 **Exit:**
 

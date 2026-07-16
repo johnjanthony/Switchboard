@@ -12,12 +12,12 @@ it cannot conflict with it.
 from __future__ import annotations
 
 import json
-import os
 import sys
 import urllib.error
 import urllib.request
 
-DEFAULT_BASE_URL = "http://127.0.0.1:9876"
+from _hook_common import auth_headers, base_url, read_stdin_json
+
 AGENT_STATUS_PATH = "/agent_status"
 TIMEOUT_SECONDS = 1.0
 
@@ -64,10 +64,7 @@ def _build_detail(tool_name: str, tool_input: dict) -> str | None:
 
 def _post(url: str, body: dict) -> dict:
 	data = json.dumps(body).encode("utf-8")
-	headers = {"Content-Type": "application/json"}
-	token = os.environ.get("SWITCHBOARD_TOKEN")
-	if token:
-		headers["Authorization"] = f"Bearer {token}"
+	headers = {"Content-Type": "application/json", **auth_headers()}
 	req = urllib.request.Request(
 		url,
 		data=data,
@@ -83,17 +80,7 @@ def _post(url: str, body: dict) -> dict:
 
 
 def main() -> int:
-	# Read raw bytes; json.loads handles UTF-8. See cli-session-injector-hook
-	# for why we can't use sys.stdin.read() on Windows (cp1252 + surrogateescape
-	# mangles UTF-8 multi-byte sequences).
-	try:
-		raw = sys.stdin.buffer.read()
-	except Exception:
-		return 0
-	try:
-		payload = json.loads(raw) if raw else {}
-	except Exception:
-		return 0
+	payload = read_stdin_json()
 
 	session_id = payload.get("session_id") or ""
 	if not session_id:
@@ -123,8 +110,7 @@ def main() -> int:
 	else:
 		return 0  # unknown event
 
-	base_url = os.environ.get("SWITCHBOARD_BASE_URL", DEFAULT_BASE_URL)
-	url = base_url + AGENT_STATUS_PATH
+	url = base_url() + AGENT_STATUS_PATH
 	cwd = payload.get("cwd") or ""
 	body = {"session_id": session_id, "state": state, "event": event}
 	if cwd:

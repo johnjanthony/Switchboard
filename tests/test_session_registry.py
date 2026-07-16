@@ -380,3 +380,36 @@ def test_ringed_terminal_record_still_prunes_at_retention():
 		retention_seconds=72 * 3600, rings_fresh=True, ring_ids={"sess-A"})
 	assert pruned == ["sess-A"]
 	assert reg.get("sess-A") is None
+
+
+def test_sweep_presumed_dead_increments_counter():
+	import datetime as _dt
+	reg = SessionRegistry(now=lambda: "2026-07-14T12:00:00+00:00")
+	reg.record_session_start("sess-pd-1", cwd="C:/Work/X")
+	last = _dt.datetime.fromisoformat("2026-07-14T12:00:00+00:00").timestamp()
+	reg.sweep(
+		now_ts=last + 1000, lost_after_seconds=900, retention_seconds=72 * 3600,
+		rings_fresh=True, ring_ids=set(),
+	)
+	assert reg.get("sess-pd-1").state == "lost"
+	assert reg.presumed_dead_total == 1
+
+
+def test_marker_health_check_fires_once_at_threshold():
+	reg = SessionRegistry()
+	reg.presumed_dead_total = 3
+	assert reg.marker_health_check() is True
+	assert reg.marker_health_check() is False
+
+
+def test_marker_health_check_quiet_below_threshold():
+	reg = SessionRegistry()
+	reg.presumed_dead_total = 2
+	assert reg.marker_health_check() is False
+
+
+def test_marker_health_check_quiet_when_markers_applied():
+	reg = SessionRegistry()
+	reg.presumed_dead_total = 10
+	reg.markers_applied_total = 1
+	assert reg.marker_health_check() is False

@@ -11,8 +11,11 @@ server's session-end sweep loop applies it via handle_session_end.
 Marker dir: SWITCHBOARD_MARKER_DIR if set (the server's <logs>/session-end,
 expressed in this surface's path: a Windows path for Windows-native sessions,
 a /mnt/c/... path for WSL sessions; set per host by the chezmoi dotfiles). If
-unset, falls back to a path relative to this script, which is correct only when
-the plugin runs in-place from the repo. Best-effort: never blocks shutdown.
+unset, falls back to a path relative to this script, which is correct only
+when the plugin runs in-place from the repo. Under the version-gated plugin
+cache the fallback dir is NEVER swept, so the hook also drops an
+_UNPROVISIONED.txt breadcrumb there naming the env var. Best-effort: never
+blocks shutdown.
 """
 from __future__ import annotations
 import json
@@ -21,31 +24,43 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from _hook_common import read_stdin_json
 
-def _marker_dir() -> Path:
+BREADCRUMB_NAME = "_UNPROVISIONED.txt"
+BREADCRUMB_TEXT = (
+	"SWITCHBOARD_MARKER_DIR is not set, so SessionEnd markers are written to\n"
+	"this fallback directory next to the hook script. If this copy of the\n"
+	"script runs from the version-gated Claude Code plugin cache, the\n"
+	"switchboard server NEVER sweeps this directory and sessions are never\n"
+	"marked dormant. Fix: set the SWITCHBOARD_MARKER_DIR environment variable\n"
+	"to the server's <repo>/logs/session-end directory (see the repo\n"
+	"CLAUDE.md, Setup). If the plugin runs in-place from the repo checkout,\n"
+	"this directory IS the server's sweep dir and markers are applied.\n"
+)
+
+
+def _marker_dir() -> tuple[Path, bool]:
+	"""Resolve the marker directory. Returns (dir, used_fallback)."""
 	env = os.environ.get("SWITCHBOARD_MARKER_DIR")
 	if env:
-		return Path(env)
-	# Fallback: <script>/../logs/session-end (the repo's logs dir when the
-	# plugin runs in-place). Set SWITCHBOARD_MARKER_DIR to be sure, especially
-	# under WSL where this script's location is not the Windows logs dir.
-	return Path(__file__).resolve().parents[1] / "logs" / "session-end"
+		return Path(env), False
+	return Path(__file__).resolve().parents[1] / "logs" / "session-end", True
 
 
 def main() -> None:
-	# Read raw bytes; json.loads handles UTF-8. See cli-session-injector-hook
-	# for why we can't use json.load(sys.stdin) on Windows.
-	try:
-		payload = json.loads(sys.stdin.buffer.read())
-	except Exception:
-		sys.exit(0)
+	payload = read_stdin_json()
 	session_id = payload.get("session_id")
 	reason = payload.get("reason", "other")
 	if not session_id:
 		sys.exit(0)
 	try:
-		marker_dir = _marker_dir()
+		marker_dir, used_fallback = _marker_dir()
 		marker_dir.mkdir(parents=True, exist_ok=True)
+		if used_fallback:
+			try:
+				(marker_dir / BREADCRUMB_NAME).write_text(BREADCRUMB_TEXT, encoding="utf-8")
+			except OSError:
+				pass
 		# session_id is a UUID (filesystem-safe); sanitize defensively anyway.
 		safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_") or "unknown"
 		marker = {

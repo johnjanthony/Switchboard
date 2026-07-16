@@ -835,7 +835,7 @@ async def _run(config: Config) -> None:
 			session_registry, widget_store, logger, loop_sups["dispatch_session_sweep"],
 			lost_after_seconds=config.session_lost_after_seconds,
 			retention_hours=config.session_retention_hours,
-			registry=registry, backend=backend,
+			registry=registry, backend=backend, marker_dir=session_end_marker_dir,
 		)
 	)
 

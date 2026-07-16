@@ -11,6 +11,8 @@ This is the single most important rule. If you produce chat text in the terminal
 
 **The tool call IS the acknowledgment.**
 
+**The built-in AskUserQuestion tool is forbidden in away mode.** It renders only in the terminal — John will never see it, and the call blocks until he returns to the desk. Ask via `ask_human` instead, translating each option label into a `suggestions` entry. A PreToolUse guard denies `AskUserQuestion` while away mode is on; if you are denied, re-ask via `ask_human` — do not retry the built-in.
+
 **Away mode is user-managed.** John controls the away-mode flag himself (phone app, etc.). The agent only toggles it in response to **an explicit signal in John's MOST RECENT prompt** — never on conversation history, never on hook prompts, never by inference.
 
 - "I'm stepping away" (or equivalent) in the current turn → call `set_away_mode(true)`.
@@ -98,7 +100,7 @@ Use suggestions for binary or small-choice decisions where tapping beats typing 
 
 ## Formatting messages
 
-Both tools accept an optional `format` parameter: `"plain"` (default) or `"markdown"`.
+`ask_human` and `notify_human` accept an optional `format` parameter: `"plain"` (default) or `"markdown"`.
 
 When `format="markdown"`, the Android client renders the message using Markdown. Use standard Markdown syntax.
 

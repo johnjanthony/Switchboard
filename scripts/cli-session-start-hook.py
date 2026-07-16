@@ -10,27 +10,18 @@ does NOT self-heal, so SessionEnd keeps its marker mechanism).
 from __future__ import annotations
 
 import json
-import os
 import sys
 import urllib.error
 import urllib.request
 
-DEFAULT_BASE_URL = "http://127.0.0.1:9876"
+from _hook_common import auth_headers, base_url, read_stdin_json
+
 SESSION_START_PATH = "/session_start"
 TIMEOUT_SECONDS = 1.0
 
 
 def main() -> int:
-	# Read raw bytes; json.loads handles UTF-8. See cli-session-injector-hook
-	# for why sys.stdin text reads mangle UTF-8 on Windows (cp1252 wrapper).
-	try:
-		raw = sys.stdin.buffer.read()
-	except Exception:
-		return 0
-	try:
-		payload = json.loads(raw) if raw else {}
-	except Exception:
-		return 0
+	payload = read_stdin_json()
 
 	session_id = payload.get("session_id") or ""
 	if not session_id:
@@ -41,13 +32,9 @@ def main() -> int:
 		"source": payload.get("source") or "",
 	}
 
-	base_url = os.environ.get("SWITCHBOARD_BASE_URL", DEFAULT_BASE_URL)
-	headers = {"Content-Type": "application/json"}
-	token = os.environ.get("SWITCHBOARD_TOKEN")
-	if token:
-		headers["Authorization"] = f"Bearer {token}"
+	headers = {"Content-Type": "application/json", **auth_headers()}
 	req = urllib.request.Request(
-		base_url + SESSION_START_PATH,
+		base_url() + SESSION_START_PATH,
 		data=json.dumps(body).encode("utf-8"),
 		headers=headers,
 		method="POST",
