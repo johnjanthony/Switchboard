@@ -392,7 +392,8 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		sender: your display name (kebab-case recommended).
 		title: optional session label shown on John's phone tab.
 		format: 'plain' (default) or 'markdown'.
-		suggestions: optional list of quick-reply options.
+		suggestions: optional quick-reply options. MUST be a JSON array of
+		strings, e.g. ["Yes", "No", "Ship it"]; any other shape is rejected.
 
 		cli_session_id and cwd identify your session. Claude Code: injected
 		automatically by the plugin hook (do not pass them). Other CLIs (e.g.

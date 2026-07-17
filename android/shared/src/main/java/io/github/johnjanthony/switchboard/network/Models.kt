@@ -69,14 +69,6 @@ data class PendingExitToggle(
 data class ConversationMember(
 	val cliSessionId: String = "",
 	val sender: String = "",
-	val cwd: String = "",
-	val surface: String = "",  // "windows" | "wsl"
-	val alive: Boolean = true,
-	val sessionLostPermanently: Boolean = false,
-	val sessionEndedAt: String? = null,  // ISO-8601
-	val sessionEndReason: String? = null,
-	val joinedAt: Double = 0.0,
-	val lastSeenSeq: Int = 0,
 )
 
 data class ConversationSummary(
@@ -174,6 +166,9 @@ data class RegistrySession(
 	@get:PropertyName("cli_session_id") @set:PropertyName("cli_session_id") var cliSessionId: String = "",
 	@get:PropertyName("cwd") @set:PropertyName("cwd") var cwd: String = "",
 	@get:PropertyName("surface") @set:PropertyName("surface") var surface: String = "windows",
+	// Never rendered yet - kept as a deliberate node mirror: the server tracks
+	// non-Claude CLIs (e.g. Antigravity) in this field, and a sessions-board
+	// CLI badge is the expected consumer.
 	@get:PropertyName("cli") @set:PropertyName("cli") var cli: String = "claude",
 	@get:PropertyName("started_at") @set:PropertyName("started_at") var startedAt: String = "",
 	@get:PropertyName("last_event_at") @set:PropertyName("last_event_at") var lastEventAt: String = "",

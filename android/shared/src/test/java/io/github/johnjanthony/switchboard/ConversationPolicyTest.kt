@@ -169,4 +169,25 @@ class ConversationPolicyTest {
 		val all = listOf(conv("a", "active"), conv("b", "active"))
 		assertEquals(listOf("b"), pickerTargets(all, excludeId = "a").map { it.id })
 	}
+
+	@Test
+	fun `unread zeroes only for the open row in the foreground`() {
+		assertTrue(shouldZeroUnreadOnArrival("conv-1", "conv-1", appForeground = true))
+	}
+
+	@Test
+	fun `no zero when the app is backgrounded on the conversation`() {
+		assertFalse(shouldZeroUnreadOnArrival("conv-1", "conv-1", appForeground = false))
+	}
+
+	@Test
+	fun `no zero for a non-selected row or no selection`() {
+		assertFalse(shouldZeroUnreadOnArrival("conv-2", "conv-1", appForeground = true))
+		assertFalse(shouldZeroUnreadOnArrival(null, "conv-1", appForeground = true))
+	}
+
+	@Test
+	fun `no zero for the synthetic admin row`() {
+		assertFalse(shouldZeroUnreadOnArrival(ADMIN_CONVERSATION_ID, ADMIN_CONVERSATION_ID, appForeground = true))
+	}
 }

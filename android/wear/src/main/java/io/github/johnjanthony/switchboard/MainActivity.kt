@@ -38,7 +38,7 @@ import android.widget.TextView
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.viewinterop.AndroidView
 import com.google.firebase.auth.FirebaseAuth
-import io.github.johnjanthony.switchboard.fcm.SwitchboardFirebaseMessagingService
+import io.github.johnjanthony.switchboard.fcm.BaseSwitchboardMessagingService
 import io.github.johnjanthony.switchboard.shared.GoogleAuthHelper
 
 class MainActivity : ComponentActivity() {
@@ -77,12 +77,15 @@ class MainActivity : ComponentActivity() {
 	}
 
 	private fun handleNotificationIntent(intent: Intent?) {
-		intent?.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_AGENT_ID)?.let { value ->
+		intent?.getStringExtra(BaseSwitchboardMessagingService.EXTRA_AGENT_ID)?.let { value ->
 			pendingDeepLinkConvId.value = value
 		}
-		intent?.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_MESSAGE_ID)?.let { messageId ->
+		intent?.getStringExtra(BaseSwitchboardMessagingService.EXTRA_MESSAGE_ID)?.let { messageId ->
 			viewModel.setPendingDeepLinkMessageId(messageId)
 		}
+		// Scrub the consumed extras so activity recreation does not re-fire them.
+		intent?.removeExtra(BaseSwitchboardMessagingService.EXTRA_AGENT_ID)
+		intent?.removeExtra(BaseSwitchboardMessagingService.EXTRA_MESSAGE_ID)
 	}
 }
 
@@ -443,6 +446,16 @@ fun MarkdownText(content: String, format: String, color: Color = Color.Unspecifi
 				.usePlugin(io.noties.markwon.ext.tasklist.TaskListPlugin.create(ctx))
 				.usePlugin(io.noties.markwon.ext.strikethrough.StrikethroughPlugin.create())
 				.usePlugin(io.noties.markwon.simple.ext.SimpleExtPlugin.create())
+				.usePlugin(object : io.noties.markwon.AbstractMarkwonPlugin() {
+					override fun configureConfiguration(builder: io.noties.markwon.MarkwonConfiguration.Builder) {
+						builder.linkResolver(object : io.noties.markwon.LinkResolver {
+							override fun resolve(v: android.view.View, link: String) {
+								if (isAllowedLinkScheme(link)) io.noties.markwon.LinkResolverDef().resolve(v, link)
+								// Disallowed scheme: deliberate no-op (see LinkSchemes.kt).
+							}
+						})
+					}
+				})
 				.build()
 		}
 		val lastRendered = remember { mutableStateOf<Pair<String, Int>?>(null) }

@@ -16,6 +16,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.ChildEventListener
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.DatabaseReference
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
 import io.github.johnjanthony.switchboard.network.BulkRespondEntry
@@ -74,6 +75,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 	private val _selectedConversationId = MutableStateFlow<String?>(null)
 	val selectedConversationId: StateFlow<String?> = _selectedConversationId.asStateFlow()
+
+	// Test seam: unit tests swap this; production reads the process-wide flag.
+	internal var foregroundProvider: () -> Boolean = { AppForeground.isForeground }
 
 	/** Conversations dropped from the list because their node failed to parse (convId to error). */
 	private val _conversationParseFailures = MutableStateFlow<Map<String, String>>(emptyMap())
@@ -314,9 +318,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		newMap[convId] = updated
 		_conversationRows.value = newMap
 
-		// Clear unread badge on the server-side counter when this is the open row.
-		if (_selectedConversationId.value == convId && !isSyntheticConversation(convId)) {
-			conversationsRef.child(convId).child("unread_count").setValue(0)
+		// Clear unread badge on the server-side counter when this is the open row
+		// and the app is in the foreground - a conversation left open on a
+		// pocketed phone must not mark arriving messages read.
+		if (shouldZeroUnreadOnArrival(_selectedConversationId.value, convId, foregroundProvider())) {
+			writeReporting(conversationsRef.child(convId).child("unread_count"), 0, "clear unread")
 		}
 
 		val attachedAt = messageListenerAttachedAt[convId] ?: nowIso()
@@ -502,14 +508,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 								ConversationMember(
 									cliSessionId = memberNode.child("cli_session_id").getValue(String::class.java) ?: return@mapNotNull null,
 									sender = memberNode.child("sender").getValue(String::class.java) ?: return@mapNotNull null,
-									cwd = memberNode.child("cwd").getValue(String::class.java) ?: "",
-									surface = memberNode.child("surface").getValue(String::class.java) ?: "windows",
-									alive = memberNode.child("alive").getValue(Boolean::class.java) ?: true,
-									sessionLostPermanently = memberNode.child("session_lost_permanently").getValue(Boolean::class.java) ?: false,
-									sessionEndedAt = memberNode.child("session_ended_at").getValue(String::class.java),
-									sessionEndReason = memberNode.child("session_end_reason").getValue(String::class.java),
-									joinedAt = memberNode.child("joined_at").getValue(Double::class.java) ?: 0.0,
-									lastSeenSeq = memberNode.child("last_seen_seq").getValue(Int::class.java) ?: 0,
 								)
 							} catch (e: Exception) {
 								android.util.Log.w("MainViewModel", "member parse failed in ${convNode.key}: ${memberNode.key}", e)
@@ -729,7 +727,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		// The synthetic _admin row has no Firebase node; never write under conversations/_admin (R3).
 		if (isSyntheticConversation(convId)) return
 		// Clear the server-maintained unread badge so the indicator drops on every device.
-		conversationsRef.child(convId).child("unread_count").setValue(0)
+		writeReporting(conversationsRef.child(convId).child("unread_count"), 0, "clear unread")
 	}
 
 	fun clearSelectedChannel() {
@@ -748,10 +746,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		_markdownViewerContent.value = null
 	}
 
+	/**
+	 * setValue with failure reporting. RTDB writes are otherwise fire-and-forget:
+	 * a permission-denied rejection (rules change, auth loss) vanishes silently
+	 * and the UI acts as if the write landed - a first-launch credential failure
+	 * made spawn commands disappear with no error anywhere. Fail loudly instead.
+	 */
+	private fun writeReporting(ref: DatabaseReference, value: Any?, label: String) {
+		ref.setValue(value).addOnFailureListener { e ->
+			android.util.Log.e("MainViewModel", "write failed: $label", e)
+			Handler(Looper.getMainLooper()).post {
+				Toast.makeText(getApplication(), writeFailureToastText(label, e.message), Toast.LENGTH_LONG).show()
+			}
+		}
+	}
+
 	/** Phone-side: mark a message opened given the convId (no bridge lookup needed). */
 	fun markMessageOpened(convId: String, msgId: String) {
 		if (isSyntheticConversation(convId)) return  // no Firebase node for _admin (R3)
-		database.getReference("messages/$convId/$msgId/opened").setValue(true)
+		writeReporting(database.getReference("messages/$convId/$msgId/opened"), true, "mark opened")
 	}
 
 	/**
@@ -761,12 +774,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	 * /answers/<convId>/<requestId>, the conversation-scoped path the server watches.
 	 */
 	fun submitReplyForConversation(convId: String, sender: String, text: String, requestId: String) {
-		database.getReference("answers/$convId/$requestId").setValue(mapOf(
+		writeReporting(database.getReference("answers/$convId/$requestId"), mapOf(
 			"text" to text,
 			"sender" to sender,
 			"request_id" to requestId,
 			"written_at" to nowIso(),
-		))
+		), "send reply")
 		// Optimistically remove from pending so the row indicator clears immediately.
 		localAnswers.add(convId, requestId)
 		val row = _conversationRows.value[convId] ?: return
@@ -819,12 +832,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	/** Phone-side hide by convId. */
 	fun hideConversation(convId: String) {
 		if (isSyntheticConversation(convId)) return  // _admin is not hideable; no Firebase node (R3)
-		conversationsRef.child(convId).child("meta").child("hidden").setValue(true)
+		writeReporting(conversationsRef.child(convId).child("meta").child("hidden"), true, "hide conversation")
 	}
 
 	/** Phone-side unhide by convId. */
 	fun unhideConversation(convId: String) {
-		conversationsRef.child(convId).child("meta").child("hidden").setValue(false)
+		writeReporting(conversationsRef.child(convId).child("meta").child("hidden"), false, "unhide conversation")
 		_selectedConversationId.value = convId
 	}
 
@@ -862,7 +875,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		)
 		if (prompt.isNotBlank()) record["prompt"] = prompt
 		if (targetConversationId != null) record["target_conversation_id"] = targetConversationId
-		database.getReference("spawn_commands").push().setValue(record)
+		writeReporting(database.getReference("spawn_commands").push(), record, "spawn")
 		return wasAwayOff
 	}
 
@@ -870,7 +883,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 	/** Acknowledge a session's current state (e.g. dismiss a stale/ended badge on the board). */
 	fun ackSession(sessionId: String) {
-		database.getReference("session_acks/$sessionId").setValue(nowIso())
+		writeReporting(database.getReference("session_acks/$sessionId"), nowIso(), "ack session")
 	}
 
 	/**
@@ -885,7 +898,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			"issued_at" to nowIso(),
 		)
 		if (!title.isNullOrBlank()) record["title"] = title
-		database.getReference("convene_commands").push().setValue(record)
+		writeReporting(database.getReference("convene_commands").push(), record, "convene")
 	}
 
 	/**
@@ -904,17 +917,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		)
 		if (targetConversationId != null) record["target_conversation_id"] = targetConversationId
 		if (!prompt.isNullOrBlank()) record["prompt"] = prompt
-		database.getReference("spawn_commands").push().setValue(record)
+		writeReporting(database.getReference("spawn_commands").push(), record, "resume session")
 		return wasAwayOff
 	}
 
 	// --- Conversation command writers ---
 
 	fun endConversation(conversationId: String) {
-		database.getReference("force_end_commands").push().setValue(mapOf(
+		writeReporting(database.getReference("force_end_commands").push(), mapOf(
 			"conversation_id" to conversationId,
 			"issued_at" to nowIso(),
-		))
+		), "end conversation")
 	}
 
 	fun resumeConversation(sourceConversationId: String, newPrompt: String?) {
@@ -924,15 +937,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			"issued_at" to nowIso(),
 		)
 		if (newPrompt != null) record["prompt"] = newPrompt
-		database.getReference("spawn_commands").push().setValue(record)
+		writeReporting(database.getReference("spawn_commands").push(), record, "resume conversation")
 	}
 
 	fun combineConversations(sourceConversationId: String, targetConversationId: String) {
-		database.getReference("combine_commands").push().setValue(mapOf(
+		writeReporting(database.getReference("combine_commands").push(), mapOf(
 			"source_conversation_id" to sourceConversationId,
 			"target_conversation_id" to targetConversationId,
 			"issued_at" to nowIso(),
-		))
+		), "combine")
 	}
 
 	// --- Claude-status request (phone -> server command queue) ---
@@ -944,22 +957,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	 * push pattern. This is the phone's trigger path - NOT an HTTP call.
 	 */
 	fun requestClaudeStatusCheck() {
-		database.getReference("widget/status_request").push().setValue(
-			mapOf("type" to "check", "issued_at" to nowIso())
+		writeReporting(
+			database.getReference("widget/status_request").push(),
+			mapOf("type" to "check", "issued_at" to nowIso()),
+			"status check",
 		)
 	}
 
 	/** Stop the server's status watch loop (acknowledge), via the same command queue. */
 	fun stopClaudeStatusWatch() {
-		database.getReference("widget/status_request").push().setValue(
-			mapOf("type" to "stop", "issued_at" to nowIso())
+		writeReporting(
+			database.getReference("widget/status_request").push(),
+			mapOf("type" to "stop", "issued_at" to nowIso()),
+			"status watch stop",
 		)
 	}
 
 	// --- Away mode command emitters ---
 
 	private fun enterGlobalAway() {
-		awayCommandsRef.push().setValue(mapOf("type" to "enter_global", "issued_at" to nowIso()))
+		writeReporting(awayCommandsRef.push(), mapOf("type" to "enter_global", "issued_at" to nowIso()), "enter away mode")
 	}
 
 	private fun exitGlobalAway(decision: String? = null, defaultText: String? = null) {
@@ -969,7 +986,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		)
 		if (decision != null) payload["decision"] = decision
 		if (defaultText != null) payload["default_text"] = defaultText
-		awayCommandsRef.push().setValue(payload)
+		writeReporting(awayCommandsRef.push(), payload, "exit away mode")
 	}
 
 	// --- Utilities ---

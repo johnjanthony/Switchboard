@@ -17,6 +17,16 @@ const val ADMIN_CONVERSATION_ID = "_admin"
 fun isSyntheticConversation(conversationId: String): Boolean =
 	conversationId == ADMIN_CONVERSATION_ID
 
+/**
+ * True when a just-arrived message on [convId] should zero the server-side
+ * unread counter. Only the open row zeroes, only while the app is actually in
+ * the foreground (a conversation left open on a pocketed phone must not mark
+ * arriving messages read - the zero propagates to every surface), and never
+ * for synthetic rows.
+ */
+fun shouldZeroUnreadOnArrival(selectedConversationId: String?, convId: String, appForeground: Boolean): Boolean =
+	selectedConversationId == convId && appForeground && !isSyntheticConversation(convId)
+
 /** Number of still-open pending questions on a row (cancelled ones excluded). */
 fun pendingReplyCount(row: ConversationRow): Int =
 	row.pendingQuestions.values.count { !it.cancelled }

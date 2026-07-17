@@ -51,7 +51,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.google.firebase.auth.FirebaseAuth
-import io.github.johnjanthony.switchboard.fcm.SwitchboardFirebaseMessagingService
+import io.github.johnjanthony.switchboard.fcm.BaseSwitchboardMessagingService
 import io.github.johnjanthony.switchboard.pickerTargets
 import io.github.johnjanthony.switchboard.shared.GoogleAuthHelper
 import android.widget.Toast
@@ -82,8 +82,12 @@ class MainActivity : ComponentActivity() {
 	override fun onCreate(savedInstanceState: Bundle?) {
 		super.onCreate(savedInstanceState)
 		requestNotificationPermission()
-		pendingDeepLinkConvId.value = intent.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_AGENT_ID)
-		pendingDeepLinkMessageId.value = intent.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_MESSAGE_ID)
+		pendingDeepLinkConvId.value = intent.getStringExtra(BaseSwitchboardMessagingService.EXTRA_AGENT_ID)
+		pendingDeepLinkMessageId.value = intent.getStringExtra(BaseSwitchboardMessagingService.EXTRA_MESSAGE_ID)
+		// Scrub the consumed extras so activity recreation (rotation) does not
+		// re-read them from the retained Intent and yank navigation back.
+		intent.removeExtra(BaseSwitchboardMessagingService.EXTRA_AGENT_ID)
+		intent.removeExtra(BaseSwitchboardMessagingService.EXTRA_MESSAGE_ID)
 		setContent {
 			SwitchboardTheme {
 				SwitchboardNavHost(viewModel, pendingDeepLinkConvId, pendingDeepLinkMessageId)
@@ -94,10 +98,12 @@ class MainActivity : ComponentActivity() {
 	override fun onNewIntent(intent: Intent) {
 		super.onNewIntent(intent)
 		setIntent(intent)
-		val convId = intent.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_AGENT_ID)
-		val messageId = intent.getStringExtra(SwitchboardFirebaseMessagingService.EXTRA_MESSAGE_ID)
+		val convId = intent.getStringExtra(BaseSwitchboardMessagingService.EXTRA_AGENT_ID)
+		val messageId = intent.getStringExtra(BaseSwitchboardMessagingService.EXTRA_MESSAGE_ID)
 		if (convId != null) pendingDeepLinkConvId.value = convId
 		if (messageId != null) pendingDeepLinkMessageId.value = messageId
+		intent.removeExtra(BaseSwitchboardMessagingService.EXTRA_AGENT_ID)
+		intent.removeExtra(BaseSwitchboardMessagingService.EXTRA_MESSAGE_ID)
 	}
 
 	private fun requestNotificationPermission() {
@@ -519,7 +525,8 @@ fun MarkdownText(
 							override fun resolve(v: android.view.View, link: String) {
 								val cb = currentLink.value
 								if (link.startsWith("#") && cb != null) cb(v as TextView, link)
-								else io.noties.markwon.LinkResolverDef().resolve(v, link)
+								else if (isAllowedLinkScheme(link)) io.noties.markwon.LinkResolverDef().resolve(v, link)
+								// Disallowed scheme: deliberate no-op (see LinkSchemes.kt).
 							}
 						})
 					}

@@ -142,6 +142,26 @@ def require_cli_session_id(handler):
 	return wrapped
 
 
+def illegal_suggestions_reason(suggestions: object) -> str | None:
+	"""Shape summary if suggestions is not a JSON array of strings, else None.
+
+	ask_human's suggestions render as tap-to-answer chips on the phone; a
+	malformed shape historically leaked into the question body as literal
+	markup instead of failing loudly. Rejection happens at the tool boundary
+	BEFORE any state is created (no conversation resolution, no rate-limit
+	consumption, no registry pending). None is legal (no chips). Salvageable
+	shapes (e.g. a list of numbers) are deliberately rejected, not coerced -
+	coercion would hide the sender-side malformation this exists to surface."""
+	if suggestions is None:
+		return None
+	if not isinstance(suggestions, list):
+		return f"{type(suggestions).__name__} (not a list)"
+	for i, item in enumerate(suggestions):
+		if not isinstance(item, str):
+			return f"element {i} is {type(item).__name__}, not str"
+	return None
+
+
 @dataclass
 class ToolHandlers:
 	ask_human: Callable[..., Coroutine[None, None, str]]
@@ -245,6 +265,11 @@ def build_tool_handlers(
 	) -> str:
 		if err := _validate_sender(sender):
 			return err
+		if (reason := illegal_suggestions_reason(suggestions)) is not None:
+			return (
+				'ERROR: suggestions must be a JSON array of strings, e.g. ["Yes", "No", "Ship it"]. '
+				f"Got: {reason}. Re-call ask_human with the corrected shape, or omit suggestions."
+			)
 		# Defensive (T-145): a session still bound to an Ended conversation (the
 		# race window after force-end resolved its future but before
 		# session-fallback rebinds it) must not register a new pending question
