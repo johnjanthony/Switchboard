@@ -1,17 +1,15 @@
 import { html, useState } from "../vendor/htm-preact.js";
-import { pendingCountFor, isActive } from "../derive.js";
+import { pendingCountFor, isActive, formatAge } from "../derive.js";
 import { SessionsRail } from "./SessionsRail.js";
 
 // Relative "last traffic" age from meta.last_activity_at (float epoch SECONDS,
-// verified in server write_conversation_meta). Empty when never active.
+// verified in server write_conversation_meta). Empty when never active; "now"
+// for a not-yet-elapsed timestamp. Tier formatting delegates to derive.formatAge.
 function fmtLastTraffic(lastActivityAtSec) {
 	if (!lastActivityAtSec) return "";
 	const ageSec = Math.floor(Date.now() / 1000 - lastActivityAtSec);
 	if (ageSec < 0) return "now";
-	if (ageSec < 60) return `${ageSec}s`;
-	if (ageSec < 3600) return `${Math.floor(ageSec / 60)}m`;
-	if (ageSec < 86400) return `${Math.floor(ageSec / 3600)}h`;
-	return `${Math.floor(ageSec / 86400)}d`;
+	return formatAge(ageSec);
 }
 
 // Board lamp: a calling line (active + pending) pulses amber; a connected line

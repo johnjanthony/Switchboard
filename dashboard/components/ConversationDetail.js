@@ -2,12 +2,8 @@ import { html, useState } from "../vendor/htm-preact.js";
 import { memberState, isActive, predecessorTitle, ringForMember, ringSeverity } from "../derive.js";
 import { renderMarkdown } from "../markdown.js";
 import { documentPillHtml } from "../document.js";
+import { escapeText } from "../escape.js";
 import { PaneBanner } from "./PaneBanner.js";
-
-function escapePlain(s) {
-	return String(s == null ? "" : s)
-		.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
 
 // Member lamp on the roster: alive glows green, dormant sits amber (resumable),
 // lost burns red.
@@ -51,7 +47,7 @@ function Roster({ conv, rings }) {
 function MessageBody({ msg, convId, msgId }) {
 	const body = msg.format === "markdown"
 		? renderMarkdown(msg.text)
-		: `<p>${escapePlain(msg.text).replace(/\n/g, "<br />")}</p>`;
+		: `<p>${escapeText(msg.text).replace(/\n/g, "<br />")}</p>`;
 	// A document message carries the caption in text (rendered above) plus a url +
 	// filename; append the pill linking to the preview page.
 	const inner = body + documentPillHtml(msg, convId, msgId);

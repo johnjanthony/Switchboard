@@ -1,6 +1,7 @@
 import { renderMarkdown } from "./markdown.js";
 import hljs from "./vendor/highlight.bundle.js";
 import { classifyDocument } from "./document.js";
+import { escapeText, escapeAttr } from "./escape.js";
 
 // Map a few common extensions to highlight.js language ids; unknown extensions
 // fall back to an escaped plain block (matching markdown.js's safety stance).
@@ -13,14 +14,6 @@ const EXT_LANG = {
 	sql: "sql", toml: "ini", ini: "ini", json: "json", rb: "ruby", go: "go",
 	rs: "rust", php: "php", swift: "swift", diff: "diff", patch: "diff",
 };
-
-function escapeText(s) {
-	return String(s == null ? "" : s)
-		.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-function escapeAttr(s) {
-	return escapeText(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-}
 
 function headerHtml(name, src) {
 	return `<div class="doc-head">`

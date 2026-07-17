@@ -149,17 +149,31 @@ def _build_agent_status_route(handlers, session_registry: SessionRegistry):
 	return agent_status
 
 
+def _compute_healthy(listeners, loop_failures) -> bool:
+	"""The one health verdict shared by /stats and /healthz (and thus by the
+	dashboard and the Watchtower widget). A listener is unhealthy iff its state
+	is 'reconnecting' ('stopped' is an intentional shutdown, 'starting' is
+	transient); a dispatch loop is unhealthy iff its consecutive_failures > 0.
+	listeners: iterable of dicts with a 'state'; loop_failures: iterable of the
+	per-loop consecutive_failures ints."""
+	listener_unhealthy = any(
+		isinstance(l, dict) and l.get("state") == "reconnecting" for l in listeners
+	)
+	loop_unhealthy = any((f or 0) > 0 for f in loop_failures)
+	return not listener_unhealthy and not loop_unhealthy
+
+
 def _build_stats_route(registry: Registry, backend, loop_sups: dict, session_registry=None):
 	"""GET /stats - the widget-facing roll-up (localhost, unauthenticated, same
 	trust model as /healthz and /away-mode). The widget polls this so it never
 	needs Firebase.
 
-	The `healthy` flag matches the dashboard's rollUpHealth exactly: a listener
-	is unhealthy iff its state is 'reconnecting' (per firebase_supervisor, that
-	is the dead-and-retrying state; 'stopped' is an intentional shutdown and
-	'starting' is transient, so neither counts); a dispatch loop is unhealthy
-	iff consecutive_failures > 0. Both surfaces test state == 'reconnecting'
-	verbatim, so /stats and the dashboard never disagree."""
+	A listener is unhealthy iff its state
+	is 'reconnecting' (per firebase_supervisor, that is the dead-and-retrying
+	state; 'stopped' is an intentional shutdown and 'starting' is transient, so
+	neither counts); a dispatch loop is unhealthy iff consecutive_failures > 0.
+	/stats, /healthz, and the dashboard all read this one server-computed verdict
+	(_compute_healthy), so they cannot disagree."""
 	async def stats(request: Request):
 		listeners = []
 		listener_health_fn = getattr(backend, "listener_health", None)
@@ -168,13 +182,10 @@ def _build_stats_route(registry: Registry, backend, loop_sups: dict, session_reg
 				listeners = listener_health_fn()
 			except Exception:
 				listeners = []
-		listener_unhealthy = any(
-			isinstance(l, dict) and l.get("state") == "reconnecting" for l in listeners
+		healthy = _compute_healthy(
+			listeners,
+			[sup.health().consecutive_failures for sup in loop_sups.values()],
 		)
-		loop_unhealthy = any(
-			sup.health().consecutive_failures > 0 for sup in loop_sups.values()
-		)
-		healthy = not listener_unhealthy and not loop_unhealthy
 		return JSONResponse({
 			"active_conversations": registry.active_conversations_count,
 			"pending_count": registry.pending_count,
@@ -757,6 +768,10 @@ async def _run(config: Config) -> None:
 				),
 			})
 		dispatch_loops.sort(key=lambda d: d["name"])
+		healthy = _compute_healthy(
+			listeners,
+			[sup.health().consecutive_failures for sup in loop_sups.values()],
+		)
 		return JSONResponse({
 			"pending": {
 				"count": registry.pending_count,
@@ -764,6 +779,7 @@ async def _run(config: Config) -> None:
 				"oldest_pending_age_seconds": registry.oldest_pending_age_seconds,
 				"total_answered": registry.total_answered,
 			},
+			"healthy": healthy,
 			"listeners": listeners,
 			"dispatch_loops": dispatch_loops,
 		})

@@ -68,7 +68,7 @@ test('initialState shape is exactly the contract', () => {
 		pendingsFlat: [],
 		health: { reachable: false, healthy: false, totalAnswered: null },
 		ui: {
-			leftCollapsed: false, rightCollapsed: false, leftWidth: 280, awayOffDialogOpen: false,
+			leftCollapsed: false, leftWidth: 280, awayOffDialogOpen: false,
 			sessionsCollapsed: false, selectedSessionIds: [],
 		},
 		paneErrors: {},
@@ -136,11 +136,10 @@ test('setLeftCollapsed is idempotent, persists, and backs the toggle', () => {
 	assert.equal(storage.getItem('sb.leftCollapsed'), 'false');
 });
 
-test('initialState reads collapse flags from storage', () => {
-	const { store } = makeStore({ storageInit: { 'sb.leftCollapsed': 'true', 'sb.rightCollapsed': 'false' } });
+test('initialState reads collapse flag from storage', () => {
+	const { store } = makeStore({ storageInit: { 'sb.leftCollapsed': 'true' } });
 	const s = store.getState();
 	assert.equal(s.ui.leftCollapsed, true);
-	assert.equal(s.ui.rightCollapsed, false);
 });
 
 test('setAuthed sets authed and clears authError', () => {
@@ -192,13 +191,6 @@ test('toggleLeftCollapsed flips ui.leftCollapsed and persists to storage', () =>
 	store.toggleLeftCollapsed();
 	assert.equal(store.getState().ui.leftCollapsed, false);
 	assert.equal(storage.getItem('sb.leftCollapsed'), 'false');
-});
-
-test('toggleRightCollapsed flips ui.rightCollapsed and persists to storage', () => {
-	const { store, storage } = makeStore();
-	store.toggleRightCollapsed();
-	assert.equal(store.getState().ui.rightCollapsed, true);
-	assert.equal(storage.getItem('sb.rightCollapsed'), 'true');
 });
 
 test('setAwayOffDialogOpen toggles ui.awayOffDialogOpen', () => {

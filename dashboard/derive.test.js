@@ -158,6 +158,19 @@ test('sessionAgeSeconds and formatAge', () => {
 	assert.equal(derive.formatAge(259200), '3d');
 });
 
+test('formatAge floors (does not round up) and covers all tiers', () => {
+	assert.equal(derive.formatAge(0), '0s');
+	assert.equal(derive.formatAge(59), '59s');
+	assert.equal(derive.formatAge(90), '1m');      // floor: round would give 2m
+	assert.equal(derive.formatAge(119), '1m');
+	assert.equal(derive.formatAge(3599), '59m');   // floor: round would give 60m
+	assert.equal(derive.formatAge(7199), '1h');
+	assert.equal(derive.formatAge(86399), '23h');
+	assert.equal(derive.formatAge(86400), '1d');
+	assert.equal(derive.formatAge(null), '');
+	assert.equal(derive.formatAge(undefined), '');
+});
+
 test('sortSessionEntries orders newest-first by last_event_at', () => {
 	const entries = derive.sortSessionEntries({
 		a: { last_event_at: '2026-07-06T10:00:00+00:00' },

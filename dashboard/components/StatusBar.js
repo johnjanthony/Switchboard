@@ -1,18 +1,10 @@
 import { html, useState } from "../vendor/htm-preact.js";
-import { isActive, globalPendingCount, oldestPendingAgeSeconds } from "../derive.js";
+import { isActive, globalPendingCount, oldestPendingAgeSeconds, formatAge } from "../derive.js";
 import { statusDotClass } from "../statusControl.js";
 
 function healthLampClass(health) {
 	if (!health.reachable) return "lamp lamp-red";
 	return health.healthy ? "lamp lamp-green" : "lamp lamp-amber";
-}
-
-function fmtAge(seconds) {
-	if (seconds == null) return "-";
-	const s = Math.floor(seconds);
-	if (s < 60) return `${s}s`;
-	if (s < 3600) return `${Math.floor(s / 60)}m`;
-	return `${Math.floor(s / 3600)}h`;
 }
 
 // Open a fresh line. The one global action that doesn't act on an existing line,
@@ -160,7 +152,7 @@ export function StatusBar({ store }) {
 				<span class="status-counts">
 					<span class="count"><b>${activeCount}</b> active</span>
 					<span class="count lit"><b>${pendingCount}</b> lit</span>
-					<span class="count">oldest <b>${fmtAge(oldest)}</b></span>
+					<span class="count">oldest <b>${oldest == null ? "-" : formatAge(oldest)}</b></span>
 				</span>
 				<span class="status-health">
 					<span class=${healthLampClass(state.health)} title="Server health"></span>

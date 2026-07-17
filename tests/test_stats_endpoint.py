@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from server.main import _build_stats_route
+from server.main import _build_stats_route, _compute_healthy
 from server.registry import Conversation, Registry
 from server.session_registry import SessionRegistry
 
@@ -98,7 +98,7 @@ async def test_stats_unhealthy_when_listener_reconnecting():
 @pytest.mark.asyncio
 async def test_stats_healthy_when_listener_stopped_or_starting():
 	"""'stopped' is an intentional shutdown and 'starting' is transient; only
-	'reconnecting' counts as unhealthy, matching the dashboard's rollUpHealth."""
+	'reconnecting' counts as unhealthy, matching _compute_healthy."""
 	registry = _registry(active=1)
 	backend = _FakeBackend([
 		{"name": "responses", "state": "stopped"},
@@ -166,3 +166,27 @@ async def test_stats_sessions_block_defaults_when_session_registry_is_none():
 	body = json.loads(resp.body)
 
 	assert body["sessions"] == {"total": 0, "by_state": {}}
+
+
+def test_compute_healthy_true_when_no_reconnecting_and_no_failures():
+	assert _compute_healthy([{"state": "live"}], [0]) is True
+
+
+def test_compute_healthy_false_when_a_listener_is_reconnecting():
+	assert _compute_healthy([{"state": "reconnecting"}], [0]) is False
+
+
+def test_compute_healthy_true_for_stopped_or_starting_listeners():
+	assert _compute_healthy([{"state": "stopped"}, {"state": "starting"}], [0]) is True
+
+
+def test_compute_healthy_false_when_a_loop_has_consecutive_failures():
+	assert _compute_healthy([{"state": "live"}], [0, 2]) is False
+
+
+def test_compute_healthy_true_on_empty_inputs():
+	assert _compute_healthy([], []) is True
+
+
+def test_compute_healthy_ignores_non_dict_listener_entries():
+	assert _compute_healthy([None, {"state": "live"}], [0]) is True

@@ -6,18 +6,6 @@ import { FIREBASE_CONFIG } from "./dashboard-config.js";
 import { App } from "./components/App.js";
 import * as statusControl from "./statusControl.js";
 
-// Health roll-up: identical definition to the server's /stats _build_stats_route.
-// A listener is unhealthy iff state === 'reconnecting' ('stopped' is an intentional
-// shutdown, 'starting' is transient). A dispatch loop is unhealthy iff
-// consecutive_failures > 0. healthy = neither condition present.
-export function rollUpHealth(healthz) {
-	const listeners = (healthz && healthz.listeners) || [];
-	const loops = (healthz && healthz.dispatch_loops) || [];
-	const listenerBad = listeners.some((l) => l.state === "reconnecting");
-	const loopBad = loops.some((d) => (d.consecutive_failures || 0) > 0);
-	return !listenerBad && !loopBad;
-}
-
 function consumeDeepLink(store) {
 	const m = /(?:^|#)conv=([^&]+)/.exec(window.location.hash || "");
 	if (m) {
@@ -32,7 +20,7 @@ async function pollHealth(store) {
 		const body = await resp.json();
 		store.setHealth({
 			reachable: true,
-			healthy: rollUpHealth(body),
+			healthy: body.healthy === true,
 			totalAnswered: (body.pending && body.pending.total_answered) ?? null
 		});
 	} catch (_e) {

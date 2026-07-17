@@ -172,12 +172,6 @@ export function createStore(deps) {
 		setLeftCollapsed(!state.ui.leftCollapsed);
 	}
 
-	function toggleRightCollapsed() {
-		state.ui.rightCollapsed = !state.ui.rightCollapsed;
-		storage.setItem('sb.rightCollapsed', String(state.ui.rightCollapsed));
-		notify();
-	}
-
 	function toggleSessionsCollapsed() {
 		state.ui.sessionsCollapsed = !state.ui.sessionsCollapsed;
 		storage.setItem('sb.sessionsCollapsed', String(state.ui.sessionsCollapsed));
@@ -485,7 +479,6 @@ export function createStore(deps) {
 		retrySelectedConversation,
 		toggleLeftCollapsed,
 		setLeftCollapsed,
-		toggleRightCollapsed,
 		toggleSessionsCollapsed,
 		setLeftWidth,
 		mergeConversationMessages,
@@ -535,7 +528,6 @@ function initialState(storage) {
 		health: { reachable: false, healthy: false, totalAnswered: null },
 		ui: {
 			leftCollapsed: storage.getItem('sb.leftCollapsed') === 'true',
-			rightCollapsed: storage.getItem('sb.rightCollapsed') === 'true',
 			leftWidth: readStoredLeftWidth(storage),
 			awayOffDialogOpen: false,
 			sessionsCollapsed: storage.getItem('sb.sessionsCollapsed') === 'true',
