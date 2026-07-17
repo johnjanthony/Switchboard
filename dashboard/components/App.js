@@ -24,7 +24,7 @@ function AdminStrip({ notifications }) {
 				const rel = Number.isNaN(when) ? "" : formatAge((Date.now() - when) / 1000);
 				return html`
 					<div class="admin-note" key=${key}>
-						<span class="admin-note-text" dangerouslySetInnerHTML=${{ __html: renderMarkdown(n.text) }}></span>
+						<div class="admin-note-text" dangerouslySetInnerHTML=${{ __html: renderMarkdown(n.text) }}></div>
 						<span class="admin-note-time" title=${n.timestamp || ""}>${rel}</span>
 					</div>
 				`;

@@ -528,6 +528,7 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .admin-note { display: flex; gap: 12px; align-items: baseline; padding: 5px 16px; font-size: 12px; border-bottom: 1px solid var(--board); }
 .admin-note:last-child { border-bottom: none; }
 .admin-note-text { flex: 1; color: var(--label-dim); }
+.admin-note-text p { margin: 0; }
 .admin-note-time { color: var(--label-faint); font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
 
 /* ============================================================================
