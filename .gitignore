@@ -57,3 +57,4 @@ watchtower/**/publish/
 /docs/*.md
 !/docs/switchboard-design-spec-comprehensive.md
 /docs/tracking/
+graphify-out/*
