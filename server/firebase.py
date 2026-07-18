@@ -60,6 +60,21 @@ def _member_payload(member) -> dict:
 	}
 
 
+def _storage_paths_in_messages(messages) -> list[str]:
+	"""Collect the non-empty Storage object paths (storage_path) referenced by a
+	conversation's message nodes, so they can be deleted alongside the RTDB
+	teardown. Tolerant of a None/empty node and non-dict entries."""
+	if not isinstance(messages, dict):
+		return []
+	paths: list[str] = []
+	for node in messages.values():
+		if isinstance(node, dict):
+			sp = node.get("storage_path")
+			if isinstance(sp, str) and sp:
+				paths.append(sp)
+	return paths
+
+
 class FirebaseBackend(
 	MessageWriter,
 	ResponsePoller,
@@ -278,9 +293,44 @@ class FirebaseBackend(
 			return db.reference(f"conversations/{conv_id}/meta").get()
 		return await asyncio.to_thread(_get)
 
+	async def _delete_conversation_blobs(self, conv_id: str) -> None:
+		"""Best-effort: delete every Storage blob referenced by conv_id's message
+		nodes (read-before-delete). Degrades silently when Storage is
+		unconfigured; a per-blob failure is logged and skipped. NEVER raises -
+		the caller must still delete the RTDB nodes."""
+		if not self._storage_bucket:
+			return
+		def _read():
+			return db.reference(f"messages/{conv_id}").get()
+		try:
+			messages = await asyncio.to_thread(_read)
+		except Exception as exc:
+			if self._logger is not None:
+				await self._logger.surface_error(f"blob_cleanup_read_failed conv={conv_id}: {exc}")
+			return
+		paths = _storage_paths_in_messages(messages)
+		if not paths:
+			return
+		def _delete_blobs():
+			failures: list[tuple[str, Exception]] = []
+			bucket = storage.bucket(self._storage_bucket)
+			for p in paths:
+				try:
+					bucket.blob(p).delete()
+				except Exception as exc:
+					failures.append((p, exc))
+			return failures
+		failures = await asyncio.to_thread(_delete_blobs)
+		if failures and self._logger is not None:
+			for p, exc in failures:
+				await self._logger.surface_error(f"blob_delete_failed conv={conv_id} path={p}: {exc}")
+
 	async def delete_conversation_nodes(self, conv_id: str) -> None:
 		"""Atomically delete a conversation's index card and its companion
-		top-level /messages and /answers nodes (multi-location update)."""
+		top-level /messages and /answers nodes (multi-location update). Storage
+		blobs referenced by the message nodes are deleted first (best-effort);
+		the RTDB teardown always runs even if a blob delete failed."""
+		await self._delete_conversation_blobs(conv_id)
 		def _delete():
 			db.reference().update({
 				f"conversations/{conv_id}": None,
@@ -489,6 +539,19 @@ class FirebaseBackend(
 			"timestamp": now,
 		}
 		await asyncio.to_thread(ref.set, payload)
+
+	async def list_admin_notifications(self) -> dict:
+		def _get():
+			return db.reference("admin_notifications").get() or {}
+		return await asyncio.to_thread(_get)
+
+	async def delete_admin_notifications(self, keys) -> None:
+		keys = list(keys)
+		if not keys:
+			return
+		def _delete():
+			db.reference("admin_notifications").update({k: None for k in keys})
+		await asyncio.to_thread(_delete)
 
 	async def send_text(self, text: str) -> None:
 		# Admin/system channel for global errors/notifies that have no natural cwd.

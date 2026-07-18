@@ -709,22 +709,77 @@ async def _conversation_sweep_once(registry, backend, logger, *, retention_hours
 	return deleted
 
 
+def _parse_iso_to_epoch(ts):
+	"""Best-effort ISO-8601 -> epoch seconds. Returns None on anything
+	unparseable (the caller skips those entries rather than crashing the sweep).
+	admin_notifications timestamps are tz-aware (+00:00), so .timestamp() is
+	unambiguous; a rare naive value degrades to local-tz, acceptable for an
+	hours-scale prune horizon."""
+	if not isinstance(ts, str):
+		return None
+	try:
+		from datetime import datetime
+		return datetime.fromisoformat(ts).timestamp()
+	except (ValueError, TypeError):
+		return None
+
+
+async def _prune_admin_notifications_once(backend, logger, *, retention_hours, now_ts=None):
+	"""One admin_notifications retention tick: delete entries older than the
+	window. Un-parseable / non-dict entries are skipped (never crashes the
+	sweep). Returns the pruned keys."""
+	import time as _time
+	now = now_ts if now_ts is not None else _time.time()
+	horizon = retention_hours * 3600
+	entries = await backend.list_admin_notifications()
+	if not isinstance(entries, dict):
+		return []
+	stale: list[str] = []
+	for key, entry in entries.items():
+		if not isinstance(entry, dict):
+			continue
+		epoch = _parse_iso_to_epoch(entry.get("timestamp"))
+		if epoch is None:
+			continue
+		if now - epoch > horizon:
+			stale.append(key)
+	if stale:
+		await backend.delete_admin_notifications(stale)
+	return stale
+
+
 async def dispatch_conversation_sweep(
 	registry, backend, logger, supervisor, *,
-	retention_hours, interval: float = 3600.0,
+	retention_hours, admin_retention_hours, interval: float = 3600.0,
 ):
-	"""Hourly retention judge for ended conversations (WP-10). The body runs
-	a pass immediately at startup, then hourly."""
+	"""Hourly retention judge: delete ended conversations past their horizon
+	(and their Storage blobs), then prune admin_notifications past their own
+	window. Runs a pass immediately at startup, then hourly. Each pass is
+	isolated - a failure in one records a crash but does not skip the other."""
 	while True:
+		ok = True
 		try:
 			deleted = await _conversation_sweep_once(
 				registry, backend, logger, retention_hours=retention_hours,
 			)
 			if deleted:
 				await logger.info(f"conversation_sweep_deleted: {deleted}")
-			supervisor.record_success()
 		except asyncio.CancelledError:
 			raise
 		except Exception as exc:
+			ok = False
 			await supervisor.record_crash(exc)
+		try:
+			pruned = await _prune_admin_notifications_once(
+				backend, logger, retention_hours=admin_retention_hours,
+			)
+			if pruned:
+				await logger.info(f"admin_notifications_pruned: {len(pruned)}")
+		except asyncio.CancelledError:
+			raise
+		except Exception as exc:
+			ok = False
+			await supervisor.record_crash(exc)
+		if ok:
+			supervisor.record_success()
 		await asyncio.sleep(interval)

@@ -3,7 +3,7 @@ plus a firebase_admin RTDB witness, standing in for an agent and John -
 exercises the running service end to end over its public surfaces (HTTP,
 MCP, RTDB). No server imports; run from the repo root."""
 from __future__ import annotations
-import argparse, asyncio, sys
+import argparse, asyncio, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -194,6 +194,16 @@ async def flow_restart_survival(ctx, rep, args):
 		return None
 	ctx.request_id = await poll_until("pending question recorded before restart", _find_pending, 15)
 
+	# A backdated ended conversation the startup sweep must delete. It is
+	# not in the live registry (no veto) and its ended_at is well past the default
+	# 72h horizon, so the sweep's immediate startup pass removes it. RTDB-only -
+	# no Storage, no document - so it is deterministic regardless of bucket config.
+	sweep_probe_id = f"conv-smoke-sweep-{ctx.run_id}"
+	rtdb(ctx, f"conversations/{sweep_probe_id}/meta").set({
+		"title": "smoke sweep probe", "state": "ended",
+		"ended_at": time.time() - 73 * 3600,
+	})
+
 	await restart_service(ctx)
 
 	# The restart severs the MCP session, but the blocked ask does not error promptly -
@@ -216,6 +226,11 @@ async def flow_restart_survival(ctx, rep, args):
 	parked = hz["pending"]["parked"]
 	if parked != 1:
 		raise SmokeFailure(f"expected /healthz pending.parked == 1 after restart, got {parked!r}")
+
+	def _probe_swept():
+		gone = rtdb(ctx, f"conversations/{sweep_probe_id}/meta").get() is None
+		return True if gone else None
+	await poll_until("backdated conversation swept on startup", _probe_swept, 20)
 
 	expected_reply = f"smoke-restart-answer-{ctx.run_id}"
 	rtdb(ctx, f"answers/{ctx.conversation_id}/{ctx.request_id}").set({

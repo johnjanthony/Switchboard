@@ -4,19 +4,26 @@ and are evicted from the in-memory registry. Active conversations are
 never touched."""
 import asyncio
 import time
+from datetime import datetime, timezone
 
 import pytest
 
-from server.gateway.dispatch import _conversation_sweep_once, dispatch_conversation_sweep
+from server.gateway.dispatch import _conversation_sweep_once, dispatch_conversation_sweep, _prune_admin_notifications_once
 from server.registry import Registry, Conversation
 from tests.conftest import _make_loop_supervisor
 from tests.test_hydration import make_logger
 
 
+def _iso(epoch: float) -> str:
+	return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+
 class _SweepBackend:
-	def __init__(self, metas: dict[str, dict]):
+	def __init__(self, metas: dict[str, dict], admin: dict | None = None):
 		self._metas = metas
 		self.deleted: list[str] = []
+		self._admin = dict(admin or {})
+		self.admin_deleted: list[str] = []
 
 	async def list_conversation_ids(self):
 		return list(self._metas.keys())
@@ -26,6 +33,12 @@ class _SweepBackend:
 
 	async def delete_conversation_nodes(self, conv_id):
 		self.deleted.append(conv_id)
+
+	async def list_admin_notifications(self):
+		return dict(self._admin)
+
+	async def delete_admin_notifications(self, keys):
+		self.admin_deleted.extend(keys)
 
 
 HOURS_73_AGO = time.time() - 73 * 3600
@@ -93,17 +106,55 @@ async def test_sweep_skips_when_in_memory_copy_is_active():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_loop_runs_and_can_be_cancelled():
+async def test_dispatch_loop_runs_conversation_and_admin_passes_and_can_be_cancelled():
 	registry = Registry()
-	backend = _SweepBackend({"conv-old": {"state": "ended", "ended_at": HOURS_73_AGO}})
+	backend = _SweepBackend(
+		{"conv-old": {"state": "ended", "ended_at": HOURS_73_AGO}},
+		admin={"k_old": {"timestamp": _iso(time.time() - 8 * 24 * 3600)}},
+	)
 	logger = make_logger()
 	supervisor = _make_loop_supervisor(None, logger, "dispatch_conversation_sweep")
 	task = asyncio.create_task(dispatch_conversation_sweep(
-		registry, backend, logger, supervisor, retention_hours=72, interval=10.0,
+		registry, backend, logger, supervisor,
+		retention_hours=72, admin_retention_hours=168, interval=10.0,
 	))
 	for _ in range(5):
 		await asyncio.sleep(0)
 	assert backend.deleted == ["conv-old"]
+	assert backend.admin_deleted == ["k_old"]
 	task.cancel()
 	with pytest.raises(asyncio.CancelledError):
 		await task
+
+
+@pytest.mark.asyncio
+async def test_admin_prune_deletes_only_stale_entries():
+	now = 1_000_000.0
+	backend = _SweepBackend({}, admin={
+		"k_old": {"text": "old", "timestamp": _iso(now - 8 * 24 * 3600)},   # 8d > 168h
+		"k_new": {"text": "new", "timestamp": _iso(now - 3600)},            # 1h
+	})
+	pruned = await _prune_admin_notifications_once(backend, make_logger(), retention_hours=168, now_ts=now)
+	assert pruned == ["k_old"]
+	assert backend.admin_deleted == ["k_old"]
+
+
+@pytest.mark.asyncio
+async def test_admin_prune_skips_unparseable_and_nondict_entries():
+	now = 1_000_000.0
+	backend = _SweepBackend({}, admin={
+		"k_bad": {"timestamp": "not-a-date"},
+		"k_missing": {"text": "no timestamp"},
+		"k_str": "garbage",
+	})
+	pruned = await _prune_admin_notifications_once(backend, make_logger(), retention_hours=168, now_ts=now)
+	assert pruned == []
+	assert backend.admin_deleted == []
+
+
+@pytest.mark.asyncio
+async def test_admin_prune_empty_is_noop():
+	backend = _SweepBackend({}, admin={})
+	pruned = await _prune_admin_notifications_once(backend, make_logger(), retention_hours=168, now_ts=1_000_000.0)
+	assert pruned == []
+	assert backend.admin_deleted == []

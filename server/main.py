@@ -887,6 +887,7 @@ async def _run(config: Config) -> None:
 		dispatch_conversation_sweep(
 			registry, backend, logger, loop_sups["dispatch_conversation_sweep"],
 			retention_hours=config.conversation_retention_hours,
+			admin_retention_hours=config.admin_notification_retention_hours,
 		)
 	)
 

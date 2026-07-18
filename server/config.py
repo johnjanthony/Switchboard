@@ -71,6 +71,11 @@ class Config:
 	# /answers nodes) survives before the conversation sweep deletes it.
 	# Env: SWITCHBOARD_CONVERSATION_RETENTION_HOURS, default 72.
 	conversation_retention_hours: int = 72
+	# How long a system admin_notifications entry survives before the sweep
+	# prunes it. Env: SWITCHBOARD_ADMIN_NOTIFICATION_RETENTION_HOURS, default
+	# 168 (7 days). Separate from conversation retention on purpose - admin
+	# notices are low-volume system breadcrumbs, tuned independently.
+	admin_notification_retention_hours: int = 168
 
 
 def load_config(dotenv_path: str | Path | None = None) -> Config:
@@ -106,6 +111,7 @@ def load_config(dotenv_path: str | Path | None = None) -> Config:
 		session_lost_after_seconds=int(os.environ.get("SWITCHBOARD_SESSION_LOST_AFTER_SECONDS", "900")),
 		session_retention_hours=int(os.environ.get("SWITCHBOARD_SESSION_RETENTION_HOURS", "72")),
 		conversation_retention_hours=int(os.environ.get("SWITCHBOARD_CONVERSATION_RETENTION_HOURS", "72")),
+		admin_notification_retention_hours=int(os.environ.get("SWITCHBOARD_ADMIN_NOTIFICATION_RETENTION_HOURS", "168")),
 	)
 	require_token_for_nonloopback(cfg.host, cfg.auth_token)
 	return cfg

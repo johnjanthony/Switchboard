@@ -22,6 +22,7 @@ def _clear_env(monkeypatch):
 		"SWITCHBOARD_SESSION_RETENTION_HOURS",
 		"SWITCHBOARD_TOKEN",
 		"SWITCHBOARD_ROUTE_RATE_LIMIT",
+		"SWITCHBOARD_ADMIN_NOTIFICATION_RETENTION_HOURS",
 	]:
 		monkeypatch.delenv(key, raising=False)
 
@@ -161,6 +162,19 @@ def test_session_retention_hours_configurable_via_env(monkeypatch, tmp_path):
 	monkeypatch.setenv("SWITCHBOARD_SESSION_RETENTION_HOURS", "24")
 	cfg = load_config(dotenv_path=tmp_path / "no.env")
 	assert cfg.session_retention_hours == 24
+
+
+def test_admin_notification_retention_hours_defaults_to_168(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.admin_notification_retention_hours == 168
+
+
+def test_admin_notification_retention_hours_configurable_via_env(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	monkeypatch.setenv("SWITCHBOARD_ADMIN_NOTIFICATION_RETENTION_HOURS", "48")
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.admin_notification_retention_hours == 48
 
 
 def test_auth_token_default_none(monkeypatch, tmp_path):
