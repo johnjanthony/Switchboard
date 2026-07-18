@@ -204,6 +204,11 @@ async def flow_restart_survival(ctx, rep, args):
 		"ended_at": time.time() - 73 * 3600,
 	})
 
+	# Read the GLOBAL parked count before the restart so the parked check below is
+	# delta-based rather than an absolute count (which assumed this flow was the only
+	# pending in the system and broke the moment another agent was mid-ask at restart).
+	parked_before = http_get_json(f"{ctx.base_url}/healthz")["pending"]["parked"]
+
 	await restart_service(ctx)
 
 	# The restart severs the MCP session, but the blocked ask does not error promptly -
@@ -222,15 +227,31 @@ async def flow_restart_survival(ctx, rep, args):
 	if away.get("active") is not False:
 		raise SmokeFailure(f"away mode not reset to False after restart (startup reset contract): {away!r}")
 
-	hz = http_get_json(f"{ctx.base_url}/healthz")
-	parked = hz["pending"]["parked"]
-	if parked != 1:
-		raise SmokeFailure(f"expected /healthz pending.parked == 1 after restart, got {parked!r}")
-
+	# Check the Storage-independent startup sweep FIRST, so an isolation-caused parked
+	# surprise below cannot mask the retention-sweep verification (this used to run after
+	# the parked check, which aborted the flow before the sweep was ever verified).
 	def _probe_swept():
 		gone = rtdb(ctx, f"conversations/{sweep_probe_id}/meta").get() is None
 		return True if gone else None
 	await poll_until("backdated conversation swept on startup", _probe_swept, 20)
+
+	# This flow's own pending must survive the restart: its pending_questions record
+	# persists in Firebase and hydration rebuilds it future-less (parked). This is the
+	# real isolation-proof - it does not depend on how many other agents were mid-ask.
+	def _own_pending_survived():
+		rec = rtdb(ctx, f"conversations/{ctx.conversation_id}/pending_questions/{ctx.request_id}").get()
+		return True if rec is not None else None
+	await poll_until("this flow's pending survived the restart (rehydrated parked)", _own_pending_survived, 20)
+
+	# Delta sanity: the restart added at least this flow's ask to the parked set. Use >=
+	# (not ==) because the restart severs every MCP session, so any other agent's live ask
+	# also rehydrates parked - an absolute count breaks the moment another agent is mid-ask.
+	hz = http_get_json(f"{ctx.base_url}/healthz")
+	parked = hz["pending"]["parked"]
+	if parked < parked_before + 1:
+		raise SmokeFailure(
+			f"expected /healthz pending.parked >= {parked_before + 1} after restart "
+			f"(pre-restart {parked_before} + this flow's rehydrated ask), got {parked!r}")
 
 	expected_reply = f"smoke-restart-answer-{ctx.run_id}"
 	rtdb(ctx, f"answers/{ctx.conversation_id}/{ctx.request_id}").set({
@@ -238,10 +259,13 @@ async def flow_restart_survival(ctx, rep, args):
 		"request_id": ctx.request_id, "written_at": datetime.now(timezone.utc).isoformat(),
 	})
 
+	# Delta again (not == 0): the flow's answer must DROP the parked count by its one; any
+	# other agent's parked asks may legitimately remain. The own-record-gone check below is
+	# the definitive proof this flow's pending resolved.
 	def _parked_cleared():
 		hz2 = http_get_json(f"{ctx.base_url}/healthz")
-		return True if hz2["pending"]["parked"] == 0 else None
-	await poll_until("healthz pending.parked back to 0 after answer", _parked_cleared, 20)
+		return True if hz2["pending"]["parked"] <= parked - 1 else None
+	await poll_until("this flow's answer dropped healthz pending.parked", _parked_cleared, 20)
 
 	def _pending_gone():
 		gone = rtdb(ctx, f"conversations/{ctx.conversation_id}/pending_questions/{ctx.request_id}").get() is None

@@ -155,7 +155,7 @@ Conversations are the persistence + routing unit. States: `Active` / `Ended`. A 
 ## Architectural constraints (decided)
 
 - **Local gateway, cloud-synchronized state.** The compute is local; conversation/session/telemetry state persists and transits through Firebase (RTDB + FCM), which is a hard startup dependency. The founding "localhost only" principle was retired deliberately (2026-07-01 architecture review, D1); there is no Firebase-less run mode.
-- **The service runs as LocalSystem** (NSSM; the install script's interactive-user intent never took effect, verified 2026-06-25). It therefore cannot read `~/.claude/projects`, cannot reach WSL, and receives all session/telemetry data by push: plugin hooks, Watchtower snapshots, MCP calls. Do not design features that assume the server can see John's files (D6).
+- **The service runs as LocalSystem** (NSSM; the installer's explicit default since the ops-hardening chunk - the earlier interactive-user intent never took effect and was removed; -ServiceUser overrides deliberately, verified post-set). It therefore cannot read `~/.claude/projects`, cannot reach WSL, and receives all session/telemetry data by push: plugin hooks, Watchtower snapshots, MCP calls. Do not design features that assume the server can see John's files (D6).
 - **Sessions are first-class** (2026-07-06): `server/session_registry.py` tracks every Claude Code session birth-to-death via SessionStart/agent-status/SessionEnd hooks, ring sightings, and MCP calls, mirrored to RTDB `sessions/` for the roster surfaces. Identity is `cli_session_id` everywhere; `sender` is a display attribute (D4).
 
 ## Setup
@@ -179,7 +179,7 @@ The plugin install wires the skill and the turn-end + agent-status hooks. Two th
     claude mcp add switchboard --scope user --transport http http://<windows-host-ip>:9876/mcp --header "Authorization: Bearer <SWITCHBOARD_TOKEN value>"
     ```
 
-    WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` AND `SWITCHBOARD_TOKEN` set - the server refuses to start non-loopback without a token (REV-003 fail-closed), and every non-loopback client must send `Authorization: Bearer <token>` on all routes except `/healthz` (loopback callers are exempt). The firewall inbound rule for TCP 9876 from the WSL subnet remains recommended as defense-in-depth; the token is the enforced control.
+    WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` AND `SWITCHBOARD_TOKEN` set - the server refuses to start non-loopback without a token (REV-003 fail-closed), and every non-loopback client must send `Authorization: Bearer <token>` on all routes except `/healthz` (loopback callers are exempt). install-service.ps1 creates the inbound firewall rule (TCP 9876, scoped to the WSL NAT pool 172.16.0.0/12, rule name "Switchboard MCP (WSL)") as defense-in-depth; the token is the enforced control.
 
     For WSL agents, also point the hook scripts at the Windows host so their HTTP callbacks don't fall back to `127.0.0.1` (unreachable from WSL). Export these in the WSL **login-shell** chain (`~/.profile` or `~/.bash_profile`, sourced directly), NOT only `~/.bashrc`: phone-spawned WSL agents launch via `wsl.exe -e bash -l` (a login, non-interactive shell) whose `~/.bashrc` early-returns at its interactive guard before reaching the var, so a `~/.bashrc`-only value never reaches a spawned agent and its `Bearer ${SWITCHBOARD_TOKEN}` header then expands empty (401):
 
