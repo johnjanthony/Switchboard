@@ -13,18 +13,9 @@ public static class WindowsSessionScanner
 
 		foreach (var projDir in Directory.EnumerateDirectories(projectsRoot))
 		{
-			IEnumerable<string> files;
-			try { files = Directory.EnumerateFiles(projDir, "*.jsonl", SearchOption.TopDirectoryOnly); }
-			catch (IOException) { continue; }
-			catch (UnauthorizedAccessException) { continue; }
-
-			foreach (var file in files)
-			{
-				DateTime mtime;
-				try { mtime = File.GetLastWriteTimeUtc(file); }
-				catch (IOException) { continue; }
+			var files = SafeScan.Materialize(() => Directory.EnumerateFiles(projDir, "*.jsonl", SearchOption.TopDirectoryOnly));
+			foreach (var (file, mtime) in SafeScan.WithMtimes(files, File.GetLastWriteTimeUtc))
 				if (ActiveClassifier.IsActive(mtime, nowUtc, activeWindowMinutes)) yield return file;
-			}
 		}
 	}
 
@@ -37,18 +28,9 @@ public static class WindowsSessionScanner
 		DateTime? max = null;
 		foreach (var projDir in Directory.EnumerateDirectories(projectsRoot))
 		{
-			IEnumerable<string> files;
-			try { files = Directory.EnumerateFiles(projDir, "*.jsonl", SearchOption.TopDirectoryOnly); }
-			catch (IOException) { continue; }
-			catch (UnauthorizedAccessException) { continue; }
-
-			foreach (var file in files)
-			{
-				DateTime mtime;
-				try { mtime = File.GetLastWriteTimeUtc(file); }
-				catch (IOException) { continue; }
+			var files = SafeScan.Materialize(() => Directory.EnumerateFiles(projDir, "*.jsonl", SearchOption.TopDirectoryOnly));
+			foreach (var (_, mtime) in SafeScan.WithMtimes(files, File.GetLastWriteTimeUtc))
 				if (max is null || mtime > max) max = mtime;
-			}
 		}
 		return max;
 	}

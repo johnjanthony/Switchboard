@@ -20,6 +20,7 @@ internal sealed class QuotaService
 
 	readonly Action<string>? _info;
 	readonly Action<string, Exception>? _error;
+	readonly QuotaBackoff _backoff = new(TimeSpan.FromHours(24));
 
 	public QuotaService(Action<string>? info = null, Action<string, Exception>? error = null)
 	{
@@ -34,6 +35,13 @@ internal sealed class QuotaService
 	{
 		var creds = ReadCredentials();
 		if (creds is null) return new QuotaResult(QuotaStatus.NoCredentials, null);
+
+		// While backed off after an auth failure, spend nothing (no CLI spawn, no HTTP) until the
+		// credentials file changes or the retry interval elapses. The skipped tick still reports
+		// AuthRequired so the UI keeps showing the paused state.
+		string fingerprint = QuotaBackoff.Fingerprint(creds.Value.Token, creds.Value.ExpiresAtMs);
+		if (!_backoff.ShouldAttempt(fingerprint, DateTime.UtcNow))
+			return new QuotaResult(QuotaStatus.AuthRequired, null);
 
 		// Proactively refresh an expired token before spending a request on a guaranteed 401.
 		if (QuotaParser.IsExpired(creds.Value.ExpiresAtMs, DateTimeOffset.UtcNow))
@@ -50,7 +58,19 @@ internal sealed class QuotaService
 			RefreshViaCli();
 			var refreshed = ReadCredentials();
 			if (refreshed is null) return new QuotaResult(QuotaStatus.NoCredentials, null);
+			creds = refreshed;
 			result = FetchUsage(refreshed.Value.Token);
+		}
+
+		if (result.Status == QuotaStatus.AuthRequired)
+		{
+			// The refreshed token and the endpoint agree: auth is gone. Stop spending spawns.
+			_backoff.RecordAuthFailure(QuotaBackoff.Fingerprint(creds.Value.Token, creds.Value.ExpiresAtMs), DateTime.UtcNow);
+			_info?.Invoke("auth failure - quota polling backed off until credentials change (24h retry)");
+		}
+		else if (result.Status == QuotaStatus.Ok)
+		{
+			_backoff.RecordSuccess();
 		}
 		return result;
 	}

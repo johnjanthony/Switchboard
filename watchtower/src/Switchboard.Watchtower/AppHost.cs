@@ -28,6 +28,8 @@ internal sealed class AppHost : IDisposable
 	IReadOnlyList<SessionModel> _lastSessions = Array.Empty<SessionModel>();
 	QuotaUsage? _lastQuota;
 	IReadOnlyDictionary<string, string> _lastTitleStates = new Dictionary<string, string>();
+	DateTime? _lastActivityUtc;                      // newest transcript mtime from the last scan (null while sessions exist)
+	SwitchboardStats? _lastSwitchboardStats;         // last successful /stats read (survives unavailable ticks)
 	readonly System.Windows.Forms.Timer _claudeStatusTimer = new();   // steady GET-poll of the server view
 	readonly ClaudeStatusReader _claudeStatusReader;
 	volatile bool _claudeStatusScanning;
@@ -105,9 +107,9 @@ internal sealed class AppHost : IDisposable
 		_embedWatchdog.Start();
 		_hoverTimer.Start();
 		_widget.SetShowQuota(_config.ShowQuota);
+		RenderLastKnown(LastKnownStore.LoadFrom(LastKnownStore.DefaultPath));
 		if (_config.ShowQuota) { _quotaTimer.Start(); PollQuota(); }
 		Scan();
-		_panel.UpdateSwitchboard(_config.Switchboard.Enabled, null);
 		if (_config.Switchboard.Enabled) { _switchboardTimer.Start(); PollSwitchboard(); }
 		_claudeStatusTimer.Start();
 		PollClaudeStatus();
@@ -204,7 +206,9 @@ internal sealed class AppHost : IDisposable
 
 		_lastSessions = sessions;
 		_lastTitleStates = titleStates;
+		_lastActivityUtc = lastActivityUtc;
 		PushSnapshot();
+		SaveLastKnown();
 	}
 
 	void LogError(string source, Exception ex) => WatchtowerLog.Error(source, ex, _logPath);
@@ -220,6 +224,7 @@ internal sealed class AppHost : IDisposable
 			_quotaScanning = false;
 			if (t.IsFaulted) { LogError("quota-poll", t.Exception!); return; }
 			var r = t.Result;
+			_panel.SetQuotaAuthPaused(r.Status == QuotaStatus.AuthRequired);
 			if (r.Status == QuotaStatus.Ok && r.Usage is QuotaUsage u)
 			{
 				_widget.UpdateQuota(u);
@@ -227,6 +232,7 @@ internal sealed class AppHost : IDisposable
 				ScheduleCountdown();
 				_lastQuota = u;
 				PushSnapshot();
+				SaveLastKnown();
 				LogInfo("quota", $"ok 5h={u.Session.Percentage:0}% 7d={u.Weekly.Percentage:0}%");
 			}
 			else
@@ -246,6 +252,7 @@ internal sealed class AppHost : IDisposable
 			_switchboardScanning = false;
 			if (t.IsFaulted) { LogError("switchboard-poll", t.Exception!); return; }
 			var stats = t.Result;
+			if (stats is not null) _lastSwitchboardStats = stats;
 			_panel.UpdateSwitchboard(enabled: true, stats);
 			_tray.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
 			_widget.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
@@ -265,6 +272,48 @@ internal sealed class AppHost : IDisposable
 			_snapshotPushing = false;
 			if (t.IsFaulted) LogError("widget-snapshot-push", t.Exception!);
 		}, TaskScheduler.Default);
+	}
+
+	// Persist the render cache at the same cadence as the server push (scan + quota ticks).
+	void SaveLastKnown()
+	{
+		var state = LastKnownStore.From(_lastSessions, _lastActivityUtc, _lastQuota, _lastSwitchboardStats, DateTime.UtcNow);
+		if (!LastKnownStore.SaveTo(state, LastKnownStore.DefaultPath))
+			LogInfo("last-known", "save failed; startup render will use the previous cache");
+	}
+
+	// Render the cached last-known state before the first live scan/poll lands, so startup is
+	// not blank. Stale-session guard: session bars older than the freshness window are skipped
+	// (they would advertise live agents that are long gone); quota and stats render at any age
+	// and are replaced by the first live poll within seconds.
+	void RenderLastKnown(LastKnownState? state)
+	{
+		// The panel's Switchboard section always needs its enabled seed, cache or no cache.
+		var cachedStats = state is not null && _config.Switchboard.Enabled ? LastKnownStore.ToStats(state) : null;
+		_panel.UpdateSwitchboard(_config.Switchboard.Enabled, cachedStats);
+		if (state is null) return;
+
+		bool light = _config.LightThemeOverride ?? ThemeReader.IsLightTaskbar();
+		if (LastKnownStore.SessionsFresh(state.SavedAtUtc, DateTime.UtcNow))
+		{
+			var sessions = LastKnownStore.ToSessionModels(state);
+			_widget.UpdateSessions(sessions, light);
+			_panel.UpdateSessions(sessions, light, state.LastActivityUtc);
+			var gauge = TrayGauge.From(sessions);
+			_tray.SetGauge(gauge.Max, gauge.AnyError, gauge.MaxSeverity, light);
+		}
+		if (_config.ShowQuota && LastKnownStore.ToQuota(state) is QuotaUsage q)
+		{
+			_widget.UpdateQuota(q);
+			_panel.UpdateQuota(q);
+			ScheduleCountdown();
+		}
+		if (cachedStats is not null)
+		{
+			bool hasPending = cachedStats is { PendingCount: > 0 };
+			_tray.SetPending(_config.Switchboard.ShowBadge, hasPending);
+			_widget.SetPending(_config.Switchboard.ShowBadge, hasPending);
+		}
 	}
 
 	// The popup button / tray item posts an action to the server: from a hidden/idle

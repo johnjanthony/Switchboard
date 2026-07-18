@@ -64,4 +64,22 @@ public class WslSessionScannerTests
 		var t = WslSessionScanner.MostRecentActivityUtc(lister, _ => Array.Empty<string>(), _ => Now);
 		Assert.Null(t);
 	}
+
+	[Fact]
+	public void One_distros_glob_failure_does_not_abort_other_distros()
+	{
+		// A distro whose enumeration dies mid-glob contributes nothing; the scan continues.
+		var lister = new FakeLister("bad-distro", "Ubuntu-22.04");
+		IEnumerable<string> FakeGlob(string d)
+		{
+			if (d == "bad-distro") { yield return "half.jsonl"; throw new IOException("distro stopped"); }
+			yield return @"\\wsl.localhost\Ubuntu-22.04\home\j\.claude\projects\p\a.jsonl";
+		}
+
+		var found = WslSessionScanner.ActiveTranscripts(lister, Now, 5, FakeGlob,
+			mtimeOf: _ => Now.AddSeconds(-20)).ToList();
+
+		Assert.Single(found);
+		Assert.Equal("Ubuntu-22.04", found[0].distro);
+	}
 }

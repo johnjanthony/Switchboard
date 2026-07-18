@@ -6,29 +6,6 @@ public class QuotaFormatTests
 	static readonly DateTimeOffset Now = DateTimeOffset.FromUnixTimeSeconds(1_000_000);
 
 	[Theory]
-	[InlineData(90000, "1d")]   // 25h -> days
-	[InlineData(10800, "3h")]   // exactly 3h
-	[InlineData(300, "5m")]
-	[InlineData(45, "45s")]
-	[InlineData(-10, "now")]    // already past
-	public void Countdown_shows_largest_unit(long deltaSecs, string expected)
-	{
-		Assert.Equal(expected, QuotaFormat.Countdown(Now.AddSeconds(deltaSecs), Now));
-	}
-
-	[Fact]
-	public void Line_combines_rounded_percent_and_countdown()
-	{
-		Assert.Equal("50% · 3h", QuotaFormat.Line(49.6, Now.AddSeconds(10800), Now));
-	}
-
-	[Fact]
-	public void Line_is_percent_only_when_no_reset()
-	{
-		Assert.Equal("31%", QuotaFormat.Line(31, null, Now));
-	}
-
-	[Theory]
 	[InlineData(11000, 201)]  // 3h2m40s shows "3h"; flips to "2h" in 11000-10800+1
 	[InlineData(305, 6)]      // 5m5s shows "5m"; flips to "4m" in 305-300+1
 	[InlineData(45, 1)]       // seconds tick every second

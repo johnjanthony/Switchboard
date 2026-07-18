@@ -12,6 +12,7 @@ internal sealed class DetailPanel : Form
 	const int RowH = 42;
 	const int Pad = 12;
 	const int QuotaWindowRowH = 46;
+	const int QuotaPausedRowH = 18;
 	const int GroupVPad = 8;     // inner top/bottom padding inside a group panel
 	const int GroupGap = 10;     // vertical gap between the two group panels
 	const int PanelMargin = 6;   // horizontal inset of a group panel from the popup edge
@@ -22,6 +23,7 @@ internal sealed class DetailPanel : Form
 	IReadOnlyList<SessionModel> _sessions = Array.Empty<SessionModel>();
 	Palette _palette = new(light: false);
 	QuotaUsage? _quota;   // latest Claude plan usage (5h/7d); null until first successful poll -> section hidden
+	bool _quotaAuthPaused;
 	DateTime? _lastActivityUtc;   // newest transcript mtime when no session is active; null if never seen
 
 	bool _switchboardEnabled;
@@ -97,16 +99,24 @@ internal sealed class DetailPanel : Form
 		old?.Dispose();
 	}
 
-	static GraphicsPath RoundedRect(int w, int h, int r)
+	static GraphicsPath RoundedRectPath(RectangleF r, int radius)
 	{
-		int d = r * 2;
+		int d = radius * 2;
 		var path = new GraphicsPath();
-		path.AddArc(0, 0, d, d, 180, 90);
-		path.AddArc(w - d, 0, d, d, 270, 90);
-		path.AddArc(w - d, h - d, d, d, 0, 90);
-		path.AddArc(0, h - d, d, d, 90, 90);
+		path.AddArc(r.X, r.Y, d, d, 180, 90);
+		path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+		path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+		path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
 		path.CloseFigure();
 		return path;
+	}
+
+	static GraphicsPath RoundedRect(int w, int h, int r) => RoundedRectPath(new RectangleF(0, 0, w, h), r);
+
+	static void FillRoundedRect(Graphics g, Brush brush, Rectangle r, int radius)
+	{
+		using var path = RoundedRectPath(r, radius);
+		g.FillPath(brush, path);
 	}
 
 	protected override bool ShowWithoutActivation => true;
@@ -129,6 +139,15 @@ internal sealed class DetailPanel : Form
 	public void UpdateQuota(QuotaUsage usage)
 	{
 		_quota = usage;
+		RecomputeHeight();
+		Invalidate();
+	}
+
+	// Auth-failure banner for the quota section: shown while the quota poll is backed off.
+	public void SetQuotaAuthPaused(bool paused)
+	{
+		if (_quotaAuthPaused == paused) return;
+		_quotaAuthPaused = paused;
 		RecomputeHeight();
 		Invalidate();
 	}
@@ -160,7 +179,8 @@ internal sealed class DetailPanel : Form
 
 	void RecomputeHeight()
 	{
-		int quotaH = _quota.HasValue ? 2 * QuotaWindowRowH + 2 * GroupVPad + GroupGap : 0;
+		int quotaContentH = (_quota.HasValue ? 2 * QuotaWindowRowH : 0) + (_quotaAuthPaused ? QuotaPausedRowH : 0);
+		int quotaH = quotaContentH > 0 ? quotaContentH + 2 * GroupVPad + GroupGap : 0;
 		int ctxH = Math.Max(1, _sessions.Count) * RowH + 2 * GroupVPad;
 		int sbH = _switchboardEnabled ? SwitchboardRowH + _openDashboard.Height + 2 * GroupVPad + GroupGap : 0;
 		int csH = ClaudeStatusRowH + _claudeButton.Height + 2 * GroupVPad + GroupGap;
@@ -195,14 +215,23 @@ internal sealed class DetailPanel : Form
 
 		int y = Pad;
 
-		// Group 1: plan-usage windows (5h / 7d) on a filled surface panel.
-		if (_quota is QuotaUsage q)
+		// Group 1: plan-usage windows (5h / 7d), plus the auth-paused banner when polling is backed off.
+		if (_quota.HasValue || _quotaAuthPaused)
 		{
-			int groupH = 2 * QuotaWindowRowH + 2 * GroupVPad;
+			int groupH = (_quota.HasValue ? 2 * QuotaWindowRowH : 0) + (_quotaAuthPaused ? QuotaPausedRowH : 0) + 2 * GroupVPad;
 			DrawGroupPanel(g, y, groupH);
 			int inner = y + GroupVPad;
-			inner = DrawQuotaWindow(g, inner, "5h session", q.Session, QuotaPacing.SessionDuration, label, small);
-			DrawQuotaWindow(g, inner, "7d week", q.Weekly, QuotaPacing.WeeklyDuration, label, small);
+			if (_quotaAuthPaused)
+			{
+				using var warn = new SolidBrush(_palette.Warning);
+				g.DrawString("quota paused - Claude login required", small, warn, Pad, inner);
+				inner += QuotaPausedRowH;
+			}
+			if (_quota is QuotaUsage q)
+			{
+				inner = DrawQuotaWindow(g, inner, "5h session", q.Session, QuotaPacing.SessionDuration, label, small);
+				DrawQuotaWindow(g, inner, "7d week", q.Weekly, QuotaPacing.WeeklyDuration, label, small);
+			}
 			y += groupH + GroupGap;
 		}
 
@@ -223,7 +252,7 @@ internal sealed class DetailPanel : Form
 		foreach (var s in _sessions)   // no-op when empty (message drawn above)
 		{
 			// status dot
-			var dotColor = s.Status == SessionStatus.Live ? Color.FromArgb(63, 185, 80) : _palette.Muted;
+			var dotColor = s.Status == SessionStatus.Live ? StatusColors.Green : _palette.Muted;
 			using (var dot = new SolidBrush(dotColor)) g.FillEllipse(dot, Pad, y + 3, 8, 8);
 
 			// line 1: [WSL] label .................... model/window tag
@@ -391,18 +420,6 @@ internal sealed class DetailPanel : Form
 	{
 		using var b = new SolidBrush(_palette.Surface);
 		FillRoundedRect(g, b, new Rectangle(PanelMargin, top, Width - 2 * PanelMargin, height), PanelRadius);
-	}
-
-	static void FillRoundedRect(Graphics g, Brush brush, Rectangle r, int radius)
-	{
-		int d = radius * 2;
-		using var path = new GraphicsPath();
-		path.AddArc(r.X, r.Y, d, d, 180, 90);
-		path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-		path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-		path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
-		path.CloseFigure();
-		g.FillPath(brush, path);
 	}
 
 	// Trim text to fit maxWidth, appending an ellipsis. Returns the input unchanged when it already fits.
