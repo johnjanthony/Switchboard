@@ -58,9 +58,11 @@ if ($SkipTests) {
 Write-Host "--- Starting $ServiceName ---"
 nssm start $ServiceName
 if ($LASTEXITCODE -ne 0) {
-	Write-Host "ERROR: nssm start $ServiceName failed (exit $LASTEXITCODE)." -ForegroundColor Red
-	Show-StderrTail
-	exit 1
+	# nssm start returns non-zero when the app is still START_PENDING past nssm's
+	# start-wait window (Firebase hydration pushes real startup past it). Benign -
+	# the SERVICE_RUNNING + /healthz polls below are the real arbiter and abort
+	# cleanly if the service genuinely fails to start.
+	Write-Host "WARNING: nssm start returned exit $LASTEXITCODE; confirming via SERVICE_RUNNING + /healthz..." -ForegroundColor Yellow
 }
 
 $deadline = (Get-Date).AddSeconds(30)

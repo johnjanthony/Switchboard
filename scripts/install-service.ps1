@@ -193,7 +193,14 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "Starting $ServiceName..."
-Invoke-Nssm start $ServiceName
+# Do NOT route 'start' through Invoke-Nssm: nssm start returns non-zero when the
+# app is still START_PENDING past nssm's start-wait window (Firebase hydration
+# pushes real startup past it). Benign - the SERVICE_RUNNING + /healthz polls
+# below are the real arbiter and abort cleanly if the service fails to start.
+& nssm start $ServiceName
+if ($LASTEXITCODE -ne 0) {
+	Write-Host "WARNING: nssm start returned exit $LASTEXITCODE; confirming via SERVICE_RUNNING + /healthz..." -ForegroundColor Yellow
+}
 
 $deadline = (Get-Date).AddSeconds(30)
 $running = $false
