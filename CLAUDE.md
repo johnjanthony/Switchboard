@@ -301,3 +301,14 @@ Hidden conversations are accessible via the overflow menu's "Show hidden" toggle
 - **Single mandatory backend.** Firebase is required; the server exits at startup with a ConfigError if its env vars are unset. Optional sub-features degrade gracefully (document delivery needs `FIREBASE_STORAGE_BUCKET`; spawn needs the spawn-root vars), but the core gateway does not start without Firebase.
 - **Conversations persist; in-flight futures don't.** Conversation state persists in Firebase and rehydrates on restart (`server/hydration.py`); pending `ask_human` futures and wait queues are in-memory and do not survive restart. Don't add a second datastore without a design revision.
 - **Comments sparingly.** Explain why, not what.
+
+## Knowledge graph & Obsidian vault
+
+The repo has a Graphify knowledge graph (`graphify-out/graph.json`, gitignored, rebuilt automatically by post-commit/post-checkout git hooks — AST-only, no LLM cost).
+
+- **Query it before grepping** for architecture / what-calls-what / data-flow questions: `graphify query "<question>"`, `graphify explain "<node>"`, `graphify path "A" "B"`. Human-readable map: `graphify-out/GRAPH_REPORT.md`; interactive: `graphify-out/graph.html`.
+- **Obsidian vault** at `graphify-out/obsidian/` is a generated view of the graph — entry point `Start Here.md`, shaky-extraction review in `INFERRED Review.base`. The git hooks rebuild the graph only; the vault does NOT auto-update.
+- **Re-exporting the vault**: `graphify export obsidian`, then ALWAYS `pwsh -File scripts/dedot-obsidian.ps1`. Skipping the dedot pass leaves method notes with dot-prefixed filenames that Obsidian hides (~1/3 of the vault invisible, links apparently broken).
+- **`.graphifyignore` is load-bearing** (excludes `dashboard/vendor/`); without it a rebuild regenerates ~300 junk nodes from vendored JS.
+- Don't commit `graphify-out/` — regenerable output, and the post-commit hook would dirty the tree on every commit if tracked.
+- Vault conventions and the full Graphify lesson list live in the main knowledge vault: `C:\Work\ClaudeObsidian\Claude Vault\Reference\Graphify Usage.md`.
