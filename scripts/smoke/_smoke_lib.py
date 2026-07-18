@@ -93,7 +93,7 @@ async def restart_service(ctx) -> None:
 	await asyncio.to_thread(subprocess.run,
 		["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-SkipTests"],
 		capture_output=True, text=True, timeout=120)
-	# Exit code is unreliable (unchecked nssm calls) - liveness comes from /healthz.
+	# restart-service.ps1 now checks nssm exit codes, but /healthz stays the liveness truth here.
 	def _alive():
 		try:
 			hz = http_get_json(f"{ctx.base_url}/healthz")
