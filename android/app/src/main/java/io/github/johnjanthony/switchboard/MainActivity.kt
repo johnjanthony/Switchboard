@@ -558,7 +558,12 @@ fun MarkdownText(
 						}
 					}
 				}.apply {
-					android.text.method.LinkMovementMethod.getInstance().let { movementMethod = it }
+					setTextIsSelectable(isSelectable)
+					// Important: setTextIsSelectable(true) overwrites movementMethod with
+					// ArrowKeyMovementMethod. We must (re)apply LinkMovementMethod AFTER
+					// setting selectability to ensure links remain interceptable.
+					movementMethod = android.text.method.LinkMovementMethod.getInstance()
+
 					// setMovementMethod(...) auto-flips isClickable/isLongClickable to true
 					// (Android-internal fixFocusableAndClickableSettings). That makes the
 					// TextView consume every touch and prevents clicks from propagating out
@@ -568,12 +573,12 @@ fun MarkdownText(
 					// regardless of isClickable.
 					isClickable = isSelectable
 					isLongClickable = isSelectable
-					setTextIsSelectable(isSelectable)
 				}
 			},
 			update = { view ->
 				if (view.isTextSelectable != isSelectable) {
 					view.setTextIsSelectable(isSelectable)
+					view.movementMethod = android.text.method.LinkMovementMethod.getInstance()
 					view.isClickable = isSelectable
 					view.isLongClickable = isSelectable
 				}

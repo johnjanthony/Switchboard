@@ -463,6 +463,10 @@ fun MarkdownText(content: String, format: String, color: Color = Color.Unspecifi
 			factory = { ctx ->
 				TextView(ctx).apply {
 					movementMethod = LinkMovementMethod.getInstance()
+					// setMovementMethod auto-flips isClickable/isLongClickable to true, which
+					// swallows Card clicks. Reset to false here; links still work via onTouchEvent.
+					isClickable = false
+					isLongClickable = false
 				}
 			},
 			update = { view ->
