@@ -287,7 +287,7 @@ private fun SwitchboardNavHost(
 				}
 				return@composable
 			}
-			val awayActive = viewModel.isAwayActive(convId)
+			val awayActive = globalAway
 			var infoOpen by remember { mutableStateOf(false) }
 
 			DisposableEffect(convId) {
@@ -446,10 +446,14 @@ private fun SwitchboardNavHost(
 @Composable
 fun AwayModePillChip(active: Boolean, onLongPress: () -> Unit) {
 	val brass = MaterialTheme.colorScheme.primary
+	// Light grey for inactive: today is onSurfaceVariant (InkDim 0xFF889099).
+	// B0B8C1 is lighter than 889099.
+	val inactiveColor = Color(0xFFB0B8C1)
+
 	val bg = if (active) brass.copy(alpha = 0.13f) else Color.Transparent
-	val borderColor = if (active) brass.copy(alpha = 0.34f) else MaterialTheme.colorScheme.outline
-	val contentColor = if (active) brass else MaterialTheme.colorScheme.onSurfaceVariant
-	val label = if (active) "AWAY" else "AT DESK"
+	val borderColor = if (active) brass.copy(alpha = 0.34f) else inactiveColor.copy(alpha = 0.2f)
+	val contentColor = if (active) brass else inactiveColor
+	val label = "AWAY"
 
 	androidx.compose.foundation.layout.Box(
 		modifier = Modifier
@@ -463,15 +467,13 @@ fun AwayModePillChip(active: Boolean, onLongPress: () -> Unit) {
 			.padding(horizontal = 10.dp, vertical = 4.dp)
 	) {
 		Row(verticalAlignment = Alignment.CenterVertically) {
-			if (active) {
-				Icon(
-					imageVector = Icons.Filled.DarkMode,
-					contentDescription = null,
-					tint = brass,
-					modifier = Modifier.size(12.dp),
-				)
-				Spacer(Modifier.width(5.dp))
-			}
+			Icon(
+				imageVector = Icons.Filled.DarkMode,
+				contentDescription = null,
+				tint = contentColor,
+				modifier = Modifier.size(12.dp),
+			)
+			Spacer(Modifier.width(5.dp))
 			Text(label, style = MaterialTheme.typography.labelSmall, color = contentColor)
 		}
 	}

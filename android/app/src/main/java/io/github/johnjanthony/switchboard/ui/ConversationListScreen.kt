@@ -14,15 +14,17 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
+import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
+import androidx.compose.foundation.layout.Row
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -37,6 +39,7 @@ import io.github.johnjanthony.switchboard.network.ConversationRow
 import io.github.johnjanthony.switchboard.network.WidgetQuota
 import io.github.johnjanthony.switchboard.network.WidgetRing
 import io.github.johnjanthony.switchboard.network.WidgetStatus
+import io.github.johnjanthony.switchboard.ui.theme.Jade
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -70,16 +73,42 @@ fun ConversationListScreen(
 	onRetrySignIn: () -> Unit = {},
 ) {
 	var menuExpanded by remember { mutableStateOf(false) }
+	var showQuotaPopup by remember { mutableStateOf(false) }
 
 	Scaffold(
 		topBar = {
-			TopAppBar(
-				title = { Text("Switchboard") },
-				actions = {
-					AwayModePillChip(
-						active = globalAway,
-						onLongPress = if (globalAway) onExitGlobalAway else onEnterGlobalAway,
-					)
+			CenterAlignedTopAppBar(
+				navigationIcon = {
+					Row(verticalAlignment = Alignment.CenterVertically) {
+						Box {
+							IconButton(onClick = { menuExpanded = true }) {
+								Icon(Icons.Default.MoreVert, contentDescription = "More")
+							}
+							DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+								DropdownMenuItem(
+									text = { Text("Check status") },
+									onClick = { onCheckStatus(); menuExpanded = false }
+								)
+								if (claudeStatus?.watchState == "watching") {
+									DropdownMenuItem(
+										text = { Text("Stop status watch") },
+										onClick = { onStopStatus(); menuExpanded = false }
+									)
+								}
+								Divider()
+								HiddenChannelsToggleMenuItem(
+									hiddenCount = hiddenRows.size,
+									showHidden = showHidden,
+									onToggle = { onToggleShowHidden(); menuExpanded = false },
+								)
+							}
+						}
+						IconButton(onClick = onSpawnClick) {
+							Icon(Icons.Default.Add, contentDescription = "Spawn")
+						}
+					}
+				},
+				title = {
 					IconButton(onClick = onSessionsClick) {
 						BadgedBox(
 							badge = {
@@ -88,22 +117,19 @@ fun ConversationListScreen(
 								}
 							},
 						) {
-							Icon(Icons.Default.Hub, contentDescription = "Sessions")
+							Icon(
+								imageVector = Icons.Default.Hub,
+								contentDescription = "Sessions",
+								tint = if (claudeStatus?.level == "operational") Jade else MaterialTheme.colorScheme.onSurfaceVariant
+							)
 						}
 					}
-					IconButton(onClick = onSpawnClick) {
-						Icon(Icons.Default.Add, contentDescription = "Spawn")
-					}
-					IconButton(onClick = { menuExpanded = true }) {
-						Icon(Icons.Default.MoreVert, contentDescription = "More")
-					}
-					DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-						HiddenChannelsToggleMenuItem(
-							hiddenCount = hiddenRows.size,
-							showHidden = showHidden,
-							onToggle = { onToggleShowHidden(); menuExpanded = false },
-						)
-					}
+				},
+				actions = {
+					AwayModePillChip(
+						active = globalAway,
+						onLongPress = if (globalAway) onExitGlobalAway else onEnterGlobalAway,
+					)
 				},
 			)
 		},
@@ -111,10 +137,8 @@ fun ConversationListScreen(
 		Column(modifier = Modifier.fillMaxSize().padding(padding)) {
 		WidgetStatusHeader(
 			quota = quota,
-			status = claudeStatus,
 			pushedAt = pushedAt,
-			onCheck = onCheckStatus,
-			onStop = onStopStatus,
+			onClick = { if (quota != null) showQuotaPopup = true }
 		)
 		val displayed = if (showHidden) (rows + hiddenRows) else rows
 		val hasContent = displayed.isNotEmpty() || adminRow != null
@@ -172,5 +196,9 @@ fun ConversationListScreen(
 				}
 		}
 		}
+	}
+
+	if (showQuotaPopup && quota != null) {
+		QuotaDetailDialog(quota = quota, onDismiss = { showQuotaPopup = false })
 	}
 }

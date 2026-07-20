@@ -222,8 +222,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		}
 	}
 
-	fun isAwayActive(cwdKey: String): Boolean = _globalAway.value
-
 	// --- Firebase listeners ---
 
 	private fun setupAdminNotificationsListener() {
