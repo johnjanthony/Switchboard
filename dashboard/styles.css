@@ -472,19 +472,25 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 /* ---- Calling line: the pending-question answer panel ---- */
 .pending-stack { margin-top: 20px; display: flex; flex-direction: column; gap: 14px; }
 .answer-box {
-	background: color-mix(in srgb, var(--lamp-amber) 7%, var(--panel));
-	border: 1px solid color-mix(in srgb, var(--lamp-amber) 45%, var(--rule));
+	background: color-mix(in srgb, #ff7a66 7%, var(--panel));
+	border: 1px solid color-mix(in srgb, #ff7a66 45%, var(--rule));
 	border-radius: var(--radius); padding: 14px;
-	box-shadow: 0 0 0 1px color-mix(in srgb, var(--lamp-amber) 12%, transparent);
+	box-shadow: 0 0 0 1px color-mix(in srgb, #ff7a66 12%, transparent);
 }
-.pending-question { display: flex; align-items: flex-start; gap: 9px; font-weight: 600; margin-bottom: 10px; color: var(--label); }
+.pending-question { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 10px; color: var(--label); }
 .pending-question::before {
 	content: ""; flex: 0 0 auto; margin-top: 5px; width: 10px; height: 10px; border-radius: 50%;
-	background: radial-gradient(circle at 38% 32%, #ffd98a, var(--lamp-amber));
-	box-shadow: 0 0 8px color-mix(in srgb, var(--lamp-amber) 80%, transparent);
+	background: radial-gradient(circle at 38% 32%, #ffb3a6, #ff7a66);
+	box-shadow: 0 0 8px color-mix(in srgb, #ff7a66 80%, transparent);
 	animation: lamp-pulse 1.6s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) { .pending-question::before { animation: none; } }
+.pending-question-body { flex: 1; min-width: 0; font-size: 13.5px; line-height: 1.5; }
+.pending-question-body p { margin: 0 0 8px 0; }
+.pending-question-body p:last-child { margin-bottom: 0; }
+.pending-question-body ul, .pending-question-body ol { margin: 4px 0 8px 18px; padding: 0; }
+.pending-question-body code { font-family: var(--font-mono); font-size: 12px; background: rgba(255,255,255,0.08); padding: 2px 5px; border-radius: 4px; }
+.pending-question-body pre { margin: 8px 0; padding: 10px; background: var(--well); border-radius: 5px; overflow-x: auto; }
 .suggestions { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 10px; }
 .suggestion {
 	background: var(--well); border: 1px solid var(--rule); border-radius: 5px;

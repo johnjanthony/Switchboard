@@ -100,9 +100,13 @@ function AnswerBox({ store, convId, pending }) {
 		const ok = await store.sendAnswer(convId, pending.requestId, v, pending.sender);
 		if (ok) setText("");
 	};
+	const qText = pending.questionText || pending.question || pending.prompt || "";
+	const qHtml = renderMarkdown(qText);
 	return html`
 		<div class="answer-box" key=${pending.requestId}>
-			<div class="pending-question">${pending.questionText}</div>
+			<div class="pending-question">
+				<div class="pending-question-body" dangerouslySetInnerHTML=${{ __html: qHtml }}></div>
+			</div>
 			${(pending.suggestions && pending.suggestions.length)
 				? html`<div class="suggestions">
 						${pending.suggestions.map((s, i) => html`
