@@ -148,7 +148,12 @@ export function StatusBar({ store }) {
 					class=${"away-pill " + (awayOn ? "away-on" : "away-off")}
 					onClick=${onAwayPill}
 					title="Toggle global away mode"
-				>Away ${awayOn ? "ON" : "OFF"}</button>
+				>
+					<svg class="away-moon-icon" viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
+						<path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-1.14 1.4-2.88 2.26-4.8 2.26-3.31 0-6-2.69-6-6 0-1.92.86-3.66 2.26-4.8C12.92 3.04 12.46 3 12 3z"/>
+					</svg>
+					AWAY
+				</button>
 				<span class="status-counts">
 					<span class="count"><b>${activeCount}</b> active</span>
 					<span class="count lit"><b>${pendingCount}</b> lit</span>

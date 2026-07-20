@@ -446,11 +446,10 @@ private fun SwitchboardNavHost(
 @Composable
 fun AwayModePillChip(active: Boolean, onLongPress: () -> Unit) {
 	val brass = MaterialTheme.colorScheme.primary
-	// Light grey for inactive: today is onSurfaceVariant (InkDim 0xFF889099).
-	// B0B8C1 is lighter than 889099.
-	val inactiveColor = Color(0xFFB0B8C1)
+	// Darker grey for inactive away mode pill (0xFF525B66 / label-faint).
+	val inactiveColor = Color(0xFF525B66)
 
-	val bg = if (active) brass.copy(alpha = 0.13f) else Color.Transparent
+	val bg = if (active) brass.copy(alpha = 0.13f) else Color(0xFF08090B)
 	val borderColor = if (active) brass.copy(alpha = 0.34f) else inactiveColor.copy(alpha = 0.2f)
 	val contentColor = if (active) brass else inactiveColor
 	val label = "AWAY"
