@@ -4,6 +4,7 @@ under the new /conversations/<id>/... schema."""
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 
 import pytest
@@ -24,13 +25,12 @@ def _make_store_backend():
 	backend.write_conversation_meta = AsyncMock()
 	backend.write_conversation_member = AsyncMock()
 	backend.remove_conversation_member = AsyncMock()
+	backend.move_conversation_member = AsyncMock()
 	backend.set_conversation_state = AsyncMock()
 	backend.set_conversation_last_activity = AsyncMock()
-	backend.set_open_conversation_id = AsyncMock()
 	backend.set_session_home = AsyncMock()
 	backend.set_global_away_mode = AsyncMock()
 	backend.send_timeout_followup = AsyncMock()
-	backend.send_resolution_confirmation = AsyncMock()
 	backend.mark_question_cancelled = AsyncMock()
 	backend.write_agent_status = AsyncMock()
 	backend.write_conversation_member_history = AsyncMock()
@@ -68,7 +68,7 @@ def _make_active_conv(conv_id: str = "conv-abc", session_id: str = "s-1", sender
 		surface="windows",
 		joined_at=time.time(),
 	)
-	conv.members_active[sender] = m
+	conv.members_active[session_id] = m
 	r.conversations[conv_id] = conv
 	r.bind_session(session_id, conv_id)
 	r.set_session_home(session_id, conv_id)
@@ -79,27 +79,6 @@ async def _drain_bg():
 	"""Yield control so _spawn_bg tasks get a chance to run."""
 	for _ in range(5):
 		await asyncio.sleep(0)
-
-
-# ---------------------------------------------------------------------------
-# Test 1: open_conversation writes open pointer
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_open_conversation_writes_open_pointer(tmp_path):
-	from server.gateway import build_tool_handlers
-
-	cfg = _make_config(tmp_path)
-	logger = _make_logger(cfg)
-	backend = _make_store_backend()
-	registry, conv = _make_active_conv()
-
-	handlers = build_tool_handlers(cfg, registry, backend, logger)
-	result = await handlers.open_conversation("Claude", cli_session_id="s-1", cwd="C:/Work/X")
-
-	assert result.startswith("ok")
-	await _drain_bg()
-	backend.set_open_conversation_id.assert_awaited_once_with(conv.id)
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +97,7 @@ async def test_leave_conversation_removes_member_and_writes_state(tmp_path):
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
 	result = await handlers.leave_conversation("Claude", "goodbye!", cli_session_id="s-1", cwd="C:/Work/X")
 
-	assert result.startswith("ok")
+	assert json.loads(result) == {"status": "ok", "conversation_id": conv.id}
 	await _drain_bg()
 
 	# Member was removed
@@ -159,7 +138,7 @@ async def test_combine_writes_both_target_member_and_source_state(tmp_path):
 		surface="windows",
 		joined_at=time.time(),
 	)
-	registry.conversations["conv-src"].members_active["Agent"] = m
+	registry.conversations["conv-src"].members_active["s-1"] = m
 	registry.bind_session("s-1", "conv-src")
 
 	result = await _perform_combine(registry, "conv-src", "conv-tgt", None, None, backend=backend)
@@ -167,38 +146,13 @@ async def test_combine_writes_both_target_member_and_source_state(tmp_path):
 
 	await _drain_bg()
 
-	backend.remove_conversation_member.assert_awaited_with("conv-src", "Agent")
-	backend.write_conversation_member.assert_awaited()
+	backend.move_conversation_member.assert_awaited_once()
+	args = backend.move_conversation_member.await_args
+	assert args.args[0] == "conv-src" and args.args[1] == "conv-tgt"
+	assert args.args[3] == "Agent"          # old_sender
+	assert args.kwargs == {"end_source": False}
 	backend.set_conversation_state.assert_awaited_once_with("conv-src", "ended")
 	backend.set_conversation_last_activity.assert_awaited_once_with("conv-tgt", pytest.approx(time.time(), abs=5))
-
-
-# ---------------------------------------------------------------------------
-# Test 4: handle_force_end clears open pointer when target was open
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_handle_force_end_clears_open_pointer_when_target_was_open():
-	from server.gateway.dispatch import handle_force_end
-	from server.registry import Conversation, ConversationMember, Registry
-
-	backend = _make_store_backend()
-	registry = Registry()
-	registry.open_conversation_id = "conv-1"
-
-	conv = Conversation(id="conv-1", title="test")
-	m = ConversationMember(cli_session_id="s-A", sender="A", cwd="C:/X", surface="windows", joined_at=0.0)
-	conv.members_active["A"] = m
-	registry.conversations["conv-1"] = conv
-	registry.bind_session("s-A", "conv-1")
-
-	await handle_force_end(registry, "conv-1", backend=backend)
-	await _drain_bg()
-
-	assert registry.open_conversation_id is None
-	backend.set_open_conversation_id.assert_awaited_once_with(None)
-	backend.set_conversation_state.assert_awaited_once_with("conv-1", "ended")
-	backend.remove_conversation_member.assert_awaited_with("conv-1", "A")
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +174,7 @@ async def test_handle_session_end_writes_dormant_member_state():
 		surface="windows",
 		joined_at=time.time(),
 	)
-	conv.members_active["Claude"] = m
+	conv.members_active["s-1"] = m
 	registry.conversations["conv-x"] = conv
 	registry.bind_session("s-1", "conv-x")
 
@@ -267,6 +221,27 @@ async def test_apply_fallback_create_new_writes_conversation_meta():
 	backend.set_session_home.assert_awaited_once_with("s-orphan", new_conv_id)
 
 
+@pytest.mark.asyncio
+async def test_apply_fallback_create_new_writes_member():
+	"""REV-112: the member write is the crux - it is what lets hydration
+	rebuild the binding after a restart."""
+	from server.session_fallback import apply_fallback
+	from server.registry import Registry
+
+	backend = _make_store_backend()
+	registry = Registry()
+	registry.global_away_mode = True
+	registry.bind_session("s-orphan2", "conv-gone")
+
+	apply_fallback(registry, "s-orphan2", backend=backend)
+	await _drain_bg()
+
+	backend.write_conversation_member.assert_awaited_once()
+	conv_id_arg, member_arg = backend.write_conversation_member.await_args.args
+	assert conv_id_arg == registry.session_to_conversation_id["s-orphan2"]
+	assert member_arg.cli_session_id == "s-orphan2"
+
+
 # ---------------------------------------------------------------------------
 # Test 7: message_and_await_agent writes message to conversations path
 # ---------------------------------------------------------------------------
@@ -293,7 +268,7 @@ async def test_message_and_await_writes_message_to_conversations_path(tmp_path):
 			surface="windows",
 			joined_at=time.time(),
 		)
-		conv.members_active[name] = m
+		conv.members_active[sid] = m
 		registry.bind_session(sid, "conv-m")
 	registry.conversations["conv-m"] = conv
 
@@ -408,7 +383,7 @@ async def test_handle_force_end_without_backend_still_ends_conversation():
 	registry = Registry()
 	conv = Conversation(id="conv-1", title="test")
 	m = ConversationMember(cli_session_id="s-A", sender="A", cwd="C:/X", surface="windows", joined_at=0.0)
-	conv.members_active["A"] = m
+	conv.members_active["s-A"] = m
 	registry.conversations["conv-1"] = conv
 	registry.bind_session("s-A", "conv-1")
 

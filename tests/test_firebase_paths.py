@@ -80,29 +80,15 @@ async def test_write_conversation_message_omits_attached_to_msg_id_when_not_pass
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_set_open_conversation_id_writes_to_global_settings(backend):
-	"""set_open_conversation_id writes to global_settings/open_conversation_id."""
+async def test_delete_open_conversation_node_deletes_the_node(backend):
+	"""One-shot chunk 5 cleanup: delete_open_conversation_node deletes
+	global_settings/open_conversation_id via ref.delete(), sending the phone's
+	open-accent listener a permanent null."""
 	be, mock_db = backend
-	await be.set_open_conversation_id("conv-abc123")
+	await be.delete_open_conversation_node()
 	calls = [str(c) for c in mock_db.reference.call_args_list]
 	assert any("global_settings/open_conversation_id" in c for c in calls)
-	mock_db.reference.return_value.set.assert_called_with("conv-abc123")
-
-
-@pytest.mark.asyncio
-async def test_set_open_conversation_id_none_deletes_node(backend):
-	"""set_open_conversation_id(None) must call delete(), not set(None).
-
-	firebase_admin's ref.set(None) raises ValueError('Value must not be None.') —
-	the only way to clear a node is ref.delete(). The previous version called
-	set(None), which silently failed in a background task and left Firebase
-	pointing at a stale conversation id (observed 2026-05-27 in nssm-stderr.log:
-	`Task exception was never retrieved future: <Task finished
-	name='fb_clear_open_id:...' exception=ValueError('Value must not be None.')>`)."""
-	be, mock_db = backend
-	await be.set_open_conversation_id(None)
 	mock_db.reference.return_value.delete.assert_called_once()
-	mock_db.reference.return_value.set.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -123,27 +109,6 @@ async def test_set_session_home_writes_to_cli_sessions(backend):
 	calls = [str(c) for c in mock_db.reference.call_args_list]
 	assert any("cli_sessions/sess-xyz/home_conversation_id" in c for c in calls)
 	mock_db.reference.return_value.set.assert_called_with("conv-home-1")
-
-
-@pytest.mark.asyncio
-async def test_write_combine_command_returns_push_key(backend):
-	"""write_combine_command pushes to /combine_commands and returns the push key."""
-	be, mock_db = backend
-	fake_push_ref = MagicMock()
-	fake_push_ref.key = "push-key-42"
-	mock_db.reference.return_value.push.return_value = fake_push_ref
-
-	result = await be.write_combine_command("conv-src", "conv-tgt")
-
-	assert result == "push-key-42"
-	calls = [str(c) for c in mock_db.reference.call_args_list]
-	assert any("combine_commands" in c for c in calls)
-	# Verify payload shape
-	set_call = fake_push_ref.set.call_args
-	payload = set_call.args[0]
-	assert payload["source_conversation_id"] == "conv-src"
-	assert payload["target_conversation_id"] == "conv-tgt"
-	assert "issued_at" in payload
 
 
 @pytest.mark.asyncio
@@ -202,7 +167,7 @@ async def test_set_global_wsl_available_coerces_truthy(backend):
 
 @pytest.mark.asyncio
 async def test_write_conversation_message_writes_to_correct_path(backend):
-	"""write_conversation_message (expanded form) writes to conversations/<id>/messages."""
+	"""write_conversation_message (expanded form) writes to messages/<id>."""
 	be, mock_db = backend
 	fake_ref = MagicMock()
 	fake_ref.key = "push-key-abc"
@@ -211,7 +176,7 @@ async def test_write_conversation_message_writes_to_correct_path(backend):
 	await be.write_conversation_message("conv-test-path", "Claude", "notify", "hello")
 
 	calls = [str(c) for c in mock_db.reference.call_args_list]
-	assert any("conversations/conv-test-path/messages" in c for c in calls)
+	assert any("messages/conv-test-path" in c for c in calls)
 	# Must NOT write to /channels/<anything>/messages
 	assert not any("channels/" in c and "/messages" in c for c in calls)
 
@@ -250,9 +215,9 @@ async def test_write_conversation_message_returns_correlation_and_msg_id(backend
 
 	# Must be a 2-tuple
 	assert isinstance(result, tuple) and len(result) == 2
-	correlation, msg_id = result
-	# correlation is (conv_id, sender) — dispatch_responses routes by (cwd, sender) key
-	assert correlation == ("conv-ret", "Claude")
+	conv_id, msg_id = result
+	# correlation is the conversation id; answers resolve by (conv_id, request_id)
+	assert conv_id == "conv-ret"
 	assert msg_id == "push-key-xyz"
 
 
@@ -269,7 +234,7 @@ async def test_write_conversation_message_dict_form_returns_push_key(backend):
 
 	assert result == "push-dict-key"
 	calls = [str(c) for c in mock_db.reference.call_args_list]
-	assert any("conversations/conv-dict/messages" in c for c in calls)
+	assert any("messages/conv-dict" in c for c in calls)
 
 
 @pytest.mark.asyncio
@@ -290,7 +255,7 @@ async def test_no_channels_messages_path_written_for_conversation_message(backen
 
 @pytest.mark.asyncio
 async def test_mark_question_cancelled_reads_from_conversations_not_channels(backend):
-	"""mark_question_cancelled now scans /conversations/<conv_id>/messages, not /channels/."""
+	"""mark_question_cancelled now scans /messages/<conv_id>, not /channels/."""
 	be, mock_db = backend
 	# Simulate Firebase returning no messages (empty conversations node)
 	mock_db.reference.return_value.get.return_value = None
@@ -298,33 +263,8 @@ async def test_mark_question_cancelled_reads_from_conversations_not_channels(bac
 	await be.mark_question_cancelled("conv-cancel", "req-xyz")
 
 	calls = [str(c) for c in mock_db.reference.call_args_list]
-	assert any("conversations/conv-cancel/messages" in c for c in calls)
+	assert any("messages/conv-cancel" in c for c in calls)
 	assert not any("channels/" in c and "/messages" in c for c in calls)
-
-
-# ---------------------------------------------------------------------------
-# Fix 5: set_conversation_hidden writes to /conversations/<id>/meta/hidden
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_set_conversation_hidden_writes_to_conversations_path(backend):
-	"""set_conversation_hidden writes to /conversations/<conv_id>/meta/hidden, NOT /channels/<key>/hidden."""
-	be, mock_db = backend
-	await be.set_conversation_hidden("conv-abc123", True)
-	calls = [str(c) for c in mock_db.reference.call_args_list]
-	assert any("conversations/conv-abc123/meta/hidden" in c for c in calls)
-	assert not any("channels/" in c and "/hidden" in c for c in calls)
-	mock_db.reference.return_value.set.assert_called_with(True)
-
-
-@pytest.mark.asyncio
-async def test_set_conversation_hidden_false_writes_false(backend):
-	"""set_conversation_hidden(False) writes False to the conversation path."""
-	be, mock_db = backend
-	await be.set_conversation_hidden("conv-xyz", False)
-	calls = [str(c) for c in mock_db.reference.call_args_list]
-	assert any("conversations/conv-xyz/meta/hidden" in c for c in calls)
-	mock_db.reference.return_value.set.assert_called_with(False)
 
 
 # ---------------------------------------------------------------------------

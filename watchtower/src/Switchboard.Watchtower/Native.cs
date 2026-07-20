@@ -103,6 +103,19 @@ internal static class Native
 	[return: MarshalAs(UnmanagedType.Bool)]
 	public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, [MarshalAs(UnmanagedType.Bool)] bool bRepaint);
 
+	public static readonly IntPtr HWND_TOP = IntPtr.Zero;
+	public const uint SWP_SHOWWINDOW = 0x0040;
+	public const int SW_SHOWNA = 8;                 // show without activating
+	public const int WS_VISIBLE = 0x10000000;
+
+	[DllImport("user32.dll")]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool IsWindowVisible(IntPtr hWnd);
+
+	[DllImport("user32.dll", SetLastError = true)]
+	[return: MarshalAs(UnmanagedType.Bool)]
+	public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
 	// Frees an HICON created via Bitmap.GetHicon(); Icon.FromHandle does not own the handle.
 	[DllImport("user32.dll", SetLastError = true)]
 	[return: MarshalAs(UnmanagedType.Bool)]

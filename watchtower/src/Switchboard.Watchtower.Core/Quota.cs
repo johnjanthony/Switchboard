@@ -97,28 +97,7 @@ public static class QuotaParser
 
 public static class QuotaFormat
 {
-	/// <summary>Countdown to a reset as the single largest unit: "3d" / "3h" / "45m" / "30s", "now" if past, "" if unknown.</summary>
-	public static string Countdown(DateTimeOffset? resetsAt, DateTimeOffset now)
-	{
-		if (resetsAt is not DateTimeOffset reset) return "";
-		var remaining = reset - now;
-		if (remaining <= TimeSpan.Zero) return "now";
-		long secs = (long)remaining.TotalSeconds;
-		if (secs >= 86400) return $"{secs / 86400}d";
-		if (secs >= 3600) return $"{secs / 3600}h";
-		if (secs >= 60) return $"{secs / 60}m";
-		return $"{secs}s";
-	}
-
-	/// <summary>"50% · 3h" (percent + countdown), or just "50%" when no reset time is known.</summary>
-	public static string Line(double percentage, DateTimeOffset? resetsAt, DateTimeOffset now)
-	{
-		string pct = $"{(int)Math.Round(percentage)}%";
-		string cd = Countdown(resetsAt, now);
-		return cd.Length == 0 ? pct : $"{pct} · {cd}";
-	}
-
-	/// <summary>How long until <see cref="Countdown"/>'s text would next change; null if unknown or already past.</summary>
+	/// <summary>How long until the countdown text ("3d"/"3h"/"45m"/"30s") would next change; null if unknown or already past.</summary>
 	public static TimeSpan? TimeUntilDisplayChange(DateTimeOffset? resetsAt, DateTimeOffset now)
 	{
 		if (resetsAt is not DateTimeOffset reset) return null;

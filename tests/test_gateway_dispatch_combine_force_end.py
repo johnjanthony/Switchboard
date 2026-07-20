@@ -15,6 +15,14 @@ def logger(tmp_path):
 	return JsonlLogger(str(tmp_path / "log.jsonl"))
 
 
+def _make_supervisor():
+	from unittest.mock import AsyncMock, MagicMock
+	supervisor = MagicMock()
+	supervisor.record_success = MagicMock()
+	supervisor.record_crash = AsyncMock()
+	return supervisor
+
+
 # ---------------------------------------------------------------------------
 # dispatch_combine_commands
 # ---------------------------------------------------------------------------
@@ -45,16 +53,16 @@ async def test_dispatch_combine_command_invokes_perform_combine(logger):
 		surface="windows",
 		joined_at=0.0,
 	)
-	src_conv.members_active["Agent"] = m
+	src_conv.members_active["s-1"] = m
 	registry.bind_session("s-1", "conv-src")
 
 	backend = MagicMock()
 	backend.remove_conversation_member = AsyncMock()
 	backend.write_conversation_member = AsyncMock()
+	backend.move_conversation_member = AsyncMock()
 	backend.write_conversation_message = AsyncMock(return_value="key-1")
 	backend.set_conversation_state = AsyncMock()
 	backend.set_conversation_last_activity = AsyncMock()
-	backend.set_open_conversation_id = AsyncMock()
 	registered_handler = None
 
 	async def fake_start_listener(handler):
@@ -63,7 +71,8 @@ async def test_dispatch_combine_command_invokes_perform_combine(logger):
 
 	backend.start_combine_command_listener = fake_start_listener
 
-	await dispatch_combine_commands(registry, backend, logger, supervisor=None)
+	supervisor = _make_supervisor()
+	await dispatch_combine_commands(registry, backend, logger, supervisor)
 
 	assert registered_handler is not None, "handler should have been registered"
 
@@ -75,7 +84,9 @@ async def test_dispatch_combine_command_invokes_perform_combine(logger):
 
 	# _perform_combine should have ended source and moved the member to target
 	assert registry.conversations["conv-src"].state == "ended"
-	assert "Agent" in registry.conversations["conv-tgt"].members_active
+	assert "s-1" in registry.conversations["conv-tgt"].members_active
+	supervisor.record_success.assert_called_once()
+	supervisor.record_crash.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -98,7 +109,8 @@ async def test_dispatch_combine_command_logs_missing_ids(logger, tmp_path):
 
 	backend.start_combine_command_listener = fake_start_listener
 
-	await dispatch_combine_commands(registry, backend, logger, supervisor=None)
+	supervisor = _make_supervisor()
+	await dispatch_combine_commands(registry, backend, logger, supervisor)
 	assert registered_handler is not None
 
 	await registered_handler({"issued_at": "2026-05-25T00:00:00+00:00"})
@@ -106,6 +118,7 @@ async def test_dispatch_combine_command_logs_missing_ids(logger, tmp_path):
 	events = [json.loads(line) for line in log_path.read_text().splitlines() if line]
 	errors = [e for e in events if e["event"] == "surface_error"]
 	assert any("combine_command_missing_ids" in e["detail"] for e in errors)
+	supervisor.record_success.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -126,14 +139,13 @@ async def test_dispatch_force_end_command_invokes_handle_force_end(logger):
 	registry = Registry()
 	conv = Conversation(id="conv-xyz", title="test")
 	m = ConversationMember(cli_session_id="s-1", sender="Agent", cwd="C:/X", surface="windows", joined_at=0.0)
-	conv.members_active["Agent"] = m
+	conv.members_active["s-1"] = m
 	registry.conversations["conv-xyz"] = conv
 	registry.bind_session("s-1", "conv-xyz")
 
 	backend = MagicMock()
 	backend.remove_conversation_member = AsyncMock()
 	backend.set_conversation_state = AsyncMock()
-	backend.set_open_conversation_id = AsyncMock()
 	backend.write_conversation_message = AsyncMock(return_value="key-1")
 	# handle_force_end now calls apply_fallback(..., backend=backend) for every
 	# member session - including alive members whose fallback path may issue
@@ -148,7 +160,8 @@ async def test_dispatch_force_end_command_invokes_handle_force_end(logger):
 
 	backend.start_force_end_command_listener = fake_start_listener
 
-	await dispatch_force_end_commands(registry, backend, logger, supervisor=None)
+	supervisor = _make_supervisor()
+	await dispatch_force_end_commands(registry, backend, logger, supervisor)
 
 	assert registered_handler is not None
 
@@ -157,6 +170,8 @@ async def test_dispatch_force_end_command_invokes_handle_force_end(logger):
 	# handle_force_end should have ended the conversation
 	assert conv.state == "ended"
 	assert conv.ended_at is not None
+	supervisor.record_success.assert_called_once()
+	supervisor.record_crash.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -179,7 +194,8 @@ async def test_dispatch_force_end_command_logs_missing_id(logger, tmp_path):
 
 	backend.start_force_end_command_listener = fake_start_listener
 
-	await dispatch_force_end_commands(registry, backend, logger, supervisor=None)
+	supervisor = _make_supervisor()
+	await dispatch_force_end_commands(registry, backend, logger, supervisor)
 	assert registered_handler is not None
 
 	await registered_handler({"issued_at": "2026-05-25T00:00:00+00:00"})
@@ -187,6 +203,7 @@ async def test_dispatch_force_end_command_logs_missing_id(logger, tmp_path):
 	events = [json.loads(line) for line in log_path.read_text().splitlines() if line]
 	errors = [e for e in events if e["event"] == "surface_error"]
 	assert any("force_end_command_missing_id" in e["detail"] for e in errors)
+	supervisor.record_success.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -215,8 +232,8 @@ async def test_handle_force_end_clears_dormant_member_home_pointer(logger):
 		cwd="C:/Y", surface="windows", joined_at=0.0,
 		alive=False, session_end_reason="logout",
 	)
-	conv.members_active["Alice"] = alice
-	conv.members_active["Bob"] = bob
+	conv.members_active["s-alice"] = alice
+	conv.members_active["s-bob"] = bob
 	registry.conversations["conv-fe"] = conv
 	registry.bind_session("s-alice", "conv-fe")
 	# Bob is intentionally NOT in session_to_conversation_id (dormant).
@@ -226,7 +243,6 @@ async def test_handle_force_end_clears_dormant_member_home_pointer(logger):
 	backend = MagicMock()
 	backend.remove_conversation_member = AsyncMock()
 	backend.set_conversation_state = AsyncMock()
-	backend.set_open_conversation_id = AsyncMock()
 	backend.write_conversation_message = AsyncMock(return_value="key-fe")
 	backend.set_session_home = AsyncMock()
 
@@ -245,3 +261,65 @@ async def test_handle_force_end_clears_dormant_member_home_pointer(logger):
 	# No new conversation minted (away mode is OFF so even Alice doesn't get
 	# a create_new — she's just unbound).
 	assert len(registry.conversations) == conv_count_before
+
+
+@pytest.mark.asyncio
+async def test_force_end_sweeps_bound_but_memberless_session(tmp_path):
+	"""REV-103: a session bound during the spawn window (no member yet) must be
+	fallback-processed by force-end, not left bound to the Ended conversation.
+	Away mode OFF here -> compute_fallback says unbind."""
+	from server.gateway.dispatch import handle_force_end
+	from server.registry import Registry, Conversation
+
+	registry = Registry()
+	conv = Conversation(id="conv-fe-spawn", title="spawn-window")
+	registry.conversations["conv-fe-spawn"] = conv
+	registry.bind_session("s-spawn-window", "conv-fe-spawn")  # bound, NOT in members_active
+
+	backend = MagicMock()
+	backend.remove_conversation_member = AsyncMock()
+	backend.set_conversation_state = AsyncMock()
+	backend.write_conversation_message = AsyncMock(return_value="key-fe-spawn")
+	backend.set_session_home = AsyncMock()
+
+	await handle_force_end(registry, "conv-fe-spawn", backend=backend)
+
+	assert conv.state == "ended"
+	assert "s-spawn-window" not in registry.session_to_conversation_id, (
+		"bound-but-memberless session must be swept (REV-103)"
+	)
+
+
+@pytest.mark.asyncio
+async def test_force_end_sweeps_bound_memberless_session_into_fallback_conv_when_away(tmp_path):
+	"""REV-103 + Task 1 (REV-112): away mode ON and the bound-but-memberless
+	session's home also points at the ended conv -> create_new mints a fresh
+	home conversation WITH a member, so the spawned agent's first MCP call
+	routes into a live, hydration-safe conversation instead of staying bound
+	to the Ended one."""
+	from server.gateway.dispatch import handle_force_end
+	from server.registry import Registry, Conversation
+
+	registry = Registry()
+	conv = Conversation(id="conv-fe-spawn2", title="spawn-window")
+	registry.conversations["conv-fe-spawn2"] = conv
+	registry.global_away_mode = True
+	registry.bind_session("s-spawn-window", "conv-fe-spawn2")
+	registry.set_session_home("s-spawn-window", "conv-fe-spawn2")
+
+	backend = MagicMock()
+	backend.remove_conversation_member = AsyncMock()
+	backend.set_conversation_state = AsyncMock()
+	backend.write_conversation_message = AsyncMock(return_value="key-fe-spawn2")
+	backend.set_session_home = AsyncMock()
+	backend.write_conversation_member = AsyncMock()
+	backend.write_conversation_meta = AsyncMock()
+
+	await handle_force_end(registry, "conv-fe-spawn2", backend=backend)
+
+	assert conv.state == "ended"
+	new_id = registry.session_to_conversation_id["s-spawn-window"]
+	assert new_id != conv.id
+	new_conv = registry.conversations[new_id]
+	assert new_conv.state == "active"
+	assert "s-spawn-window" in new_conv.members_active

@@ -2,7 +2,7 @@
 
 > A human-in-the-loop input gateway for AI coding agents.
 
-Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task and ask you a question via a native Android app. Designed for away-from-desk workflows where you want your agents to continue working unsupervised until they hit a decision that genuinely requires human input.
+Switchboard is a local MCP gateway with cloud-synchronized state (Firebase) that lets AI agents pause mid-task and ask you a question via a native Android app. Designed for away-from-desk workflows where you want your agents to continue working unsupervised until they hit a decision that genuinely requires human input.
 
 ![The Switchboard Android app in away mode: a status update, a delivered document, and a question with quick-reply buttons, all in one conversation](docs/media/android-chat.png)
 
@@ -19,7 +19,7 @@ Switchboard is a locally-hosted MCP server that lets AI agents pause mid-task an
 ## Features
 
 - **Session-id routing**: Each agent session is identified by a `cli_session_id` injected automatically by the PreToolUse hook. Agents only pass `sender` and tool arguments.
-- **Conversations**: Messages, members, and state persist in Firebase as named conversations (Active / Ended). At most one is "open" — joinable by any new agent via `enter_conversation`.
+- **Conversations**: Messages, members, and state persist in Firebase as named conversations (Active / Ended). At most one is "open" — joinable by any new agent via `join_conversation`.
 - **Asynchronous updates**: Send non-blocking notifications or deliver documents directly to your phone.
 - **In-line replies**: View your responses directly in the chat history for full context.
 - **Global away mode**: Single server-wide flag. Toggle from the phone's top-bar pill or via the `set_away_mode` MCP tool.
@@ -113,7 +113,13 @@ Switchboard ships as a Claude Code plugin. From any Claude Code session:
 
 The plugin install wires the skill and the Claude turn-end + agent-status hooks. The MCP server connection is bootstrapped per host by a parallel chezmoi dotfiles effort (Windows uses `localhost:9876`; WSL uses the Windows host IP, resolvable from `/etc/resolv.conf` or `ip route show default | awk '{print $3}'`). If you are not using chezmoi, run `claude mcp add switchboard --scope user --transport http <resolved-url>` per host.
 
-WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` and a firewall inbound rule for TCP 9876 from the WSL subnet.
+WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` AND `SWITCHBOARD_TOKEN` set - the server refuses to start non-loopback without a token (REV-003 fail-closed), and every non-loopback client must send `Authorization: Bearer <token>` on all routes except `/healthz` (loopback callers are exempt). The firewall inbound rule for TCP 9876 from the WSL subnet remains recommended as defense-in-depth; the token is the enforced control.
+
+### Antigravity CLI (agy)
+
+Antigravity CLI sessions are first-class agents (spec: `docs/superpowers/specs/2026-07-14-antigravity-cli-support-design.md`). Requirements: `agy` >= 1.1.2 on PATH. The wiring is delivered by the chezmoi dotfiles repo, not a plugin: `~/.gemini/config/mcp_config.json` (the `serverUrl` MCP entry), `~/.gemini/config/hooks.json` (PreInvocation/PreToolUse/PostToolUse/Stop hooks pointing at `scripts/agy-identity-hook.py` and `scripts/turn-end-hook-away-mode.py --cli antigravity` in this repo), and a switchboard protocol section in `~/.gemini/GEMINI.md`.
+
+Identity model: agy hooks cannot rewrite tool arguments, so the model passes `cli_session_id` (its conversation UUID) and `cwd` explicitly inside every switchboard call's Arguments; a PreInvocation ephemeral message teaches the values each turn and a PreToolUse hook denies non-compliant calls with the correction. Contrast: Claude Code wires via the plugin and gets silent hook injection.
 
 ## Android App
 
@@ -191,8 +197,7 @@ Away mode activates when you tell your agent you're stepping away — any phrasi
 **Multi-agent (conversation) tools:**
 
 - **`message_and_await_agent(sender, message, title?)`** — speak to peers in your conversation and block for the next reply.
-- **`open_conversation(sender, title?)`** — promote your conversation to the global "open" singleton so other agents can join via `enter_conversation`.
-- **`enter_conversation(sender)`** — join the open conversation (or queue for the next intro in your current one) and block until a peer speaks.
+- **`join_conversation(sender, ref?, title?)`** — join a conversation (a specific one via `ref`, or the currently-open one; mints a fresh room when none exists). Never blocks; returns the unseen history. Replaces the deprecated `open_conversation`/`enter_conversation` pair.
 - **`combine_conversations(source_id, target_id)`** — merge two conversations; dormant members of `source_id` are migrated and auto-resumed.
 - **`lookup_conversation_ids(cwd_filter?, sender_contains?, title_contains?)`** — find conversation IDs to feed `combine_conversations`.
 - **`leave_conversation(sender, parting_message)`** — leave the conversation with a final summary; session falls back to its home conversation (away on) or terminal output (away off).
@@ -205,7 +210,7 @@ Switchboard correlates your reply to the waiting `ask_human` call via the Androi
 
 ### Conversation composition
 
-Multiple agents can share a conversation without spawning. Open one with `open_conversation(sender, title?)`, then have additional agents join via `enter_conversation(sender)`. Agents in the same conversation communicate through `message_and_await_agent`.
+Multiple agents can share a conversation without spawning. Any agent calls `join_conversation(sender, title?)` — the first mints the room and it becomes the open one; later ref-less callers land in it, and `ref` targets a specific conversation. Agents in the same conversation communicate through `message_and_await_agent`.
 
 You can also merge two existing conversations with `combine_conversations(source_id, target_id)` — dormant members of the source are migrated into the target and revived. All three flows are also available from the phone's long-press menu on any conversation row.
 

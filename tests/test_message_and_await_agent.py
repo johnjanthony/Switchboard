@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 
 import pytest
 
 from server.config import Config
 from server.gateway import build_tool_handlers
 from server.logging_jsonl import JsonlLogger
+from server.rate_limiter import RateLimiter
 from server.registry import Conversation, ConversationMember, Registry
 from tests.test_gateway_notify_human import RecordingBackend
 
@@ -62,8 +65,8 @@ def _make_registry_with_two_alive_members():
 		surface="windows",
 		joined_at=0.0,
 	)
-	conv.members_active["Claude-A"] = a
-	conv.members_active["Claude-B"] = b
+	conv.members_active["s-A"] = a
+	conv.members_active["s-B"] = b
 	r.conversations["conv-1"] = conv
 	r.bind_session("s-A", "conv-1")
 	r.bind_session("s-B", "conv-1")
@@ -81,7 +84,7 @@ def _make_registry_with_one_alive_member():
 		surface="windows",
 		joined_at=0.0,
 	)
-	conv.members_active["Claude-Solo"] = m
+	conv.members_active["s-solo"] = m
 	r.conversations["conv-solo"] = conv
 	r.bind_session("s-solo", "conv-solo")
 	return r, "conv-solo"
@@ -159,97 +162,73 @@ async def test_message_and_await_rejects_missing_cli_session_id(cfg, logger):
 
 
 # ---------------------------------------------------------------------------
-# Tests: sole alive member
+# Tests: sole alive member parks
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_message_and_await_sole_alive_member_returns_empty_sentinel(cfg, logger):
-	"""Single-member conversation — calling message_and_await returns __CONVERSATION_EMPTY__ immediately.
-	Per Fix Pack 1 / Bug #6 the sentinel return is now matched by actual member
-	removal: the caller is dropped from members_active, the conv transitions to
-	"ended" (no remaining members), and session-fallback rebinds/unbinds the
-	caller so the agent's "I was removed" belief matches reality."""
+async def test_sole_alive_speaker_parks_and_is_woken_by_joiner(cfg, logger):
+	"""A solo speaker appends its message and PARKS in the normal wait_queue
+	instead of auto-leaving or holding a lobby. The conversation stays active
+	and the caller stays a member. A later joiner's speak wakes the parked
+	future via the existing FIFO _wake_one_from, and the joiner then parks
+	in turn."""
 	backend = RecordingBackend()
 	r, conv_id = _make_registry_with_one_alive_member()
 	handlers = build_tool_handlers(cfg, r, backend, logger)
 
-	result = await handlers.message_and_await_agent(
-		"Claude-Solo",
-		message="hello?",
-		cli_session_id="s-solo",
-		cwd="C:/Z",
-	)
-
-	assert result == "__CONVERSATION_EMPTY__"
-	# Caller removed from members_active and recorded in history.
-	conv = r.conversations[conv_id]
-	assert "Claude-Solo" not in conv.members_active
-	assert any(m.cli_session_id == "s-solo" for m in conv.members_history)
-	# No remaining members → conversation Ended.
-	assert conv.state == "ended"
-	assert conv.ended_at is not None
-	# Session-fallback applied: global_away_mode default False → unbind.
-	assert "s-solo" not in r.session_to_conversation_id
-
-
-@pytest.mark.asyncio
-async def test_sole_alive_in_open_marker_conv_blocks_until_peer_joins(cfg, logger):
-	"""When the sole-alive caller is in the conv that holds the open marker,
-	message_and_await_agent does NOT auto-leave. It blocks via the same
-	open_peer_future mechanism as the mint-path bootstrap, so the lobby stays
-	alive across peers coming and going.
-
-	A peer-join concurrently unblocks the lobby-holder with a 'Peer X joined'
-	payload, and the conv is still active afterwards."""
-	backend = RecordingBackend()
-	r, conv_id = _make_registry_with_one_alive_member()
-	# This conv is the open marker — the lobby case.
-	r.open_conversation_id = conv_id
-	handlers = build_tool_handlers(cfg, r, backend, logger)
-
-	lobby_task = asyncio.create_task(handlers.message_and_await_agent(
+	solo_task = asyncio.create_task(handlers.message_and_await_agent(
 		"Claude-Solo",
 		message="anyone here?",
 		cli_session_id="s-solo",
 		cwd="C:/Z",
 	))
-	await asyncio.sleep(0.1)
-	# Lobby-holder should be blocked, not auto-leaving
-	assert not lobby_task.done(), "sole-alive in open-marker conv should block, not auto-leave"
-	assert "Claude-Solo" in r.conversations[conv_id].members_active
+	for _ in range(5):
+		await asyncio.sleep(0)
 
-	# A peer joins to unblock the lobby
-	peer_task = asyncio.create_task(handlers.enter_conversation(
+	conv = r.conversations[conv_id]
+	assert len(conv.wait_queue) == 1
+	assert conv.state == "active"
+	assert "s-solo" in conv.members_active
+	assert not solo_task.done()
+
+	joiner_task = asyncio.create_task(handlers.join_conversation(
 		"Joiner",
+		ref=conv_id,
 		cli_session_id="s-joiner",
 		cwd="/home/j",
 	))
-	result = await asyncio.wait_for(lobby_task, timeout=2.0)
+	for _ in range(5):
+		await asyncio.sleep(0)
 
-	assert "Joiner" in result, f"Expected joiner sender in wake payload, got: {result!r}"
-	# Conv is still Active; lobby-holder remains a member; open marker still set
-	conv = r.conversations[conv_id]
-	assert conv.state == "active"
-	assert "Claude-Solo" in conv.members_active
-	assert r.open_conversation_id == conv_id
+	speak_task = asyncio.create_task(handlers.message_and_await_agent(
+		"Joiner",
+		message="I'm here",
+		cli_session_id="s-joiner",
+		cwd="/home/j",
+	))
 
-	peer_task.cancel()
-	try:
-		await peer_task
-	except asyncio.CancelledError:
-		pass
+	result = await asyncio.wait_for(solo_task, timeout=2.0)
+	data = json.loads(result)
+	assert data["status"] == "ok"
+	assert "I'm here" in data["log"]
+	assert len(conv.wait_queue) == 1  # joiner now parked in turn
+
+	joiner_task.cancel()
+	speak_task.cancel()
+	for t in (joiner_task, speak_task):
+		try:
+			await t
+		except asyncio.CancelledError:
+			pass
 
 
 @pytest.mark.asyncio
-async def test_sole_alive_in_open_marker_conv_times_out_without_ending(short_timeout_cfg, logger):
-	"""Lobby-hold timeout: returns __TIMEOUT__ but does NOT force-end the conv
-	or clear the open marker. The caller stays a member and can poll again or
-	explicitly leave. Distinguishes the mid-conversation lobby case from the
-	bootstrap mint case (which DOES force-end on timeout to clean up an
-	orphan room that no one ever joined)."""
+async def test_sole_alive_parker_times_out(short_timeout_cfg, logger):
+	"""A solo speaker who parks and gets no reply within the timeout gets the
+	ordinary timeout envelope; the conversation and membership are untouched
+	and the wait entry is removed from the queue."""
 	backend = RecordingBackend()
 	r, conv_id = _make_registry_with_one_alive_member()
-	r.open_conversation_id = conv_id
 	handlers = build_tool_handlers(short_timeout_cfg, r, backend, logger)
 
 	result = await handlers.message_and_await_agent(
@@ -259,75 +238,89 @@ async def test_sole_alive_in_open_marker_conv_times_out_without_ending(short_tim
 		cwd="C:/Z",
 	)
 
-	assert result == "__TIMEOUT__"
+	assert json.loads(result) == {"status": "timeout"}
 	conv = r.conversations[conv_id]
-	assert conv.state == "active", "lobby timeout should NOT end the conv"
-	assert "Claude-Solo" in conv.members_active, "caller should remain a member"
-	assert r.open_conversation_id == conv_id, "open marker should still be set"
+	assert conv.state == "active"
+	assert "s-solo" in conv.members_active
+	assert len(conv.wait_queue) == 0
 
 
 @pytest.mark.asyncio
-async def test_sole_alive_in_non_open_conv_still_auto_leaves(cfg, logger):
-	"""Belt-and-suspenders: confirm we ONLY changed behavior for the open-marker
-	case. A sole-alive caller in a conversation that is NOT the open marker
-	still hits the original auto-leave path."""
+async def test_parked_solo_woken_by_peer_leave(cfg, logger):
+	"""A parked solo speaker is woken when a joining peer immediately leaves
+	with a parting message — leave_conversation's own _wake_one_from call
+	resolves the parked future with the parting text."""
 	backend = RecordingBackend()
 	r, conv_id = _make_registry_with_one_alive_member()
-	# Deliberately NOT setting r.open_conversation_id — this is an ad-hoc conv.
-	assert r.open_conversation_id is None
 	handlers = build_tool_handlers(cfg, r, backend, logger)
 
-	result = await handlers.message_and_await_agent(
+	solo_task = asyncio.create_task(handlers.message_and_await_agent(
 		"Claude-Solo",
-		message="hello?",
+		message="anyone here?",
 		cli_session_id="s-solo",
 		cwd="C:/Z",
+	))
+	for _ in range(5):
+		await asyncio.sleep(0)
+
+	join_result = await handlers.join_conversation(
+		"Joiner",
+		ref=conv_id,
+		cli_session_id="s-joiner",
+		cwd="/home/j",
 	)
+	assert join_result
 
-	assert result == "__CONVERSATION_EMPTY__"
-	conv = r.conversations[conv_id]
-	assert "Claude-Solo" not in conv.members_active
-	assert conv.state == "ended"
+	leave_result = await handlers.leave_conversation(
+		"Joiner",
+		"gotta go",
+		cli_session_id="s-joiner",
+		cwd="/home/j",
+	)
+	assert leave_result
 
+	result = await asyncio.wait_for(solo_task, timeout=2.0)
+	assert "gotta go" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: cancel resets session-registry state
+# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_sole_member_empty_sentinel_includes_partings(cfg, logger):
-	"""Sole alive member sees parting messages in the __CONVERSATION_EMPTY__ payload."""
+async def test_cancelled_wait_resets_session_state(cfg, logger):
+	"""Cancelling a parked message_and_await_agent call (the Esc-in-CLI path)
+	resets the caller's session-registry state so the roster does not show a
+	stale awaiting_* chip forever."""
+	from server.session_registry import SessionRegistry
+
 	backend = RecordingBackend()
-	r = Registry()
-	conv = Conversation(id="conv-p", title="parting test")
-	m = ConversationMember(
-		cli_session_id="s-last",
-		sender="Claude-Last",
-		cwd="C:/P",
-		surface="windows",
-		joined_at=0.0,
-	)
-	conv.members_active["Claude-Last"] = m
-	# Inject a parting message that was added before the caller's last_seen_seq is updated
-	conv.messages.append({
-		"seq": 0,
-		"sender": "Claude-Other",
-		"type": "parting",
-		"text": "goodbye world",
-		"timestamp": "2026-01-01T00:00:00+00:00",
-		"title": None,
-	})
-	# last_seen_seq = 0, so the parting is "since last_seen_seq"
-	m.last_seen_seq = 0
-	r.conversations["conv-p"] = conv
-	r.bind_session("s-last", "conv-p")
-	handlers = build_tool_handlers(cfg, r, backend, logger)
+	r, conv_id = _make_registry_with_two_alive_members()
+	session_registry = SessionRegistry()
+	session_registry.record_session_start("s-A", cwd="C:/X")
+	session_registry.upsert_from_hook("s-A", state="awaiting_agent", event="PreToolUse")
+	handlers = build_tool_handlers(cfg, r, backend, logger, session_registry=session_registry)
 
-	result = await handlers.message_and_await_agent(
-		"Claude-Last",
-		message="still here?",
-		cli_session_id="s-last",
-		cwd="C:/P",
-	)
+	task_a = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-A",
+		message="parking",
+		cli_session_id="s-A",
+		cwd="C:/X",
+	))
+	for _ in range(5):
+		await asyncio.sleep(0)
 
-	assert "__CONVERSATION_EMPTY__" in result
-	assert "goodbye world" in result
+	conv = r.conversations[conv_id]
+	assert len(conv.wait_queue) == 1
+
+	task_a.cancel()
+	with pytest.raises(asyncio.CancelledError):
+		await task_a
+
+	rec = session_registry.get("s-A")
+	assert rec.state == "active"
+	assert rec.state_detail == "wait-cancelled"
+	assert len(conv.wait_queue) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -479,7 +472,7 @@ async def test_timeout_cleans_up_wait_entry(cfg, logger, tmp_path):
 		cwd="C:/X",
 	)
 
-	assert result == "__TIMEOUT__"
+	assert json.loads(result) == {"status": "timeout"}
 	# Queue should be cleaned up
 	assert len(conv.wait_queue) == 0
 
@@ -492,7 +485,7 @@ async def test_last_seen_seq_updated_after_wake(cfg, logger):
 	handlers = build_tool_handlers(cfg, r, backend, logger)
 
 	conv = r.conversations[conv_id]
-	member_a = conv.members_active["Claude-A"]
+	member_a = conv.members_active["s-A"]
 	initial_seq = member_a.last_seen_seq
 
 	task_a = asyncio.create_task(
@@ -529,3 +522,57 @@ async def test_last_seen_seq_updated_after_wake(cfg, logger):
 		await task_b
 	except asyncio.CancelledError:
 		pass
+
+
+# ---------------------------------------------------------------------------
+# Tests: rate-limiter push suppression (REV-109)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_rate_limited_agent_msg_still_delivers_but_suppresses_push(cfg, logger):
+	"""REV-109: message_and_await_agent shares the per-conversation bucket, but
+	degrades by suppressing FCM - a collab ping-pong storm stops buzzing the
+	phone without breaking delivery or wake semantics."""
+	registry, _ = _make_registry_with_two_alive_members()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger, limiter=RateLimiter(1))
+
+	task_a = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-A", "first message", cli_session_id="s-A", cwd="C:/X"))
+	await asyncio.sleep(0.05)
+	task_b = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-B", "second message", cli_session_id="s-B", cwd="C:/Y"))
+	await asyncio.sleep(0.05)
+
+	result_a = json.loads(await task_a)
+	assert result_a["status"] == "ok"
+	assert "second message" in result_a["log"]
+	# Both messages were written - delivery is never dropped by the limiter.
+	assert len(backend.channel_messages) == 2
+	# The second write exceeded the bucket (capacity 1): push suppressed.
+	assert backend.push_suppressed == [False, True]
+
+	task_b.cancel()
+	with contextlib.suppress(asyncio.CancelledError):
+		await task_b
+
+
+@pytest.mark.asyncio
+async def test_agent_msgs_within_limit_push_normally(cfg, logger):
+	registry, _ = _make_registry_with_two_alive_members()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger, limiter=RateLimiter(30))
+
+	task_a = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-A", "hello", cli_session_id="s-A", cwd="C:/X"))
+	await asyncio.sleep(0.05)
+	task_b = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-B", "reply", cli_session_id="s-B", cwd="C:/Y"))
+	await asyncio.sleep(0.05)
+
+	assert json.loads(await task_a)["status"] == "ok"
+	assert backend.push_suppressed == [False, False]
+
+	task_b.cancel()
+	with contextlib.suppress(asyncio.CancelledError):
+		await task_b

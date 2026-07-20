@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import MagicMock, patch, AsyncMock
 
 import pytest
 
 from server.registry import Registry
+from server.session_registry import SessionRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -33,10 +33,6 @@ def make_logger():
 	return logger
 
 
-def _run(coro):
-	return asyncio.get_event_loop().run_until_complete(coro)
-
-
 def member_data(**kwargs):
 	base = {
 		"cli_session_id": "sess-default",
@@ -55,7 +51,7 @@ def member_data(**kwargs):
 	return base
 
 
-def conv_snapshot(conv_id, state="active", title=None, members=None, messages=None, extra_meta=None):
+def conv_snapshot(conv_id, state="active", title=None, members=None, extra_meta=None):
 	meta = {
 		"state": state,
 		"title": title or conv_id,
@@ -69,8 +65,6 @@ def conv_snapshot(conv_id, state="active", title=None, members=None, messages=No
 	node = {"meta": meta}
 	if members:
 		node["members_active"] = members
-	if messages:
-		node["messages"] = messages
 	return node
 
 
@@ -92,7 +86,6 @@ async def test_hydrate_empty_firebase_leaves_registry_clean():
 	assert registry.conversations == {}
 	assert registry._session_to_conversation_id == {}
 	assert registry._session_home_conversation_id == {}
-	assert registry._open_conversation_id is None
 	assert registry._global_away is False
 	logger.surface_error.assert_not_called()
 
@@ -114,95 +107,6 @@ async def test_hydrate_restores_global_away_mode():
 
 
 @pytest.mark.asyncio
-async def test_hydrate_restores_open_conversation_id():
-	"""Firebase has global_settings/open_conversation_id pointing at an Active conv
-	→ registry._open_conversation_id set after hydration."""
-	registry = Registry()
-	logger = make_logger()
-	mock_db = make_firebase_db_mock({
-		"global_settings/open_conversation_id": "conv-open-42",
-		"conversations": {
-			"conv-open-42": conv_snapshot("conv-open-42", state="active"),
-		},
-	})
-
-	with patch("server.hydration.db", mock_db):
-		from server.hydration import hydrate_from_firebase
-		await hydrate_from_firebase(registry, None, logger)
-
-	assert registry._open_conversation_id == "conv-open-42"
-
-
-@pytest.mark.asyncio
-async def test_hydrate_clears_dangling_open_pointer_to_ended_conv():
-	"""Firebase open_conversation_id points at a conv whose state is Ended (so it
-	doesn't get hydrated). Hydration must clear the dangling pointer — in memory
-	AND on the backend — instead of leaving a stale id that every enter_conversation
-	call will reject. Reproduces the divergence observed 2026-05-27 after the
-	set_open_conversation_id(None) bug caused a clear to silently fail."""
-	registry = Registry()
-	logger = make_logger()
-	backend = MagicMock()
-	backend.set_open_conversation_id = AsyncMock()
-	mock_db = make_firebase_db_mock({
-		"global_settings/open_conversation_id": "conv-stale",
-		"conversations": {
-			"conv-stale": conv_snapshot("conv-stale", state="ended"),
-		},
-	})
-
-	with patch("server.hydration.db", mock_db):
-		from server.hydration import hydrate_from_firebase
-		await hydrate_from_firebase(registry, backend, logger)
-
-	assert registry._open_conversation_id is None
-	backend.set_open_conversation_id.assert_awaited_once_with(None)
-
-
-@pytest.mark.asyncio
-async def test_hydrate_clears_dangling_open_pointer_to_missing_conv():
-	"""Firebase open_conversation_id points at a conv that doesn't exist in
-	Firebase at all (deleted, orphaned). Same outcome as the Ended case: clear."""
-	registry = Registry()
-	logger = make_logger()
-	backend = MagicMock()
-	backend.set_open_conversation_id = AsyncMock()
-	mock_db = make_firebase_db_mock({
-		"global_settings/open_conversation_id": "conv-ghost",
-		# no /conversations node at all
-	})
-
-	with patch("server.hydration.db", mock_db):
-		from server.hydration import hydrate_from_firebase
-		await hydrate_from_firebase(registry, backend, logger)
-
-	assert registry._open_conversation_id is None
-	backend.set_open_conversation_id.assert_awaited_once_with(None)
-
-
-@pytest.mark.asyncio
-async def test_hydrate_does_not_touch_backend_when_open_pointer_is_valid():
-	"""Pointer references a live Active conv: leave it alone, no backend write."""
-	registry = Registry()
-	logger = make_logger()
-	backend = MagicMock()
-	backend.set_open_conversation_id = AsyncMock()
-	mock_db = make_firebase_db_mock({
-		"global_settings/open_conversation_id": "conv-live",
-		"conversations": {
-			"conv-live": conv_snapshot("conv-live", state="active"),
-		},
-	})
-
-	with patch("server.hydration.db", mock_db):
-		from server.hydration import hydrate_from_firebase
-		await hydrate_from_firebase(registry, backend, logger)
-
-	assert registry._open_conversation_id == "conv-live"
-	backend.set_open_conversation_id.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_hydrate_single_active_conversation():
 	"""One Active conversation with one alive member: full state restored
 	including messages, session binding, and home pointer."""
@@ -215,11 +119,11 @@ async def test_hydrate_single_active_conversation():
 				"conv-1",
 				title="My Session",
 				members={"Claude": member_data(cli_session_id="sess-abc", sender="Claude", alive=True)},
-				messages={
-					"-push1": {"seq": 0, "sender": "Claude", "type": "notify", "text": "hello", "timestamp": "t1"},
-					"-push2": {"seq": 1, "sender": "John", "type": "human", "text": "hi", "timestamp": "t2"},
-				},
 			)
+		},
+		"messages/conv-1": {
+			"-push1": {"seq": 0, "sender": "Claude", "type": "agent_msg", "text": "hello", "timestamp": "t1"},
+			"-push2": {"seq": 1, "sender": "John", "type": "system", "text": "hi", "timestamp": "t2"},
 		},
 		"cli_sessions": {
 			"sess-abc": {"home_conversation_id": "conv-1"},
@@ -235,9 +139,9 @@ async def test_hydrate_single_active_conversation():
 	conv = registry.conversations["conv-1"]
 	assert conv.title == "My Session"
 	assert conv.state == "active"
-	assert "Claude" in conv.members_active
-	assert conv.members_active["Claude"].cli_session_id == "sess-abc"
-	assert conv.members_active["Claude"].alive is True
+	assert "sess-abc" in conv.members_active
+	assert conv.members_active["sess-abc"].cli_session_id == "sess-abc"
+	assert conv.members_active["sess-abc"].alive is True
 	assert len(conv.messages) == 2
 	# Session binding derived from alive member
 	assert registry._session_to_conversation_id.get("sess-abc") == "conv-1"
@@ -296,8 +200,8 @@ async def test_hydrate_preserves_dormant_members():
 		await hydrate_from_firebase(registry, None, logger)
 
 	conv = registry.conversations["conv-dormant"]
-	assert "Claude" in conv.members_active
-	member = conv.members_active["Claude"]
+	assert "sess-dormant" in conv.members_active
+	member = conv.members_active["sess-dormant"]
 	assert member.alive is False
 	assert member.session_lost_permanently is False
 
@@ -350,14 +254,12 @@ async def test_hydrate_orders_messages_by_push_key():
 	# Deliberately provide push keys out of alphabetical/time order
 	snapshot = {
 		"conversations": {
-			"conv-msgs": conv_snapshot(
-				"conv-msgs",
-				messages={
-					"-zzz": {"seq": 2, "sender": "John", "type": "human", "text": "third"},
-					"-aaa": {"seq": 0, "sender": "Claude", "type": "notify", "text": "first"},
-					"-mmm": {"seq": 1, "sender": "Claude", "type": "notify", "text": "second"},
-				},
-			),
+			"conv-msgs": conv_snapshot("conv-msgs"),
+		},
+		"messages/conv-msgs": {
+			"-zzz": {"seq": 2, "sender": "John", "type": "agent_msg", "text": "third"},
+			"-aaa": {"seq": 0, "sender": "Claude", "type": "agent_msg", "text": "first"},
+			"-mmm": {"seq": 1, "sender": "Claude", "type": "agent_msg", "text": "second"},
 		},
 	}
 	mock_db = make_firebase_db_mock(snapshot)
@@ -445,9 +347,9 @@ async def test_hydrate_handles_partial_member_data():
 		await hydrate_from_firebase(registry, None, logger)
 
 	conv = registry.conversations["conv-partial"]
-	assert "HasSession" in conv.members_active
-	assert "NoSession" not in conv.members_active
-	assert conv.members_active["HasSession"].cli_session_id == "sess-valid"
+	assert "sess-valid" in conv.members_active
+	assert len(conv.members_active) == 1
+	assert conv.members_active["sess-valid"].cli_session_id == "sess-valid"
 
 
 @pytest.mark.asyncio
@@ -503,8 +405,8 @@ async def test_hydrate_restores_members_history():
 	assert departed.session_end_reason == "hook_sessionend"
 	assert departed.last_seen_seq == 7
 	# Active members still loaded
-	assert "Alive" in conv.members_active
-	assert conv.members_active["Alive"].cli_session_id == "sess-alive"
+	assert "sess-alive" in conv.members_active
+	assert conv.members_active["sess-alive"].cli_session_id == "sess-alive"
 
 
 @pytest.mark.asyncio
@@ -544,3 +446,323 @@ async def test_force_end_after_hydration_does_not_mint_orphan_home_conv():
 	assert registry.conversations["conv-d"].state == "ended"
 	assert len(registry.conversations) == conv_count_before, \
 		"force-end must not mint a '(home)' conversation for a dead session"
+
+
+@pytest.mark.asyncio
+async def test_hydrate_sessions_loads_terminal_and_nonterminal_records_without_remirroring():
+	"""sessions/ children hydrate into the SessionRegistry regardless of state -
+	terminal (ended) records included, since the sweeper needs them in memory to
+	retention-prune their RTDB entries. hydrate_record must seed the mirror canon
+	so hydration itself never re-fires a write back to Firebase."""
+	registry = Registry()
+	logger = make_logger()
+	session_registry = SessionRegistry()
+
+	mirror_calls = []
+	session_registry.set_mirror(lambda sid, payload: mirror_calls.append((sid, payload)))
+
+	snapshot = {
+		"sessions": {
+			"sess-idle": {
+				"cli_session_id": "sess-idle",
+				"cwd": "c:/work/sw",
+				"surface": "windows",
+				"cli": "claude",
+				"started_at": "t0",
+				"last_event_at": "t1",
+				"state": "idle",
+				"state_detail": None,
+				"conversation_id": None,
+				"sender": "Claude",
+				"model": None,
+				"context_pct": None,
+				"end_reason": None,
+			},
+			"sess-ended": {
+				"cli_session_id": "sess-ended",
+				"cwd": "c:/work/sw",
+				"surface": "windows",
+				"cli": "claude",
+				"started_at": "t0",
+				"last_event_at": "t2",
+				"state": "ended",
+				"state_detail": None,
+				"conversation_id": None,
+				"sender": "Claude",
+				"model": None,
+				"context_pct": None,
+				"end_reason": "hook_sessionend",
+			},
+		},
+	}
+	mock_db = make_firebase_db_mock(snapshot)
+
+	with patch("server.hydration.db", mock_db):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, None, logger, session_registry=session_registry)
+
+	idle_rec = session_registry.get("sess-idle")
+	assert idle_rec is not None
+	assert idle_rec.state == "idle"
+	assert idle_rec.last_event_at == "t1"
+	assert idle_rec.source == "hydration"
+
+	ended_rec = session_registry.get("sess-ended")
+	assert ended_rec is not None
+	assert ended_rec.state == "ended"
+	assert ended_rec.last_event_at == "t2"
+	assert ended_rec.source == "hydration"
+
+	assert mirror_calls == [], "hydrate_record must seed the mirror canon, not re-fire writes"
+
+
+@pytest.mark.asyncio
+async def test_hydrate_restores_origin():
+	"""A meta payload carrying origin=join round-trips onto the hydrated Conversation.origin."""
+	registry = Registry()
+	logger = make_logger()
+
+	snapshot = {
+		"conversations": {
+			"conv-origin": conv_snapshot("conv-origin", extra_meta={"origin": "join"}),
+		},
+	}
+	mock_db = make_firebase_db_mock(snapshot)
+
+	with patch("server.hydration.db", mock_db):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, None, logger)
+
+	assert registry.conversations["conv-origin"].origin == "join"
+
+
+@pytest.mark.asyncio
+async def test_hydrate_missing_origin_is_none():
+	"""A meta payload without the origin key hydrates origin is None (pre-origin record)."""
+	registry = Registry()
+	logger = make_logger()
+
+	snapshot = {
+		"conversations": {
+			"conv-no-origin": conv_snapshot("conv-no-origin"),
+		},
+	}
+	mock_db = make_firebase_db_mock(snapshot)
+
+	with patch("server.hydration.db", mock_db):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, None, logger)
+
+	assert registry.conversations["conv-no-origin"].origin is None
+
+
+@pytest.mark.asyncio
+async def test_hydrate_sessions_skipped_when_session_registry_is_none():
+	"""Callers that don't pass session_registry (or lack the feature) still hydrate
+	cleanly - the sessions block is opt-in via the default None parameter."""
+	registry = Registry()
+	logger = make_logger()
+	mock_db = make_firebase_db_mock({
+		"sessions": {"sess-1": {"cli_session_id": "sess-1", "state": "idle"}},
+	})
+
+	with patch("server.hydration.db", mock_db):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, None, logger)
+
+	logger.surface_error.assert_not_called()
+
+
+def _conv_with_pending(pending):
+	node = conv_snapshot(
+		"conv-1",
+		members={"Claude": member_data(cli_session_id="sess-abc", sender="Claude", alive=True)},
+	)
+	node["pending_questions"] = pending
+	return node
+
+
+@pytest.mark.asyncio
+async def test_hydrate_rebuilds_parked_pending_from_record():
+	registry = Registry()
+	logger = make_logger()
+	snapshot = {
+		"conversations": {
+			"conv-1": _conv_with_pending({
+				"req-1": {
+					"sender": "Claude", "questionText": "Deploy?", "cancelled": False,
+					"msgId": "m-q", "suggestions": None,
+					"cliSessionId": "sess-abc", "askedAt": "2026-07-07T10:00:00+00:00",
+				},
+			}),
+		},
+	}
+	with patch("server.hydration.db", make_firebase_db_mock(snapshot)):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, None, logger)
+
+	assert registry.pending_count == 1
+	assert registry.parked_count == 1
+	rec = registry.find_by_request_id("conv-1", "req-1")
+	assert rec.future is None
+	assert rec.cli_session_id == "sess-abc"
+	assert rec.question == "Deploy?"
+	assert rec.msg_id == "m-q"
+	assert rec.started_at.isoformat() == "2026-07-07T10:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_hydrate_cancels_legacy_record_missing_new_fields_once():
+	registry = Registry()
+	logger = make_logger()
+	backend = MagicMock()
+	backend.mark_question_cancelled = AsyncMock()
+	snapshot = {
+		"conversations": {
+			"conv-1": _conv_with_pending({
+				"req-legacy": {
+					"sender": "Claude", "questionText": "Old?", "cancelled": False,
+					"msgId": "m-old", "suggestions": None,
+				},
+			}),
+		},
+	}
+	with patch("server.hydration.db", make_firebase_db_mock(snapshot)):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, backend, logger)
+
+	assert registry.pending_count == 0
+	backend.mark_question_cancelled.assert_awaited_once_with("conv-1", "req-legacy")
+
+
+@pytest.mark.asyncio
+async def test_hydrate_cancels_pending_under_ended_conversation():
+	registry = Registry()
+	logger = make_logger()
+	backend = MagicMock()
+	backend.mark_question_cancelled = AsyncMock()
+	node = conv_snapshot("conv-9", state="ended")
+	node["pending_questions"] = {
+		"req-9": {
+			"sender": "Claude", "questionText": "Orphan?", "cancelled": False,
+			"msgId": "m-9", "suggestions": None,
+			"cliSessionId": "sess-9", "askedAt": "2026-07-07T10:00:00+00:00",
+		},
+	}
+	snapshot = {"conversations": {"conv-9": node}}
+	with patch("server.hydration.db", make_firebase_db_mock(snapshot)):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, backend, logger)
+
+	assert registry.pending_count == 0
+	backend.mark_question_cancelled.assert_awaited_once_with("conv-9", "req-9")
+
+
+@pytest.mark.asyncio
+async def test_hydration_demotes_duplicate_alive_member_later_joined_at_wins():
+	"""REV-104: a crash between the halves of a member move left the same
+	session alive in two Active conversations; the binding derivation used
+	to resolve it silently by iteration order. The later joined_at copy
+	wins; the loser is demoted to members_history and mirrored to Firebase."""
+	registry = Registry()
+	backend = MagicMock()
+	backend.remove_conversation_member = AsyncMock()
+	backend.write_conversation_member_history = AsyncMock()
+	logger = make_logger()
+
+	snapshot = {
+		"conversations": {
+			"conv-early": conv_snapshot(
+				"conv-early",
+				members={"Claude": member_data(cli_session_id="s-dup", sender="Claude", joined_at=100.0)},
+			),
+			"conv-late": conv_snapshot(
+				"conv-late",
+				members={"Claude": member_data(cli_session_id="s-dup", sender="Claude", joined_at=200.0)},
+			),
+		},
+	}
+	with patch("server.hydration.db", make_firebase_db_mock(snapshot)):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, backend, logger)
+
+	assert "s-dup" in registry.conversations["conv-late"].members_active
+	assert "s-dup" not in registry.conversations["conv-early"].members_active
+	demoted = registry.conversations["conv-early"].members_history
+	assert any(m.cli_session_id == "s-dup" and m.alive is False for m in demoted)
+	assert registry.session_to_conversation_id["s-dup"] == "conv-late"
+	backend.remove_conversation_member.assert_awaited_once_with("conv-early", "Claude")
+	backend.write_conversation_member_history.assert_awaited_once()
+	logger.surface_error.assert_awaited()
+	assert "hydration_duplicate_member_demoted" in logger.surface_error.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_hydration_duplicate_tiebreak_is_deterministic():
+	"""Exact joined_at tie: the larger conv_id string wins - restart order
+	must never decide."""
+	registry = Registry()
+	backend = MagicMock()
+	backend.remove_conversation_member = AsyncMock()
+	backend.write_conversation_member_history = AsyncMock()
+	logger = make_logger()
+
+	snapshot = {
+		"conversations": {
+			"conv-aaa": conv_snapshot(
+				"conv-aaa",
+				members={"Claude": member_data(cli_session_id="s-dup", sender="Claude", joined_at=100.0)},
+			),
+			"conv-zzz": conv_snapshot(
+				"conv-zzz",
+				members={"Claude": member_data(cli_session_id="s-dup", sender="Claude", joined_at=100.0)},
+			),
+		},
+	}
+	with patch("server.hydration.db", make_firebase_db_mock(snapshot)):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, backend, logger)
+
+	assert "s-dup" in registry.conversations["conv-zzz"].members_active
+	assert "s-dup" not in registry.conversations["conv-aaa"].members_active
+	demoted = registry.conversations["conv-aaa"].members_history
+	assert any(m.cli_session_id == "s-dup" and m.alive is False for m in demoted)
+	assert registry.session_to_conversation_id["s-dup"] == "conv-zzz"
+	backend.remove_conversation_member.assert_awaited_once_with("conv-aaa", "Claude")
+	backend.write_conversation_member_history.assert_awaited_once()
+	logger.surface_error.assert_awaited()
+	assert "hydration_duplicate_member_demoted" in logger.surface_error.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_hydration_filters_messages_to_live_types():
+	"""DT-4: live code appends only system/agent_msg/parting to conv.messages;
+	questions, answers, notifies and documents are persisted for the phone
+	but never enter the in-memory log. Reloading them made len(conv.messages),
+	wake deltas and last_seen_seq cursors mean different things after a
+	restart than before it."""
+	registry = Registry()
+	logger = make_logger()
+
+	snapshot = {
+		"conversations": {
+			"conv-x": conv_snapshot("conv-x"),
+		},
+		"messages/conv-x": {
+			"-push1": {"seq": 0, "sender": "Claude", "type": "system", "text": "a"},
+			"-push2": {"seq": 1, "sender": "John", "type": "question", "text": "b"},
+			"-push3": {"seq": 2, "sender": "Claude", "type": "agent_msg", "text": "c"},
+			"-push4": {"seq": 3, "sender": "John", "type": "human", "text": "d"},
+			"-push5": {"seq": 4, "sender": "Claude", "type": "notify", "text": "e"},
+			"-push6": {"seq": 5, "sender": "Claude", "type": "parting", "text": "f"},
+			"-push7": {"seq": 6, "sender": "Claude", "type": "document", "text": "g"},
+		},
+	}
+	mock_db = make_firebase_db_mock(snapshot)
+
+	with patch("server.hydration.db", mock_db):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, None, logger)
+
+	conv = registry.conversations["conv-x"]
+	assert [m["type"] for m in conv.messages] == ["system", "agent_msg", "parting"]

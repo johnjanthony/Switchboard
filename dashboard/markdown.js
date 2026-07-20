@@ -42,6 +42,17 @@ const md = mdFactory({
 	highlight,
 });
 
+// Open all markdown links in a new tab
+const defaultLinkOpen = md.renderer.rules.link_open || function (tokens, idx, options, env, self) {
+	return self.renderToken(tokens, idx, options);
+};
+md.renderer.rules.link_open = function (tokens, idx, options, env, self) {
+	tokens[idx].attrSet("target", "_blank");
+	tokens[idx].attrSet("rel", "noopener noreferrer");
+	return defaultLinkOpen(tokens, idx, options, env, self);
+};
+
+
 // GFM task lists: a list item whose text begins with "[ ] " or "[x] " (the x is
 // case-insensitive) renders as a disabled checkbox followed by the remaining
 // text, matching the phone ext-tasklist. This replicates the essential logic of

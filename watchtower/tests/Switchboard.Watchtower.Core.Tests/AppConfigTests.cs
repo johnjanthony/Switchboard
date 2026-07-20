@@ -93,4 +93,35 @@ public class AppConfigTests
 		}
 		finally { if (File.Exists(path)) File.Delete(path); }
 	}
+
+	[Fact]
+	public void Present_unreadable_config_is_degraded_and_not_overwritten()
+	{
+		var path = Path.Combine(Path.GetTempPath(), "wt-degraded-" + Guid.NewGuid().ToString("N") + ".json");
+		File.WriteAllText(path, "{ this is not valid json ");
+		try
+		{
+			var cfg = AppConfig.LoadFrom(path);
+			Assert.True(cfg.LoadDegraded);
+			cfg.WidgetX = 999;
+			Assert.False(cfg.SaveTo(path));                                  // refuses to clobber
+			Assert.Equal("{ this is not valid json ", File.ReadAllText(path)); // original preserved
+		}
+		finally { if (File.Exists(path)) File.Delete(path); }
+	}
+
+	[Fact]
+	public void Absent_config_is_not_degraded_and_saves_atomically()
+	{
+		var path = Path.Combine(Path.GetTempPath(), "wt-absent-" + Guid.NewGuid().ToString("N") + ".json");
+		try
+		{
+			var cfg = AppConfig.LoadFrom(path);
+			Assert.False(cfg.LoadDegraded);
+			Assert.True(cfg.SaveTo(path));
+			Assert.True(File.Exists(path));
+			Assert.False(File.Exists(path + ".tmp"));                        // temp cleaned up by the move
+		}
+		finally { foreach (var p in new[] { path, path + ".tmp" }) if (File.Exists(p)) File.Delete(p); }
+	}
 }

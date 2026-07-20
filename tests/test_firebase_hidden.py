@@ -10,7 +10,6 @@ import asyncio
 import pytest
 
 from server.firebase import FirebaseBackend
-from server.canonicalization import to_firebase_key
 
 
 class _FakeBackend(FirebaseBackend):
@@ -116,7 +115,7 @@ class _PatchedBackend(_FakeBackend):
 		if message_type == "question":
 			self._ref_sets.append((f"conversations/{conv_id}/meta/hidden", False))
 
-		self._ref_sets.append((f"conversations/{conv_id}/messages/{msg_id}", payload))
+		self._ref_sets.append((f"messages/{conv_id}/{msg_id}", payload))
 
 		if title:
 			self._ref_sets.append((f"conversations/{conv_id}/meta/title", title[:80]))
@@ -136,7 +135,7 @@ class _PatchedBackend(_FakeBackend):
 			except Exception:
 				pass
 
-		return (conv_id, sender), msg_id
+		return conv_id, msg_id
 
 	def hidden_set_for(self, conv_id: str) -> bool | None:
 		path = f"conversations/{conv_id}/meta/hidden"
@@ -192,7 +191,7 @@ async def test_human_message_skips_fcm():
 async def test_per_message_title_written():
 	backend = _PatchedBackend()
 	await backend.write_conversation_message("conv-proj-1", "Claude", "notify", "hi", title="My Session")
-	msg_writes = [(p, v) for p, v in backend._ref_sets if p == "conversations/conv-proj-1/messages/fake_msg_id"]
+	msg_writes = [(p, v) for p, v in backend._ref_sets if p == "messages/conv-proj-1/fake_msg_id"]
 	assert msg_writes
 	assert msg_writes[0][1]["title"] == "My Session"
 
@@ -233,10 +232,10 @@ async def test_title_truncated_to_80_chars():
 
 
 @pytest.mark.asyncio
-async def test_correlation_is_conv_id_sender_tuple():
+async def test_correlation_is_conversation_id():
 	backend = _PatchedBackend()
 	corr, msg_id = await backend.write_conversation_message("conv-proj-1", "Claude", "question", "q?", request_id="r1")
-	assert corr == ("conv-proj-1", "Claude")
+	assert corr == "conv-proj-1"
 	assert msg_id == "fake_msg_id"
 
 

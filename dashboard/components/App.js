@@ -2,6 +2,9 @@ import { html } from "../vendor/htm-preact.js";
 import { StatusBar } from "./StatusBar.js";
 import { ConversationList } from "./ConversationList.js";
 import { ConversationDetail } from "./ConversationDetail.js";
+import { PaneBanner } from "./PaneBanner.js";
+import { renderMarkdown } from "../markdown.js";
+import { formatAge } from "../derive.js";
 
 // Dragging the left resizer narrower than this (well past the 180px min width)
 // collapses the rail entirely instead of sticking at the min.
@@ -16,12 +19,16 @@ function AdminStrip({ notifications }) {
 	}
 	return html`
 		<div class="admin-strip">
-			${rows.map(({ key, n }) => html`
-				<div class="admin-note" key=${key}>
-					<span class="admin-note-text">${n.text}</span>
-					<span class="admin-note-time">${n.timestamp || ""}</span>
-				</div>
-			`)}
+			${rows.map(({ key, n }) => {
+				const when = n.timestamp ? Date.parse(n.timestamp) : NaN;
+				const rel = Number.isNaN(when) ? "" : formatAge((Date.now() - when) / 1000);
+				return html`
+					<div class="admin-note" key=${key}>
+						<div class="admin-note-text" dangerouslySetInnerHTML=${{ __html: renderMarkdown(n.text) }}></div>
+						<span class="admin-note-time" title=${n.timestamp || ""}>${rel}</span>
+					</div>
+				`;
+			})}
 		</div>
 	`;
 }
@@ -79,6 +86,10 @@ export function App({ store }) {
 	return html`
 		<div class="app-root">
 			<${StatusBar} store=${store} />
+			${state.paneErrors.global
+				? html`<${PaneBanner} message=${state.paneErrors.global}
+						onRetry=${() => store.setPaneError('global', null)} actionLabel="Dismiss" />`
+				: null}
 			<${AdminStrip} notifications=${state.adminNotifications} />
 			<div class=${shellClass} style=${"--left-rail-width:" + state.ui.leftWidth + "px"}>
 				<${ConversationList} store=${store} />

@@ -35,10 +35,12 @@ def apply_fallback(registry, session_id: str, backend=None) -> None:
 	  - "unbind": no Firebase write (the durable home pointer is preserved for a
 	    later away-on rebind; M01/M34, decided 2026-06-12)
 	  - "rebind_home": no Firebase write (home pointer unchanged)
-	  - "create_new": write_conversation_meta + set_session_home for the new conv
+	  - "create_new": write_conversation_meta + write_conversation_member +
+	    set_session_home for the new conv (the member write is what lets
+	    hydration rebuild the binding after a restart; REV-112)
 	"""
 	import time
-	from server.registry import Conversation
+	from server.registry import Conversation, ConversationMember
 	from server.gateway.bg_tasks import _spawn_bg
 
 	# Dormant-session short-circuit: a session that is not in
@@ -89,11 +91,30 @@ def apply_fallback(registry, session_id: str, backend=None) -> None:
 		registry.bind_session(session_id, target)
 		# No Firebase write: home pointer hasn't changed; only routing is updated.
 	else:  # "create_new"
+		from server.conversation_ops import _infer_surface
 		new_id = "conv-" + uuid.uuid4().hex
 		now = time.time()
-		new_conv = Conversation(id=new_id, title="(home)")
+		new_conv = Conversation(id=new_id, title="(home)", origin="fallback")
 		new_conv.created_at = now
 		new_conv.last_activity_at = now
+		# Bound implies member (DT-2/REV-112): the binding below survives a
+		# restart only if hydration finds an alive member to derive it from,
+		# so the fallback conversation is minted WITH its member and the
+		# member is persisted. Sender/cwd come from the session roster when
+		# available; the defaults keep a roster-less registry working. No
+		# sender disambiguation: the conversation is brand-new and solo.
+		record = registry.sessions.get(session_id) if registry.sessions is not None else None
+		member_sender = (record.sender if record is not None else None) or "Claude"
+		member_cwd = (record.cwd if record is not None else "") or ""
+		member = ConversationMember(
+			cli_session_id=session_id,
+			sender=member_sender,
+			cwd=member_cwd,
+			surface=_infer_surface(member_cwd),
+			joined_at=now,
+			last_seen_seq=0,
+		)
+		new_conv.members_active[session_id] = member
 		registry.conversations[new_id] = new_conv
 		registry.unbind_session(session_id)
 		registry.bind_session(session_id, new_id)
@@ -109,8 +130,13 @@ def apply_fallback(registry, session_id: str, backend=None) -> None:
 					last_activity_at=now,
 					ended_at=None,
 					hidden=False,
+					origin="fallback",
 				),
 				label=f"fb_write_conv_meta:{new_id}",
+			)
+			_spawn_bg(
+				backend.write_conversation_member(new_id, member),
+				label=f"fb_write_member:{new_id}:{member.sender}",
 			)
 			_spawn_bg(
 				backend.set_session_home(session_id, new_id),

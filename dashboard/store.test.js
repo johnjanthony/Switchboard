@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { createStore } from './store.js';
 import * as paths from './schema.js';
 import { pendingCountFor } from './derive.js';
+import {
+	answerCmd, resumeCmd, combineCmd, forceEndCmd, conveneCmd, ackSessionCmd,
+	spawnFreshCmd, awayOnCmd, awayOffCmd, setHiddenCmd,
+} from './commands.js';
 
 function makeFakeStorage(initial = {}) {
 	const map = new Map(Object.entries(initial));
@@ -42,7 +46,8 @@ function makeStore(overrides = {}) {
 	const fb = overrides.fb || makeFakeFb();
 	const storage = overrides.storage || makeFakeStorage(overrides.storageInit || {});
 	const nowMs = overrides.nowMs || (() => 1000);
-	const store = createStore({ fb, paths, storage, nowMs });
+	const requestStatus = overrides.requestStatus || (() => Promise.resolve({ ok: true, status: 200 }));
+	const store = createStore({ fb, paths, storage, nowMs, requestStatus });
 	return { store, fb, storage };
 }
 
@@ -53,16 +58,19 @@ test('initialState shape is exactly the contract', () => {
 		authed: false,
 		authError: null,
 		globalAway: false,
-		openConversationId: null,
 		wslAvailable: false,
 		conversations: {},
+		sessions: {},
+		sessionAcks: {},
 		adminNotifications: {},
 		widget: { rings: {}, quota: null, status: null, pushedAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
-		messageTimestampResolver: {},
 		health: { reachable: false, healthy: false, totalAnswered: null },
-		ui: { leftCollapsed: false, rightCollapsed: false, leftWidth: 280, awayOffDialogOpen: false },
+		ui: {
+			leftCollapsed: false, leftWidth: 280, awayOffDialogOpen: false,
+			sessionsCollapsed: false, selectedSessionIds: [],
+		},
 		paneErrors: {},
 	});
 });
@@ -128,11 +136,10 @@ test('setLeftCollapsed is idempotent, persists, and backs the toggle', () => {
 	assert.equal(storage.getItem('sb.leftCollapsed'), 'false');
 });
 
-test('initialState reads collapse flags from storage', () => {
-	const { store } = makeStore({ storageInit: { 'sb.leftCollapsed': 'true', 'sb.rightCollapsed': 'false' } });
+test('initialState reads collapse flag from storage', () => {
+	const { store } = makeStore({ storageInit: { 'sb.leftCollapsed': 'true' } });
 	const s = store.getState();
 	assert.equal(s.ui.leftCollapsed, true);
-	assert.equal(s.ui.rightCollapsed, false);
 });
 
 test('setAuthed sets authed and clears authError', () => {
@@ -157,14 +164,12 @@ test('retrySignIn clears authError then calls fb.signIn', () => {
 	assert.equal(fb.calls.signInCount, 1);
 });
 
-test('setGlobalAway, setOpenConversationId, setWslAvailable update their slices', () => {
+test('setGlobalAway, setWslAvailable update their slices', () => {
 	const { store } = makeStore();
 	store.setGlobalAway(true);
-	store.setOpenConversationId('c5');
 	store.setWslAvailable(true);
 	const s = store.getState();
 	assert.equal(s.globalAway, true);
-	assert.equal(s.openConversationId, 'c5');
 	assert.equal(s.wslAvailable, true);
 });
 
@@ -186,13 +191,6 @@ test('toggleLeftCollapsed flips ui.leftCollapsed and persists to storage', () =>
 	store.toggleLeftCollapsed();
 	assert.equal(store.getState().ui.leftCollapsed, false);
 	assert.equal(storage.getItem('sb.leftCollapsed'), 'false');
-});
-
-test('toggleRightCollapsed flips ui.rightCollapsed and persists to storage', () => {
-	const { store, storage } = makeStore();
-	store.toggleRightCollapsed();
-	assert.equal(store.getState().ui.rightCollapsed, true);
-	assert.equal(storage.getItem('sb.rightCollapsed'), 'true');
 });
 
 test('setAwayOffDialogOpen toggles ui.awayOffDialogOpen', () => {
@@ -231,13 +229,6 @@ test('upsertAdminNotification stores by key', () => {
 	assert.deepEqual(store.getState().adminNotifications.k1, { text: 'hi', type: 'notify' });
 });
 
-test('mergeConversationMessages updates messageTimestampResolver for the selected conv', () => {
-	const { store } = makeStore();
-	store.upsertConversationMeta('c1', { state: 'active' });
-	store.selectConversation('c1');
-	store.mergeConversationMessages('c1', { m1: { timestamp: '2026-06-15T00:00:00.000Z' } });
-	assert.equal(store.getState().messageTimestampResolver.m1, '2026-06-15T00:00:00.000Z');
-});
 test('selectConversation attaches three onValue listeners and detaches prior ones on switch', () => {
 	const { store, fb } = makeStore();
 	store.upsertConversationMeta('c1', { state: 'active' });
@@ -246,7 +237,7 @@ test('selectConversation attaches three onValue listeners and detaches prior one
 	const afterFirst = fb.calls.onValue.length;
 	const selectionPaths = fb.calls.onValue.slice(afterFirst - 3).map((e) => e.path);
 	assert.deepEqual(selectionPaths, [
-		'conversations/c1/messages',
+		'messages/c1',
 		'conversations/c1/members_active',
 		'conversations/c1/agent_status',
 	]);
@@ -254,7 +245,7 @@ test('selectConversation attaches three onValue listeners and detaches prior one
 	store.selectConversation('c2');
 	const detached = fb.calls.unsubs.slice(unsubsBefore).map((u) => u.path);
 	assert.deepEqual(detached, [
-		'conversations/c1/messages',
+		'messages/c1',
 		'conversations/c1/members_active',
 		'conversations/c1/agent_status',
 	]);
@@ -269,7 +260,6 @@ test('startGlobalListeners wires conversation/global/admin listeners', () => {
 	assert.ok(addedPaths.includes('admin_notifications'));
 	const valuePaths = fb.calls.onValue.map((e) => e.path);
 	assert.ok(valuePaths.includes('global_settings/away_mode'));
-	assert.ok(valuePaths.includes('global_settings/open_conversation_id'));
 	assert.ok(valuePaths.includes('global_settings/wsl_available'));
 });
 
@@ -297,7 +287,7 @@ test('a denied conversation read surfaces a detail pane error (M4)', () => {
 	store.upsertConversationMeta('c1', { state: 'active' });
 	store.selectConversation('c1');
 
-	const entry = fb.calls.onValue.find((e) => e.path === 'conversations/c1/messages');
+	const entry = fb.calls.onValue.find((e) => e.path === 'messages/c1');
 	assert.ok(entry, 'selection listener attached');
 	assert.equal(typeof entry.errCb, 'function', 'selection listener must register an error callback');
 
@@ -343,7 +333,7 @@ test('mergeConversationPending builds pendingsFlat from camelCase keys, dropping
 	const { store } = makeStore({ nowMs: () => 5000 });
 	store.upsertConversationMeta('c1', { state: 'active' });
 	store.mergeConversationPending('c1', {
-		r1: { sender: 'John', questionText: 'q?', msgId: 'm1', cancelled: false, suggestions: ['a'] },
+		r1: { sender: 'John', questionText: 'q?', msgId: 'm1', cancelled: false, suggestions: ['a'], askedAt: '2026-06-15T00:00:00.000Z' },
 		r2: { sender: 'John', questionText: 'gone', msgId: 'm2', cancelled: true, suggestions: null },
 	});
 	const flat = store.getState().pendingsFlat;
@@ -355,6 +345,7 @@ test('mergeConversationPending builds pendingsFlat from camelCase keys, dropping
 		questionText: 'q?',
 		suggestions: ['a'],
 		msgId: 'm1',
+		askedAt: '2026-06-15T00:00:00.000Z',
 		firstObservedMs: 5000,
 	});
 });
@@ -375,4 +366,205 @@ test('pendingsFlat firstObservedMs is stable across re-emits of the same (convId
 	const r2 = flat.find((p) => p.requestId === 'r2');
 	assert.equal(r1.firstObservedMs, firstStamp);
 	assert.equal(r2.firstObservedMs, 9000);
+});
+
+test('setSessions replaces the sessions map and notifies', () => {
+	const { store } = makeStore();
+	let notified = 0;
+	store.subscribe(() => { notified += 1; });
+	store.setSessions({ 'sess-a': { state: 'active' } });
+	assert.deepEqual(store.getState().sessions, { 'sess-a': { state: 'active' } });
+	assert.ok(notified >= 1);
+});
+
+test('startGlobalListeners subscribes the sessions path', () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const valuePaths = fb.calls.onValue.map((e) => e.path);
+	assert.ok(valuePaths.includes(paths.sessions()));
+});
+
+test('toggleSessionsCollapsed flips and persists', () => {
+	const { store, storage } = makeStore();
+	const before = store.getState().ui.sessionsCollapsed;
+	store.toggleSessionsCollapsed();
+	assert.equal(store.getState().ui.sessionsCollapsed, !before);
+	assert.equal(storage.getItem('sb.sessionsCollapsed'), String(!before));
+});
+
+test('startGlobalListeners subscribes the sessionAcks path', () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const valuePaths = fb.calls.onValue.map((e) => e.path);
+	assert.ok(valuePaths.includes(paths.sessionAcks()));
+});
+
+test('the sessionAcks listener replaces state.sessionAcks', () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const entry = fb.calls.onValue.find((e) => e.path === paths.sessionAcks());
+	assert.ok(entry, 'sessionAcks listener attached');
+	entry.cb({ 'sess-a': '2026-06-15T12:00:00.000Z' });
+	assert.deepEqual(store.getState().sessionAcks, { 'sess-a': '2026-06-15T12:00:00.000Z' });
+	entry.cb(null);
+	assert.deepEqual(store.getState().sessionAcks, {});
+});
+
+test('toggleSessionSelected adds and removes an id; clearSessionSelection resets to empty', () => {
+	const { store } = makeStore();
+	assert.deepEqual(store.getState().ui.selectedSessionIds, []);
+	store.toggleSessionSelected('sess-a');
+	assert.deepEqual(store.getState().ui.selectedSessionIds, ['sess-a']);
+	store.toggleSessionSelected('sess-b');
+	assert.deepEqual(store.getState().ui.selectedSessionIds, ['sess-a', 'sess-b']);
+	store.toggleSessionSelected('sess-a');
+	assert.deepEqual(store.getState().ui.selectedSessionIds, ['sess-b']);
+	store.clearSessionSelection();
+	assert.deepEqual(store.getState().ui.selectedSessionIds, []);
+});
+
+test('ackSession writes ackSessionCmd via fb.setValue', () => {
+	const { store, fb } = makeStore();
+	store.ackSession('sess-a');
+	const expected = ackSessionCmd('sess-a', fb.nowIso);
+	assert.deepEqual(fb.calls.set, [expected]);
+});
+
+test('conveneSelected pushes conveneCmd and clears selection on success', async () => {
+	const { store, fb } = makeStore();
+	store.toggleSessionSelected('sess-a');
+	store.toggleSessionSelected('sess-b');
+	const ok = await store.conveneSelected({ target: 'new', title: 'Pairing' });
+	assert.equal(ok, true);
+	assert.deepEqual(fb.calls.pushed, [conveneCmd({ sessionIds: ['sess-a', 'sess-b'], target: 'new', title: 'Pairing' }, fb.nowIso)]);
+	assert.deepEqual(store.getState().ui.selectedSessionIds, []);
+});
+
+test('conveneSelected keeps the selection and surfaces to global on failure', async () => {
+	const fb = makeFakeFb();
+	fb.pushValue = () => Promise.reject(new Error('DENIED'));
+	const { store } = makeStore({ fb });
+	store.toggleSessionSelected('sess-a');
+	assert.equal(await store.conveneSelected({ target: 'new' }), false);
+	assert.deepEqual(store.getState().ui.selectedSessionIds, ['sess-a']);
+	assert.ok(store.getState().paneErrors.global);
+});
+
+test('spawnFresh / awayOn / awayOff / setHidden push and return true', async () => {
+	const { store, fb } = makeStore();
+	assert.equal(await store.spawnFresh({ surface: 'windows', project: 'X' }), true);
+	assert.equal(await store.awayOn(), true);
+	assert.equal(await store.awayOff({ decision: 'skip' }), true);
+	assert.equal(await store.setHidden('c1', true), true);
+	assert.deepEqual(fb.calls.pushed, [
+		spawnFreshCmd({ surface: 'windows', project: 'X' }, fb.nowIso),
+		awayOnCmd(fb.nowIso),
+		awayOffCmd({ decision: 'skip' }, fb.nowIso),
+	]);
+	assert.deepEqual(fb.calls.set, [setHiddenCmd('c1', true)]);
+});
+
+test('a rejected global write surfaces to the global pane', async () => {
+	const fb = makeFakeFb();
+	fb.pushValue = () => Promise.reject(new Error('DENIED'));
+	const { store } = makeStore({ fb });
+	assert.equal(await store.awayOn(), false);
+	assert.ok(store.getState().paneErrors.global);
+});
+
+test('requestClaudeStatus calls requestStatus and returns true on ok', async () => {
+	let called = null;
+	const { store } = makeStore({ requestStatus: (a) => { called = a; return Promise.resolve({ ok: true, status: 200 }); } });
+	assert.equal(await store.requestClaudeStatus('check'), true);
+	assert.equal(called, 'check');
+});
+
+test('requestClaudeStatus surfaces a non-ok response to the global pane', async () => {
+	const { store } = makeStore({ requestStatus: () => Promise.resolve({ ok: false, status: 503 }) });
+	assert.equal(await store.requestClaudeStatus('check'), false);
+	assert.ok(store.getState().paneErrors.global);
+});
+
+test('retrySignIn surfaces a rejected popup as an auth error', async () => {
+	const fb = makeFakeFb();
+	fb.signIn = () => Promise.reject(new Error('popup-blocked'));
+	const { store } = makeStore({ fb });
+	await store.retrySignIn();
+	assert.ok(store.getState().authError);
+});
+
+test('a denied pending-questions read surfaces to the global pane, not the sign-in gate', () => {
+	const { store, fb } = makeStore();
+	store.setAuthed(true, { email: 'ok@example.com' });
+	store.upsertConversationMeta('c1', { state: 'active' });
+	const entry = fb.calls.onValue.find((e) => e.path === 'conversations/c1/pending_questions');
+	assert.ok(entry, 'pending listener attached');
+	entry.errCb(new Error('PERMISSION_DENIED'));
+	assert.equal(store.getState().authed, true, 'still authed - one conv error must not blank the app');
+	assert.ok(store.getState().paneErrors.global);
+});
+
+test('mergeConversationMembers replaces the members map so server-side deletions propagate', () => {
+	const { store } = makeStore();
+	store.upsertConversationMeta('c1', { state: 'active' });
+	store.mergeConversationMembers('c1', { a: { alive: true }, b: { alive: true } });
+	assert.deepEqual(Object.keys(store.getState().conversations.c1.members), ['a', 'b']);
+	store.mergeConversationMembers('c1', { a: { alive: true } });
+	assert.deepEqual(Object.keys(store.getState().conversations.c1.members), ['a']);
+});
+
+test('mergeConversationAgentStatus replaces the map so a cleared status disappears', () => {
+	const { store } = makeStore();
+	store.upsertConversationMeta('c1', { state: 'active' });
+	store.mergeConversationAgentStatus('c1', { a: { state: 'working' } });
+	assert.deepEqual(store.getState().conversations.c1.agentStatus, { a: { state: 'working' } });
+	store.mergeConversationAgentStatus('c1', {});
+	assert.deepEqual(store.getState().conversations.c1.agentStatus, {});
+});
+
+test('startGlobalListeners is idempotent: a second call detaches the first set', () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const unsubsBefore = fb.calls.unsubs.length;
+	store.startGlobalListeners();
+	const detached = fb.calls.unsubs.slice(unsubsBefore).map((u) => u.path);
+	assert.ok(detached.includes('conversations'), 'prior conversations listener detached before re-attach');
+	assert.ok(detached.includes('global_settings/away_mode'), 'prior away-mode listener detached');
+	assert.equal(detached.length, 13, 'all 13 global listeners detached before re-attach - update this count when adding a listener');
+});
+
+test('sendAnswer writes answerCmd and returns true on success', async () => {
+	const { store, fb } = makeStore();
+	const ok = await store.sendAnswer('c1', 'r1', 'hi', 'John');
+	assert.equal(ok, true);
+	assert.deepEqual(fb.calls.set, [answerCmd('c1', 'r1', 'hi', 'John', fb.nowIso)]);
+});
+
+test('sendAnswer surfaces a rejected write to the detail pane and returns false', async () => {
+	const fb = makeFakeFb();
+	fb.setValue = () => Promise.reject(new Error('PERMISSION_DENIED'));
+	const { store } = makeStore({ fb });
+	const ok = await store.sendAnswer('c1', 'r1', 'hi', 'John');
+	assert.equal(ok, false);
+	assert.ok(store.getState().paneErrors.detail);
+});
+
+test('restoreLine / patchLine / dropLine push their commands and return true', async () => {
+	const { store, fb } = makeStore();
+	assert.equal(await store.restoreLine('c1', 'go'), true);
+	assert.equal(await store.patchLine('c1', 'c2'), true);
+	assert.equal(await store.dropLine('c1'), true);
+	assert.deepEqual(fb.calls.pushed, [
+		resumeCmd({ sourceConversationId: 'c1', prompt: 'go' }, fb.nowIso),
+		combineCmd({ sourceConversationId: 'c1', targetConversationId: 'c2' }, fb.nowIso),
+		forceEndCmd({ conversationId: 'c1' }, fb.nowIso),
+	]);
+});
+
+test('a rejected detail write surfaces to the detail pane', async () => {
+	const fb = makeFakeFb();
+	fb.pushValue = () => Promise.reject(new Error('DENIED'));
+	const { store } = makeStore({ fb });
+	assert.equal(await store.dropLine('c1'), false);
+	assert.ok(store.getState().paneErrors.detail);
 });

@@ -8,28 +8,53 @@ entries, route sessions, and perform combine/migrate/queue operations.
 
 from __future__ import annotations
 
-import asyncio
 import re
 import time
 import uuid
 from typing import TYPE_CHECKING
 
+from server.clock import now_iso
 from server.registry import Conversation, ConversationMember, Registry
 
 
 _WSL_MOUNT_RE = re.compile(r"^/mnt/[a-z]/", re.IGNORECASE)
 
+JOIN_CANDIDATE_WINDOW_SECONDS = 1800.0
 
-def _disambiguate_sender(conv, desired: str) -> str:
-	"""If `desired` is already a key in conv.members_active, append a space and
-	a number (2, 3, ...) until unique — e.g. 'Claude Win' → 'Claude Win 2'.
-	Senders are display labels, so the space-separated form reads naturally on
-	the phone bubble attribution. Returns the disambiguated sender string;
-	caller must update both the dict key and member.sender to the returned value."""
-	if desired not in conv.members_active:
+# Firebase RTDB key-illegal characters. sender interpolates into paths like
+# conversations/<id>/members_active/<sender> and agent_status/<sender>; a '/'
+# nests the record under a child, and any of '.#$[]' makes db.reference()
+# raise inside fire-and-forget writes (member exists in memory, never
+# persists, silently erased on restart).
+_FIREBASE_KEY_ILLEGAL = set("/.#$[]")
+
+
+def illegal_sender_reason(sender: str) -> str | None:
+	"""Reason string if sender cannot be used as a Firebase key / display
+	attribution, else None. Shared by the tool-boundary validation in
+	gateway/handlers.py and the member-creation invariant guards below."""
+	if not sender or not sender.strip():
+		return "empty or whitespace-only"
+	for ch in sender:
+		if ch in _FIREBASE_KEY_ILLEGAL:
+			return f"contains Firebase-illegal character '{ch}'"
+		if ord(ch) < 0x20 or ord(ch) == 0x7F:
+			return "contains control characters"
+	return None
+
+
+def _disambiguate_sender(conv, desired: str, exclude_session_id: str | None = None) -> str:
+	"""Sender is a display label; make it unique among the conversation's members
+	(excluding the caller's own entry when renaming) by appending ' 2', ' 3', ...
+	Identity is the members_active key (cli_session_id), never the sender."""
+	taken = {
+		m.sender for sid, m in conv.members_active.items()
+		if sid != exclude_session_id
+	}
+	if desired not in taken:
 		return desired
 	n = 2
-	while f"{desired} {n}" in conv.members_active:
+	while f"{desired} {n}" in taken:
 		n += 1
 	return f"{desired} {n}"
 
@@ -43,6 +68,23 @@ def _infer_surface(cwd: str) -> str:
 	return "windows"
 
 
+def _find_join_candidate(registry, now_ts: float):
+	"""The marker's replacement: a ref-less joiner lands with a fresh, still-solo
+	ref-less mint - and ONLY when that target is unambiguous. Zero or several
+	candidates both mean 'mint a new room'."""
+	candidates = []
+	for conv in registry.conversations.values():
+		if conv.state != "active" or conv.origin != "join":
+			continue
+		alive = [m for m in conv.members_active.values() if m.alive]
+		if len(alive) != 1:
+			continue
+		if (conv.created_at or 0.0) < now_ts - JOIN_CANDIDATE_WINDOW_SECONDS:
+			continue
+		candidates.append(conv)
+	return candidates[0] if len(candidates) == 1 else None
+
+
 async def _create_active_conversation_for(
 	registry: Registry,
 	cli_session_id: str,
@@ -50,6 +92,7 @@ async def _create_active_conversation_for(
 	sender: str,
 	backend=None,
 	title: str | None = None,
+	origin: str = "fallback",
 ) -> str:
 	"""Mint a new Active conversation, add the session as its sole member, bind
 	routing, and set home pointer (only if not already set). Returns the new
@@ -69,7 +112,9 @@ async def _create_active_conversation_for(
 		existing = registry.session_to_conversation_id.get(cli_session_id)
 		if existing is not None:
 			return existing
-		return await _create_active_conversation_for_locked(registry, cli_session_id, cwd, sender, backend, title)
+		return await _create_active_conversation_for_locked(
+			registry, cli_session_id, cwd, sender, backend, title, origin,
+		)
 
 
 async def _create_active_conversation_for_locked(
@@ -79,12 +124,15 @@ async def _create_active_conversation_for_locked(
 	sender: str,
 	backend=None,
 	title: str | None = None,
+	origin: str = "fallback",
 ) -> str:
 	"""Inner implementation called while holding session_create_lock. Do not call directly."""
+	if (reason := illegal_sender_reason(sender)) is not None:
+		raise ValueError(f"illegal sender name {sender!r}: {reason}")
 	from server.gateway.bg_tasks import _spawn_bg
 	conv_id = "conv-" + uuid.uuid4().hex
 	resolved_title = title if title else f"{sender} · {cwd}"
-	conv = Conversation(id=conv_id, title=resolved_title)
+	conv = Conversation(id=conv_id, title=resolved_title, origin=origin)
 	now = time.time()
 	conv.created_at = now
 	conv.last_activity_at = now
@@ -95,9 +143,11 @@ async def _create_active_conversation_for_locked(
 		surface=_infer_surface(cwd),
 		joined_at=now,
 	)
-	conv.members_active[sender] = member
+	conv.members_active[cli_session_id] = member
 	registry.conversations[conv_id] = conv
 	registry.bind_session(cli_session_id, conv_id)
+	if registry.sessions is not None:
+		registry.sessions.set_sender(cli_session_id, member.sender)
 	home_newly_set = cli_session_id not in registry.session_home_conversation_id
 	if home_newly_set:
 		registry.set_session_home(cli_session_id, conv_id)
@@ -112,6 +162,7 @@ async def _create_active_conversation_for_locked(
 				last_activity_at=now,
 				ended_at=None,
 				hidden=False,
+				origin=origin,
 			),
 			label=f"fb_write_conv_meta:{conv_id}",
 		)
@@ -161,11 +212,11 @@ async def _resolve_conversation_and_member(
 	conv = registry.conversations.get(conv_id)
 	if conv is None:
 		return conv_id
-	if not any(m.cli_session_id == cli_session_id for m in conv.members_active.values()):
+	if cli_session_id not in conv.members_active:
 		async with conv.lock:
 			# Re-check inside the lock: a concurrent first call from the same
 			# session may have added the member already.
-			if not any(m.cli_session_id == cli_session_id for m in conv.members_active.values()):
+			if cli_session_id not in conv.members_active:
 				await _add_member(registry, conv_id, cli_session_id, sender, cwd, backend=backend)
 	return conv_id
 
@@ -212,6 +263,8 @@ async def _add_member(
 	Caller must hold conv.lock if concurrent safety matters.
 	backend: optional ConversationStore — if provided, Firebase writes are issued.
 	"""
+	if (reason := illegal_sender_reason(sender)) is not None:
+		raise ValueError(f"illegal sender name {sender!r}: {reason}")
 	from server.gateway.bg_tasks import _spawn_bg
 	conv = registry.conversations[conversation_id]
 	actual_sender = _disambiguate_sender(conv, sender)
@@ -223,8 +276,10 @@ async def _add_member(
 		joined_at=time.time(),
 		last_seen_seq=0,  # new member sees full history on first wake
 	)
-	conv.members_active[actual_sender] = member
+	conv.members_active[cli_session_id] = member
 	registry.bind_session(cli_session_id, conversation_id)
+	if registry.sessions is not None:
+		registry.sessions.set_sender(cli_session_id, member.sender)
 	home_newly_set = cli_session_id not in registry.session_home_conversation_id
 	if home_newly_set:
 		registry.set_session_home(cli_session_id, conversation_id)
@@ -238,17 +293,6 @@ async def _add_member(
 				backend.set_session_home(cli_session_id, conversation_id),
 				label=f"fb_set_session_home:{cli_session_id}:{conversation_id}",
 			)
-	# Wake any mint-path opener blocked on conv.open_peer_future. The opener's
-	# wake payload identifies the newly-joined peer by sender so they can greet
-	# by name. Newline-separated so the leading line still matches the legacy
-	# `ok. open_conversation = <id>` format that existing parsers split on.
-	fut = conv.open_peer_future
-	if fut is not None and not fut.done():
-		fut.set_result(
-			f"ok. open_conversation = {conversation_id}\n"
-			f"Peer '{actual_sender}' joined."
-		)
-		conv.open_peer_future = None
 
 
 async def _migrate_member(
@@ -266,147 +310,38 @@ async def _migrate_member(
 	to target. (Migration is a explicit move, not a fallback.)
 	backend: optional ConversationStore — if provided, Firebase writes are issued.
 	"""
+	if (reason := illegal_sender_reason(sender)) is not None:
+		raise ValueError(f"illegal sender name {sender!r}: {reason}")
 	from server.gateway.bg_tasks import _spawn_bg
 	source = registry.conversations[source_id]
 	target = registry.conversations[target_id]
-	# Find caller in source by cli_session_id (sender may have changed)
-	caller_member = None
-	old_key = None
-	for s, m in source.members_active.items():
-		if m.cli_session_id == cli_session_id:
-			caller_member = m
-			old_key = s
-			break
+	caller_member = source.members_active.get(cli_session_id)
 	if caller_member is None:
 		# Not in source — fall through to _add_member behavior
 		await _add_member(registry, target_id, cli_session_id, sender, cwd, backend=backend)
 		return
-	# Pop from source, push to target with updated (possibly disambiguated) sender
-	del source.members_active[old_key]
+	old_sender = caller_member.sender
+	del source.members_active[cli_session_id]
 	actual_sender = _disambiguate_sender(target, sender)
 	caller_member.sender = actual_sender
 	caller_member.cwd = cwd
 	caller_member.surface = _infer_surface(cwd)
-	caller_member.last_seen_seq = 0  # treat as new member of target (full history)
-	target.members_active[actual_sender] = caller_member
+	caller_member.last_seen_seq = 0
+	target.members_active[cli_session_id] = caller_member
 	registry.bind_session(cli_session_id, target_id)
+	if registry.sessions is not None:
+		registry.sessions.set_sender(cli_session_id, caller_member.sender)
 	# If source has no alive members AND no dormant members → end source
 	source_ended = False
 	if not source.members_active:
 		source.state = "ended"
 		source.ended_at = time.time()
 		source_ended = True
-		if registry.open_conversation_id == source_id:
-			registry.open_conversation_id = None
 	if backend is not None:
 		_spawn_bg(
-			backend.remove_conversation_member(source_id, old_key),
-			label=f"fb_remove_member:{source_id}:{old_key}",
+			backend.move_conversation_member(source_id, target_id, caller_member, old_sender, end_source=source_ended),
+			label=f"fb_move_member:{source_id}->{target_id}:{actual_sender}",
 		)
-		_spawn_bg(
-			backend.write_conversation_member(target_id, caller_member),
-			label=f"fb_write_member:{target_id}:{actual_sender}",
-		)
-		if source_ended:
-			_spawn_bg(
-				backend.set_conversation_state(source_id, "ended"),
-				label=f"fb_set_state:{source_id}:ended",
-			)
-	# Wake any opener blocked on the target's open_peer_future. Migration is a
-	# peer-join from the target's POV, so the lobby/bootstrap wake protocol
-	# applies the same way as _add_member.
-	fut = target.open_peer_future
-	if fut is not None and not fut.done():
-		fut.set_result(
-			f"ok. open_conversation = {target_id}\n"
-			f"Peer '{actual_sender}' joined."
-		)
-		target.open_peer_future = None
-
-
-async def _queue_for_open_peer(
-	registry: Registry,
-	conversation_id: str,
-	cli_session_id: str,
-	timeout_seconds: float,
-	backend=None,
-	end_conv_on_timeout: bool = True,
-) -> str:
-	"""Block the caller on conv.open_peer_future until a peer becomes an alive
-	member (which resolves the future from inside _add_member), until force-end
-	or session-end resolves the future, or until timeout.
-
-	Two callers:
-	- open_conversation mint path: end_conv_on_timeout=True. A timeout means
-	  no one joined the just-minted room, so we force-end it to avoid leaking
-	  an orphan.
-	- message_and_await_agent sole-alive + open-marker (lobby-hold): end_conv_on_timeout=False.
-	  The conv was already established; a timeout just means "no peer arrived
-	  this round." Return __TIMEOUT__ but leave the conv alive so the caller
-	  can poll again or explicitly leave_conversation."""
-	conv = registry.conversations[conversation_id]
-	future = asyncio.get_event_loop().create_future()
-	conv.open_peer_future = future
-	try:
-		return await asyncio.wait_for(future, timeout=timeout_seconds)
-	except asyncio.TimeoutError:
-		if conv.open_peer_future is future:
-			conv.open_peer_future = None
-		if end_conv_on_timeout:
-			from server.gateway.dispatch import handle_force_end
-			await handle_force_end(registry, conversation_id, backend=backend)
-		return "__TIMEOUT__"
-	except asyncio.CancelledError:
-		if conv.open_peer_future is future:
-			conv.open_peer_future = None
-		raise
-
-
-async def _queue_for_intro(
-	registry: Registry,
-	conversation_id: str,
-	cli_session_id: str,
-	sender: str,
-	cwd: str,
-	timeout_seconds: float,
-) -> str:
-	"""Append a QueueEntry(waiting_kind='enter') for the caller; await the wake
-	payload. Returns the payload string.
-
-	Caller is assumed to already be a member of conversation_id (caller of
-	enter_conversation may have just been migrated/added)."""
-	conv = registry.conversations[conversation_id]
-	# Locate caller's member
-	caller_member = None
-	for m in conv.members_active.values():
-		if m.cli_session_id == cli_session_id:
-			caller_member = m
-			break
-	if caller_member is None:
-		return "ERROR: enter_conversation: caller not a member of target conversation."
-	future = asyncio.get_event_loop().create_future()
-	entry = {
-		"member": caller_member,
-		"future": future,
-		"waiting_kind": "enter",
-		"block_position": time.monotonic(),
-	}
-	conv.wait_queue.append(entry)
-	try:
-		result = await asyncio.wait_for(future, timeout=timeout_seconds)
-		return result
-	except asyncio.TimeoutError:
-		try:
-			conv.wait_queue.remove(entry)
-		except ValueError:
-			pass
-		return "__TIMEOUT__"
-	except asyncio.CancelledError:
-		try:
-			conv.wait_queue.remove(entry)
-		except ValueError:
-			pass
-		raise
 
 
 async def _inject_combine_intro(registry: Registry, target: Conversation, sender: str, backend=None) -> None:
@@ -422,8 +357,8 @@ async def _inject_combine_intro(registry: Registry, target: Conversation, sender
 		"seq": len(target.messages),
 		"sender": "<system>",
 		"type": "system",
-		"text": f"{sender} joined via combine. Call enter_conversation(sender='{sender}') to receive the conversation history.",
-		"timestamp": _now_iso(),
+		"text": f"{sender} joined via combine. Call join_conversation(sender='{sender}') to collect the conversation history.",
+		"timestamp": now_iso(),
 	}
 	target.messages.append(msg)
 	if backend is not None:
@@ -459,7 +394,7 @@ async def _spawn_pending_for_combine_resume(
 		"agents": [{
 			"surface": member.surface,
 			"cli_session_id": member.cli_session_id,
-			"prompt": f"You were moved from conversation '{source_id}' to '{target_id}' via combine. Call enter_conversation(sender='{member.sender}') to receive the new conversation's history.",
+			"prompt": f"You were moved from conversation '{source_id}' to '{target_id}' via combine. Call join_conversation(sender='{member.sender}', ref='{target_id}') to collect the new conversation's history.",
 			"project_path": member.cwd,
 			"prior_sender": member.sender,
 		}],
@@ -520,72 +455,70 @@ async def _perform_combine(
 	# Lock ordering: smaller id first to avoid AB-BA deadlock
 	locks = sorted([source, target], key=lambda c: c.id)
 	combine_resume_count = 0
+	flipped: list = []
 	async with locks[0].lock, locks[1].lock:
 		moved_names = []
 		removed_from_source: list[str] = []
-		for sender_key, member in list(source.members_active.items()):
+		for sid, member in list(source.members_active.items()):
 			if member.session_lost_permanently:
 				continue  # stay in source for visibility
+			old_sender = member.sender
 			# Disambiguate before inserting into target to avoid clobbering existing members
 			actual_sender = _disambiguate_sender(target, member.sender)
 			member.sender = actual_sender
+			if registry.sessions is not None:
+				registry.sessions.set_sender(member.cli_session_id, actual_sender)
 			if member.alive:
 				registry.bind_session(member.cli_session_id, target_id)
 				member.last_seen_seq = 0
-				del source.members_active[sender_key]
-				target.members_active[actual_sender] = member
+				del source.members_active[sid]
+				target.members_active[sid] = member
 				await _inject_combine_intro(registry, target, actual_sender, backend=backend)
-				# Wake any opener blocked on the target's open_peer_future:
-				# combine is a peer-join from the target's POV, exactly like
-				# _migrate_member's resolution (H01: without this, a
-				# lobby-holding sole member never learns a peer arrived).
-				fut = target.open_peer_future
-				if fut is not None and not fut.done():
-					fut.set_result(
-						f"ok. open_conversation = {target_id}\n"
-						f"Peer '{actual_sender}' joined."
-					)
-					target.open_peer_future = None
 				moved_names.append(actual_sender)
-				removed_from_source.append(sender_key)
+				removed_from_source.append(old_sender)
 				if backend is not None:
 					_spawn_bg(
-						backend.remove_conversation_member(source_id, sender_key),
-						label=f"fb_remove_member:{source_id}:{sender_key}",
-					)
-					_spawn_bg(
-						backend.write_conversation_member(target_id, member),
-						label=f"fb_write_member:{target_id}:{actual_sender}",
+						backend.move_conversation_member(source_id, target_id, member, old_sender, end_source=False),
+						label=f"fb_move_member:{source_id}->{target_id}:{actual_sender}",
 					)
 			else:
-				# Dormant member: write the relaunch pending file, then bind
-				# and flip alive TOGETHER (bound = alive-or-launching
-				# invariant; handle_resume does the same). Clearing the
-				# dormancy fields keeps message_and_await_agent's alive-peer
-				# count honest while the relaunch is in flight. With
-				# pending_dir=None (test mode) no relaunch happens, so the
-				# member moves as-is and stays unbound.
-				await _spawn_pending_for_combine_resume(pending_dir, member, target_id, source_id)
-				if pending_dir is not None:
-					member.alive = True
-					member.session_ended_at = None
-					member.session_end_reason = None
-					member.left_at = None
-					registry.bind_session(member.cli_session_id, target_id)
-					combine_resume_count += 1
+				sessions = getattr(registry, "sessions", None)
+				rec = sessions.get(sid) if sessions is not None else None
+				if rec is not None and rec.cli == "antigravity":
+					if backend is not None:
+						_spawn_bg(
+							backend.send_text(
+								f"'{actual_sender}' is an Antigravity session; auto-resume is not "
+								f"supported yet. Resume manually: agy --conversation {sid} in {member.cwd}"
+							),
+							label=f"fb_agy_manual_resume:{sid}",
+						)
+				else:
+					# Dormant member: write the relaunch pending file, then bind
+					# and flip alive TOGETHER (bound = alive-or-launching
+					# invariant; handle_resume does the same). Clearing the
+					# dormancy fields keeps message_and_await_agent's alive-peer
+					# count honest while the relaunch is in flight. With
+					# pending_dir=None (test mode) no relaunch happens, so the
+					# member moves as-is and stays unbound.
+					await _spawn_pending_for_combine_resume(pending_dir, member, target_id, source_id)
+					if pending_dir is not None:
+						flipped.append((member, (member.session_ended_at, member.session_end_reason, member.left_at)))
+						member.alive = True
+						member.session_ended_at = None
+						member.session_end_reason = None
+						member.left_at = None
+						registry.bind_session(member.cli_session_id, target_id)
+						combine_resume_count += 1
 				member.last_seen_seq = 0
-				del source.members_active[sender_key]
-				target.members_active[actual_sender] = member
+				del source.members_active[sid]
+				target.members_active[sid] = member
 				moved_names.append(actual_sender)
-				removed_from_source.append(sender_key)
+				removed_from_source.append(old_sender)
 				if backend is not None:
 					_spawn_bg(
-						backend.remove_conversation_member(source_id, sender_key),
-						label=f"fb_remove_member:{source_id}:{sender_key}",
-					)
-					_spawn_bg(
-						backend.write_conversation_member(target_id, member),
-						label=f"fb_write_member:{target_id}:{actual_sender}",
+						backend.move_conversation_member(source_id, target_id, member, old_sender, end_source=False),
+						label=f"fb_move_member:{source_id}->{target_id}:{actual_sender}",
 					)
 		now_ts = time.time()
 		target_msg = {
@@ -593,7 +526,7 @@ async def _perform_combine(
 			"sender": "<system>",
 			"type": "system",
 			"text": f"Merged with '{source.title}'. New members: {', '.join(moved_names) or '(none)'}",
-			"timestamp": _now_iso(),
+			"timestamp": now_iso(),
 		}
 		target.messages.append(target_msg)
 		target.last_activity_at = now_ts
@@ -602,7 +535,7 @@ async def _perform_combine(
 			"sender": "<system>",
 			"type": "system",
 			"text": f"Merged into '{target.title}'",
-			"timestamp": _now_iso(),
+			"timestamp": now_iso(),
 		}
 		source.messages.append(source_msg)
 		# Migrate waiters from source.wait_queue. Members were updated in-place
@@ -616,8 +549,7 @@ async def _perform_combine(
 			member_ref = entry.get("member")
 			if (
 				member_ref is not None
-				and member_ref.sender in target.members_active
-				and target.members_active[member_ref.sender] is member_ref
+				and target.members_active.get(member_ref.cli_session_id) is member_ref
 			):
 				target.wait_queue.append(entry)
 			else:
@@ -627,10 +559,6 @@ async def _perform_combine(
 		source.wait_queue.clear()
 		source.state = "ended"
 		source.ended_at = time.time()
-		open_cleared = False
-		if registry.open_conversation_id == source_id:
-			registry.open_conversation_id = None
-			open_cleared = True
 		if backend is not None:
 			_spawn_bg(
 				backend.write_conversation_message(target_id, target_msg),
@@ -648,11 +576,20 @@ async def _perform_combine(
 				backend.set_conversation_last_activity(target_id, now_ts),
 				label=f"fb_last_activity:{target_id}",
 			)
-			if open_cleared:
-				_spawn_bg(
-					backend.set_open_conversation_id(None),
-					label=f"fb_clear_open_id:{source_id}",
-				)
+	# Source is Ended: terminally end its pending ask_humans (REV-102). A live
+	# asker - a member just migrated to target - wakes with a terminal envelope
+	# telling it to re-ask; its binding already points at target, so the re-ask
+	# lands there. A parked record is withdrawn on the phone. Re-keying the
+	# pending to target was rejected: answers correlate by the answer's
+	# conversation_id and the question message lives under source, so a phone
+	# reply could never resolve a re-keyed record.
+	from server.gateway.pending_lifecycle import terminate_pending
+	for record in registry.pending_for_conversation(source_id):
+		await terminate_pending(
+			registry, backend, logger, record,
+			resolve_text=f"__CONVERSATION_ENDED__\n(combined into {target_id}; re-ask your question there)",
+			remember_resolved=True,
+		)
 	# Fire the launcher once if any dormant member got a combine_resume
 	# pending file: the file alone does nothing until the scheduled task
 	# runs (H08/H09: state used to say "resumed" with no process behind it).
@@ -662,41 +599,308 @@ async def _perform_combine(
 			await _spawn_mod.invoke_spawn_launcher(logger)
 		except Exception as exc:
 			# The combine itself already committed (members moved); only the
-			# dormant-member relaunch failed. Surface it to the phone instead of
-			# failing the combine or leaving members "alive" with no process (B4).
-			# invoke_spawn_launcher already logged the failure.
-			if backend is not None and hasattr(backend, "send_text"):
-				try:
-					await backend.send_text(
-						f"Combined conversations, but relaunching dormant member(s) failed: {exc}. "
-						"Resume them from the phone."
-					)
-				except Exception:
-					pass
+			# dormant-member relaunch failed. Roll every flipped member back to
+			# dormant so the advertised phone recovery (Resume) actually works:
+			# handle_resume's eligibility filter skips alive members, and the
+			# optimistic alive=True was already persisted, so without rollback
+			# the member would be stranded alive-with-no-process across
+			# restarts. Awaited persist (not _spawn_bg): the optimistic write
+			# completed during the launcher's subprocess round-trip, so this
+			# write deterministically lands after it.
+			target_conv = registry.conversations.get(target_id)
+			if target_conv is not None:
+				async with target_conv.lock:
+					for member, (ended_at, end_reason, left_at) in flipped:
+						member.alive = False
+						member.session_ended_at = ended_at
+						member.session_end_reason = end_reason
+						member.left_at = left_at
+						registry.unbind_session(member.cli_session_id)
+			if backend is not None:
+				for member, _saved in flipped:
+					try:
+						await backend.write_conversation_member(target_id, member)
+					except Exception as persist_exc:
+						if logger is not None:
+							await logger.surface_error(f"combine_rollback_persist_failed: {member.sender}: {persist_exc}")
+				if hasattr(backend, "send_text"):
+					try:
+						await backend.send_text(
+							f"Combined conversations, but relaunching dormant member(s) failed: {exc}. "
+							"They are dormant again; resume them from the phone (long-press the target conversation > Resume)."
+						)
+					except Exception:
+						pass
 	# Wake one waiter in target so any blocked agent sees the merge marker
 	async with target.lock:
 		_wake_one_from(target)
 	return f"ok. combined {source_id} into {target_id} ({len(moved_names)} member(s))"
 
 
-def _now_iso() -> str:
-	from datetime import datetime, timezone
-	return datetime.now(timezone.utc).isoformat()
-
-
 def _wake_one_from(conversation: Conversation) -> bool:
-	"""Pop the FIFO-oldest entry from conv.wait_queue, resolve its future with the
-	appropriate wake payload. Returns True if a wake occurred, False if queue was empty."""
-	if not conversation.wait_queue:
-		return False
-	entry = conversation.wait_queue.popleft()
-	future = entry["future"]
-	member = entry["member"]
-	kind = entry["waiting_kind"]
-	if future.done():
-		return False  # already resolved (race); skip
-	payload = _compose_wake_payload(conversation, member, kind)
-	future.set_result(payload)
-	# Update last_seen_seq so the next wake doesn't re-deliver
-	member.last_seen_seq = len(conversation.messages)
-	return True
+	"""Wake the FIFO-oldest LIVE waiter on conv.wait_queue: pop entries until one
+	holds an unresolved future, resolve it with the appropriate wake payload, and
+	advance that member's cursor. A popped entry whose future is already done is
+	dead - its waiter's wait_for timed out or was cancelled before the waiter
+	could reacquire conv.lock to dequeue itself (REV-101) - so it is discarded
+	and the next waiter is tried; the dead waiter's own cleanup arm tolerates the
+	entry being gone. Returns True if a wake occurred, False otherwise."""
+	while conversation.wait_queue:
+		entry = conversation.wait_queue.popleft()
+		future = entry["future"]
+		if future.done():
+			continue
+		member = entry["member"]
+		kind = entry["waiting_kind"]
+		payload = _compose_wake_payload(conversation, member, kind)
+		future.set_result(payload)
+		# Update last_seen_seq so the next wake doesn't re-deliver
+		member.last_seen_seq = len(conversation.messages)
+		return True
+	return False
+
+
+def _convene_notice(conversation_id: str, member_sender: str, peers: list) -> str:
+	peer_str = ", ".join(peers) if peers else "(no peers yet)"
+	return (
+		f"John convened you into conversation {conversation_id} (peers: {peer_str}). "
+		f"Call join_conversation(sender='{member_sender}', ref='{conversation_id}') to collect the "
+		f"history (idempotent - you are already a member), then message_and_await_agent to speak."
+	)
+
+
+async def _wake_convened(registry, session_registry, conversation_id, woken_session_ids, logger, backend=None):
+	"""Deliver the convene to each moved session by whatever structure it is
+	actually blocked in RIGHT NOW (live derivation, not roster state): a blocked
+	message_and_await future resolves immediately with a convened envelope; a
+	pending ask_human gets the notice prepended to its eventual answer; everyone
+	else gets a hook-delivered notice queued on their session record."""
+	from server.gateway.handlers import _envelope
+	target = registry.conversations.get(conversation_id)
+	if target is None:
+		return []
+	woken_now: list[str] = []
+	for sid in woken_session_ids:
+		member = target.members_active.get(sid)
+		if member is None:
+			continue
+		peers = [m.sender for k, m in target.members_active.items() if k != sid]
+		log = _compose_wake_payload(target, member, "enter")
+		envelope = _envelope("convened", conversation_id=conversation_id, peers=peers, log=log or None)
+		notice = _convene_notice(conversation_id, member.sender, peers)
+
+		# (b) Blocked in message_and_await, queued in some conversation's wait_queue.
+		resolved = False
+		for conv in list(registry.conversations.values()):
+			for entry in list(conv.wait_queue):
+				m = entry.get("member")
+				if m is not None and m.cli_session_id == sid:
+					fut = entry.get("future")
+					try:
+						conv.wait_queue.remove(entry)
+					except ValueError:
+						pass
+					if fut is not None and not fut.done():
+						fut.set_result(envelope)
+						resolved = True
+					break
+			if resolved:
+				break
+
+		if resolved:
+			member.last_seen_seq = len(target.messages)
+			woken_now.append(sid)
+			continue
+
+		# (d) Blocked in ask_human: prepend the notice to the eventual human reply.
+		pending_attached = False
+		for pending in registry.all_pending():
+			if pending.cli_session_id == sid:
+				pending.notices.append(notice)
+				pending_attached = True
+				break
+		if pending_attached:
+			continue
+
+		# (e) Otherwise: queue a hook-delivered notice on the session record.
+		if session_registry is not None:
+			session_registry.queue_notice(sid, notice)
+	if logger is not None and woken_now:
+		await logger.info(f"convene_woke_blocked: {woken_now}")
+	return woken_now
+
+
+def _convene_sender_for(registry, session_registry, cli_session_id: str) -> str:
+	rec = session_registry.get(cli_session_id) if session_registry is not None else None
+	if rec is not None and rec.sender:
+		return rec.sender
+	if rec is not None and rec.name:
+		return rec.name
+	return f"Agent {cli_session_id[:8]}"
+
+
+async def _perform_convene(registry, session_registry, cmd: dict, logger, backend=None, spawn_handler=None) -> dict:
+	from server.gateway.bg_tasks import _spawn_bg
+	session_ids = [s for s in (cmd.get("session_ids") or []) if isinstance(s, str) and s]
+	target = cmd.get("target") or "new"
+	title = cmd.get("title") if isinstance(cmd.get("title"), str) else None
+
+	result: dict = {"conversation_id": None, "convened": [], "skipped": [], "resuming": []}
+	if not session_ids:
+		return result
+
+	# For an existing target, resolve upfront (it must exist and be Active). For
+	# "new", mint LAZILY - only once a session actually routes in - so an
+	# all-skipped convene leaves no orphan empty Active conversation.
+	if target == "new":
+		conv = None
+		conv_id = None
+	else:
+		conv = registry.conversations.get(target)
+		if conv is None or conv.state != "active":
+			result["skipped"] = [{"session_id": s, "reason": "target not found or not Active"} for s in session_ids]
+			if logger is not None:
+				await logger.surface_error(f"convene_target_invalid: {target}")
+			return result
+		conv_id = target
+		result["conversation_id"] = conv_id
+
+	def _reserve_target_id() -> str:
+		# Reserve the id without materializing (REV-115): the resume prompt
+		# must embed a real conversation id BEFORE the fallible launch, but an
+		# all-failed convene must leave no orphan Active conversation, so
+		# creation is deferred to _ensure_target() after a launch succeeds.
+		nonlocal conv_id
+		if conv_id is None:
+			conv_id = "conv-" + uuid.uuid4().hex
+		return conv_id
+
+	def _ensure_target():
+		nonlocal conv
+		if conv is not None:
+			return
+		_reserve_target_id()
+		now = time.time()
+		conv = Conversation(id=conv_id, title=title or f"Convened {len(session_ids)} agents", origin="convene")
+		conv.created_at = now
+		conv.last_activity_at = now
+		registry.conversations[conv_id] = conv
+		result["conversation_id"] = conv_id
+		if backend is not None:
+			_spawn_bg(
+				backend.write_conversation_meta(
+					conv_id, title=conv.title, state="active", continued_from=None,
+					created_at=now, last_activity_at=now, ended_at=None, hidden=False,
+					origin="convene",
+				),
+				label=f"fb_write_conv_meta:{conv_id}",
+			)
+
+	woken: list[str] = []
+	for sid in session_ids:
+		rec = session_registry.get(sid) if session_registry is not None else None
+		if rec is None:
+			result["skipped"].append({"session_id": sid, "reason": "not a live session"})
+			continue
+		if rec.state in ("ended", "lost"):
+			if spawn_handler is None:
+				result["skipped"].append({"session_id": sid, "reason": "resume unavailable"})
+				continue
+			if not rec.cwd:
+				result["skipped"].append({"session_id": sid, "reason": "no cwd recorded"})
+				continue
+			_reserve_target_id()
+			sender = _convene_sender_for(registry, session_registry, sid)
+			prompt = (
+				f"John convened you (by resume) into conversation {conv_id}. "
+				"Tool calls auto-inject your cli_session_id. "
+				f"Call join_conversation(sender='{sender}', ref='{conv_id}') to collect the history "
+				"(idempotent - you are already a member), then message_and_await_agent to speak."
+			)
+			if session_registry is not None:
+				session_registry.note_spawn_resume(sid, rec.cwd)
+			ok = await spawn_handler.launch_resume_agent(
+				session_id=sid, surface=rec.surface, cwd=rec.cwd, prompt=prompt, prior_sender=sender
+			)
+			if not ok:
+				result["skipped"].append({"session_id": sid, "reason": "resume launch failed"})
+				continue
+			# Materialize only after the launch succeeded (REV-115): the agent
+			# takes seconds to start, and the conversation must exist before
+			# its join_conversation(ref=...) lands - immediately after launch
+			# is early enough and never orphans on an all-failed convene.
+			_ensure_target()
+			async with conv.lock:
+				if sid not in conv.members_active:
+					await _add_member(registry, conv_id, sid, sender, rec.cwd, backend=backend)
+			result["resuming"].append(conv.members_active[sid].sender)
+			continue
+		sender = _convene_sender_for(registry, session_registry, sid)
+		cwd = rec.cwd or ""
+		bound_id = registry.session_to_conversation_id.get(sid)
+		# conv (not conv_id) is the materialization test: a reserved-but-unmade
+		# id from a failed resume can never equal a real binding, and the body
+		# below dereferences conv.
+		if conv is not None and bound_id == conv_id:
+			member = conv.members_active.get(sid)
+			if member is None:
+				async with conv.lock:
+					if sid not in conv.members_active:
+						await _add_member(registry, conv_id, sid, sender, cwd, backend=backend)
+			result["convened"].append(conv.members_active[sid].sender)
+			woken.append(sid)
+			continue
+		if bound_id is None:
+			_ensure_target()
+			async with conv.lock:
+				await _add_member(registry, conv_id, sid, sender, cwd, backend=backend)
+			result["convened"].append(conv.members_active[sid].sender)
+			woken.append(sid)
+			continue
+		source = registry.conversations.get(bound_id)
+		if source is None:
+			_ensure_target()
+			async with conv.lock:
+				await _add_member(registry, conv_id, sid, sender, cwd, backend=backend)
+			result["convened"].append(conv.members_active[sid].sender)
+			woken.append(sid)
+			continue
+		other_alive = [m for k, m in source.members_active.items() if k != sid and m.alive]
+		if other_alive:
+			result["skipped"].append({"session_id": sid, "reason": "in a multi-party conversation"})
+			continue
+		_ensure_target()
+		locks = sorted([source, conv], key=lambda c: c.id)
+		async with locks[0].lock, locks[1].lock:
+			await _migrate_member(registry, bound_id, conv_id, sid, rec.sender or sender, cwd, backend=backend)
+		result["convened"].append(conv.members_active[sid].sender)
+		woken.append(sid)
+
+	# Intro message: the transcript explains itself; also the documented backstop
+	# for any lost wake notice.
+	if result["convened"] or result["resuming"]:
+		names = result["convened"]
+		text = "John convened: " + ", ".join(names) if names else "John convened"
+		if result["resuming"]:
+			text += ("; " if names else ": ") + "resuming: " + ", ".join(result["resuming"])
+		if result["skipped"]:
+			skips = "; ".join(f"{s['session_id'][:8]} - {s['reason']}" for s in result["skipped"])
+			text += f" (skipped: {skips})"
+		msg = {
+			"seq": len(conv.messages),
+			"sender": "<system>",
+			"type": "system",
+			"text": text,
+			"timestamp": now_iso(),
+		}
+		conv.messages.append(msg)
+		conv.last_activity_at = time.time()
+		if backend is not None:
+			_spawn_bg(backend.write_conversation_message(conv_id, msg), label=f"fb_convene_intro:{conv_id}")
+			_spawn_bg(
+				backend.set_conversation_last_activity(conv_id, conv.last_activity_at),
+				label=f"fb_last_activity:{conv_id}",
+			)
+
+	await _wake_convened(registry, session_registry, conv_id, woken, logger, backend=backend)
+	return result

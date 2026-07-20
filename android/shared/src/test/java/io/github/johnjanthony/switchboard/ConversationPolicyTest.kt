@@ -153,4 +153,41 @@ class ConversationPolicyTest {
 	fun `listRowContextRing returns null when no member has a ring`() {
 		assertEquals(null, listRowContextRing(listOf(member("x"), member("y")), mapOf("s1" to ring(0.9))))
 	}
+
+	private fun conv(id: String, state: String) = ConversationSummary(
+		id = id, title = id, state = state, members = emptyList(), lastActivityAt = "",
+	)
+
+	@Test
+	fun `pickerTargets keeps only active conversations`() {
+		val all = listOf(conv("a", "active"), conv("b", "ended"), conv("c", "active"))
+		assertEquals(listOf("a", "c"), pickerTargets(all).map { it.id })
+	}
+
+	@Test
+	fun `pickerTargets excludes the given id`() {
+		val all = listOf(conv("a", "active"), conv("b", "active"))
+		assertEquals(listOf("b"), pickerTargets(all, excludeId = "a").map { it.id })
+	}
+
+	@Test
+	fun `unread zeroes only for the open row in the foreground`() {
+		assertTrue(shouldZeroUnreadOnArrival("conv-1", "conv-1", appForeground = true))
+	}
+
+	@Test
+	fun `no zero when the app is backgrounded on the conversation`() {
+		assertFalse(shouldZeroUnreadOnArrival("conv-1", "conv-1", appForeground = false))
+	}
+
+	@Test
+	fun `no zero for a non-selected row or no selection`() {
+		assertFalse(shouldZeroUnreadOnArrival("conv-2", "conv-1", appForeground = true))
+		assertFalse(shouldZeroUnreadOnArrival(null, "conv-1", appForeground = true))
+	}
+
+	@Test
+	fun `no zero for the synthetic admin row`() {
+		assertFalse(shouldZeroUnreadOnArrival(ADMIN_CONVERSATION_ID, ADMIN_CONVERSATION_ID, appForeground = true))
+	}
 }

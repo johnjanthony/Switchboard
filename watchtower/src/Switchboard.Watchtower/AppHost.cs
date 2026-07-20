@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using Switchboard.Watchtower.Core;
 
 namespace Switchboard.Watchtower;
@@ -17,14 +18,18 @@ internal sealed class AppHost : IDisposable
 	readonly QuotaService _quotaService;
 	readonly IDistroLister _distroLister = new WslDistroLister();
 	readonly string _logPath;
-	volatile bool _scanning;
+	readonly ScanGate _scanGate = new(TimeSpan.FromMinutes(2));
 	volatile bool _quotaScanning;
 	readonly System.Windows.Forms.Timer _switchboardTimer = new();
 	readonly SwitchboardStatsReader? _switchboardReader;
 	volatile bool _switchboardScanning;
 	readonly WidgetSnapshotPusher? _snapshotPusher;
+	volatile bool _snapshotPushing;
 	IReadOnlyList<SessionModel> _lastSessions = Array.Empty<SessionModel>();
 	QuotaUsage? _lastQuota;
+	IReadOnlyDictionary<string, string> _lastTitleStates = new Dictionary<string, string>();
+	DateTime? _lastActivityUtc;                      // newest transcript mtime from the last scan (null while sessions exist)
+	SwitchboardStats? _lastSwitchboardStats;         // last successful /stats read (survives unavailable ticks)
 	readonly System.Windows.Forms.Timer _claudeStatusTimer = new();   // steady GET-poll of the server view
 	readonly ClaudeStatusReader _claudeStatusReader;
 	volatile bool _claudeStatusScanning;
@@ -102,9 +107,9 @@ internal sealed class AppHost : IDisposable
 		_embedWatchdog.Start();
 		_hoverTimer.Start();
 		_widget.SetShowQuota(_config.ShowQuota);
+		RenderLastKnown(LastKnownStore.LoadFrom(LastKnownStore.DefaultPath));
 		if (_config.ShowQuota) { _quotaTimer.Start(); PollQuota(); }
 		Scan();
-		_panel.UpdateSwitchboard(_config.Switchboard.Enabled, null);
 		if (_config.Switchboard.Enabled) { _switchboardTimer.Start(); PollSwitchboard(); }
 		_claudeStatusTimer.Start();
 		PollClaudeStatus();
@@ -129,9 +134,8 @@ internal sealed class AppHost : IDisposable
 	// Fire-and-forget background scan; results marshaled back to the UI thread.
 	void Scan()
 	{
-		if (_scanning) return;
-		_scanning = true;
 		var now = DateTime.UtcNow;
+		if (!_scanGate.TryEnter(now)) return;
 		var cfg = _config;
 
 		Task.Run(() =>
@@ -164,45 +168,50 @@ internal sealed class AppHost : IDisposable
 				LogError("scan", ex);
 				result = new List<SessionModel>();
 			}
-			return (result, lastActivityUtc);
+
+			// Best-effort tab-title correlation; only worth the UIA walk when there's somewhere to push it.
+			// A malformed title (e.g. a lone surrogate that trips TabTitles.Classify) must never fault the
+			// scan and freeze the widget - fall back to no verdict.
+			IReadOnlyDictionary<string, string> titleStates = new Dictionary<string, string>();
+			if (_snapshotPusher is not null)
+			{
+				try
+				{
+					titleStates = TabTitles.Correlate(TerminalTabScanner.ReadTabTitles().Select(TabTitles.Classify).ToList(), result);
+				}
+				catch (Exception ex)
+				{
+					LogError("title-scan", ex);
+				}
+			}
+
+			return (result, lastActivityUtc, titleStates);
 		}).ContinueWith(t =>
 		{
-			_scanning = false;
+			_scanGate.Exit();
 			if (t.IsFaulted) { LogError("scan-continuation", t.Exception!); return; }
-			ApplyToUi(t.Result.Item1, t.Result.Item2);
+			ApplyToUi(t.Result.Item1, t.Result.Item2, t.Result.Item3);
 		}, TaskScheduler.FromCurrentSynchronizationContext());
 	}
 
-	void ApplyToUi(IReadOnlyList<SessionModel> sessions, DateTime? lastActivityUtc)
+	void ApplyToUi(IReadOnlyList<SessionModel> sessions, DateTime? lastActivityUtc, IReadOnlyDictionary<string, string> titleStates)
 	{
 		bool light = _config.LightThemeOverride ?? ThemeReader.IsLightTaskbar();
 		_widget.UpdateSessions(sessions, light);
 		_panel.UpdateSessions(sessions, light, lastActivityUtc);
 
 		// Tray ring gauge mirrors the busiest session (same rule the widget's % label uses).
-		bool anyError = false;
-		double max = 0;
-		Severity maxSev = Severity.Green;
-		foreach (var s in sessions)
-		{
-			anyError |= s.IsError;
-			if (!s.IsError && s.Pct >= max) { max = s.Pct; maxSev = s.Severity; }
-		}
-		_tray.SetGauge(max, anyError, maxSev, light);
+		var gauge = TrayGauge.From(sessions);
+		_tray.SetGauge(gauge.Max, gauge.AnyError, gauge.MaxSeverity, light);
 
 		_lastSessions = sessions;
+		_lastTitleStates = titleStates;
+		_lastActivityUtc = lastActivityUtc;
 		PushSnapshot();
+		SaveLastKnown();
 	}
 
-	void LogError(string source, Exception ex)
-	{
-		try
-		{
-			Directory.CreateDirectory(Path.GetDirectoryName(_logPath)!);
-			File.AppendAllText(_logPath, $"{DateTime.Now:s} [{source}] {ex.GetType().Name}: {ex.Message}{Environment.NewLine}");
-		}
-		catch { /* logging must never crash the widget */ }
-	}
+	void LogError(string source, Exception ex) => WatchtowerLog.Error(source, ex, _logPath);
 
 	// Fire-and-forget quota poll; result marshaled back to the UI thread. Keeps last-known data on
 	// any non-Ok status (rate-limited / auth / failure) and simply waits for the next interval.
@@ -215,6 +224,7 @@ internal sealed class AppHost : IDisposable
 			_quotaScanning = false;
 			if (t.IsFaulted) { LogError("quota-poll", t.Exception!); return; }
 			var r = t.Result;
+			_panel.SetQuotaAuthPaused(r.Status == QuotaStatus.AuthRequired);
 			if (r.Status == QuotaStatus.Ok && r.Usage is QuotaUsage u)
 			{
 				_widget.UpdateQuota(u);
@@ -222,6 +232,7 @@ internal sealed class AppHost : IDisposable
 				ScheduleCountdown();
 				_lastQuota = u;
 				PushSnapshot();
+				SaveLastKnown();
 				LogInfo("quota", $"ok 5h={u.Session.Percentage:0}% 7d={u.Weekly.Percentage:0}%");
 			}
 			else
@@ -241,6 +252,7 @@ internal sealed class AppHost : IDisposable
 			_switchboardScanning = false;
 			if (t.IsFaulted) { LogError("switchboard-poll", t.Exception!); return; }
 			var stats = t.Result;
+			if (stats is not null) _lastSwitchboardStats = stats;
 			_panel.UpdateSwitchboard(enabled: true, stats);
 			_tray.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
 			_widget.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
@@ -252,12 +264,56 @@ internal sealed class AppHost : IDisposable
 	// tick is cheap. Null pusher == Switchboard integration disabled.
 	void PushSnapshot()
 	{
-		if (_snapshotPusher is null) return;
-		var payload = WidgetSnapshotBuilder.Build(_lastSessions, _lastQuota, DateTimeOffset.Now);
+		if (_snapshotPusher is null || _snapshotPushing) return;
+		_snapshotPushing = true;
+		var payload = WidgetSnapshotBuilder.Build(_lastSessions, _lastQuota, DateTimeOffset.Now, _lastTitleStates);
 		_snapshotPusher.PushAsync(payload, CancellationToken.None).ContinueWith(t =>
 		{
+			_snapshotPushing = false;
 			if (t.IsFaulted) LogError("widget-snapshot-push", t.Exception!);
 		}, TaskScheduler.Default);
+	}
+
+	// Persist the render cache at the same cadence as the server push (scan + quota ticks).
+	void SaveLastKnown()
+	{
+		var state = LastKnownStore.From(_lastSessions, _lastActivityUtc, _lastQuota, _lastSwitchboardStats, DateTime.UtcNow);
+		if (!LastKnownStore.SaveTo(state, LastKnownStore.DefaultPath))
+			LogInfo("last-known", "save failed; startup render will use the previous cache");
+	}
+
+	// Render the cached last-known state before the first live scan/poll lands, so startup is
+	// not blank. Stale-session guard: session bars older than the freshness window are skipped
+	// (they would advertise live agents that are long gone); quota and stats render at any age
+	// and are replaced by the first live poll within seconds.
+	void RenderLastKnown(LastKnownState? state)
+	{
+		// The panel's Switchboard section always needs its enabled seed, cache or no cache.
+		var cachedStats = state is not null && _config.Switchboard.Enabled ? LastKnownStore.ToStats(state) : null;
+		_panel.UpdateSwitchboard(_config.Switchboard.Enabled, cachedStats);
+		if (state is null) return;
+
+		bool light = _config.LightThemeOverride ?? ThemeReader.IsLightTaskbar();
+		if (LastKnownStore.SessionsFresh(state.SavedAtUtc, DateTime.UtcNow))
+		{
+			var sessions = LastKnownStore.ToSessionModels(state);
+			_widget.UpdateSessions(sessions, light);
+			_panel.UpdateSessions(sessions, light, state.LastActivityUtc);
+			var gauge = TrayGauge.From(sessions);
+			_tray.SetGauge(gauge.Max, gauge.AnyError, gauge.MaxSeverity, light);
+		}
+		if (_config.ShowQuota && LastKnownStore.ToQuota(state) is QuotaUsage q)
+		{
+			_widget.UpdateQuota(q);
+			_panel.UpdateQuota(q);
+			ScheduleCountdown();
+		}
+		if (cachedStats is not null)
+		{
+			bool hasPending = cachedStats is { PendingCount: > 0 };
+			_tray.SetPending(_config.Switchboard.ShowBadge, hasPending);
+			_widget.SetPending(_config.Switchboard.ShowBadge, hasPending);
+		}
 	}
 
 	// The popup button / tray item posts an action to the server: from a hidden/idle
@@ -320,17 +376,13 @@ internal sealed class AppHost : IDisposable
 		else { _quotaTimer.Stop(); _countdownTimer.Stop(); }
 	}
 
-	void LogInfo(string source, string message)
-	{
-		try
-		{
-			Directory.CreateDirectory(Path.GetDirectoryName(_logPath)!);
-			File.AppendAllText(_logPath, $"{DateTime.Now:s} [{source}] {message}{Environment.NewLine}");
-		}
-		catch { /* logging must never crash the widget */ }
-	}
+	void LogInfo(string source, string message) => WatchtowerLog.Info(source, message, _logPath);
 
-	void SafeSaveConfig() { try { _config.Save(); } catch (Exception ex) { LogError("config-save", ex); } }
+	void SafeSaveConfig()
+	{
+		try { if (!_config.Save()) LogInfo("config-save", "skipped: config load was degraded; not overwriting"); }
+		catch (Exception ex) { LogError("config-save", ex); }
+	}
 
 	// Open the Operator dashboard in the default browser. conversationId, when supplied, deep-links via #conv=.
 	void OpenDashboard(string? conversationId = null)

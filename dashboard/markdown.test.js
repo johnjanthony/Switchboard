@@ -84,9 +84,11 @@ test("renders italic as em", () => {
 	assert.ok(renderMarkdown("a *em* b").includes("<em>em</em>"));
 });
 
-test("renders a normal https link as an anchor with the right href", () => {
+test("renders a normal https link as an anchor with the right href, target, and rel", () => {
 	const out = renderMarkdown("see [docs](https://example.com)");
-	assert.ok(out.includes("<a href=\"https://example.com\""));
+	assert.ok(out.includes('<a href="https://example.com"'));
+	assert.ok(out.includes('target="_blank"'));
+	assert.ok(out.includes('rel="noopener noreferrer"'));
 	assert.ok(out.includes(">docs</a>"));
 });
 

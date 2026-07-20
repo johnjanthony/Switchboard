@@ -24,8 +24,8 @@ class _StubBackend:
 	async def write_conversation_message(self, *a, **k): return ""
 	async def write_conversation_member(self, *a, **k): pass
 	async def remove_conversation_member(self, *a, **k): pass
+	async def move_conversation_member(self, *a, **k): pass
 	async def set_conversation_state(self, *a, **k): pass
-	async def set_open_conversation_id(self, *a, **k): pass
 	async def send_text(self, *a, **k): pass
 	async def set_global_away_mode(self, *a, **k): pass
 
@@ -64,7 +64,7 @@ async def test_solo_resume_prompt_does_not_instruct_enter_conversation(tmp_path,
 		surface="windows", joined_at=0.0, alive=False,
 		session_ended_at="2026-06-13T00:00:00+00:00",
 	)
-	source.members_active["Claude"] = member
+	source.members_active["sess-1"] = member
 	registry.conversations["conv-src"] = source
 
 	await handler.handle_resume({"type": "resume", "source_conversation_id": "conv-src"})
@@ -72,7 +72,7 @@ async def test_solo_resume_prompt_does_not_instruct_enter_conversation(tmp_path,
 	prompts = _read_agent_prompts(tmp_path)
 	assert len(prompts) == 1
 	prompt = prompts[0]
-	# The multi-agent branch issues the imperative "Call enter_conversation(...)".
+	# The multi-agent branch issues the imperative "Call join_conversation(...)".
 	# A solo resume must not, since no peer will ever wake that wait.
 	assert "Call enter_conversation" not in prompt, (
 		"solo resume prompt instructed enter_conversation; the agent would block "
@@ -84,11 +84,11 @@ async def test_solo_resume_prompt_does_not_instruct_enter_conversation(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_multi_agent_resume_prompt_still_instructs_enter_conversation(tmp_path, monkeypatch):
+async def test_multi_agent_resume_prompt_still_instructs_join_conversation(tmp_path, monkeypatch):
 	cfg, registry, handler = _make_handler(tmp_path, monkeypatch)
 	source = Conversation(id="conv-src", title="Collab work")
 	for name, sess in (("Claude Win", "sess-1"), ("Claude WSL", "sess-2")):
-		source.members_active[name] = ConversationMember(
+		source.members_active[sess] = ConversationMember(
 			cli_session_id=sess, sender=name, cwd="C:/Work/X",
 			surface="windows", joined_at=0.0, alive=False,
 			session_ended_at="2026-06-13T00:00:00+00:00",
@@ -100,7 +100,7 @@ async def test_multi_agent_resume_prompt_still_instructs_enter_conversation(tmp_
 	prompts = _read_agent_prompts(tmp_path)
 	assert len(prompts) == 2
 	for prompt in prompts:
-		assert "Call enter_conversation" in prompt, (
-			"multi-agent resume prompt should still instruct enter_conversation so "
+		assert "Call join_conversation" in prompt, (
+			"multi-agent resume prompt should still instruct join_conversation so "
 			"each agent surfaces context from its alive peers"
 		)

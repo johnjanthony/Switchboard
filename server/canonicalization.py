@@ -1,12 +1,12 @@
-"""Path canonicalization — display-only since the conversations redesign.
+"""Path canonicalization - display-only since the conversations redesign.
 
-Routing keys are session_id / conversation_id; cwd is informational. The
-canonicalize_cwd function still normalizes raw cwd strings into a stable
-display form (so Page B shows a consistent label regardless of how the
-agent passed the path: Windows / Git-Bash / POSIX / WSL `/mnt/<letter>/...`
-all map to the same canonical form). to_firebase_key derives Firebase-safe
-keys; the only surviving caller is the legacy response-slot parser in
-firebase.py (to_firebase_key / from_firebase_key for legacy composite slots).
+Routing keys are session_id / conversation_id; cwd is informational.
+canonicalize_cwd normalizes raw cwd strings into a stable display form
+(Windows, Git-Bash /c/..., and WSL-mount /mnt/c/... forms of the same
+directory all map to one canonical string). No production path is wired
+to it yet; whether display surfaces should route cwd labels through it
+is a pending design decision, and the utility and its tests are kept
+for that. Do not delete as dead code while that decision is open.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ _WSL_MOUNT_PREFIX = re.compile(r"^/mnt/([a-z])/(.*)$")
 
 
 def canonicalize_cwd(raw: str) -> str:
-	"""Normalize raw cwd to the canonical display form used as a display label and Firebase key.
+	"""Normalize raw cwd to the canonical display form used as a display label.
 
 	Accepts both Windows-style paths (drive letter + colon, with backslash or
 	forward-slash separators, plus Git-Bash-style /c/... and WSL-mount
@@ -91,40 +91,3 @@ def canonicalize_cwd(raw: str) -> str:
 	raise CanonicalizationError(
 		f"cwd must be absolute (Windows drive letter or POSIX root), got: {raw!r}"
 	)
-
-
-def to_firebase_key(canonical_cwd: str) -> str:
-	"""Convert canonical cwd to Firebase-safe key by flattening slashes.
-
-	Each existing underscore is escaped to four underscores first; then each
-	slash becomes two underscores. The decoder distinguishes the two by
-	preferring the four-underscore match.
-
-	Examples:
-	    c:/work/foo   -> c:__work__foo
-	    c:/work_foo   -> c:__work____foo
-	    c:/work__foo  -> c:__work________foo
-	"""
-	escaped = canonical_cwd.replace("_", "____")
-	return escaped.replace("/", "__")
-
-
-def from_firebase_key(key: str) -> str:
-	"""Reverse to_firebase_key; recovers canonical cwd from Firebase key.
-
-	Walks the string left-to-right so ____ (literal _) is decoded before
-	__ (slash) and they cannot be confused with overlapping replacements.
-	"""
-	result = []
-	i = 0
-	while i < len(key):
-		if key[i:i + 4] == "____":
-			result.append("_")
-			i += 4
-		elif key[i:i + 2] == "__":
-			result.append("/")
-			i += 2
-		else:
-			result.append(key[i])
-			i += 1
-	return "".join(result)

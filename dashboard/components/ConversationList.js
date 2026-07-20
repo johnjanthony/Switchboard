@@ -1,18 +1,15 @@
 import { html, useState } from "../vendor/htm-preact.js";
-import * as fb from "../firebase.js";
-import { pendingCountFor, isActive } from "../derive.js";
-import { setHiddenCmd } from "../commands.js";
+import { pendingCountFor, isActive, formatAge } from "../derive.js";
+import { SessionsRail } from "./SessionsRail.js";
 
 // Relative "last traffic" age from meta.last_activity_at (float epoch SECONDS,
-// verified in server write_conversation_meta). Empty when never active.
+// verified in server write_conversation_meta). Empty when never active; "now"
+// for a not-yet-elapsed timestamp. Tier formatting delegates to derive.formatAge.
 function fmtLastTraffic(lastActivityAtSec) {
 	if (!lastActivityAtSec) return "";
 	const ageSec = Math.floor(Date.now() / 1000 - lastActivityAtSec);
 	if (ageSec < 0) return "now";
-	if (ageSec < 60) return `${ageSec}s`;
-	if (ageSec < 3600) return `${Math.floor(ageSec / 60)}m`;
-	if (ageSec < 86400) return `${Math.floor(ageSec / 3600)}h`;
-	return `${Math.floor(ageSec / 86400)}d`;
+	return formatAge(ageSec);
 }
 
 // Board lamp: a calling line (active + pending) pulses amber; a connected line
@@ -38,8 +35,7 @@ export function ConversationList({ store }) {
 	const rows = visibleRows.concat(hiddenRows);
 
 	const onHideToggle = (id, currentlyHidden) => {
-		const { path, value } = setHiddenCmd(id, !currentlyHidden);
-		fb.setValue(path, value);
+		store.setHidden(id, !currentlyHidden);
 	};
 
 	const renderRow = (r) => {
@@ -47,7 +43,6 @@ export function ConversationList({ store }) {
 		const ended = !isActive(r.meta);
 		const rowClass = "conv-row" +
 			(r.id === state.selectedConversationId ? " selected" : "") +
-			(r.id === state.openConversationId ? " open" : "") +
 			(ended ? " ended" : "") +
 			(r.meta.hidden ? " hidden" : "");
 		return html`
@@ -88,7 +83,6 @@ export function ConversationList({ store }) {
 								key=${r.id}
 								class=${"conv-dot" +
 									(r.id === state.selectedConversationId ? " selected" : "") +
-									(r.id === state.openConversationId ? " open" : "") +
 									(r.meta.hidden ? " hidden" : "")}
 								title=${r.meta.title || r.id}
 								onClick=${() => store.selectConversation(r.id)}
@@ -105,6 +99,7 @@ export function ConversationList({ store }) {
 
 	return html`
 		<aside class="rail rail-left">
+			<${SessionsRail} store=${store} />
 			<div class="rail-head">
 				<span class="rail-title">Board</span>
 				<label class="show-hidden">

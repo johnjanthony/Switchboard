@@ -24,14 +24,13 @@ from tests.test_gateway_notify_human import RecordingBackend
 def _make_backend() -> MagicMock:
 	backend = MagicMock()
 	backend.send_text = AsyncMock()
-	backend.send_spawn_ack = AsyncMock()
 	backend.write_conversation_meta = AsyncMock()
 	backend.write_conversation_message = AsyncMock(return_value="push-key-1")
 	backend.write_conversation_member = AsyncMock()
 	backend.remove_conversation_member = AsyncMock()
+	backend.move_conversation_member = AsyncMock()
 	backend.set_conversation_state = AsyncMock()
 	backend.set_conversation_last_activity = AsyncMock()
-	backend.set_open_conversation_id = AsyncMock()
 	backend.set_session_home = AsyncMock()
 	backend.set_global_away_mode = AsyncMock()
 	return backend
@@ -184,7 +183,7 @@ async def test_e2e_session_end_then_resume(tmp_path):
 			joined_at=0.0,
 			alive=True,
 		)
-		conv.members_active["claude"] = member
+		conv.members_active[pre_bound_session] = member
 
 	# Step 2: simulate SessionEnd — mark member dormant
 	member = next(m for m in conv.members_active.values() if m.cli_session_id == pre_bound_session)
@@ -259,7 +258,7 @@ async def test_e2e_resume_creates_continuation_conv(tmp_path):
 		joined_at=0.0,
 		alive=False,
 	)
-	source.members_active["claude-original"] = m
+	source.members_active["sess-dormant-1"] = m
 	registry.conversations["conv-dormant-src"] = source
 
 	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
@@ -319,7 +318,7 @@ async def test_e2e_fresh_spawn_joins_existing_conversation(tmp_path):
 		joined_at=0.0,
 		alive=True,
 	)
-	existing_conv.members_active["claude-host"] = m_existing
+	existing_conv.members_active["sess-host"] = m_existing
 	registry.conversations["conv-existing-target"] = existing_conv
 	registry.bind_session("sess-host", "conv-existing-target")
 

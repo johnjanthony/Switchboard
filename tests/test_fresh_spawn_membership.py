@@ -122,7 +122,8 @@ async def test_fresh_spawn_first_ask_human_creates_member(tmp_path):
 	assert member.sender == "Claude Win"
 
 	# Unblock the handler so the task completes cleanly.
-	req_id = registry.resolve(conversation_id="conv-fresh", sender="Claude Win", text="go")
+	pending = registry.pending_for_conversation("conv-fresh")[0]
+	req_id = registry.resolve(conversation_id="conv-fresh", request_id=pending.request_id, text="go")
 	assert req_id is not None
 	result = await asyncio.wait_for(task, timeout=1.0)
 	assert result == "go"
@@ -168,9 +169,6 @@ async def test_fresh_spawn_message_and_await_ensures_membership(tmp_path):
 	conv = Conversation(id="conv-fresh", title="modules (windows)")
 	registry.conversations["conv-fresh"] = conv
 	registry.bind_session("s-fresh", "conv-fresh")
-	# Mark as open so the sole-member path lobby-holds rather than emitting
-	# __CONVERSATION_EMPTY__ (which would remove the member before we can assert).
-	registry.open_conversation_id = "conv-fresh"
 	handlers = build_tool_handlers(_cfg(tmp_path), registry, backend, logger)
 
 	task = asyncio.create_task(
@@ -183,58 +181,7 @@ async def test_fresh_spawn_message_and_await_ensures_membership(tmp_path):
 	assert member is not None, "message_and_await_agent must ensure membership, not error out"
 	assert member.sender == "Claude Win"
 
-	# Sole member with no peer: the handler lobby-holds. Cancel to finish.
-	task.cancel()
-	try:
-		await task
-	except asyncio.CancelledError:
-		pass
-
-
-@pytest.mark.asyncio
-async def test_open_conversation_creates_member_for_bound_memberless_session(tmp_path):
-	"""Fresh-spawn state + open_conversation: a member is created before the
-	open pointer is set (today the rename loop silently finds none)."""
-	backend = RecordingBackend()
-	registry = Registry()
-	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
-	conv = Conversation(id="conv-fresh", title="modules (windows)")
-	registry.conversations["conv-fresh"] = conv
-	registry.bind_session("s-fresh", "conv-fresh")
-	handlers = build_tool_handlers(_cfg(tmp_path), registry, backend, logger)
-
-	result = await handlers.open_conversation("Claude Win", cli_session_id="s-fresh", cwd="C:/Work/modules")
-
-	assert result.startswith("ok")
-	members = [m for m in conv.members_active.values() if m.cli_session_id == "s-fresh"]
-	assert len(members) == 1
-	assert members[0].sender == "Claude Win"
-
-
-@pytest.mark.asyncio
-async def test_enter_conversation_current_branch_ensures_membership(tmp_path):
-	"""Fresh-spawn state + enter_conversation with no open conversation set:
-	Branch 1/5 (queue in current) must ensure membership first, converting the
-	'caller not a member' error into a real join that then blocks on the queue."""
-	backend = RecordingBackend()
-	registry = Registry()
-	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
-	conv = Conversation(id="conv-fresh", title="modules (windows)")
-	registry.conversations["conv-fresh"] = conv
-	registry.bind_session("s-fresh", "conv-fresh")
-	# open_conversation_id stays None -> open_id is None -> Branch 1/5 (current).
-	handlers = build_tool_handlers(_cfg(tmp_path), registry, backend, logger)
-
-	task = asyncio.create_task(
-		handlers.enter_conversation("Claude Win", cli_session_id="s-fresh", cwd="C:/Work/modules")
-	)
-	await asyncio.sleep(0)
-	await asyncio.sleep(0)
-
-	member = next((m for m in conv.members_active.values() if m.cli_session_id == "s-fresh"), None)
-	assert member is not None, "enter_conversation must ensure membership before queuing"
-	assert member.sender == "Claude Win"
-
+	# Sole member with no peer: the handler parks in wait_queue. Cancel to finish.
 	task.cancel()
 	try:
 		await task

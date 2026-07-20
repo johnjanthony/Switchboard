@@ -69,4 +69,25 @@ public class WidgetSnapshotBuilderTests
 		Assert.Contains("\"pushed_at\":", json);
 		Assert.Contains("\"quota\":null", json);
 	}
+
+	[Fact]
+	public void Serializes_name_and_name_source()
+	{
+		var named = new SessionModel("label", null, 160_000, 200_000, "claude-opus-4-8", SessionStatus.Live,
+			Pushed.UtcDateTime, IsError: false, SessionId: "abc", Name: "Pairing", NameSource: "custom-title");
+		var p = WidgetSnapshotBuilder.Build(new[] { named }, null, Pushed);
+		var json = JsonSerializer.Serialize(p);
+		Assert.Contains("\"name\":\"Pairing\"", json);
+		Assert.Contains("\"name_source\":\"custom-title\"", json);
+	}
+
+	[Fact]
+	public void Serializes_title_state()
+	{
+		var p = WidgetSnapshotBuilder.Build(new[] { Session("abc", 0.8), Session("def", 0.5) }, null, Pushed,
+			titleStates: new Dictionary<string, string> { ["abc"] = "star" });
+		var json = JsonSerializer.Serialize(p);
+		Assert.Contains("\"title_state\":\"star\"", json);
+		Assert.Contains("\"title_state\":null", json);
+	}
 }

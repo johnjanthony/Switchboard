@@ -72,7 +72,7 @@ fun MarkdownViewerScreen(
 				.fillMaxSize()
 				.padding(padding)
 				.pointerInput(Unit) {
-					// See SessionViewScreen for the no-consume-bail rationale.
+					// See ConversationViewScreen for the no-consume-bail rationale.
 					awaitEachGesture {
 						awaitFirstDown(requireUnconsumed = false)
 						var didPinch = false

@@ -7,6 +7,7 @@ phone path (H14)."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -47,10 +48,10 @@ def _registry_with_source_and_target() -> Registry:
 	alive combiner."""
 	registry = Registry()
 	source = Conversation(id="conv-src", title="Source")
-	source.members_active["Dormant"] = _member("sess-dormant", "Dormant", alive=False)
+	source.members_active["sess-dormant"] = _member("sess-dormant", "Dormant", alive=False)
 	registry.conversations["conv-src"] = source
 	target = Conversation(id="conv-tgt", title="Target")
-	target.members_active["Combiner"] = _member("sess-combiner", "Combiner", alive=True)
+	target.members_active["sess-combiner"] = _member("sess-combiner", "Combiner", alive=True)
 	registry.conversations["conv-tgt"] = target
 	registry.bind_session("sess-combiner", "conv-tgt")
 	return registry
@@ -75,9 +76,9 @@ async def test_combine_with_dormant_member_aborts_without_desktop_session(tmp_pa
 	# Nothing moved, nothing ended, nothing written
 	source = registry.conversations["conv-src"]
 	target = registry.conversations["conv-tgt"]
-	assert "Dormant" in source.members_active
+	assert "sess-dormant" in source.members_active
 	assert source.state == "active"
-	assert "Dormant" not in target.members_active
+	assert "sess-dormant" not in target.members_active
 	assert "sess-dormant" not in registry.session_to_conversation_id
 	assert list(tmp_path.glob("spawn-pending-*.json")) == []
 
@@ -89,7 +90,7 @@ async def test_combine_dormant_member_binds_flips_alive_and_fires_launcher(tmp_p
 	relaunch-in-flight-with-alive-set), clearing the dormancy fields."""
 	from server.conversation_ops import _perform_combine
 	registry = _registry_with_source_and_target()
-	dormant = registry.conversations["conv-src"].members_active["Dormant"]
+	dormant = registry.conversations["conv-src"].members_active["sess-dormant"]
 	dormant.session_ended_at = "2026-06-11T00:00:00+00:00"
 	dormant.session_end_reason = "logout"
 	backend = RecordingBackend()
@@ -103,7 +104,7 @@ async def test_combine_dormant_member_binds_flips_alive_and_fires_launcher(tmp_p
 
 	assert result.startswith("ok"), f"unexpected: {result}"
 	target = registry.conversations["conv-tgt"]
-	member = target.members_active["Dormant"]
+	member = target.members_active["sess-dormant"]
 	# bind + alive together at relaunch time
 	assert member.alive is True
 	assert member.session_ended_at is None
@@ -135,7 +136,7 @@ async def test_mcp_combine_path_fires_launcher_for_dormant_member(tmp_path):
 			cli_session_id="sess-combiner", cwd="C:/Work/X",
 		)
 
-	assert result.startswith("ok"), f"unexpected: {result}"
+	assert json.loads(result)["status"] == "ok", f"unexpected: {result}"
 	assert len(list(tmp_path.glob("spawn-pending-*.json"))) == 1
 	mock_launch.assert_awaited_once()
 
@@ -173,3 +174,71 @@ async def test_phone_combine_path_passes_pending_dir_and_fires_launcher(tmp_path
 
 	assert len(list(tmp_path.glob("spawn-pending-*.json"))) == 1
 	mock_launch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_combine_launcher_failure_rolls_dormant_member_back(tmp_path):
+	from server.conversation_ops import _perform_combine
+	registry = _registry_with_source_and_target()  # has a dormant movable member "sess-dormant"
+	backend = RecordingBackend()
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+	member_before = registry.conversations["conv-src"].members_active["sess-dormant"]
+	saved_reason = member_before.session_end_reason
+
+	with patch("server.spawn.user_has_interactive_session", AsyncMock(return_value=True)), \
+		patch("server.spawn.invoke_spawn_launcher", AsyncMock(side_effect=RuntimeError("schtasks 1"))):
+		result = await _perform_combine(
+			registry, "conv-src", "conv-tgt", logger, pending_dir=tmp_path, backend=backend,
+		)
+	for _ in range(5):
+		await asyncio.sleep(0)
+
+	assert not result.startswith("ERROR")  # the combine itself committed
+	member = registry.conversations["conv-tgt"].members_active["sess-dormant"]
+	assert member.alive is False
+	assert member.session_end_reason == saved_reason  # captured fields restored
+	assert registry.session_to_conversation_id.get("sess-dormant") is None  # unbound
+	assert any(cid == "conv-tgt" and m.alive is False for cid, m in backend.member_writes)  # dormant re-persisted
+	assert any("long-press" in t for t in backend.sent_texts)  # working recovery advertised
+
+
+@pytest.mark.asyncio
+async def test_combine_launcher_success_keeps_flip(tmp_path):
+	from server.conversation_ops import _perform_combine
+	registry = _registry_with_source_and_target()
+	backend = RecordingBackend()
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+	with patch("server.spawn.user_has_interactive_session", AsyncMock(return_value=True)), \
+		patch("server.spawn.invoke_spawn_launcher", AsyncMock(return_value=None)):
+		result = await _perform_combine(
+			registry, "conv-src", "conv-tgt", logger, pending_dir=tmp_path, backend=backend,
+		)
+	assert not result.startswith("ERROR")
+	member = registry.conversations["conv-tgt"].members_active["sess-dormant"]
+	assert member.alive is True
+	assert registry.session_to_conversation_id.get("sess-dormant") == "conv-tgt"
+
+
+@pytest.mark.asyncio
+async def test_combine_leaves_antigravity_member_dormant_with_notice(tmp_path):
+	from server.conversation_ops import _perform_combine
+	from server.session_registry import SessionRegistry
+	registry = _registry_with_source_and_target()
+	registry.sessions = SessionRegistry()
+	registry.sessions.record_session_start("sess-dormant", cwd="C:/Work/X", cli="antigravity")
+	backend = RecordingBackend()
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+
+	with patch("server.spawn.user_has_interactive_session", AsyncMock(return_value=True)):
+		result = await _perform_combine(
+			registry, "conv-src", "conv-tgt", logger, pending_dir=tmp_path, backend=backend,
+		)
+	for _ in range(5):
+		await asyncio.sleep(0)
+
+	assert not result.startswith("ERROR")
+	member = registry.conversations["conv-tgt"].members_active["sess-dormant"]
+	assert member.alive is False
+	assert registry.session_to_conversation_id.get("sess-dormant") is None
+	assert not list(tmp_path.glob("spawn-pending-*.json"))
+	assert any("agy --conversation sess-dormant" in t for t in backend.sent_texts)

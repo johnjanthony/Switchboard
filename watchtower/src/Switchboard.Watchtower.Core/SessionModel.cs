@@ -9,7 +9,9 @@ public sealed record SessionModel(
 	SessionStatus Status,
 	DateTime LastActiveUtc,
 	bool IsError = false,
-	string? SessionId = null)  // Claude Code session id (transcript filename stem); null when unknown
+	string? SessionId = null,  // Claude Code session id (transcript filename stem); null when unknown
+	string? Name = null,
+	string? NameSource = null)
 {
 	public double Pct => WindowSize <= 0 ? 0 : (double)ContextTokens / WindowSize;
 	public Severity Severity => SeverityClassifier.For(Pct);

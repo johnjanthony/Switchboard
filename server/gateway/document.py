@@ -8,8 +8,19 @@ from pathlib import Path
 from urllib.parse import urlparse, unquote
 
 _MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
-_DENYLIST_EXACT = frozenset({".env", "service-account.json"})
+_DENYLIST_EXACT = frozenset({".env", "service-account.json", "credentials.json"})
 _DENYLIST_GLOBS = ("*token*", "*secret*", "*.pem", "*.key", ".env*", "*.env")
+
+# Extension allowlist (REV-004): send_document_human exists to deliver reports,
+# logs, diffs, and images to the phone. Everything else - source, archives,
+# binaries, HTML/SVG (active content), JSON (credentials shape), key material
+# (id_rsa, *.p12, *.jks, ...), and extensionless files - is refused. The
+# denylist above still runs first so known-secret names keep their specific
+# rejection messages.
+_ALLOWED_EXTENSIONS = frozenset({
+	".md", ".markdown", ".txt", ".log", ".csv", ".tsv", ".diff", ".patch",
+	".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+})
 
 async def _sha256_hex(path: Path) -> str:
 	def _do_sha256():
@@ -23,15 +34,19 @@ async def _sha256_hex(path: Path) -> str:
 def _validate_path(path_str: str, cwd: Path | None = None) -> Path:
 	"""Return the resolved Path if safe; raise ValueError otherwise."""
 	p = Path(path_str)
+	_cwd = (cwd or Path.cwd()).resolve()
 	if p.is_absolute():
 		resolved = p.resolve()
 	else:
-		_cwd = (cwd or Path.cwd()).resolve()
 		resolved = (_cwd / p).resolve()
-		try:
-			resolved.relative_to(_cwd)
-		except ValueError:
-			raise ValueError(f"Path escapes project directory: {path_str}")
+	# Containment is enforced for every input, absolute or relative: an absolute
+	# path is only accepted if it still resolves to somewhere inside the project.
+	# (Previously absolute paths skipped this check entirely, letting an agent
+	# read any file on the machine.)
+	try:
+		resolved.relative_to(_cwd)
+	except ValueError:
+		raise ValueError(f"Path escapes project directory: {path_str}")
 
 	if not resolved.exists():
 		raise ValueError(f"File not found: {path_str}")
@@ -50,6 +65,13 @@ def _validate_path(path_str: str, cwd: Path | None = None) -> Path:
 			raise ValueError(
 				f"File matches restricted pattern '{pattern}': {resolved.name}"
 			)
+
+	ext = resolved.suffix.lower()
+	if ext not in _ALLOWED_EXTENSIONS:
+		allowed = ", ".join(sorted(_ALLOWED_EXTENSIONS))
+		raise ValueError(
+			f"File type '{ext or '(no extension)'}' is not on the shareable allowlist ({allowed}): {resolved.name}"
+		)
 
 	return resolved
 

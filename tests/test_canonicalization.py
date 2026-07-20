@@ -1,5 +1,5 @@
 import pytest
-from server.canonicalization import canonicalize_cwd, to_firebase_key, from_firebase_key, CanonicalizationError
+from server.canonicalization import canonicalize_cwd, CanonicalizationError
 
 
 class TestCanonicalize:
@@ -100,29 +100,7 @@ class TestCanonicalize:
 		once = canonicalize_cwd("/mnt/c/Work/Switchboard")
 		assert canonicalize_cwd(once) == once
 
-
-class TestFirebaseKey:
-	def test_flatten_slashes(self):
-		assert to_firebase_key("c:/work/switchboard") == "c:__work__switchboard"
-
-	def test_no_double_underscore_collision(self):
-		key1 = to_firebase_key("c:/work/foo")
-		key2 = to_firebase_key("c:/work__foo")
-		assert key1 != key2
-
 	def test_idempotent_on_already_canonical(self):
 		input_path = "c:/work/switchboard"
 		canonical = canonicalize_cwd(input_path)
 		assert canonicalize_cwd(canonical) == canonical
-
-	def test_round_trip_simple(self):
-		path = "c:/work/switchboard"
-		assert from_firebase_key(to_firebase_key(path)) == path
-
-	def test_round_trip_with_underscores(self):
-		path = "c:/work__foo"
-		assert from_firebase_key(to_firebase_key(path)) == path
-
-	def test_round_trip_underscore_then_slash(self):
-		path = "c:/work_/foo"
-		assert from_firebase_key(to_firebase_key(path)) == path

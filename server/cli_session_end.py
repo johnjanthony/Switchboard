@@ -1,8 +1,7 @@
 """SessionEnd handler: marks a conversation member dormant when its CLI session ends.
 
 Called by:
-- POST /cli-session/end (HTTP route in server/main.py)
-- (Future) the dispatcher when other code paths surface a SessionEnd
+- the SessionEnd marker-file sweep (dispatch_session_end_markers in server/gateway/dispatch.py)
 
 reason values:
 - "logout"        — agent typed /exit; member dormant but resumable
@@ -24,6 +23,7 @@ async def handle_session_end(
 	now: Callable[[], str],
 	backend=None,
 	logger=None,
+	session_registry=None,
 ) -> None:
 	"""Mark a conversation member dormant when its CLI session ends.
 
@@ -32,8 +32,13 @@ async def handle_session_end(
 	  for the dormancy system message.
 	logger: optional logger with a surface_error(msg) coroutine -- if provided,
 	  the three silent early-return paths emit a loud log instead of returning silently.
+	session_registry: optional SessionRegistry -- if provided, its record is marked
+	  ended BEFORE the unbind below, so even a session with no conversation binding
+	  still gets its record ended.
 	"""
 	from server.gateway.bg_tasks import _spawn_bg
+	if session_registry is not None:
+		session_registry.record_session_end(session_id, reason=reason, ended_at=now())
 	conversation_id = registry.unbind_session(session_id)
 	if conversation_id is None:
 		if logger is not None:
@@ -48,11 +53,7 @@ async def handle_session_end(
 				f"session_end_conv_missing: session {session_id} bound to {conversation_id} but conversation absent (reason={reason})"
 			)
 		return
-	target = None
-	for member in conv.members_active.values():
-		if member.cli_session_id == session_id:
-			target = member
-			break
+	target = conv.members_active.get(session_id)
 	if target is None:
 		if logger is not None:
 			await logger.surface_error(
@@ -82,46 +83,52 @@ async def handle_session_end(
 			backend.write_conversation_message(conversation_id, dormancy_msg),
 			label=f"fb_write_dormancy_msg:{conversation_id}:{target.sender}",
 		)
-	# Wake every waiter blocked in message_and_await_agent on this conv.
-	# Resolve their futures with the dormancy_msg text so the peer surfaces
-	# from its wait_for and can decide what to do next on its own turn.
+	# Wake every waiter blocked in message_and_await_agent on this conv. Each
+	# live waiter gets its full unseen delta composed via _compose_wake_payload
+	# - which includes the just-appended dormancy line - NOT just the dormancy
+	# text: the cursor jump below would otherwise hide any not-yet-seen message
+	# from every future wake and join log (REV-111). The empty-payload fallback
+	# guards the degenerate already-caught-up case so a wake never resolves
+	# with an empty string.
 	# Don't hold the conv.lock when resolving futures: future callbacks may
 	# schedule async work, and we're not inside the lock here (the route
 	# handler in main.py doesn't take it). Snapshot then clear, then resolve.
+	from server.conversation_ops import _compose_wake_payload
 	to_wake = list(conv.wait_queue)
 	conv.wait_queue.clear()
 	for entry in to_wake:
 		fut = entry.get("future")
-		if fut is not None and not fut.done():
+		if fut is None or fut.done():
+			continue
+		member = entry.get("member")
+		if member is None:
 			fut.set_result(dormancy_msg["text"])
-			# Advance the woken member's cursor past the dormancy message so
-			# its next wake delta does not re-include the dormancy line
-			# (parity with _wake_one_from in conversation_ops.py). F-70.
-			member = entry.get("member")
-			if member is not None:
-				member.last_seen_seq = len(conv.messages)
-	# Also surface dormancy to any mint-path opener blocked on open_peer_future
-	# (e.g. the opener's session itself ended, or a peer's session ended before
-	# they fully joined). Returning the dormancy text lets the opener decide
-	# what to do next instead of hanging until timeout.
-	opener_future = conv.open_peer_future
-	if opener_future is not None and not opener_future.done():
-		opener_future.set_result(dormancy_msg["text"])
-		conv.open_peer_future = None
-	# Cancel any pending ask_human futures owned by this departed member —
-	# their answer can never arrive (the agent's session is gone), so freeing
-	# the future immediately avoids a 24h _TIMEOUT wait if the agent ever
-	# reconnects mid-block. Match by routing identity (cli_session_id), not by
-	# sender string: ask_human keys the pending by the RAW agent-supplied
-	# sender, which differs from the member's disambiguated sender on a
-	# same-name collision (e.g. pending 'Claude' vs member 'Claude 2'), so a
-	# sender-string compare would silently miss the cancellation (M2). Fall
-	# back to the sender match for any legacy pending with no recorded session.
+			continue
+		payload = _compose_wake_payload(conv, member, entry.get("waiting_kind", "msg_and_await"))
+		fut.set_result(payload or dormancy_msg["text"])
+		# Advance the woken member's cursor past everything just delivered so
+		# its next wake delta does not re-include it (parity with
+		# _wake_one_from in conversation_ops.py). F-70.
+		member.last_seen_seq = len(conv.messages)
+	# Terminal handling for pendings owned by the departed session (REV-001).
+	# Live futures are cancelled - freeing the asker instead of a 24h wait -
+	# and the awaiting coroutine's CancelledError arm performs the Firebase
+	# cancel, so no direct write happens here. Parked records (future=None,
+	# T-001) have no coroutine: on a resumable end (logout/other) the question
+	# SURVIVES - it stays parked and phone-answerable, and the answer notice
+	# queues for delivery on resume. On a permanent end (clear/compact)
+	# nothing can ever deliver the answer, so the record terminates properly:
+	# Firebase cancel + replay memory, the pair the old remove()-only path
+	# forgot (ghost questions that resurrected across restarts).
+	from server.gateway.pending_lifecycle import terminate_pending
 	for pending in registry.pending_for_conversation(conversation_id):
-		owned = (
-			pending.cli_session_id == session_id
-			if pending.cli_session_id is not None
-			else pending.sender == target.sender
+		if pending.cli_session_id != session_id:
+			continue
+		parked = pending.future is None
+		if parked and reason not in PERMANENTLY_LOST_REASONS:
+			continue
+		await terminate_pending(
+			registry, backend, logger, pending,
+			mark_cancelled=parked,
+			remember_resolved=parked,
 		)
-		if owned:
-			registry.remove(conversation_id, pending.sender, request_id=pending.request_id)

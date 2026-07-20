@@ -37,7 +37,7 @@ Local host (Windows)                              │ Cloud / Mobile
 
 **Components.**
 
-- **MCP server** (Python 3.11+, FastMCP with `stateless_http=False`). Serves the streamable HTTP transport on `127.0.0.1:9876` by default (`SWITCHBOARD_HOST` defaults to `127.0.0.1`; set to `0.0.0.0` for WSL-reachable; `SWITCHBOARD_PORT` defaults to `9876`). Plus five HTTP endpoints (`/healthz`, `/away-mode`, `/stats`, `/agent_status`, `/cli-session/end`) for hook callbacks and health checks.
+- **MCP server** (Python 3.11+, FastMCP with `stateless_http=False`). Serves the streamable HTTP transport on `127.0.0.1:9876` by default (`SWITCHBOARD_HOST` defaults to `127.0.0.1`; set to `0.0.0.0` for WSL-reachable; `SWITCHBOARD_PORT` defaults to `9876`). Plus four HTTP endpoints (`/healthz`, `/away-mode`, `/stats`, `/agent_status`) for hook callbacks and health checks.
 - **Firebase Realtime Database** — the persistence and phone-side synchronization surface. The server writes; the Android app reads + writes replies.
 - **Firebase Cloud Messaging (FCM)** — delivers push notifications. Three channels (Asks / Updates / Documents) drive separate notification priorities.
 - **Android app** (`android/app/`) and Wear OS app (`android/wear/`) — the human surface. Kotlin/Compose. Notifications, conversation list, conversation view, reply input, spawn dialog, resume dialog, combine dialog, global away pill.
@@ -193,7 +193,7 @@ Sets `registry.global_away_mode` to `bool(value)` and mirrors to Firebase at `/g
 
 ## 5. HTTP endpoints
 
-Five routes mounted on the Starlette app:
+Four routes mounted on the Starlette app:
 
 | Route | Method | Purpose |
 |---|---|---|
@@ -201,7 +201,6 @@ Five routes mounted on the Starlette app:
 | `/away-mode` | GET | Returns the current global away-mode flag. Consumed by `turn-end-hook-away-mode.py` to gate turn-end. Query param `cwd` is informational only (logged). |
 | `/stats` | GET | Widget/Watchtower roll-up: active_conversations, pending_count, oldest_pending_age_seconds, away_mode, healthy. |
 | `/agent_status` | POST | Hook-driven status writes. Body: `{session_id, state, detail}`. Server resolves the session to a conversation and writes per-sender entries to `/conversations/<id>/agent_status/<sender>` (gated on global away mode; `state == "clear"` deletes). |
-| `/cli-session/end` | POST | SessionEnd-hook callback. Body: `{session_id, reason}` where reason ∈ {`logout`, `clear`, `compact`, `other`}. Server marks the matching member dormant; for `clear`/`compact` additionally sets `session_lost_permanently=True`; wakes blocked waiters with a dormancy system message; cancels any open `ask_human` futures owned by the departed member. |
 
 A StaticFiles mount at `/dashboard` serves the Operator cockpit.
 
@@ -216,7 +215,7 @@ Four Python hook scripts bundled with the Claude Code plugin. Registered via `ho
 | Hook | Event | Purpose |
 |---|---|---|
 | `cli-session-injector-hook.py` | PreToolUse | Self-filters on `tool_name.startswith("mcp__switchboard__")`. Reads `session_id` and `cwd` from the hook payload, merges them into the tool's input via `hookSpecificOutput.updatedInput`. The agent never passes either field directly. **`updatedInput` replaces the input** (despite docs claiming merge), so the hook explicitly carries forward every original `tool_input` field. **Stdin must be read as raw bytes** (`sys.stdin.buffer.read()` + `json.loads(bytes)`) — `json.load(sys.stdin)` uses a TextIOWrapper that on Windows defaults to cp1252+surrogateescape and mangles UTF-8 (em-dashes, emojis) into surrogate codepoints. |
-| `cli-session-end-hook.py` | SessionEnd | Writes a SessionEnd marker FILE under `SWITCHBOARD_MARKER_DIR` (atomic temp + `os.replace`), which the server's `dispatch_session_end_markers` loop sweeps to mark the member dormant (T-146: the marker file wins the process-exit race a synchronous POST loses; see section 13.3). The legacy `POST /cli-session/end` route remains for manual/testing use. Fires on orderly Claude exit (`/exit`, Ctrl+D, terminal closed); does NOT fire on SIGKILL / BSOD / network loss, which leave the member stale-alive. |
+| `cli-session-end-hook.py` | SessionEnd | Writes a SessionEnd marker FILE under `SWITCHBOARD_MARKER_DIR` (atomic temp + `os.replace`), which the server's `dispatch_session_end_markers` loop sweeps to mark the member dormant (T-146: the marker file wins the process-exit race a synchronous POST loses; see section 13.3). Fires on orderly Claude exit (`/exit`, Ctrl+D, terminal closed); does NOT fire on SIGKILL / BSOD / network loss, which leave the member stale-alive. |
 | `agent-status-hook.py` | PreToolUse, PostToolUse, UserPromptSubmit, Stop | POSTs `{session_id, state, detail}` to `POST /agent_status` to surface "thinking" / "tool:X" indicators on the phone. Server gated on global away mode; writes are dropped at-desk. |
 | `turn-end-hook-away-mode.py` | Stop | Calls `GET /away-mode`. If the response says away mode is on, returns a `BLOCK` decision (Claude) so the agent's turn cannot end until output has been routed through `ask_human` / `notify_human`. |
 
@@ -343,24 +342,6 @@ conversations/<conversation_id>/
   members_history/<sender>/     # explicit-leave + force-end + auto-leave departures
     (same fields as members_active, plus left_at)
 
-  messages/<push_id>/           # Firebase push keys, lexicographically time-ordered
-    seq                         (int -- only on server-internal dict-form messages such as force-end/combine/spawn notices; absent on question/notify/document/agent_msg/parting; the Android client does not read it)
-    sender                      (str)
-    type                        "agent_msg" | "question" | "human" | "notify"
-                                | "document" | "parting" | "system"
-    text                        (str)
-    url                         (str | null)
-    filename                    (str | null)
-    request_id                  (str | null — links question to response)
-    attached_to_msg_id          (str | null — phone-side in-line reply linkage)
-    timestamp                   (iso-8601)
-    format                      "plain" | "markdown"
-    suggestions                 (list[str] | null)
-    cancelled                   (bool)
-    rejected                    (bool)
-    title                       (str | null — snapshot)
-    opened                      (bool)
-
   pending_questions/<request_id>/
     sender                        (str)
     questionText                  (str)
@@ -368,16 +349,34 @@ conversations/<conversation_id>/
     suggestions                   (list[str] | null)
     cancelled                     (bool)
 
-  answers/<request_id>/         # phone -> server: John's reply to a pending ask_human
-    text
-    sender
-    request_id
-    written_at
-
   agent_status/<sender>/        # per-member; written only while away mode is on
     state                       "thinking" | "tool:<name>" | ...
     detail                      (str | null)
     updated_at                  (Firebase server-timestamp sentinel)
+
+messages/<conversation_id>/<push_id>/  # Firebase push keys, lexicographically time-ordered
+  seq                         (int -- only on server-internal dict-form messages such as force-end/combine/spawn notices; absent on question/notify/document/agent_msg/parting; the Android client does not read it)
+  sender                      (str)
+  type                        "agent_msg" | "question" | "human" | "notify"
+                              | "document" | "parting" | "system"
+  text                        (str)
+  url                         (str | null)
+  filename                    (str | null)
+  request_id                  (str | null — links question to response)
+  attached_to_msg_id          (str | null — phone-side in-line reply linkage)
+  timestamp                   (iso-8601)
+  format                      "plain" | "markdown"
+  suggestions                 (list[str] | null)
+  cancelled                   (bool)
+  rejected                    (bool)
+  title                       (str | null — snapshot)
+  opened                      (bool)
+
+answers/<conversation_id>/<request_id>/  # phone -> server: John's reply to a pending ask_human
+  text
+  sender
+  request_id
+  written_at
 
 cli_sessions/<session_id>/
   home_conversation_id          (conversation_id)
@@ -419,6 +418,8 @@ admin_notifications/<push_id>/
   timestamp
 ```
 
+Once a conversation is Ended, its `conversations/<id>/` index card plus its companion `/messages/<id>` and `/answers/<id>` nodes are deleted by an hourly retention sweep after `SWITCHBOARD_CONVERSATION_RETENTION_HOURS` (default 72).
+
 ### 10.1 Clear-write convention
 
 Setting a Firebase node to `None` via `ref.set(None)` raises `ValueError('Value must not be None.')` in `firebase_admin`. All Switchboard setters that accept a nullable value (e.g., `set_open_conversation_id`, `set_session_home`) route the `None` case through `ref.delete()`. The node is **absent** after a clear, not `null`-valued.
@@ -442,7 +443,7 @@ Setting a Firebase node to `None` via `ref.set(None)` raises `ValueError('Value 
 On startup, `server/hydration.py:hydrate_from_firebase` rebuilds the in-memory registry from Firebase:
 
 1. **Global settings** — `away_mode`, `open_conversation_id`.
-2. **Conversations** — every `conversations/<id>/` node whose `meta/state == "active"` is restored. Ended conversations are skipped (they live in Firebase as history but aren't loaded into memory).
+2. **Conversations** — every `conversations/<id>/` node whose `meta/state == "active"` is restored. Ended conversations are skipped (they live in Firebase as history but aren't loaded into memory). For each hydrated Active conversation, messages are additionally read from the companion top-level `messages/<id>` node.
 3. **Open-pointer validation** — if `_open_conversation_id` is set but the referenced conv wasn't hydrated (Ended or missing), hydration clears the pointer in-memory AND calls `backend.set_open_conversation_id(None)` to delete the Firebase node. The system self-heals from dangling pointers without requiring manual intervention.
 4. **Session home pointers** — `cli_sessions/<session_id>/home_conversation_id`, skipping any pointer whose home isn't in the hydrated set (avoids re-binding to Ended homes).
 5. **Session-to-conversation bindings** — derived from each Active conversation's members: only ALIVE members are re-bound. Dormant members are deliberately left unbound (the steady-state invariant is "dormant = unbound"); resume re-binds and flips a member alive only when it actually relaunches. Re-binding dormant members at hydration previously broke phone Resume permanently after a restart (H03/M21).
@@ -485,7 +486,7 @@ Title bar shows the conversation title followed by the comma-joined member sende
 
 Bubble feed renders messages chronologically; right-aligned for John, left for agents, system messages styled distinctly. Markdown rendering when `format == "markdown"`. Suggestion buttons under questions. A horizontal pull (drag left/right) reveals message timestamps; pinch zooms text scale.
 
-Reply input visible when a pending `ask_human` exists in the conv; routed via `conversations/<conv_id>/answers/<request_id>/`. Suggestion-chip taps short-circuit the typing path.
+Reply input visible when a pending `ask_human` exists in the conv; routed via `answers/<conv_id>/<request_id>/`. Suggestion-chip taps short-circuit the typing path.
 
 ### 12.3 Spawn dialog
 
@@ -544,11 +545,12 @@ Switchboard ships as a Claude Code plugin. From any Claude Code session:
 /plugin install switchboard@switchboard
 ```
 
-The plugin install wires the skill and four hooks. The MCP server connection itself is bootstrapped separately per-host (chezmoi dotfiles, or `claude mcp add switchboard --scope user --transport http http://<host>:9876/mcp`). WSL agents require bridge networking (not mirrored), `SWITCHBOARD_HOST=0.0.0.0` on the server, and a Windows firewall inbound rule for TCP 9876 from the WSL subnet.
+The plugin install wires the skill and four hooks. The MCP server connection itself is bootstrapped separately per-host (chezmoi dotfiles, or `claude mcp add switchboard --scope user --transport http http://<host>:9876/mcp --header "Authorization: Bearer <SWITCHBOARD_TOKEN value>"` for non-loopback hosts). WSL agents require bridge networking (not mirrored), `SWITCHBOARD_HOST=0.0.0.0` on the server, and a Windows firewall inbound rule for TCP 9876 from the WSL subnet. A non-loopback bind also requires `SWITCHBOARD_TOKEN` set: the server refuses to start without one (REV-003 fail-closed), and non-loopback clients must send `Authorization: Bearer <token>` on every route except `/healthz`.
 
 WSL agents also need env vars pointing their hook scripts at the Windows host (the IP from `/etc/resolv.conf` or `ip route show default | awk '{print $3}'`):
 
-- `SWITCHBOARD_BASE_URL` -- both HTTP hooks (`agent-status-hook.py` -> `/agent_status`, `turn-end-hook-away-mode.py` -> `/away-mode`).
+- `SWITCHBOARD_BASE_URL` -- the three HTTP hooks (`agent-status-hook.py` -> `/agent_status`, `turn-end-hook-away-mode.py` -> `/away-mode`, `cli-session-start-hook.py` -> `/session_start`).
+- `SWITCHBOARD_TOKEN` -- the same three hooks; attached as `Authorization: Bearer <token>` when set. Required for WSL agents once the server enforces a token.
 - `SWITCHBOARD_MARKER_DIR` -- `cli-session-end-hook.py` (marker-file path, not HTTP).
 
 Gemini CLI gets a separate AfterAgent hook installed via `scripts/install-turn-end-hook.ps1`.
@@ -569,7 +571,9 @@ Gemini CLI gets a separate AfterAgent hook installed via `scripts/install-turn-e
 | `SWITCHBOARD_WINDOWS_SPAWN_ROOT` | For spawn | — | Windows project root (e.g. `C:\Work`). Alias: `SWITCHBOARD_SPAWN_ROOT`. |
 | `SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT` | No | `work` | Segment appended to resolved WSL home for WSL project paths. |
 | `SWITCHBOARD_WSL_HOME` | No | (probed via wsl.exe) | Escape hatch overriding the resolved WSL home path; first-priority source in resolve_wsl_home; used when the NSSM service runs in Session 0 where the wsl.exe probe fails. |
-| `SWITCHBOARD_RATE_LIMIT` | No | `30` | Per-conversation rate limit for `ask_human` + `notify_human` + `send_document_human` (tokens/min). |
+| `SWITCHBOARD_RATE_LIMIT` | No | `30` | Per-conversation rate limit for `ask_human` + `notify_human` + `send_document_human` + `message_and_await_agent` (tokens/min; the last degrades to FCM suppression instead of rejecting). |
+| `SWITCHBOARD_TOKEN` | For non-loopback | — | Shared-secret for the Bearer gate; required when `SWITCHBOARD_HOST` is non-loopback (server refuses to start without it). Loopback callers and `/healthz` are exempt. |
+| `SWITCHBOARD_ROUTE_RATE_LIMIT` | No | `600` | Coarse per-route rate limit for the unauthenticated POST routes (tokens/min per route; `0` disables). |
 
 ---
 
@@ -590,10 +594,10 @@ Gemini CLI gets a separate AfterAgent hook installed via `scripts/install-turn-e
 
 ### 15.3 Security
 
-- **Localhost bind by default.** `SWITCHBOARD_HOST=127.0.0.1` keeps the server unreachable off-host. WSL setups must explicitly set `0.0.0.0` and gate via firewall to the WSL subnet only.
+- **Layered network exposure control.** Loopback bind (`SWITCHBOARD_HOST=127.0.0.1`) by default keeps the server unreachable off-host. A non-loopback bind (`0.0.0.0`, for WSL) requires `SWITCHBOARD_TOKEN`: `load_config` raises `ConfigError` at startup if it's unset (REV-003 fail-closed). Once set, `TokenAuthMiddleware` gates every route except `/healthz` behind `Authorization: Bearer <token>`, exempting loopback peers regardless of bind. The WSL-subnet firewall rule remains recommended as defense-in-depth, not the enforced control.
 - **No sandboxing.** Spawned agents run with `--dangerously-skip-permissions`; safety is governed by the agent's `SKILL.md` instructions, which gate destructive actions behind `ask_human`. Switchboard enforces the protocol (no terminal leaks while away), not the execution.
-- **Document path validation.** `send_document_human` denylist matches `.env*`, `*token*`, `*secret*`, `*.pem`, `*.key`. Path-traversal (`..`) rejected. 5 MB cap. SHA-256 logged.
-- **Rate limiting.** `ask_human` + `notify_human` + `send_document_human` bucket per conversation, default 30 tokens/min.
+- **Document path validation.** `send_document_human` runs a secret-name denylist first (`.env`, `service-account.json`, `credentials.json` exact; `*token*`, `*secret*`, `*.pem`, `*.key`, `.env*`, `*.env` globs), then an extension allowlist (`.md` `.markdown` `.txt` `.log` `.csv` `.tsv` `.diff` `.patch` `.pdf` `.png` `.jpg` `.jpeg` `.gif` `.webp`; extensionless files refused). Path-traversal (`..`) rejected. 5 MB cap. SHA-256 logged.
+- **Rate limiting.** `ask_human` + `notify_human` + `send_document_human` + `message_and_await_agent` bucket per conversation, default 30 tokens/min; `message_and_await_agent` degrades by suppressing the FCM push rather than rejecting.
 
 ### 15.4 Modalities
 

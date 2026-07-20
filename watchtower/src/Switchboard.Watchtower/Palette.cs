@@ -27,27 +27,27 @@ internal sealed class Palette
 			Background = Color.FromArgb(31, 31, 31);
 			Surface = Color.FromArgb(42, 42, 42);
 			Text = Color.FromArgb(237, 237, 237);
-			Muted = Color.FromArgb(154, 160, 166);
+			Muted = StatusColors.Grey;
 			Track = Color.FromArgb(58, 58, 58);
 		}
-		Warning = Color.FromArgb(210, 153, 34);
+		Warning = StatusColors.Amber;
 	}
 
 	public static Color ForSeverity(Severity s) => s switch
 	{
-		Severity.Red => Color.FromArgb(248, 81, 73),
-		Severity.Amber => Color.FromArgb(210, 153, 34),
-		_ => Color.FromArgb(63, 185, 80),
+		Severity.Red => StatusColors.Red,
+		Severity.Amber => StatusColors.Amber,
+		_ => StatusColors.Green,
 	};
 
 	// Status-page dot colors. Green/yellow/red endpoints match the widget rings palette;
 	// major gets a distinct orange so partial vs full outage read differently; unknown is muted grey.
 	public static Color ForClaudeStatus(ClaudeStatusLevel level) => level switch
 	{
-		ClaudeStatusLevel.Operational => Color.FromArgb(63, 185, 80),
-		ClaudeStatusLevel.Minor => Color.FromArgb(240, 205, 40),
+		ClaudeStatusLevel.Operational => StatusColors.Green,
+		ClaudeStatusLevel.Minor => StatusColors.Yellow,
 		ClaudeStatusLevel.Major => Color.FromArgb(235, 140, 50),
-		ClaudeStatusLevel.Critical => Color.FromArgb(248, 81, 73),
-		_ => Color.FromArgb(154, 160, 166),
+		ClaudeStatusLevel.Critical => StatusColors.Red,
+		_ => StatusColors.Grey,
 	};
 }

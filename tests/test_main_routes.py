@@ -26,27 +26,31 @@ def _make_request(cwd: str = "") -> Request:
 async def test_away_mode_route_returns_global_flag_invariant_of_cwd(tmp_path):
 	"""Post-conversations-redesign the route returns the global flag regardless
 	of any `?cwd=` query (which is accepted but ignored for back-compat with
-	older hook deployments)."""
+	older hook deployments). No `session_id` is supplied here, so notices is
+	always the empty list."""
+	from server.session_registry import SessionRegistry
+
 	registry = make_registry_with_loopback()
 	registry.update_global_away_cache(True)
-	route = _build_away_mode_route(registry)
+	session_registry = SessionRegistry()
+	route = _build_away_mode_route(registry, session_registry)
 
 	# No cwd → reflects global flag
 	resp = await route(_make_request())
 	assert resp.status_code == 200
-	assert json.loads(resp.body) == {"active": True}
+	assert json.loads(resp.body) == {"active": True, "notices": []}
 
 	# Garbage cwd → still reflects global flag (legacy clients send these;
 	# server ignores)
 	resp = await route(_make_request("relative/path"))
 	assert resp.status_code == 200
-	assert json.loads(resp.body) == {"active": True}
+	assert json.loads(resp.body) == {"active": True, "notices": []}
 
 	# Flag flips → response flips
 	registry.update_global_away_cache(False)
 	resp = await route(_make_request("c:/work/sw"))
 	assert resp.status_code == 200
-	assert json.loads(resp.body) == {"active": False}
+	assert json.loads(resp.body) == {"active": False, "notices": []}
 
 
 # --- T7 / H9: /collab-partner-state route ---
@@ -95,6 +99,7 @@ async def test_healthz_returns_pending_listeners_and_dispatch_loops(tmp_path, mo
 		return JSONResponse({
 			"pending": {
 				"count": registry.pending_count,
+				"parked": registry.parked_count,
 				"oldest_pending_age_seconds": registry.oldest_pending_age_seconds,
 				"total_answered": registry.total_answered,
 			},
@@ -113,3 +118,4 @@ async def test_healthz_returns_pending_listeners_and_dispatch_loops(tmp_path, mo
 	}
 	assert body["listeners"][0]["state"] == "live"
 	assert body["pending"]["count"] == 0
+	assert body["pending"]["parked"] == 0

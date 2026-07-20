@@ -31,4 +31,24 @@ public static class TranscriptParser
 			return null;
 		}
 	}
+
+	public static (string Title, bool Custom)? ParseTitleLine(string line)
+	{
+		try
+		{
+			using var doc = JsonDocument.Parse(line);
+			var root = doc.RootElement;
+			if (root.ValueKind != JsonValueKind.Object) return null;
+			if (!root.TryGetProperty("type", out var t) || t.ValueKind != JsonValueKind.String) return null;
+			var type = t.GetString();
+			if (type == "custom-title" && root.TryGetProperty("customTitle", out var ct)
+				&& ct.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(ct.GetString()))
+				return (ct.GetString()!, true);
+			if (type == "ai-title" && root.TryGetProperty("aiTitle", out var at)
+				&& at.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(at.GetString()))
+				return (at.GetString()!, false);
+			return null;
+		}
+		catch (JsonException) { return null; }
+	}
 }

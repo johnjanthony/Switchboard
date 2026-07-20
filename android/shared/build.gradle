@@ -23,11 +23,13 @@ android {
 dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.10.0'
+    api 'androidx.lifecycle:lifecycle-process:2.10.0'
 
     // Firebase
     api platform('com.google.firebase:firebase-bom:32.7.2')
     api 'com.google.firebase:firebase-database-ktx'
     api 'com.google.firebase:firebase-auth-ktx'
+    api 'com.google.firebase:firebase-messaging-ktx'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-play-services'
 
     // Credential Manager for Google Sign-In

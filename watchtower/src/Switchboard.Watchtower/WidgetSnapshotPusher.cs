@@ -33,7 +33,6 @@ internal sealed class WidgetSnapshotPusher
 			if (!resp.IsSuccessStatusCode)
 				_error?.Invoke("widget-snapshot", new HttpRequestException($"POST {_url} returned {(int)resp.StatusCode}"));
 		}
-		catch (OperationCanceledException) { throw; }
 		catch (Exception ex) { _error?.Invoke("widget-snapshot", ex); }
 	}
 }

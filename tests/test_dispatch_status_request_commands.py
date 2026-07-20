@@ -14,8 +14,7 @@ from server.gateway.dispatch import dispatch_status_request_commands
 from server.logging_jsonl import JsonlLogger
 
 
-def _now_iso() -> str:
-	return datetime.now(timezone.utc).isoformat()
+from server.clock import now_iso as _now_iso
 
 
 def _make_supervisor():

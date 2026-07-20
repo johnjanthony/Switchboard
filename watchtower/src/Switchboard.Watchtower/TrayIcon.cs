@@ -140,7 +140,7 @@ internal sealed class TrayIcon : IDisposable
 		// Pending badge: a small amber dot in the top-right corner when there are unanswered questions.
 		if (badge)
 		{
-			using var dotBrush = new SolidBrush(Color.FromArgb(210, 153, 34));
+			using var dotBrush = new SolidBrush(StatusColors.Amber);
 			g.FillEllipse(dotBrush, 22, 2, 8, 8);
 		}
 

@@ -1,33 +1,41 @@
-"""Turn-end hook for Claude Code (Stop) and Gemini CLI (AfterAgent).
+"""Turn-end hook for Claude Code (Stop), Gemini CLI (AfterAgent), and Antigravity CLI (Stop).
 
-Reads the working directory from stdin JSON (Claude Code passes it as
-`{"cwd": "..."}` in the Stop hook payload) and queries the local Switchboard
-gateway. When the agent shouldn't be allowed to silently end its turn, emits
-the appropriate block/deny JSON on stdout.
+Queries the local Switchboard gateway at turn end and, when the agent must
+not silently end its turn, emits the appropriate block/deny JSON on stdout.
 
-Single check: `GET /away-mode?cwd=<cwd>` — when active, the agent is forced
-to route output through the switchboard MCP tools instead of leaking to the
-terminal. John is on his phone, not watching.
+Single check: `GET /away-mode`. The away-mode flag is global, so enforcement
+does not depend on any stdin payload field. When the payload carries a
+session_id it is forwarded so the server can deliver (and clear) that
+session's queued wake notices in the same response.
 
-The old /collab-partner-state endpoint was deleted in the v2 conversations
-redesign. Partner state is no longer tracked per-cwd; the talking-stick FIFO
-inside Conversation.wait_queue is the source of truth and is not exposed via HTTP.
+Antigravity payloads are camelCase; the session key is conversationId (the
+agy conversation UUID that serves as cli_session_id everywhere). The block
+analog is {"decision": "continue", "reason": ...} per agy's Stop hook
+contract. The antigravity mode also POSTs the idle agent status before
+deciding (a single Stop entry does both jobs: agy's merge semantics for
+multiple Stop handlers are unverified). The idle POST carries no working
+directory; the identity hook's status POSTs own the registry record's
+working directory.
 
-Fails open: any error (connection refused, timeout, unknown --cli, malformed
-response, missing cwd) results in silent exit 0, so non-Switchboard sessions
-are unaffected.
+When away mode is active the agent is forced to route output through the
+switchboard MCP tools instead of leaking to the terminal - John is on his
+phone, not watching.
+
+Fails open only on genuine errors (connection refused, timeout, non-200,
+malformed response, unknown --cli): silent exit 0, so non-Switchboard
+sessions are unaffected.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import urllib.error
 import urllib.request
 
-DEFAULT_BASE_URL = "http://127.0.0.1:9876"
+from _hook_common import auth_headers, base_url, read_stdin_json
+
 AWAY_MODE_PATH = "/away-mode"
 TIMEOUT_SECONDS = 0.5
 
@@ -42,18 +50,19 @@ REDIRECT_REASON_AWAY_MODE = (
 )
 
 
-def _fetch_active(url: str, cwd: str) -> bool:
+def _fetch_state(url: str, session_id: str) -> tuple[bool, list]:
 	from urllib.parse import urlencode
-	full_url = f"{url}?{urlencode({'cwd': cwd})}"
+	full_url = f"{url}?{urlencode({'session_id': session_id})}" if session_id else url
+	req = urllib.request.Request(full_url, headers=auth_headers())
 	try:
-		with urllib.request.urlopen(full_url, timeout=TIMEOUT_SECONDS) as resp:
+		with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
 			if resp.status != 200:
-				return False
-			body = resp.read()
-		data = json.loads(body)
-		return bool(data.get("active", False))
+				return False, []
+			data = json.loads(resp.read())
+		notices = data.get("notices")
+		return bool(data.get("active", False)), list(notices) if isinstance(notices, list) else []
 	except (urllib.error.URLError, TimeoutError, ValueError, OSError):
-		return False
+		return False, []
 
 
 def _emit_claude(reason: str) -> None:
@@ -67,42 +76,56 @@ def _emit_gemini(reason: str) -> None:
 	)
 
 
+def _emit_antigravity(reason: str) -> None:
+	json.dump({"decision": "continue", "reason": reason}, sys.stdout)
+
+
+def _post_idle_status(session_id: str) -> None:
+	body = {"session_id": session_id, "state": "clear", "event": "Stop", "cli": "antigravity"}
+	data = json.dumps(body).encode("utf-8")
+	headers = {"Content-Type": "application/json", **auth_headers()}
+	req = urllib.request.Request(base_url() + "/agent_status", data=data, headers=headers, method="POST")
+	try:
+		with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS):
+			pass
+	except Exception:
+		pass
+
+
 def main() -> int:
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--cli", required=False)
 	args, _unknown = parser.parse_known_args()
 
-	# Read raw bytes; json.loads handles UTF-8. See cli-session-injector-hook
-	# for why we can't use sys.stdin.read() on Windows (cp1252 + surrogateescape
-	# mangles UTF-8 multi-byte sequences).
-	stdin_data = b""
-	try:
-		stdin_data = sys.stdin.buffer.read()
-	except Exception:
-		pass
+	payload = read_stdin_json()
 
-	if args.cli not in {"claude", "gemini"}:
+	if args.cli not in {"claude", "gemini", "antigravity"}:
 		return 0
 
-	cwd = ""
-	try:
-		payload = json.loads(stdin_data) if stdin_data else {}
-		cwd = payload.get("cwd", "") or ""
-	except Exception:
-		cwd = ""
-
-	if not cwd:
-		return 0  # fail-open without cwd
-
-	base_url = os.environ.get("SWITCHBOARD_BASE_URL", DEFAULT_BASE_URL)
-	away_url = base_url + AWAY_MODE_PATH
-	if not _fetch_active(away_url, cwd):
-		return 0  # away-mode inactive — don't block
-
-	if args.cli == "claude":
-		_emit_claude(REDIRECT_REASON_AWAY_MODE)
+	if args.cli == "antigravity":
+		session_id = payload.get("conversationId", "") or ""
 	else:
-		_emit_gemini(REDIRECT_REASON_AWAY_MODE)
+		session_id = payload.get("session_id", "") or ""
+
+	if args.cli == "antigravity" and session_id:
+		_post_idle_status(session_id)
+
+	away_url = base_url() + AWAY_MODE_PATH
+	active, notices = _fetch_state(away_url, session_id)
+	if not active and not notices:
+		return 0
+	reason_parts = []
+	if notices:
+		reason_parts.append("\n\n".join(notices))
+	if active:
+		reason_parts.append(REDIRECT_REASON_AWAY_MODE)
+	reason = "\n\n".join(reason_parts)
+	if args.cli == "claude":
+		_emit_claude(reason)
+	elif args.cli == "gemini":
+		_emit_gemini(reason)
+	else:
+		_emit_antigravity(reason)
 	return 0
 
 

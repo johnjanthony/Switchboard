@@ -41,6 +41,35 @@ def test_hook_writes_nothing_without_session_id(tmp_path):
 	assert list(tmp_path.glob("*.json")) == []
 
 
+def test_hook_fallback_writes_breadcrumb(tmp_path):
+	"""Without SWITCHBOARD_MARKER_DIR the hook falls back to
+	<script>/../logs/session-end and drops an _UNPROVISIONED.txt breadcrumb
+	beside the marker. Run a COPY of the script from tmp so the fallback
+	resolves under tmp, not the repo's real logs dir."""
+	import shutil
+	scripts_dir = tmp_path / "scripts"
+	scripts_dir.mkdir()
+	hook_copy = scripts_dir / "cli-session-end-hook.py"
+	shutil.copy(_HOOK, hook_copy)
+	shutil.copy(_HOOK.parent / "_hook_common.py", scripts_dir / "_hook_common.py")
+	env = {k: v for k, v in os.environ.items() if k != "SWITCHBOARD_MARKER_DIR"}
+	payload = json.dumps({"session_id": "sess-fb-1", "reason": "other"}).encode("utf-8")
+	subprocess.run([sys.executable, str(hook_copy)], input=payload, env=env, check=True, timeout=10)
+	fallback = tmp_path / "logs" / "session-end"
+	assert (fallback / "sess-fb-1.json").exists()
+	crumb = fallback / "_UNPROVISIONED.txt"
+	assert crumb.exists()
+	assert "SWITCHBOARD_MARKER_DIR" in crumb.read_text(encoding="utf-8")
+
+
+def test_hook_env_set_writes_no_breadcrumb(tmp_path):
+	env = {**os.environ, "SWITCHBOARD_MARKER_DIR": str(tmp_path)}
+	payload = json.dumps({"session_id": "sess-nb-1", "reason": "other"}).encode("utf-8")
+	subprocess.run([sys.executable, str(_HOOK)], input=payload, env=env, check=True, timeout=10)
+	assert (tmp_path / "sess-nb-1.json").exists()
+	assert not (tmp_path / "_UNPROVISIONED.txt").exists()
+
+
 import pytest as _pytest
 from datetime import datetime, timezone
 
@@ -71,7 +100,7 @@ async def test_sweep_marks_member_dormant_and_deletes_marker(tmp_path):
 
 	await _sweep_session_end_markers(registry, marker_dir, backend=None, logger=_make_logger(tmp_path))
 
-	member = conv.members_active["Claude"]
+	member = conv.members_active["s-1"]
 	assert member.alive is False
 	assert member.session_end_reason == "other"
 	assert member.session_lost_permanently is False
@@ -136,6 +165,18 @@ async def test_sweep_missing_dir_is_noop(tmp_path):
 
 
 @_pytest.mark.asyncio
+async def test_sweep_ignores_breadcrumb_file(tmp_path):
+	"""The sweep globs *.json only; the .txt breadcrumb must survive untouched
+	and cause no errors even when it sits in a swept dir."""
+	from server.gateway.dispatch import _sweep_session_end_markers
+	from server.registry import Registry
+	(tmp_path / "_UNPROVISIONED.txt").write_text("breadcrumb", encoding="utf-8")
+	count = await _sweep_session_end_markers(Registry(), tmp_path)
+	assert count == 0
+	assert (tmp_path / "_UNPROVISIONED.txt").exists()
+
+
+@_pytest.mark.asyncio
 async def test_dispatch_loop_processes_then_can_be_cancelled(tmp_path):
 	"""The loop sweeps on its first tick (marking the member dormant) and exits
 	cleanly on cancellation."""
@@ -165,7 +206,7 @@ async def test_dispatch_loop_processes_then_can_be_cancelled(tmp_path):
 		await asyncio.sleep(0)
 	await asyncio.sleep(0.1)
 
-	assert conv.members_active["Claude"].alive is False
+	assert conv.members_active["s-1"].alive is False
 	assert list(marker_dir.glob("*.json")) == []
 
 	task.cancel()
@@ -173,3 +214,20 @@ async def test_dispatch_loop_processes_then_can_be_cancelled(tmp_path):
 		await task
 	except asyncio.CancelledError:
 		pass
+
+
+@_pytest.mark.asyncio
+async def test_sweep_bumps_markers_applied_counter(tmp_path):
+	"""An applied marker increments SessionRegistry.markers_applied_total via
+	the session_registry kwarg (the marker-health detector's healthy signal)."""
+	from server.gateway.dispatch import _sweep_session_end_markers
+	from server.registry import Registry
+	from server.session_registry import SessionRegistry
+	sreg = SessionRegistry()
+	(tmp_path / "sess-c1.json").write_text(
+		json.dumps({"session_id": "sess-c1", "reason": "other", "ended_at": "2026-07-14T12:00:00+00:00"}),
+		encoding="utf-8",
+	)
+	count = await _sweep_session_end_markers(Registry(), tmp_path, session_registry=sreg)
+	assert count == 1
+	assert sreg.markers_applied_total == 1

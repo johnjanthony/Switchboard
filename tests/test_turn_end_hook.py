@@ -14,7 +14,12 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "turn-end-hook-away-m
 _DEFAULT_CWD_PAYLOAD = json.dumps({"cwd": "c:/work/switchboard"})
 
 
-def _run(cli: str, stdin: str = _DEFAULT_CWD_PAYLOAD, url_env: str | None = None) -> subprocess.CompletedProcess:
+def _run(
+	cli: str,
+	stdin: str = _DEFAULT_CWD_PAYLOAD,
+	url_env: str | None = None,
+	extra_env: dict | None = None,
+) -> subprocess.CompletedProcess:
 	"""url_env may be either a full away-mode URL (e.g. http://host:port/away-mode)
 	or a bare base URL. The hook reads SWITCHBOARD_BASE_URL and appends /away-mode,
 	so this helper strips a trailing /away-mode if present."""
@@ -22,8 +27,11 @@ def _run(cli: str, stdin: str = _DEFAULT_CWD_PAYLOAD, url_env: str | None = None
 	if url_env is not None:
 		import os
 		env = os.environ.copy()
+		env.pop("SWITCHBOARD_TOKEN", None)
 		base = url_env[:-len("/away-mode")] if url_env.endswith("/away-mode") else url_env
 		env["SWITCHBOARD_BASE_URL"] = base
+		if extra_env:
+			env.update(extra_env)
 	return subprocess.run(
 		[sys.executable, str(SCRIPT), "--cli", cli],
 		input=stdin,
@@ -49,6 +57,7 @@ class _FakeServer:
 		self._httpd = None
 		self.port = None
 		self.received_paths: list[str] = []
+		self.received_auth: list = []
 
 	def __enter__(self):
 		import http.server
@@ -58,9 +67,11 @@ class _FakeServer:
 		status = self.status
 		hang = self.hang
 		received_paths = self.received_paths
+		received_auth = self.received_auth
 
 		class Handler(http.server.BaseHTTPRequestHandler):
 			def do_GET(self):
+				received_auth.append(self.headers.get("Authorization"))
 				received_paths.append(self.path)
 				if hang:
 					import time
@@ -71,6 +82,13 @@ class _FakeServer:
 				self.end_headers()
 				if payload is not None:
 					self.wfile.write(json.dumps(payload).encode("utf-8"))
+
+			def do_POST(self):
+				received_paths.append("POST " + self.path)
+				self.send_response(200)
+				self.send_header("Content-Type", "application/json")
+				self.end_headers()
+				self.wfile.write(json.dumps({}).encode("utf-8"))
 
 			def log_message(self, *a, **kw):
 				pass
@@ -173,38 +191,50 @@ def test_unknown_cli_exits_silently():
 	assert r.stdout.strip() == ""
 
 
-def test_hook_sends_cwd_as_query_param():
-	"""Hook includes ?cwd=... in the URL it requests."""
+def test_hook_does_not_send_cwd_query_param():
+	"""cwd left the protocol entirely - the server route reads only session_id,
+	so the hook no longer sends cwd at all."""
 	with _FakeServer({"active": True}, record_queries=True) as srv:
 		r = _run("claude", stdin=json.dumps({"cwd": "c:/work/myproj"}), url_env=srv.url)
 	assert r.returncode == 0
 	assert len(srv.received_paths) == 1
-	assert "cwd=" in srv.received_paths[0]
-	assert "myproj" in srv.received_paths[0]
+	assert "cwd=" not in srv.received_paths[0]
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
 
 
-def test_hook_missing_cwd_fail_open():
-	"""When stdin has no cwd field, hook fails open (exit 0, no block)."""
+def test_hook_missing_cwd_still_enforces():
+	"""Away-mode enforcement is global: a payload without cwd must still query
+	and block (the old missing-cwd fail-open was a fail-quiet hole)."""
 	with _FakeServer({"active": True}) as srv:
 		r = _run("claude", stdin=json.dumps({"other": "data"}), url_env=srv.url)
 	assert r.returncode == 0
-	assert r.stdout.strip() == ""
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
 
 
-def test_hook_empty_stdin_fail_open():
-	"""Empty stdin means no cwd — hook fails open."""
+def test_hook_empty_stdin_still_enforces():
 	with _FakeServer({"active": True}) as srv:
 		r = _run("claude", stdin="", url_env=srv.url)
 	assert r.returncode == 0
-	assert r.stdout.strip() == ""
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
 
 
-def test_hook_invalid_json_stdin_fail_open():
-	"""Malformed stdin JSON is treated as no cwd — hook fails open."""
+def test_hook_invalid_json_stdin_still_enforces():
 	with _FakeServer({"active": True}) as srv:
 		r = _run("claude", stdin="not json at all", url_env=srv.url)
 	assert r.returncode == 0
-	assert r.stdout.strip() == ""
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
+
+
+def test_hook_no_session_id_queries_bare_path():
+	"""Without a session_id the hook queries /away-mode with no query string."""
+	with _FakeServer({"active": False}, record_queries=True) as srv:
+		r = _run("claude", stdin=json.dumps({"cwd": "c:/x"}), url_env=srv.url)
+	assert r.returncode == 0
+	assert srv.received_paths == ["/away-mode"]
 
 
 # --- T7 / H9: collab-partner-state augmentation ---
@@ -370,3 +400,119 @@ def test_away_mode_active_emits_block_regardless_of_partner_state_route():
 	# No partner clause
 	assert "end_collab" not in out["reason"]
 	assert "partner is blocked" not in out["reason"].lower()
+
+
+# --- Convening chunk 3: session_id + notices ---
+
+def test_hook_sends_session_id_as_query_param():
+	"""Hook includes ?session_id=... in the URL it requests, derived from stdin."""
+	with _FakeServer({"active": False, "notices": []}, record_queries=True) as srv:
+		r = _run("claude", stdin=json.dumps({"cwd": "c:/work/myproj", "session_id": "sess-123"}), url_env=srv.url)
+	assert r.returncode == 0
+	assert len(srv.received_paths) == 1
+	assert "session_id=" in srv.received_paths[0]
+	assert "sess-123" in srv.received_paths[0]
+
+
+def test_notices_only_emits_block_with_notice_reason():
+	"""Away mode inactive but notices present still blocks the turn - convening
+	is an at-desk operation too."""
+	with _FakeServer({"active": False, "notices": ["N"]}) as srv:
+		r = _run("claude", url_env=srv.url)
+	assert r.returncode == 0
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
+	assert out["reason"] == "N"
+
+
+def test_active_and_notices_combines_reason_notice_first():
+	"""When both away mode and notices are present, the notice text precedes
+	the away-mode reason in one block."""
+	with _FakeServer({"active": True, "notices": ["N"]}) as srv:
+		r = _run("claude", url_env=srv.url)
+	assert r.returncode == 0
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
+	assert "N" in out["reason"]
+	assert "away mode" in out["reason"].lower()
+	assert out["reason"].index("N") < out["reason"].lower().index("away mode")
+
+
+def test_inactive_no_notices_silent_exit():
+	"""Explicit empty-notices-list case stays silent, matching unchanged behavior."""
+	with _FakeServer({"active": False, "notices": []}) as srv:
+		r = _run("claude", url_env=srv.url)
+	assert r.returncode == 0
+	assert r.stdout.strip() == ""
+
+
+def test_turn_end_hook_sends_bearer_token_when_env_set():
+	with _FakeServer({"active": False}) as srv:
+		r = _run("claude", url_env=srv.url, extra_env={"SWITCHBOARD_TOKEN": "sekrit-123"})
+	assert r.returncode == 0
+	assert srv.received_auth == ["Bearer sekrit-123"]
+
+
+def test_turn_end_hook_no_auth_header_without_token():
+	with _FakeServer({"active": False}) as srv:
+		r = _run("claude", url_env=srv.url)
+	assert r.returncode == 0
+	assert srv.received_auth == [None]
+
+
+# --- Antigravity CLI support ---
+
+_ANTIGRAVITY_PAYLOAD = json.dumps({
+	"conversationId": "7b4f7804-4ce4-4b61-8704-6c97b60d54e5",
+	"workspacePaths": ["C:/Work/agy-probe"],
+	"terminationReason": "NO_TOOL_CALL",
+	"fullyIdle": True,
+})
+
+
+def test_antigravity_inactive_emits_nothing():
+	with _FakeServer({"active": False}) as srv:
+		result = _run("antigravity", stdin=_ANTIGRAVITY_PAYLOAD, url_env=f"http://127.0.0.1:{srv.port}/away-mode")
+	assert result.returncode == 0
+	assert result.stdout.strip() == ""
+
+
+def test_antigravity_active_emits_continue_decision():
+	with _FakeServer({"active": True}, record_queries=True) as srv:
+		result = _run("antigravity", stdin=_ANTIGRAVITY_PAYLOAD, url_env=f"http://127.0.0.1:{srv.port}/away-mode")
+	out = json.loads(result.stdout)
+	assert out["decision"] == "continue"
+	assert "away mode" in out["reason"]
+	assert any(p.startswith("POST /agent_status") for p in srv.received_paths)
+
+
+def test_antigravity_query_sends_conversation_id_as_session_id():
+	"""conversationId maps to the session_id query param; cwd left the protocol
+	in chunk 2 and must not reappear for the antigravity mode."""
+	with _FakeServer({"active": False}, record_queries=True) as srv:
+		_run("antigravity", stdin=_ANTIGRAVITY_PAYLOAD, url_env=f"http://127.0.0.1:{srv.port}/away-mode")
+	get_paths = [p for p in srv.received_paths if not p.startswith("POST ")]
+	assert get_paths, "hook never queried the server"
+	assert "session_id=7b4f7804-4ce4-4b61-8704-6c97b60d54e5" in get_paths[0]
+	assert "cwd=" not in get_paths[0]
+
+
+def test_antigravity_notices_prepended_to_reason():
+	with _FakeServer({"active": True, "notices": ["A convene notice."]}) as srv:
+		result = _run("antigravity", stdin=_ANTIGRAVITY_PAYLOAD, url_env=f"http://127.0.0.1:{srv.port}/away-mode")
+	out = json.loads(result.stdout)
+	assert out["reason"].startswith("A convene notice.")
+
+
+def test_antigravity_missing_conversation_id_still_enforces():
+	"""Global enforcement (chunk 2's T-174 contract): an antigravity payload
+	without conversationId still queries the bare path and continues on active.
+	No idle POST fires (there is no session to mark idle)."""
+	with _FakeServer({"active": True}, record_queries=True) as srv:
+		result = _run("antigravity", stdin=json.dumps({"workspacePaths": []}), url_env=f"http://127.0.0.1:{srv.port}/away-mode")
+	assert result.returncode == 0
+	out = json.loads(result.stdout)
+	assert out["decision"] == "continue"
+	get_paths = [p for p in srv.received_paths if not p.startswith("POST ")]
+	assert get_paths == ["/away-mode"]
+	assert not any(p.startswith("POST ") for p in srv.received_paths)

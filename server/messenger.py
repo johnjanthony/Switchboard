@@ -1,7 +1,7 @@
 """Messenger backend trait surfaces and shared types.
 
 Defines the abstract trait classes (Backend, MessageWriter, ResponsePoller,
-AwayModeMirror, ChannelLifecycle) that backend implementations must satisfy.
+AwayModeMirror) that backend implementations must satisfy.
 The transport layer can evolve without touching the gateway core, since
 gateway handlers depend on specific traits rather than a god-interface.
 """
@@ -21,19 +21,17 @@ CorrelationToken = Any
 class IncomingResponse:
 	"""A response arriving from the messenger backend.
 
-	`correlation` is whatever opaque token the backend stored at
-	`send_question` time (e.g. Telegram message_id). The gateway uses it
-	to look up the pending request_id in the registry.
+	`correlation` is the conversation_id string on every live path. The
+	gateway uses it to look up the pending request_id in the registry.
 
-	`slot` is the literal storage key the response was read from (e.g. the
-	Firebase RTDB child under `responses/`). Carried so the dispatcher can
-	clean up unroutable / stale responses without having to reconstruct the
-	key from correlation fields.
+	`slot` is the Firebase RTDB path under `answers/<id>/`. Carried so the
+	dispatcher can clean up unroutable / stale responses without having to
+	reconstruct the key from correlation fields.
 
 	`request_id` is the exact request_id the answer was minted for. Carried
 	so the dispatcher can pass it to registry.resolve as a guard, ensuring a
 	replayed or stale answer does not resolve a newer entry at the same
-	(conversation_id, sender) key (T-148). None for legacy responses/ payloads.
+	conversation_id (T-148).
 	"""
 
 	correlation: CorrelationToken
@@ -42,9 +40,10 @@ class IncomingResponse:
 	request_id: str | None = None
 	"""The request_id the answer was written for. Carried so the dispatcher can
 	resolve the EXACT pending entry it was minted for, rejecting a replayed or
-	stale answer that lands after the entry was superseded (T-148). None for
-	legacy responses/ payloads that predate request_id routing; the resolve
-	guard then falls back to (conversation_id, sender) keying."""
+	stale answer that lands after the entry was superseded (T-148)."""
+	sender: str | None = None
+	"""Who sent the reply, carried along for display/logging only. Resolution
+	is keyed by (conversation_id, request_id); sender plays no routing role."""
 
 
 class Backend(ABC):
@@ -61,8 +60,7 @@ class MessageWriter(ABC):
 	Anything that produces or annotates a message bubble in the conversation.
 	write_conversation_message is the canonical write method (declared in
 	ConversationStore). MessageWriter is retained as a mixin for backends
-	that also implement send_timeout_followup, send_resolution_confirmation,
-	and the various send_* helpers.
+	that also implement send_timeout_followup and the various send_* helpers.
 	"""
 
 	@abstractmethod
@@ -75,22 +73,8 @@ class MessageWriter(ABC):
 	) -> None:
 		"""Inform the developer a pending question has timed out."""
 
-	@abstractmethod
-	async def send_resolution_confirmation(
-		self,
-		request_id: str,
-		conversation_id: str,
-		correlation: "CorrelationToken",
-		response_text: str | None = None,
-	) -> None:
-		"""Confirm to the developer that their response was received."""
-
 	async def send_text(self, text: str) -> None:
 		"""Send a simple text notification to the primary administrative channel."""
-		pass
-
-	async def send_spawn_ack(self, conversation_id: str, prompt: str | None) -> None:
-		"""Acknowledge a successful spawn command. No-op by default."""
 		pass
 
 	async def send_stale_reply_notice(self, conversation_id: str, sender: str) -> None:
@@ -112,6 +96,8 @@ class MessageWriter(ABC):
 		msg_id: str | None,
 		question_text: str,
 		suggestions: list[str] | None = None,
+		cli_session_id: str | None = None,
+		asked_at: str | None = None,
 	) -> None:
 		"""Write a tracking record at /conversations/<id>/pending_questions/<request_id>.
 		Used by phone-side UI to render an indicator that an ask_human is in flight.
@@ -152,10 +138,16 @@ class ResponsePoller(ABC):
 		if False:
 			yield
 
+	async def poll_status_request_commands(self) -> "AsyncIterator[dict]":
+		"""Yield widget/status_request queue entries as they arrive. No-op by default."""
+		if False:
+			yield
+
 	async def delete_response_slot(self, slot: str) -> None:
-		"""Delete a response entry under `responses/` by its literal storage key.
-		Called by the dispatcher after a stale / unroutable response so the
-		listener doesn't re-fire it forever. No-op default; FirebaseBackend overrides."""
+		"""Delete an answer entry by its full RTDB path (`answers/<conv_id>/<request_id>`).
+		Called by the dispatcher after resolution or for a stale / unroutable
+		response so the listener doesn't re-fire it forever. No-op default;
+		FirebaseBackend overrides."""
 		pass
 
 	async def reset_all_pending_responses(self) -> None:
@@ -191,12 +183,9 @@ class AwayModeMirror(ABC):
 		No-op default."""
 		pass
 
-
-class ChannelLifecycle(ABC):
-	"""Channel-state CRUD plus spawn-collision sub-flow."""
-
-	async def set_conversation_hidden(self, conv_id: str, hidden: bool) -> None:
-		"""Set the hidden flag on the conversation at /conversations/<conv_id>/meta/hidden."""
+	async def delete_open_conversation_node(self) -> None:
+		"""Delete the legacy /open_conversation top-level node (one-shot migration).
+		No-op default."""
 		pass
 
 
@@ -218,6 +207,7 @@ class ConversationStore:
 		last_activity_at: float,
 		ended_at: float | None,
 		hidden: bool,
+		origin: str | None = None,
 	) -> None:
 		"""Write the top-level conversation fields (everything except members and messages)."""
 		pass
@@ -228,6 +218,13 @@ class ConversationStore:
 
 	async def remove_conversation_member(self, conv_id: str, sender: str) -> None:
 		"""Remove a member entry under /conversations/<id>/members_active/<sender>."""
+		pass
+
+	async def move_conversation_member(self, source_id: str, target_id: str, member, old_sender: str, *, end_source: bool = False) -> None:
+		"""Atomically move a member: delete members_active/<old_sender> under
+		source, write the member under target, optionally end the source - one
+		multi-location update so a crash cannot mirror the member in both
+		conversations (REV-104). No-op default; FirebaseBackend overrides."""
 		pass
 
 	async def write_conversation_member_history(self, conv_id: str, member) -> None:
@@ -251,17 +248,18 @@ class ConversationStore:
 		filename: str | None = None,
 		attached_to_msg_id: str | None = None,
 		rejected: bool = False,
+		suppress_push: bool = False,
 	):
-		"""Append a message to /conversations/<id>/messages.
+		"""Append a message to /messages/<id>.
 
 		Two call forms:
 		- Legacy dict form: write_conversation_message(conv_id, message_dict) -> str push key
-		- Expanded form: write_conversation_message(conv_id, sender, type, text, ...) -> (correlation, msg_id)
+		- Expanded form: write_conversation_message(conv_id, sender, type, text, ...) -> (conv_id, msg_id)
 
 		No-op by default; FirebaseBackend overrides with the full implementation."""
 		if isinstance(sender_or_message, dict):
 			return ""
-		return (conv_id, sender_or_message), None
+		return conv_id, None
 
 	async def set_conversation_state(self, conv_id: str, state: str) -> None:
 		"""Update a conversation's state (active/ended)."""
@@ -273,10 +271,6 @@ class ConversationStore:
 
 	async def write_conversation_title(self, conv_id: str, title: str) -> None:
 		"""Update /conversations/<id>/meta/title (partial write). No-op default."""
-		pass
-
-	async def set_open_conversation_id(self, conv_id: str | None) -> None:
-		"""Write the global open-conversation pointer."""
 		pass
 
 	async def set_session_home(self, session_id: str, conv_id: str | None) -> None:

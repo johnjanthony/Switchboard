@@ -80,7 +80,7 @@ async def test_set_away_mode_false_flips_flag_before_bulk_resolve(cfg, logger, m
 
 	seen = {}
 
-	async def _spy(reg, be, log, decision, default_text):
+	async def _spy(reg, be, log, decision, default_text, session_registry=None):
 		seen["away_at_call"] = reg.global_away_mode
 		return True
 

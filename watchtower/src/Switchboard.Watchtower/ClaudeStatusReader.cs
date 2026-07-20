@@ -35,14 +35,12 @@ internal sealed class ClaudeStatusReader
 		{
 			return await GetViewOnceAsync(ct).ConfigureAwait(false);
 		}
-		catch (OperationCanceledException) { throw; }
 		catch (HttpRequestException)
 		{
 			try
 			{
 				return await GetViewOnceAsync(ct).ConfigureAwait(false);
 			}
-			catch (OperationCanceledException) { throw; }
 			catch (Exception ex) { _error?.Invoke("claude-status-get", ex); return ClaudeServerStatus.ParseView(""); }
 		}
 		catch (Exception ex) { _error?.Invoke("claude-status-get", ex); return ClaudeServerStatus.ParseView(""); }
@@ -67,7 +65,6 @@ internal sealed class ClaudeStatusReader
 			if (!resp.IsSuccessStatusCode)
 				_error?.Invoke("claude-status-post", new HttpRequestException($"POST {url} returned {(int)resp.StatusCode}"));
 		}
-		catch (OperationCanceledException) { throw; }
 		catch (Exception ex) { _error?.Invoke("claude-status-post", ex); }
 	}
 }

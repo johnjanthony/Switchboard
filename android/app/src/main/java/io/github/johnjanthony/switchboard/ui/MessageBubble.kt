@@ -192,6 +192,37 @@ private fun FilePill(
 
 @Preview(showBackground = true, backgroundColor = 0xFF14161A)
 @Composable
+fun PreviewMessageBubbleLinkInterception() {
+	SwitchboardTheme {
+		Column(modifier = Modifier.padding(16.dp)) {
+			Text("Test for T-240 Link Interception", color = Color.White, modifier = Modifier.padding(bottom = 8.dp))
+			MessageBubble(
+				message = ChannelMessage(
+					sender = "claude",
+					type = "notify",
+					text = """
+						# Link Test
+						1. [Google (External)](https://google.com)
+						2. [Anchor Link (Internal)](#target)
+						3. [Blocked Link (Tel)](tel:5550199)
+						
+						Some long text to push the anchor down...
+						
+						
+						
+						## Target
+						Anchor reached!
+					""".trimIndent(),
+					format = "markdown",
+					timestamp = "2026-05-02T18:32:05+00:00"
+				)
+			)
+		}
+	}
+}
+
+@Preview(showBackground = true, backgroundColor = 0xFF14161A)
+@Composable
 fun PreviewMessageBubbleNormal() {
 	SwitchboardTheme {
 		MessageBubble(message = ChannelMessage(sender = "claude", type = "notify", text = "This is a normal message.", timestamp = "2026-05-02T18:32:05+00:00"))

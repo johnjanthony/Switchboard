@@ -13,12 +13,13 @@ from server.gateway.dispatch import dispatch_away_mode_commands
 from server.logging_jsonl import JsonlLogger
 from server.main import _build_away_mode_route
 from server.registry import Registry
+from server.session_registry import SessionRegistry
 from tests.test_dispatch_away_mode_commands import _make_backend, _make_supervisor, _now_iso
 
 
 async def _away_mode_active(registry: Registry) -> bool:
 	"""Drive the real GET /away-mode route and read back its JSON body."""
-	route = _build_away_mode_route(registry)
+	route = _build_away_mode_route(registry, SessionRegistry())
 	scope = {"type": "http", "method": "GET", "headers": [], "query_string": b""}
 	response = await route(Request(scope))
 	import json
@@ -41,7 +42,7 @@ async def test_enter_then_exit_flips_and_resolves_pendings(tmp_path):
 	assert await _away_mode_active(registry) is True, "/away-mode must report active after enter_global"
 
 	# A pending ask_human is parked while away.
-	future = registry.add("conv-e2e", "Claude", request_id="req-e2e", msg_id="msg-e2e")
+	future = registry.add("conv-e2e", "s-e2e", "Claude", request_id="req-e2e", msg_id="msg-e2e")
 
 	# exit_global with send_default: flips False AND resolves the pending.
 	backend2 = _make_backend([

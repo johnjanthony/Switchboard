@@ -1,6 +1,6 @@
 # Switchboard — Agent Orientation
 
-Switchboard is a local MCP gateway that lets AI agents pause mid-task and request human input. Responses come back from a phone. The gateway exists to support *away mode* — at-desk interaction continues to use the normal terminal chat UI.
+Switchboard is the mission-control hub for a multi-agent workstation: it tracks Claude Code sessions and conversations, routes questions and notifications to a phone, mirrors telemetry to ambient surfaces (Operator, Watchtower), and dispatches phone-issued commands (spawn, combine, away mode). Its founding feature - and still the core protocol - is away mode: agents pause mid-task and request human input, answered from the phone.
 
 This file orients any agent (Claude Code, etc.) working **on Switchboard itself** or **consuming** its tools. Switchboard ships as a Claude Code plugin; see [Setup](#setup) below.
 
@@ -10,9 +10,9 @@ Design history lives under [`docs/`](docs/); the current end-to-end design is [`
 
 Single Python process, one asyncio event loop, MCP HTTP server on `localhost:9876`, with a Firebase backend (Android + Realtime Database). The server also serves **Switchboard Operator**, a launch-on-demand web cockpit (a zero-build Preact+htm app in `dashboard/`), at `/dashboard`, plus a small widget-facing `GET /stats` roll-up. The dashboard talks to Firebase RTDB directly and reads `/healthz` for its health panel.
 
-Switchboard exists specifically for **away mode** — when the operator has stepped away and the terminal chat UI is no longer being watched. At-desk interaction uses the normal terminal chat channel.
+Away mode is the founding feature, not the whole product: ask/notify blocking semantics are away-mode-scoped (at-desk interaction uses the terminal), while session tracking, telemetry fan-out, Operator, and Watchtower are always-on ambient surfaces.
 
-The Registry is in-memory. The pending-request index is keyed by `(conversation_id, sender)` tuples where `conversation_id` is a `conv-<uuid>` string from `Registry.conversations` — not a filesystem path. Pending `ask_human` futures die on restart and waiting agents time out. Conversations (the persistence unit) survive restart via Firebase hydration — see `server/hydration.py`.
+The Registry is in-memory. The pending-request index is keyed by `(conversation_id, cli_session_id)` tuples where `conversation_id` is a `conv-<uuid>` string from `Registry.conversations` — not a filesystem path; answers resolve by `(conversation_id, request_id)`. Pending ask_human futures die on restart, but the questions survive: hydration rebuilds pending_questions records as parked (future-less) pendings, an arriving answer resolves them with a history write plus a session notice, and unanswered ones expire at the 72h retention horizon (chunk 7). Conversations (the persistence unit) survive restart via Firebase hydration — see `server/hydration.py`.
 
 ## Layout
 
@@ -21,25 +21,32 @@ server/
   __init__.py          Package marker
   __main__.py          Enables `python -m server`
   main.py              Entry point — wires config, registry, backend, MCP, uvicorn
+  http_auth.py         TokenAuthMiddleware - shared-secret Bearer gate (loopback peers and /healthz exempt; active when SWITCHBOARD_TOKEN is set)
   config.py            Env-based Config loader (dotenv fallback)
-  registry.py          PendingRequest + Registry (in-memory); conversations dict; session_to_conversation_id routing map; per-session asyncio.Lock for race-free first-call conv creation; global away-mode flag
+  registry.py          PendingRequest + Registry (in-memory); conversations dict with members/pendings keyed by cli_session_id; session_to_conversation_id routing map; per-session asyncio.Lock for race-free first-call conv creation; global away-mode flag
+  session_registry.py  SessionRecord + SessionRegistry (session roster; push-fed; sweeper rules)
   messenger.py         Backend lifecycle base + 4 trait ABCs (MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle) + ConversationStore protocol + IncomingResponse
   firebase.py          FirebaseBackend (implements every messenger surface); Firebase admin logic (FCM, Realtime DB)
   spawn.py             Agent session spawner (triggered from Android app)
   conversation_ops.py  Conversation lifecycle helpers (create, add/migrate member, queue-for-intro, wake, combine, session-fallback); sender-collision auto-disambiguation ('Claude Win' -> 'Claude Win 2' etc.)
-  cli_session_end.py   handle_session_end: marks a member dormant on session end; invoked by the marker-file sweep (dispatch_session_end_markers) and the retained-for-testing POST /cli-session/end route
-  rate_limiter.py      Per-channel token-bucket rate limiter for notify_human and send_document_human
-  canonicalization.py  Canonical-cwd normalization + Firebase key encoding
+  cli_session_end.py   handle_session_end: marks a member dormant on session end; invoked by the marker-file sweep (dispatch_session_end_markers)
+  rate_limiter.py      Per-conversation token-bucket rate limiter consumed by ask_human, notify_human, send_document_human, and message_and_await_agent (which degrades to FCM suppression instead of rejecting)
+  canonicalization.py  Canonical-cwd normalization (display-only; cwd is a display tag)
   logging_jsonl.py     JSONL audit log
   hydration.py         Rebuilds Registry state from Firebase on startup (conversations survive restart)
+  rules_audit.py       Startup audit of the deployed RTDB rules (placeholder/test-mode detection; loud, non-fatal)
   firebase_supervisor.py  SupervisedListener + LoopSupervisor (Firebase-listener / dispatch-loop supervision for /healthz)
   session_fallback.py  Session-to-conversation fallback resolution (home-conversation rebind / unbind)
   command_freshness.py Staleness gate for queued Firebase command entries (COMMAND_TTL_SECONDS)
+  claude_status.py     Claude service-status watch (poll loop + status parse published to widget/status)
+  widget_snapshot.py   WidgetSnapshotStore for the /widget-snapshot POST payload (canonical de-dup)
   gateway/             Tool handlers + dispatch loops
-    handlers.py          ask_human, notify_human, send_document_human, message_and_await_agent, open_conversation, enter_conversation, combine_conversations, lookup_conversation_ids, leave_conversation, set_away_mode tool closures
-    dispatch.py          dispatch_responses, dispatch_combine_commands, dispatch_force_end_commands, dispatch_spawn_commands, dispatch_away_mode_commands, dispatch_session_end_markers, handle_force_end
-    document.py          _validate_path + denylist + sha256 helpers
+    handlers.py          ask_human, notify_human, send_document_human, message_and_await_agent, join_conversation, combine_conversations, lookup_conversation_ids, leave_conversation, set_away_mode tool closures; JSON status envelopes (_envelope/_terminal_envelope/_wrap_wait_result)
+    dispatch.py          dispatch_responses, dispatch_combine_commands, dispatch_force_end_commands, dispatch_spawn_commands, dispatch_away_mode_commands, dispatch_status_request_commands, dispatch_session_end_markers, dispatch_session_sweep, dispatch_conversation_sweep, handle_force_end
+    document.py          _validate_path + extension allowlist + secret-name denylist + sha256 helpers
     bulk_respond.py      _apply_bulk_respond_decision (used by exit_global to drain pending questions)
+    parked.py            finish_parked_resolve - bookkeeping for resolving a future-less parked pending (record cleanup + session notices)
+    pending_lifecycle.py terminate_pending - single terminal-path owner for pending ask_humans (pop + future settlement + Firebase cancel + benign-replay memory); ask arms, force-end, combine, session-end, spawn cleanup, and the TTL sweep all route through it
     bg_tasks.py          _BG_TASKS + _spawn_bg — strong-ref tracker for background tasks
 scripts/
   install-service.ps1        One-time NSSM service install
@@ -48,25 +55,27 @@ scripts/
   register-spawn-task.ps1    Re-register SwitchboardSpawn scheduled task
   spawn-launcher.ps1         Runs in user session to open a new terminal tab
   install-client.ps1         Build and deploy the Android app to a connected phone
+  agy-identity-hook.py       Antigravity (agy) hooks: PreInvocation identity teaching + status, PreToolUse identity corrector, PostToolUse status
 skills/
   switchboard/
     SKILL.md           Agent skill instructions (MCP tool signatures + Away Mode protocol)
-android/
-  app/src/main/
-    AndroidManifest.xml
-    java/io/github/johnjanthony/switchboard/
-      MainActivity.kt        Compose UI — list-based two-page nav, chat view, bubble readability, high-vis indicators
-      MainViewModel.kt       Firebase listeners, immutable state tracking, unseen activity
-      fcm/
-        SwitchboardFirebaseMessagingService.kt  Push notifications (three channels, tap-to-tab)
-      network/
-        ApiService.kt        Data classes (@PropertyName annotated)
-      ui/theme/              Material3 dark theme
+android/                     Three Gradle modules: app (phone UI), shared (library used by app + wear), wear (watch)
+  shared/src/main/java/io/github/johnjanthony/switchboard/
+    MainViewModel.kt         ALL Firebase RTDB listeners + command writers (StateFlow state; shared by app and wear)
+    SessionBoardPolicy.kt    Pure sessions-board derivations (label chain, needs-attention, partition/sort, badge count)
+    ConversationPolicy.kt    Pure conversation derivations (context rings, watch partition)
+    network/Models.kt        Data classes (@PropertyName annotated): ConversationSummary/Member/Row, RegistrySession, widget DTOs
+  app/src/main/java/io/github/johnjanthony/switchboard/
+    MainActivity.kt          NavHost (conversation list / chat / sessions board / markdown viewer) + dialog hoisting
+    fcm/SwitchboardFirebaseMessagingService.kt  Push notifications (three channels, tap-to-conversation)
+    ui/                      Compose screens + composables (ConversationListScreen, SessionsBoardScreen, sheets, row composables)
+    ui/theme/                Material3 dark "console" theme (Brass/Jade/Coral palette)
+  wear/                      Wear OS companion (own Compose UI; consumes the shared MainViewModel and models)
   app/build.gradle           Markwon, Firebase, Compose dependencies
 watchtower/                  Windows client (.NET 9 / WinForms taskbar widget) — "Switchboard Watchtower"
   Switchboard.Watchtower.sln
   src/Switchboard.Watchtower/        WinForms app (widget, hover popup, tray, Win32 taskbar placement, Claude status indicator)
-  src/Switchboard.Watchtower.Core/   Pure logic (transcript parsing, session scanners, quota, window math, config, Claude status parse + watch state machine)
+  src/Switchboard.Watchtower.Core/   Pure logic (transcript parsing, session scanners, quota, window math, config, Claude status parse; the status watch state machine lives server-side)
   tests/Switchboard.Watchtower.Core.Tests/   xUnit tests for the Core library
   tools/IconGen/                     One-off WinForms tool that renders the app icon (build helper)
 dashboard/                  Switchboard Operator: zero-build Preact+htm web cockpit, served by the Python server at /dashboard
@@ -77,9 +86,12 @@ dashboard/                  Switchboard Operator: zero-build Preact+htm web cock
   derive.js                Pure derivations (member state, pending aggregation, oldest-pending age)
   commands.js              Pure write-command builders, each returning {path, value}
   store.js                 Reactive view-model store (the single owner of projected state)
-  markdown.js              Tiny safe Markdown-subset renderer (HTML-escaped, scheme-allowlisted links)
+  markdown.js              Markdown renderer wrapping vendored markdown-it + highlight.js (GFM + syntax coloring, link-scheme validation)
+  document.js              Document message pill + preview-page URL helpers (documentPillHtml)
+  doc-view.js              Standalone document preview page (opened from a document pill)
+  statusControl.js         Claude status control (POST /widget-status) + status-lamp color mapping
   app.js                   Boot wiring + /healthz poll + rollUpHealth (parity with /stats)
-  components/              Preact+htm components: App, StatusBar, ConversationList, ConversationDetail, CommandRail, PaneBanner
+  components/              Preact+htm components: App, StatusBar, ConversationList, ConversationDetail, SessionsRail, PaneBanner
   vendor/                  Pinned Preact + hooks + htm ESM + the htm-preact binding
   styles.css               3-pane grid (independently collapsible rails)
   *.test.js                node --test units (schema, derive, commands, store, markdown)
@@ -108,6 +120,10 @@ pytest tests/test_registry.py -v
 
 Integration tests run in-process; no external services required. The backends (Firebase, etc.) are mocked.
 
+### Live smoke harness
+
+`.venv\Scripts\python.exe scripts\smoke\smoke.py` drives the DEPLOYED service end-to-end: away-mode round-trip, at-desk redirect, live ask->answer->resolve, fastest-answer round-trip, restart survival (parked-pending recovery), cleanup. Real Firebase, real service, real FCM — each run pings the phone 1-2 times and briefly toggles global away mode; the default run RESTARTS the service (severs every live MCP session). Use `--skip-restart` when other agents are working; `--preflight-only` is read-only and always safe. The run leaves one hidden Ended conversation for the 72h retention sweep. Exit 0 = all flows passed.
+
 ## Building the Android app
 
 The Android project lives entirely under `android/` — its own `settings.gradle`, wrapper, and `gradle.properties`. There is no Gradle build at the repo root.
@@ -128,13 +144,19 @@ Requirements:
 
 ## MCP tool surface
 
-Active tools: `ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `open_conversation`, `enter_conversation`, `combine_conversations`, `lookup_conversation_ids`, `leave_conversation`, `set_away_mode`.
+Active tools: `ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `join_conversation`, `combine_conversations`, `lookup_conversation_ids`, `leave_conversation`, `set_away_mode`. Conversation tools return one-line JSON status envelopes (`ok | timeout | conversation_ended`); `ask_human` returns bare reply text with JSON terminal sentinels.
 
-Routing is by `cli_session_id`, injected by the `cli-session-injector-hook.py` PreToolUse hook. Agents pass `sender` and tool-specific args only.
+Routing is by `cli_session_id`, injected by the `cli-session-injector-hook.py` PreToolUse hook. Agents pass `sender` and tool-specific args only. Non-Claude agents (Antigravity) have no injector; they pass cli_session_id (= their agy conversation UUID) and cwd explicitly on every call, taught and enforced by the agy hooks.
 
 ## Conversation model
 
-Conversations are the persistence + routing unit. States: `Active` / `Ended`. At most one Active conversation is the "open" singleton (set by `open_conversation()`; joinable via `enter_conversation()`). Routing key is `cli_session_id` (hook-injected), not cwd. Away mode is a single global flag (`set_away_mode(bool)`).
+Conversations are the persistence + routing unit. States: `Active` / `Ended`. A ref-less `join_conversation()` mints a new Active conversation, or lands the caller in the single still-solo conversation another agent minted ref-less within the last ~30 minutes (the candidate rule); zero or several candidates both mint a new room. An already-bound caller's ref-less join rejoins its bound conversation (the candidate rule applies only to unbound callers). Routing key is `cli_session_id` (hook-injected), not cwd. Away mode is a single global flag (`set_away_mode(bool)`). Ended conversations are retention-pruned from Firebase (index card + /messages + /answers, plus any Storage document blobs the messages reference) after 72h (SWITCHBOARD_CONVERSATION_RETENTION_HOURS); admin_notifications entries are pruned by the same hourly sweep after 168h (SWITCHBOARD_ADMIN_NOTIFICATION_RETENTION_HOURS); messages live at /messages/<conv_id>, answers at /answers/<conv_id>/<request_id>.
+
+## Architectural constraints (decided)
+
+- **Local gateway, cloud-synchronized state.** The compute is local; conversation/session/telemetry state persists and transits through Firebase (RTDB + FCM), which is a hard startup dependency. The founding "localhost only" principle was retired deliberately (2026-07-01 architecture review, D1); there is no Firebase-less run mode.
+- **The service runs as LocalSystem** (NSSM; the installer's explicit default since the ops-hardening chunk - the earlier interactive-user intent never took effect and was removed; -ServiceUser overrides deliberately, verified post-set). It therefore cannot read `~/.claude/projects`, cannot reach WSL, and receives all session/telemetry data by push: plugin hooks, Watchtower snapshots, MCP calls. Do not design features that assume the server can see John's files (D6).
+- **Sessions are first-class** (2026-07-06): `server/session_registry.py` tracks every Claude Code session birth-to-death via SessionStart/agent-status/SessionEnd hooks, ring sightings, and MCP calls, mirrored to RTDB `sessions/` for the roster surfaces. Identity is `cli_session_id` everywhere; `sender` is a display attribute (D4).
 
 ## Setup
 
@@ -154,29 +176,37 @@ The plugin install wires the skill and the turn-end + agent-status hooks. Two th
     claude mcp add switchboard --scope user --transport http http://localhost:9876/mcp
 
     # WSL (replace <windows-host-ip> with the value from `/etc/resolv.conf` or `ip route show default | awk '{print $3}'`)
-    claude mcp add switchboard --scope user --transport http http://<windows-host-ip>:9876/mcp
+    claude mcp add switchboard --scope user --transport http http://<windows-host-ip>:9876/mcp --header "Authorization: Bearer <SWITCHBOARD_TOKEN value>"
     ```
 
-    WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` and a firewall inbound rule for TCP 9876 from the WSL subnet.
+    WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` AND `SWITCHBOARD_TOKEN` set - the server refuses to start non-loopback without a token (REV-003 fail-closed), and every non-loopback client must send `Authorization: Bearer <token>` on all routes except `/healthz` (loopback callers are exempt). install-service.ps1 creates the inbound firewall rule (TCP 9876, scoped to the WSL NAT pool 172.16.0.0/12, rule name "Switchboard MCP (WSL)") as defense-in-depth; the token is the enforced control.
 
-    For WSL agents, also point the hook scripts at the Windows host so their HTTP callbacks don't fall back to `127.0.0.1` (unreachable from WSL). Set these in the WSL environment (e.g. in `~/.bashrc`):
+    For WSL agents, also point the hook scripts at the Windows host so their HTTP callbacks don't fall back to `127.0.0.1` (unreachable from WSL). Export these in the WSL **login-shell** chain (`~/.profile` or `~/.bash_profile`, sourced directly), NOT only `~/.bashrc`: phone-spawned WSL agents launch via `wsl.exe -e bash -l` (a login, non-interactive shell) whose `~/.bashrc` early-returns at its interactive guard before reaching the var, so a `~/.bashrc`-only value never reaches a spawned agent and its `Bearer ${SWITCHBOARD_TOKEN}` header then expands empty (401):
 
-    - `SWITCHBOARD_BASE_URL=http://<windows-host-ip>:9876` — read by both HTTP hooks (`agent-status-hook.py` POSTs to `/agent_status`; `turn-end-hook-away-mode.py` GETs `/away-mode`).
-    - `SWITCHBOARD_MARKER_DIR=<path>` — read by `cli-session-end-hook.py`, which writes a SessionEnd marker FILE (not an HTTP POST) that the server sweeps; point it at the server's `<logs>/session-end` dir when the hook runs on a different host.
+    - `SWITCHBOARD_BASE_URL=http://<windows-host-ip>:9876` - read by the three HTTP hooks (`agent-status-hook.py` POSTs to `/agent_status`; `turn-end-hook-away-mode.py` GETs `/away-mode`; `cli-session-start-hook.py` POSTs to `/session_start`).
+    - `SWITCHBOARD_TOKEN=<same value as the server's .env>` - read by the same three hooks; they attach `Authorization: Bearer <token>` when it is set. Required for WSL agents once the server has a token.
+    - `SWITCHBOARD_MARKER_DIR=<path>` - read by `cli-session-end-hook.py`, which writes a SessionEnd marker FILE (not an HTTP POST) that the server sweeps; point it at the server's `<logs>/session-end` dir when the hook runs on a different host.
 
 2. **The Python server (NSSM Windows service).** Install with `scripts/install-service.ps1`. The plugin's MCP connection is useless until this is running.
 
+3. **The Antigravity CLI client.** Not a plugin install - see the README's [Antigravity CLI (agy)](README.md#antigravity-cli-agy) subsection for the wiring, delivered by the chezmoi dotfiles repo.
+
 ## Hooks
 
-The Switchboard plugin wires five Claude Code hook events automatically:
+The Switchboard plugin wires six Claude Code hook events automatically:
 
 - `Stop` (two handlers) — `turn-end-hook-away-mode.py` for the away-mode enforcement check; `agent-status-hook.py` for the per-conversation activity indicator.
-- `UserPromptSubmit`, `PreToolUse`, `PostToolUse` — `agent-status-hook.py` for the activity indicator. `PreToolUse` also runs `cli-session-injector-hook.py`, which injects `cli_session_id` + `cwd` into every `mcp__switchboard__*` call.
-- `SessionEnd` — `cli-session-end-hook.py` writes a SessionEnd marker file (under `SWITCHBOARD_MARKER_DIR`, the server's `<logs>/session-end` dir) that the server's `dispatch_session_end_markers` sweep applies to mark the session's member dormant on orderly exit (the marker write wins the process-exit race a synchronous POST loses). The legacy `POST /cli-session/end` route is retained for manual/testing use only.
+- `UserPromptSubmit`, `PreToolUse`, `PostToolUse` — `agent-status-hook.py` for the activity indicator. `PreToolUse` also runs `cli-session-injector-hook.py`, which injects `cli_session_id` + `cwd` into every `mcp__switchboard__*` call. A separate `matcher: "AskUserQuestion"` PreToolUse entry runs `away-mode-tool-guard-hook.py`, which denies the built-in AskUserQuestion tool while away mode is on and redirects the agent to `ask_human` (option labels become `suggestions`).
+- `SessionStart` — `cli-session-start-hook.py` POSTs the session's birth (`session_id`, `cwd`, `source`) to the server's `/session_start` route so the SessionRegistry records the session; a missed birth self-heals on the first MCP call or agent-status event.
+- `SessionEnd` — `cli-session-end-hook.py` writes a SessionEnd marker file (under `SWITCHBOARD_MARKER_DIR`, the server's `<logs>/session-end` dir) that the server's `dispatch_session_end_markers` sweep applies to mark the session's member dormant on orderly exit (the marker write wins the process-exit race a synchronous POST loses).
+
+The hook scripts share `scripts/_hook_common.py` (stdin bytes-read, base URL, Bearer helpers); the injector deliberately remains standalone.
 
 See `hooks/hooks.json` for the canonical wiring.
 
-**Server-side gating.** Hooks fire on every lifecycle event regardless of away-mode state, but the server's `/agent_status` handler short-circuits and skips the Firebase write when the cwd is not in away mode. The phone status indicator is therefore only visible during away mode. The HTTP layer always returns 200 so the hook contract is unchanged; the gate is invisible to the hook script.
+Antigravity (agy) sessions wire four hook events - PreInvocation, PreToolUse, PostToolUse, Stop - via the chezmoi-managed `~/.gemini/config/hooks.json`, not this plugin. There are no SessionStart/SessionEnd equivalents: birth self-heals via the first hook POST or MCP call, and exits are detected by the sweeper's silence threshold rather than an explicit end signal.
+
+**Server-side gating.** Hooks fire on every lifecycle event regardless of away-mode state, but the server's `/agent_status` handler short-circuits and skips the Firebase write when the cwd is not in away mode. The phone status indicator is therefore only visible during away mode. The `/agent_status` route upserts the SessionRegistry before that away-mode gate, so the session roster always updates even when the phone-facing conversation-status write is skipped; only the phone status indicator is away-mode-gated. The HTTP layer always returns 200 so the hook contract is unchanged; the gate is invisible to the hook script.
 
 ## Service management (Windows service via NSSM)
 
@@ -225,6 +255,7 @@ The moment the operator says they are stepping away (or any similar phrasing), s
 
 - Route **every** subsequent output (status, questions, completion) through `ask_human`, `notify_human`, or `send_document_human`.
 - Receiving a reply to `ask_human` **does not** exit away mode. Do not respond to replies in the terminal.
+- Never call the built-in `AskUserQuestion` tool in away mode — it renders only in the terminal. A PreToolUse guard denies it; use `ask_human` with `suggestions` instead.
 
 **Exit:**
 
@@ -258,7 +289,7 @@ When the user taps "+" on the phone, they choose surface (Windows / WSL), projec
 
 The Android client uses a list-based two-page nav:
 
-- **Page A**: conversation list, ordered by last activity. Each row shows the title, relative timestamp, unseen-activity dot, AWAY badge (when global away mode is on), open-conversation accent border + "open" label, and a stale-session warning. Swipe-right to end; swipe-left to hide. Long-press for a context menu: Resume, Combine into..., Hide/Unhide, End conversation.
+- **Page A**: conversation list, ordered by last activity. Each row shows the title, relative timestamp, unseen-activity dot, AWAY badge (when global away mode is on), and the open-conversation accent border + "open" label. Swipe-right to end; swipe-left to hide. Long-press for a context menu: Resume, Combine into..., Hide/Unhide, End conversation. The Resume item is enabled when any of the conversation's member sessions has a terminal (ended/lost) registry record.
 - **Page B**: per-conversation message view with the tab info popover and a reply input (visible only when there's a pending question).
 
 Hidden conversations are accessible via the overflow menu's "Show hidden" toggle. FCM notification taps deep-link directly to Page B.
@@ -270,3 +301,15 @@ Hidden conversations are accessible via the overflow menu's "Show hidden" toggle
 - **Single mandatory backend.** Firebase is required; the server exits at startup with a ConfigError if its env vars are unset. Optional sub-features degrade gracefully (document delivery needs `FIREBASE_STORAGE_BUCKET`; spawn needs the spawn-root vars), but the core gateway does not start without Firebase.
 - **Conversations persist; in-flight futures don't.** Conversation state persists in Firebase and rehydrates on restart (`server/hydration.py`); pending `ask_human` futures and wait queues are in-memory and do not survive restart. Don't add a second datastore without a design revision.
 - **Comments sparingly.** Explain why, not what.
+
+## Knowledge graph & Obsidian vault
+
+The repo has a Graphify knowledge graph (`graphify-out/graph.json`, gitignored, rebuilt automatically by post-commit/post-checkout git hooks — AST-only, no LLM cost).
+
+- **Query it before grepping** for architecture / what-calls-what / data-flow questions: `graphify query "<question>"`, `graphify explain "<node>"`, `graphify path "A" "B"`. Human-readable map: `graphify-out/GRAPH_REPORT.md`; interactive: `graphify-out/graph.html`.
+- **Architecture questions: use the production-only view.** Test code is ~52% of the nodes and ~65% of the edges in the full graph, so default queries drown in test scaffolding. Append `--graph graphify-out/graph-src.json` to `query` / `explain` / `path` / `affected` for architecture questions; use the full `graph.json` only when tests are the point (e.g. "which tests cover X"). The view is derived by `scripts/graphify-src-view.py`; the git hooks refresh it after each rebuild. If `graph-src.json` is older than `graph.json` (e.g. after `graphify hook install` re-writes the hooks and drops the refresh step), regenerate it: `python scripts/graphify-src-view.py`.
+- **Obsidian vault** at `graphify-out/obsidian/` is a generated view of the **production-only** graph (`graph-src.json` — no test notes) — entry point `Start Here.md`, shaky-extraction review in `INFERRED Review.base`. The git hooks auto-refresh both the view and the vault after each rebuild.
+- **Re-exporting the vault**: `python scripts/refresh-obsidian-vault.py` — the one canonical pipeline (export from `graph-src.json` + dedot + ownership-manifest sync). Do NOT run bare `graphify export obsidian` into this vault: the raw exporter crashes partway on control chars in node labels (a tab makes an invalid Windows filename; this is what produced a silent 665-note partial vault on 2026-07-18), and without the manifest sync every re-export accumulates duplicate " (method)" notes. `scripts/dedot-obsidian.ps1` remains for ad-hoc exports elsewhere; the dedot logic also lives inside the refresh script.
+- **`.graphifyignore` is load-bearing** (excludes `dashboard/vendor/`); without it a rebuild regenerates ~300 junk nodes from vendored JS.
+- Don't commit `graphify-out/` — regenerable output, and the post-commit hook would dirty the tree on every commit if tracked.
+- Vault conventions and the full Graphify lesson list live in the main knowledge vault: `C:\Work\ClaudeObsidian\Claude Vault\Reference\Graphify Usage.md`.

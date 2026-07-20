@@ -3,19 +3,21 @@
 Registered against UserPromptSubmit, PreToolUse, PostToolUse, and Stop. POSTs
 the inferred state to switchboard's /agent_status endpoint. Fire-and-forget:
 any failure (server unreachable, timeout, malformed stdin) results in silent
-exit 0. The script never emits stdout — it cannot influence Claude Code's
-decision flow, so it cannot conflict with the away-mode Stop hook.
+exit 0. The script never emits stdout except to deliver UserPromptSubmit
+notices - it otherwise cannot influence Claude Code's decision flow, and
+UserPromptSubmit is a different event from the Stop-hook away-mode flow, so
+it cannot conflict with it.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import sys
 import urllib.error
 import urllib.request
 
-DEFAULT_BASE_URL = "http://127.0.0.1:9876"
+from _hook_common import auth_headers, base_url, read_stdin_json
+
 AGENT_STATUS_PATH = "/agent_status"
 TIMEOUT_SECONDS = 1.0
 
@@ -60,30 +62,25 @@ def _build_detail(tool_name: str, tool_input: dict) -> str | None:
 	return None
 
 
-def _post(url: str, body: dict) -> None:
+def _post(url: str, body: dict) -> dict:
 	data = json.dumps(body).encode("utf-8")
+	headers = {"Content-Type": "application/json", **auth_headers()}
 	req = urllib.request.Request(
 		url,
 		data=data,
-		headers={"Content-Type": "application/json"},
+		headers=headers,
 		method="POST",
 	)
 	with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
-		resp.read()  # drain
+		raw = resp.read()
+	try:
+		return json.loads(raw)
+	except Exception:
+		return {}
 
 
 def main() -> int:
-	# Read raw bytes; json.loads handles UTF-8. See cli-session-injector-hook
-	# for why we can't use sys.stdin.read() on Windows (cp1252 + surrogateescape
-	# mangles UTF-8 multi-byte sequences).
-	try:
-		raw = sys.stdin.buffer.read()
-	except Exception:
-		return 0
-	try:
-		payload = json.loads(raw) if raw else {}
-	except Exception:
-		return 0
+	payload = read_stdin_json()
 
 	session_id = payload.get("session_id") or ""
 	if not session_id:
@@ -113,15 +110,22 @@ def main() -> int:
 	else:
 		return 0  # unknown event
 
-	base_url = os.environ.get("SWITCHBOARD_BASE_URL", DEFAULT_BASE_URL)
-	url = base_url + AGENT_STATUS_PATH
-	body = {"session_id": session_id, "state": state}
+	url = base_url() + AGENT_STATUS_PATH
+	cwd = payload.get("cwd") or ""
+	body = {"session_id": session_id, "state": state, "event": event}
+	if cwd:
+		body["cwd"] = cwd
 	if detail is not None:
 		body["detail"] = detail
 	try:
-		_post(url, body)
+		response = _post(url, body)
 	except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-		pass
+		return 0
+	if event == "UserPromptSubmit":
+		notices = response.get("notices") if isinstance(response, dict) else None
+		if isinstance(notices, list) and notices:
+			# UserPromptSubmit stdout becomes context for the agent's turn.
+			sys.stdout.write("\n\n".join(str(n) for n in notices))
 	return 0
 
 

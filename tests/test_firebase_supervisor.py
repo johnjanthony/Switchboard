@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -178,6 +178,49 @@ async def test_supervised_listener_swallows_user_callback_exceptions(fake_regist
 
 
 @pytest.mark.asyncio
+async def test_listener_callback_error_log_routes_through_spawn_bg(fake_registrations, monkeypatch):
+	"""REV-105: the off-thread error-log bounce must go through _spawn_bg
+	(strong ref + logged failure), not a bare loop.create_task the loop only
+	weak-references."""
+	import server.gateway.bg_tasks as bg_tasks_mod
+
+	registrations, last_callback = fake_registrations
+	messages, log = _logger_collector()
+	loop = asyncio.get_running_loop()
+
+	labels: list[str] = []
+	real_spawn = bg_tasks_mod._spawn_bg
+
+	def _spy(coro, *, label):
+		labels.append(label)
+		return real_spawn(coro, label=label)
+
+	monkeypatch.setattr(bg_tasks_mod, "_spawn_bg", _spy)
+
+	def _bad_callback(_event):
+		raise RuntimeError("boom")
+
+	supervisor = SupervisedListener(
+		name="bad2",
+		path="x",
+		callback=_bad_callback,
+		error_logger=log,
+		loop=loop,
+		watchdog_interval_seconds=0.05,
+	)
+	supervisor.start()
+	await asyncio.sleep(0.1)
+
+	last_callback[0]("event")
+	await asyncio.sleep(0.05)
+
+	assert labels == ["listener_callback_error:bad2"]
+	assert any("listener_callback_error:bad2" in m for m in messages)
+
+	await supervisor.stop()
+
+
+@pytest.mark.asyncio
 async def test_loop_supervisor_resets_on_success():
 	messages, log = _logger_collector()
 
@@ -282,3 +325,66 @@ async def test_loop_supervisor_suppresses_alerts_after_10_minutes(monkeypatch):
 	await sup.record_crash(RuntimeError("e"))
 	await sup.record_crash(RuntimeError("f"))
 	assert len(calls) == 2, "second outage should produce a fresh alert"
+
+
+def _raising_error_logger():
+	async def _log(msg: str) -> None:
+		raise OSError("disk full")
+	return _log
+
+
+@pytest.mark.asyncio
+async def test_record_crash_survives_error_logger_failure():
+	backend = MagicMock()
+	backend.send_text = AsyncMock()
+	sup = LoopSupervisor("t192", backend, _raising_error_logger(), initial_alert_threshold=1)
+	sup._backoff = 0.0  # keep the test fast; backoff sleep still runs
+	await sup.record_crash(RuntimeError("boom"))  # must NOT raise
+	assert sup.health().crash_count == 1
+	assert sup.health().consecutive_failures == 1
+
+
+@pytest.mark.asyncio
+async def test_record_crash_alert_failure_plus_logger_failure_does_not_raise():
+	backend = MagicMock()
+	backend.send_text = AsyncMock(side_effect=RuntimeError("fcm down"))
+	sup = LoopSupervisor("t192", backend, _raising_error_logger(), initial_alert_threshold=1)
+	sup._backoff = 0.0
+	await sup.record_crash(RuntimeError("boom"))  # alert fails, its logger fails: still no raise
+	assert sup.health().crash_count == 1
+
+
+@pytest.mark.asyncio
+async def test_supervise_initial_connect_failure_with_raising_logger_keeps_supervisor_alive():
+	loop = asyncio.get_running_loop()
+	listener = SupervisedListener(
+		name="t192-listener",
+		path="some/path",
+		callback=lambda ev: None,
+		error_logger=_raising_error_logger(),
+		loop=loop,
+		watchdog_interval_seconds=0.01,
+	)
+	with patch.object(listener, "_open_registration", side_effect=RuntimeError("no dns")):
+		listener.start()
+		await asyncio.sleep(0.05)
+		# The supervisor task must still be running (reconnecting), not dead from the logger raise.
+		assert listener._supervisor_task is not None and not listener._supervisor_task.done()
+		assert listener.health().state == "reconnecting"
+		await listener.stop()
+
+
+@pytest.mark.asyncio
+async def test_close_registration_swallows_logger_failure():
+	loop = asyncio.get_running_loop()
+	listener = SupervisedListener(
+		name="t192-close",
+		path="p",
+		callback=lambda ev: None,
+		error_logger=_raising_error_logger(),
+		loop=loop,
+	)
+	reg = MagicMock()
+	reg.close = MagicMock(side_effect=RuntimeError("teardown hang"))
+	listener._registration = reg
+	await listener._close_registration()  # close fails, logging it fails: no raise

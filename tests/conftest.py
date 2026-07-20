@@ -56,5 +56,5 @@ def make_active_conversation(
 		surface=surface,
 		joined_at=0.0,
 	)
-	conv.members_active[sender] = member
+	conv.members_active[member_session_id] = member
 	return conv

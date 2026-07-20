@@ -57,19 +57,14 @@ export function predecessorTitle(conv, conversations) {
 	return predecessor && predecessor.meta ? (predecessor.meta.title || null) : null;
 }
 
-export function oldestPendingAgeSeconds(pendingsFlat, messageTimestampResolver, nowMs) {
+export function oldestPendingAgeSeconds(pendingsFlat, nowMs) {
 	if (!pendingsFlat || pendingsFlat.length === 0) {
 		return null;
 	}
 	let oldestAge = null;
 	for (const pending of pendingsFlat) {
-		const isoTs = pending.msgId != null ? messageTimestampResolver[pending.msgId] : undefined;
-		let originMs;
-		if (isoTs !== undefined && isoTs !== null) {
-			originMs = Date.parse(isoTs);
-		} else {
-			originMs = pending.firstObservedMs;
-		}
+		const askedMs = pending.askedAt != null ? Date.parse(pending.askedAt) : NaN;
+		const originMs = Number.isNaN(askedMs) ? pending.firstObservedMs : askedMs;
 		const ageSeconds = (nowMs - originMs) / 1000;
 		if (oldestAge === null || ageSeconds > oldestAge) {
 			oldestAge = ageSeconds;
@@ -107,4 +102,163 @@ export function ringSeverity(pct) {
 		return 'amber';
 	}
 	return 'green';
+}
+
+const SESSION_CHIPS = {
+	active: { label: 'active', cls: 'chip-active' },
+	idle: { label: 'idle', cls: 'chip-idle' },
+	awaiting_human: { label: 'needs you', cls: 'chip-awaiting-human' },
+	awaiting_agent: { label: 'waiting on agent', cls: 'chip-awaiting-agent' },
+	ended: { label: 'ended', cls: 'chip-ended' },
+	lost: { label: 'lost', cls: 'chip-lost' },
+};
+
+export function sessionChip(record) {
+	if (record && record.blocked_on_approval) {
+		return { label: 'needs approval', cls: 'chip-needs-approval' };
+	}
+	const state = record && record.state ? record.state : 'idle';
+	return SESSION_CHIPS[state] || { label: state, cls: 'chip-idle' };
+}
+
+export function projectTail(cwd) {
+	if (!cwd) {
+		return '';
+	}
+	const parts = String(cwd).split(/[\\/]/).filter(Boolean);
+	return parts.length ? parts[parts.length - 1] : '';
+}
+
+export function sessionAgeSeconds(record, nowMs) {
+	const iso = record ? record.last_event_at : null;
+	if (!iso) {
+		return null;
+	}
+	const t = Date.parse(iso);
+	if (Number.isNaN(t)) {
+		return null;
+	}
+	return (nowMs - t) / 1000;
+}
+
+export function formatAge(seconds) {
+	if (seconds == null) {
+		return '';
+	}
+	const s = Math.floor(seconds);
+	if (s < 60) {
+		return `${s}s`;
+	}
+	if (s < 3600) {
+		return `${Math.floor(s / 60)}m`;
+	}
+	if (s < 86400) {
+		return `${Math.floor(s / 3600)}h`;
+	}
+	return `${Math.floor(s / 86400)}d`;
+}
+
+export function sortSessionEntries(sessionsMap) {
+	return Object.keys(sessionsMap || {})
+		.map((id) => ({ id, record: sessionsMap[id] || {} }))
+		.sort((a, b) => String(b.record.last_event_at || '').localeCompare(String(a.record.last_event_at || '')));
+}
+
+const SENSOR_FRESH_SECONDS = 120;
+
+export function sensorOffline(pushedAtIso, nowMs) {
+	if (!pushedAtIso) {
+		return true;
+	}
+	const t = Date.parse(pushedAtIso);
+	if (Number.isNaN(t)) {
+		return true;
+	}
+	return (nowMs - t) / 1000 > SENSOR_FRESH_SECONDS;
+}
+
+// Display name for a session row: custom/ai name wins regardless of name_source
+// (name_source stays on the record for styling only), then sender, then the
+// last path segment of cwd, then a placeholder.
+export function sessionLabel(record) {
+	if (record && record.name) {
+		return record.name;
+	}
+	if (record && record.sender) {
+		return record.sender;
+	}
+	const tail = record ? projectTail(record.cwd) : '';
+	return tail || '(unknown)';
+}
+
+// True when an idle session has an unacknowledged event: no ack yet, or the
+// session's last_event_at is newer than the stored ack. Uses Date.parse (not
+// string comparison) because the server stamps "+00:00" while fb.nowIso stamps
+// "Z", so equal-second timestamps compare unequal lexicographically.
+export function needsAttention(record, ackIso) {
+	if (!record) {
+		return false;
+	}
+	if (record.blocked_on_approval) {
+		return true;
+	}
+	if (record.state !== 'idle') {
+		return false;
+	}
+	const eventMs = Date.parse(record.last_event_at);
+	if (Number.isNaN(eventMs)) {
+		return false;
+	}
+	if (!ackIso) {
+		return true;
+	}
+	return eventMs > Date.parse(ackIso);
+}
+
+const WAKE_PATH_HINTS = {
+	awaiting_agent: 'wakes instantly',
+	awaiting_human: 'on next phone answer',
+	active: 'at end of current turn',
+	idle: "on John's next prompt",
+	ended: 'Resume into conversation',
+	lost: 'Resume into conversation',
+};
+
+export function wakePathHint(record) {
+	const state = record ? record.state : undefined;
+	return WAKE_PATH_HINTS[state] || '';
+}
+
+// Weak, tooltip-only hint: a session that has been sitting inside a tool call
+// for a while with no title-bar verdict yet (no "working"/"star" heartbeat) may
+// be stuck on an approval prompt Switchboard can't see directly. Any non-null
+// title_state is the heartbeat winning, so it suppresses the hint; the
+// blocked_on_approval flag (a hard signal) also suppresses it since that case
+// already has its own chip and needsAttention badge. Never counts toward
+// needsAttention - this is tooltip text only.
+export function approvalHint(record, nowMs) {
+	if (!record || !record.in_tool || record.blocked_on_approval) {
+		return '';
+	}
+	if (record.title_state != null) {
+		return '';
+	}
+	const ageSeconds = sessionAgeSeconds(record, nowMs);
+	if (ageSeconds == null || ageSeconds <= 300) {
+		return '';
+	}
+	return 'possibly waiting on approval';
+}
+
+const CONVENABLE_STATES = new Set(['active', 'idle', 'awaiting_human', 'awaiting_agent']);
+const RESUMABLE_STATES = new Set(['ended', 'lost']);
+
+export function isConvenable(record) {
+	if (!record) {
+		return false;
+	}
+	if (CONVENABLE_STATES.has(record.state)) {
+		return true;
+	}
+	return RESUMABLE_STATES.has(record.state) && !!record.cwd;
 }

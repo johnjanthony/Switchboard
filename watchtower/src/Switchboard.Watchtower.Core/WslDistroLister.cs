@@ -20,6 +20,8 @@ public sealed class WslDistroLister : IDistroLister
 			.ToList();
 	}
 
+	const int WslTimeoutMs = 5000;
+
 	static string RunWsl(string args)
 	{
 		var psi = new ProcessStartInfo("wsl.exe", args)
@@ -30,8 +32,13 @@ public sealed class WslDistroLister : IDistroLister
 			StandardOutputEncoding = Encoding.Unicode,
 		};
 		using var p = Process.Start(psi)!;
-		var output = p.StandardOutput.ReadToEnd();
-		p.WaitForExit(5000);
-		return output;
+		var readTask = p.StandardOutput.ReadToEndAsync();
+		if (!readTask.Wait(WslTimeoutMs))                 // was: unbounded ReadToEnd() then WaitForExit
+		{
+			try { p.Kill(entireProcessTree: true); } catch { /* already gone */ }
+			return "";
+		}
+		p.WaitForExit(WslTimeoutMs);
+		return readTask.Result;
 	}
 }

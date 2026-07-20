@@ -18,6 +18,25 @@ class ConfigError(RuntimeError):
 	pass
 
 
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def host_is_loopback(host: str) -> bool:
+	return host.strip().lower() in _LOOPBACK_HOSTS
+
+
+def require_token_for_nonloopback(host: str, auth_token: str | None) -> None:
+	"""REV-003: a non-loopback bind exposes /mcp and every HTTP route to any
+	host that can route to us, so the shared-secret gate is a hard startup
+	prerequisite there. Fail closed rather than serve an open control surface."""
+	if not host_is_loopback(host) and not auth_token:
+		raise ConfigError(
+			"SWITCHBOARD_HOST is non-loopback but SWITCHBOARD_TOKEN is unset. "
+			"A non-loopback bind requires the shared-secret gate: set SWITCHBOARD_TOKEN "
+			"(and configure WSL/remote clients with the same token) or bind to 127.0.0.1."
+		)
+
+
 @dataclass(frozen=True)
 class Config:
 	host: str
@@ -31,6 +50,8 @@ class Config:
 	# Env: SWITCHBOARD_WINDOWS_SPAWN_ROOT (preferred) or SWITCHBOARD_SPAWN_ROOT (back-compat alias).
 	windows_spawn_root: Path | None = None
 	rate_limit: int = 30
+	auth_token: str | None = None
+	route_rate_limit: int = 600
 	# Segment appended to the WSL home path to locate the workspace root.
 	# E.g. wsl_home_resolved="/home/john" + wsl_spawn_root_segment="work" → /home/john/work
 	# Env: SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT, default "work".
@@ -40,13 +61,21 @@ class Config:
 	# the NSSM Session 0 case where wsl.exe -e bash fails silently); otherwise
 	# calls resolve_wsl_home() which spawns wsl.exe.
 	wsl_home_resolved: str | None = None
-
-
-def _require(name: str) -> str:
-	value = os.environ.get(name)
-	if not value:
-		raise ConfigError(f"Missing required env var: {name}")
-	return value
+	# Silent-past-this-many-seconds threshold for the session sweeper to mark a
+	# session lost. Env: SWITCHBOARD_SESSION_LOST_AFTER_SECONDS, default 900 (15m).
+	session_lost_after_seconds: int = 900
+	# How long a terminal (ended/lost) session record survives before the sweeper
+	# prunes it. Env: SWITCHBOARD_SESSION_RETENTION_HOURS, default 72.
+	session_retention_hours: int = 72
+	# How long an ENDED conversation (its index card plus /messages and
+	# /answers nodes) survives before the conversation sweep deletes it.
+	# Env: SWITCHBOARD_CONVERSATION_RETENTION_HOURS, default 72.
+	conversation_retention_hours: int = 72
+	# How long a system admin_notifications entry survives before the sweep
+	# prunes it. Env: SWITCHBOARD_ADMIN_NOTIFICATION_RETENTION_HOURS, default
+	# 168 (7 days). Separate from conversation retention on purpose - admin
+	# notices are low-volume system breadcrumbs, tuned independently.
+	admin_notification_retention_hours: int = 168
 
 
 def load_config(dotenv_path: str | Path | None = None) -> Config:
@@ -62,7 +91,7 @@ def load_config(dotenv_path: str | Path | None = None) -> Config:
 		or os.environ.get("SWITCHBOARD_SPAWN_ROOT")
 	)
 
-	return Config(
+	cfg = Config(
 		host=os.environ.get("SWITCHBOARD_HOST", "127.0.0.1"),
 		port=int(os.environ.get("SWITCHBOARD_PORT", "9876")),
 		timeout_seconds=int(
@@ -76,5 +105,13 @@ def load_config(dotenv_path: str | Path | None = None) -> Config:
 		firebase_storage_bucket=os.environ.get("FIREBASE_STORAGE_BUCKET"),
 		windows_spawn_root=Path(windows_spawn_root_raw) if windows_spawn_root_raw else None,
 		rate_limit=int(os.environ.get("SWITCHBOARD_RATE_LIMIT", "30")),
+		auth_token=os.environ.get("SWITCHBOARD_TOKEN") or None,
+		route_rate_limit=int(os.environ.get("SWITCHBOARD_ROUTE_RATE_LIMIT", "600")),
 		wsl_spawn_root_segment=os.environ.get("SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT", "work"),
+		session_lost_after_seconds=int(os.environ.get("SWITCHBOARD_SESSION_LOST_AFTER_SECONDS", "900")),
+		session_retention_hours=int(os.environ.get("SWITCHBOARD_SESSION_RETENTION_HOURS", "72")),
+		conversation_retention_hours=int(os.environ.get("SWITCHBOARD_CONVERSATION_RETENTION_HOURS", "72")),
+		admin_notification_retention_hours=int(os.environ.get("SWITCHBOARD_ADMIN_NOTIFICATION_RETENTION_HOURS", "168")),
 	)
+	require_token_for_nonloopback(cfg.host, cfg.auth_token)
+	return cfg

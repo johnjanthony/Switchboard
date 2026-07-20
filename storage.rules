@@ -1,0 +1,14 @@
+rules_version = '2';
+
+// Deny-all (REV-004): no consumer uses the rules-enforced Storage endpoint.
+// The server uploads via the Admin SDK (rules-exempt); the phone downloads via
+// v4 signed URLs (GCS signature auth, not rules); Operator fetches through the
+// server's /document proxy (Admin SDK). Closing the bucket costs nothing and
+// makes the blast radius of a leaked client config zero.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

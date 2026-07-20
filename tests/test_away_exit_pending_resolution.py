@@ -39,7 +39,7 @@ async def test_tool_side_away_exit_resolves_pendings_with_notice(tmp_path):
 	backend = RecordingBackend()
 	handlers = _handlers(tmp_path, registry, backend)
 
-	future = registry.add("conv-x1", "Claude", request_id="req-1", msg_id="msg-1")
+	future = registry.add("conv-x1", "s-x1", "Claude", request_id="req-1", msg_id="msg-1")
 
 	result = await handlers.set_away_mode(False, cli_session_id="s-x1", cwd="C:/Work/X")
 
@@ -47,8 +47,6 @@ async def test_tool_side_away_exit_resolves_pendings_with_notice(tmp_path):
 	assert future.done() and not future.cancelled()
 	assert future.result() == AT_DESK_NOTICE
 	assert registry.pending_count == 0
-	# The reply is recorded like other bulk flows (resolution confirmation sent)
-	assert len(backend.sent_confirmations) == 1
 	assert "1 pending" in result, f"return should report the resolution count, got: {result!r}"
 
 

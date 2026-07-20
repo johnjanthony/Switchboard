@@ -24,15 +24,11 @@ export function agentStatus(id) {
 }
 
 export function messages(id) {
-	return `conversations/${id}/messages`;
+	return `messages/${id}`;
 }
 
 export function globalAway() {
 	return 'global_settings/away_mode';
-}
-
-export function openConversationId() {
-	return 'global_settings/open_conversation_id';
 }
 
 export function wslAvailable() {
@@ -57,4 +53,12 @@ export function widgetPushedAt() {
 
 export function widgetStatus() {
 	return 'widget/status';
+}
+
+export function sessions() {
+	return 'sessions';
+}
+
+export function sessionAcks() {
+	return 'session_acks';
 }

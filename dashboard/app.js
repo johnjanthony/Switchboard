@@ -4,18 +4,7 @@ import * as paths from "./schema.js";
 import { createStore } from "./store.js";
 import { FIREBASE_CONFIG } from "./dashboard-config.js";
 import { App } from "./components/App.js";
-
-// Health roll-up: identical definition to the server's /stats _build_stats_route.
-// A listener is unhealthy iff state === 'reconnecting' ('stopped' is an intentional
-// shutdown, 'starting' is transient). A dispatch loop is unhealthy iff
-// consecutive_failures > 0. healthy = neither condition present.
-export function rollUpHealth(healthz) {
-	const listeners = (healthz && healthz.listeners) || [];
-	const loops = (healthz && healthz.dispatch_loops) || [];
-	const listenerBad = listeners.some((l) => l.state === "reconnecting");
-	const loopBad = loops.some((d) => (d.consecutive_failures || 0) > 0);
-	return !listenerBad && !loopBad;
-}
+import * as statusControl from "./statusControl.js";
 
 function consumeDeepLink(store) {
 	const m = /(?:^|#)conv=([^&]+)/.exec(window.location.hash || "");
@@ -31,7 +20,7 @@ async function pollHealth(store) {
 		const body = await resp.json();
 		store.setHealth({
 			reachable: true,
-			healthy: rollUpHealth(body),
+			healthy: body.healthy === true,
 			totalAnswered: (body.pending && body.pending.total_answered) ?? null
 		});
 	} catch (_e) {
@@ -41,7 +30,10 @@ async function pollHealth(store) {
 
 function main() {
 	fb.initFirebase(FIREBASE_CONFIG);
-	const store = createStore({ fb, paths, storage: window.localStorage, nowMs: () => Date.now() });
+	const store = createStore({
+		fb, paths, storage: window.localStorage,
+		nowMs: () => Date.now(), requestStatus: statusControl.requestStatus,
+	});
 
 	const mount = document.getElementById("app");
 	const draw = () => render(html`<${App} store=${store} />`, mount);
@@ -57,6 +49,8 @@ function main() {
 			store.setAuthed(false, null);
 		}
 	});
+
+	window.addEventListener("hashchange", () => consumeDeepLink(store));
 
 	pollHealth(store);
 	setInterval(() => pollHealth(store), 5000);

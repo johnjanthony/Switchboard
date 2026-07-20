@@ -6,6 +6,8 @@
 // The output is injected via dangerouslySetInnerHTML (the transcript body is
 // already raw HTML), so every interpolated value is escaped here.
 
+import { escapeText, escapeAttr } from "./escape.js";
+
 export function documentPillHtml(msg, convId, msgId) {
 	const url = msg && msg.url;
 	const filename = msg && msg.filename;
@@ -22,15 +24,6 @@ function fileLeaf(name) {
 	const s = String(name == null ? "" : name).replace(/\/+$/, "");
 	const cut = s.lastIndexOf("/");
 	return cut === -1 ? s : s.slice(cut + 1);
-}
-
-function escapeText(s) {
-	return String(s == null ? "" : s)
-		.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function escapeAttr(s) {
-	return escapeText(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"]);

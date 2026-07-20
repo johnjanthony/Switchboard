@@ -32,7 +32,7 @@ async def test_message_and_await_agent_title_change_reaches_backend(tmp_path: Pa
 	# Two alive members so the speak does not take the sole-alive empty path.
 	conv = make_active_conversation(conversation_id="conv-t1", member_session_id="s-1", sender="Claude")
 	from server.registry import ConversationMember
-	conv.members_active["Peer"] = ConversationMember(
+	conv.members_active["s-2"] = ConversationMember(
 		cli_session_id="s-2", sender="Peer", cwd="C:/Work/X", surface="windows", joined_at=0.0,
 	)
 	registry.conversations["conv-t1"] = conv

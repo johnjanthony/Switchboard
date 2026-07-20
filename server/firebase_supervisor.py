@@ -22,6 +22,7 @@ a 10-minute wall-clock gate so a permanently-broken loop stops paging.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -34,6 +35,19 @@ _BACKOFF_INITIAL_SECONDS = 1.0
 _BACKOFF_MAX_SECONDS = 60.0
 _DEFAULT_WATCHDOG_INTERVAL_SECONDS = 5.0
 _ALERT_SUPPRESS_AFTER_SECONDS = 600.0  # 10 minutes
+
+
+async def _safe_error_log(error_logger, msg: str) -> None:
+	"""Await error_logger without letting its failure kill the supervision path.
+
+	The supervisors exist to survive crashes; a logging failure (disk full,
+	file locked by AV) must degrade to stdlib logging, never propagate into
+	the loop being supervised. CancelledError still propagates - shutdown
+	semantics are unchanged."""
+	try:
+		await error_logger(msg)
+	except Exception:
+		logging.getLogger(__name__).exception("error_logger failed while reporting: %s", msg)
 
 
 @dataclass
@@ -132,14 +146,19 @@ class SupervisedListener:
 		try:
 			self._user_callback(event)
 		except Exception as exc:
+			# Deferred import: a module-level import would cycle through
+			# server.gateway.__init__ -> dispatch -> this module (mirror of
+			# firebase.py's deferred SupervisedListener imports).
+			from server.gateway.bg_tasks import _spawn_bg
 			# Schedule the error log on the event loop; we're off-loop here.
 			# Capture exc as a default arg to avoid the late-binding closure trap —
 			# by the time the lambda fires, the except block scope is gone.
 			self._loop.call_soon_threadsafe(
-				lambda _exc=exc: self._loop.create_task(
+				lambda _exc=exc: _spawn_bg(
 					self._error_logger(
 						f"listener_callback_error:{self._name}: {_exc}"
-					)
+					),
+					label=f"listener_callback_error:{self._name}",
 				)
 			)
 
@@ -159,8 +178,8 @@ class SupervisedListener:
 		try:
 			await self._loop.run_in_executor(None, reg.close)
 		except Exception as exc:
-			await self._error_logger(
-				f"listener_close_error:{self._name}: {exc}"
+			await _safe_error_log(
+				self._error_logger, f"listener_close_error:{self._name}: {exc}"
 			)
 
 	def _registration_alive(self) -> bool:
@@ -187,8 +206,8 @@ class SupervisedListener:
 			self._crash_count += 1
 			self._last_crash_at = time.monotonic()
 			self._state = "reconnecting"
-			await self._error_logger(
-				f"listener_initial_connect_failed:{self._name}: {exc}"
+			await _safe_error_log(
+				self._error_logger, f"listener_initial_connect_failed:{self._name}: {exc}"
 			)
 
 		while not self._stopping:
@@ -212,9 +231,10 @@ class SupervisedListener:
 			self._crash_count += 1
 			self._last_crash_at = time.monotonic()
 			self._state = "reconnecting"
-			await self._error_logger(
+			await _safe_error_log(
+				self._error_logger,
 				f"listener_died:{self._name} (crash_count={self._crash_count}, "
-				f"backoff={backoff:.1f}s)"
+				f"backoff={backoff:.1f}s)",
 			)
 			await self._close_registration()
 
@@ -228,8 +248,8 @@ class SupervisedListener:
 				await self._loop.run_in_executor(None, self._open_registration)
 				self._state = "live"
 			except Exception as exc:
-				await self._error_logger(
-					f"listener_reconnect_failed:{self._name}: {exc}"
+				await _safe_error_log(
+					self._error_logger, f"listener_reconnect_failed:{self._name}: {exc}"
 				)
 				# Stay in `reconnecting` and try again on next tick.
 
@@ -302,10 +322,11 @@ class LoopSupervisor:
 		self._crash_count += 1
 		self._last_crash_at = now
 
-		await self._error_logger(
+		await _safe_error_log(
+			self._error_logger,
 			f"{self._name}_loop_crashed: {exc} "
 			f"(count={self._consecutive_failures}, "
-			f"sleep={self._backoff:.1f}s)"
+			f"sleep={self._backoff:.1f}s)",
 		)
 
 		if self._consecutive_failures >= self._next_alert_at:
@@ -317,8 +338,8 @@ class LoopSupervisor:
 						f"{self._consecutive_failures} times in a row — check service logs."
 					)
 				except Exception as alert_exc:
-					await self._error_logger(
-						f"{self._name}_loop_alert_failed: {alert_exc}"
+					await _safe_error_log(
+						self._error_logger, f"{self._name}_loop_alert_failed: {alert_exc}"
 					)
 			# Always advance the threshold so we don't re-alert at the same
 			# count on the next crash. Once `elapsed` passes the cap, all

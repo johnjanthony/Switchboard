@@ -19,15 +19,11 @@ test('agentStatus(id) targets agent_status', () => {
 });
 
 test('messages(id) targets messages', () => {
-	assert.equal(schema.messages('c1'), 'conversations/c1/messages');
+	assert.equal(schema.messages('c1'), 'messages/c1');
 });
 
 test('globalAway() targets global_settings/away_mode', () => {
 	assert.equal(schema.globalAway(), 'global_settings/away_mode');
-});
-
-test('openConversationId() targets global_settings/open_conversation_id', () => {
-	assert.equal(schema.openConversationId(), 'global_settings/open_conversation_id');
 });
 
 test('wslAvailable() targets global_settings/wsl_available', () => {
@@ -52,4 +48,12 @@ test('widgetPushedAt() targets widget/pushed_at', () => {
 
 test('widgetStatus() targets widget/status', () => {
 	assert.equal(schema.widgetStatus(), 'widget/status');
+});
+
+test('sessions() is the sessions root', () => {
+	assert.equal(schema.sessions(), 'sessions');
+});
+
+test('sessionAcks() is the session_acks root', () => {
+	assert.equal(schema.sessionAcks(), 'session_acks');
 });

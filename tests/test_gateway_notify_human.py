@@ -18,20 +18,28 @@ from server.messenger import (
 	MessageWriter,
 	ResponsePoller,
 	AwayModeMirror,
-	ChannelLifecycle,
 	ConversationStore,
 )
 from server.rate_limiter import RateLimiter
 from server.registry import Registry
 
 
-class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle, ConversationStore, Backend):
+class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ConversationStore, Backend):
 	def __init__(self) -> None:
 		self.channel_messages: list[dict] = []
 		self.sent_timeouts: list[tuple] = []
-		self.sent_confirmations: list[tuple] = []
 		self.agent_status_writes: list[tuple] = []
+		self.push_suppressed: list = []
+		self.sent_texts: list = []
+		self.member_writes: list = []
 		self._next_correlation = 1000
+
+	async def send_text(self, text, **kwargs):
+		self.sent_texts.append(text)
+		return "push-key-text"
+
+	async def write_conversation_member(self, conv_id, member) -> None:
+		self.member_writes.append((conv_id, member))
 
 	async def write_conversation_message(
 		self,
@@ -48,6 +56,7 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLif
 		title=None,
 		rejected=False,
 		attached_to_msg_id=None,
+		suppress_push=False,
 	):
 		"""Record conversation-message writes. Handles both the legacy dict form
 		and the expanded positional form so all migrated callers are captured."""
@@ -71,6 +80,7 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLif
 				"attached_to_msg_id": None,
 			}
 			self.channel_messages.append(data)
+			self.push_suppressed.append(suppress_push)
 			return msg_id
 
 		# Expanded positional form: write_conversation_message(conv_id, sender, type, text, ...)
@@ -92,6 +102,7 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLif
 			"attached_to_msg_id": attached_to_msg_id,
 		}
 		self.channel_messages.append(data)
+		self.push_suppressed.append(suppress_push)
 		if message_type == "question":
 			correlation = self._next_correlation
 			self._next_correlation += 1
@@ -100,9 +111,6 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, ChannelLif
 
 	async def send_timeout_followup(self, request_id, channel_id, timeout_seconds, correlation):
 		self.sent_timeouts.append((request_id, channel_id, timeout_seconds, correlation))
-
-	async def send_resolution_confirmation(self, request_id, channel_id, correlation, response_text=None):
-		self.sent_confirmations.append((request_id, channel_id, correlation, response_text))
 
 	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
 		if False:

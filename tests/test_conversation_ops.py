@@ -2,8 +2,11 @@
 
 import asyncio
 
-from server.conversation_ops import _create_active_conversation_for
-from server.registry import Registry
+import pytest
+
+from server.conversation_ops import _create_active_conversation_for, _wake_one_from
+from server.registry import ConversationMember, Registry
+from tests.conftest import make_active_conversation, make_registry_with_loopback
 
 
 def test_create_active_conversation_for_windows():
@@ -102,76 +105,96 @@ def test_add_member_sender_collision_disambiguates():
 			r, cli_session_id="s-a", cwd="C:/Work/X", sender="Claude",
 		)
 		conv = r.conversations[conv_id]
-		assert "Claude" in conv.members_active
+		assert "s-a" in conv.members_active
 
 		# Add a second member with the same desired sender name
 		await _add_member(r, conv_id, "s-b", "Claude", "C:/Work/X")
 
 		# Both members exist, both alive, distinct session ids
-		assert "Claude" in conv.members_active
-		assert "Claude 2" in conv.members_active
-		assert conv.members_active["Claude"].cli_session_id == "s-a"
-		assert conv.members_active["Claude 2"].cli_session_id == "s-b"
+		assert "s-a" in conv.members_active
+		assert "s-b" in conv.members_active
+		assert conv.members_active["s-a"].sender == "Claude"
+		assert conv.members_active["s-b"].sender == "Claude 2"
 	asyncio.run(run())
 
 
-def test_add_member_resolves_open_peer_future():
-	"""Regression lock: when a peer is added to a conv whose open_peer_future
-	is set, the future resolves with a 'Peer X joined' payload. This is the
-	bootstrap-and-lobby wake protocol — re-asserted as a unit test here so
-	any future refactor of _add_member catches the break."""
+@pytest.mark.anyio
+async def test_members_active_keyed_by_session_id():
+	registry = Registry()
+	conv_id = await _create_active_conversation_for(registry, "sess-A", "C:/Work/X", "Claude")
+	conv = registry.conversations[conv_id]
+	assert "sess-A" in conv.members_active
+	assert conv.members_active["sess-A"].sender == "Claude"
+
+
+@pytest.mark.anyio
+async def test_same_sender_two_sessions_disambiguates_display_only():
 	from server.conversation_ops import _add_member
 
+	registry = Registry()
+	conv_id = await _create_active_conversation_for(registry, "sess-A", "C:/Work/X", "Claude")
+	conv = registry.conversations[conv_id]
+	await _add_member(registry, conv_id, "sess-B", "Claude", "C:/Work/Y")
+	assert set(conv.members_active.keys()) == {"sess-A", "sess-B"}
+	assert conv.members_active["sess-A"].sender == "Claude"
+	assert conv.members_active["sess-B"].sender == "Claude 2"
+
+
+async def test_create_active_conversation_default_origin_is_fallback():
+	registry = make_registry_with_loopback()
+	conv_id = await _create_active_conversation_for(registry, "s-1", "C:/Work/X", "Claude")
+	assert registry.conversations[conv_id].origin == "fallback"
+
+
+async def test_create_active_conversation_origin_join():
+	registry = make_registry_with_loopback()
+	conv_id = await _create_active_conversation_for(registry, "s-1", "C:/Work/X", "Claude", origin="join")
+	assert registry.conversations[conv_id].origin == "join"
+
+
+def test_wake_one_from_skips_done_future_and_wakes_next():
+	# REV-101: wait_for's timeout or cancel completes a waiter's future before
+	# the waiter reacquires conv.lock to dequeue itself. A speaker holding the
+	# lock pops that dead entry and must go on to wake the next live waiter,
+	# not silently wake nobody.
 	async def run():
-		r = Registry()
-		conv_id = await _create_active_conversation_for(
-			r, cli_session_id="s-opener", cwd="C:/Work/X", sender="Opener",
+		conv = make_active_conversation(conversation_id="conv-w1", member_session_id="s-dead", sender="Dead")
+		alive = ConversationMember(
+			cli_session_id="s-alive", sender="Alive", cwd="C:/Work/X", surface="windows", joined_at=0.0,
 		)
-		conv = r.conversations[conv_id]
-		# Simulate the opener being blocked on the future
-		future = asyncio.get_event_loop().create_future()
-		conv.open_peer_future = future
-
-		await _add_member(r, conv_id, "s-joiner", "Joiner", "/home/joiner")
-
-		assert future.done(), "_add_member must resolve open_peer_future"
-		result = future.result()
-		assert "Joiner" in result
-		assert "open_conversation" in result
-		assert conv.open_peer_future is None, "future slot should be cleared after resolution"
+		conv.members_active["s-alive"] = alive
+		dead = conv.members_active["s-dead"]
+		loop = asyncio.get_running_loop()
+		dead_fut = loop.create_future()
+		dead_fut.cancel()  # what wait_for does internally on timeout or MCP cancel
+		live_fut = loop.create_future()
+		conv.wait_queue.append({"member": dead, "future": dead_fut, "waiting_kind": "msg_and_await", "block_position": 0.0})
+		conv.wait_queue.append({"member": alive, "future": live_fut, "waiting_kind": "msg_and_await", "block_position": 1.0})
+		conv.messages.append({"seq": 0, "sender": "Dead", "type": "agent_msg", "text": "hello", "timestamp": "2026-07-09T00:00:00+00:00"})
+		assert _wake_one_from(conv) is True
+		assert live_fut.done() and live_fut.result() == "Dead: hello"
+		assert len(conv.wait_queue) == 0
+		assert alive.last_seen_seq == len(conv.messages)
+		assert dead.last_seen_seq == 0  # nothing was delivered to the dead waiter
 	asyncio.run(run())
 
 
-def test_migrate_member_resolves_target_open_peer_future():
-	"""When a member migrates INTO a target conv whose open_peer_future is set
-	(blocked opener — either mint-path bootstrap or sole-alive lobby-hold), the
-	migrate must wake the opener. Without this the opener would block until
-	timeout while a peer effectively joined via combine or enter_conversation
-	Branch 3."""
-	from server.conversation_ops import _add_member, _migrate_member
-
+def test_wake_one_from_returns_false_when_all_waiters_dead():
 	async def run():
-		r = Registry()
-		# Source conv: the migrating peer's current home
-		source_id = await _create_active_conversation_for(
-			r, cli_session_id="s-mover", cwd="C:/Work/Src", sender="Mover",
-		)
-		# Target conv: separate conv with a blocked opener
-		target_id = await _create_active_conversation_for(
-			r, cli_session_id="s-opener", cwd="C:/Work/Tgt", sender="Opener",
-		)
-		target = r.conversations[target_id]
-		future = asyncio.get_event_loop().create_future()
-		target.open_peer_future = future
-
-		await _migrate_member(
-			r, source_id=source_id, target_id=target_id,
-			cli_session_id="s-mover", sender="Mover", cwd="/home/mover",
-		)
-
-		assert future.done(), "_migrate_member must resolve target's open_peer_future"
-		result = future.result()
-		assert "Mover" in result
-		assert "open_conversation" in result
-		assert target.open_peer_future is None
+		conv = make_active_conversation(conversation_id="conv-w2")
+		member = conv.members_active["s-1"]
+		loop = asyncio.get_running_loop()
+		f1, f2 = loop.create_future(), loop.create_future()
+		f1.cancel()
+		f2.set_result("already resolved elsewhere")
+		conv.wait_queue.append({"member": member, "future": f1, "waiting_kind": "msg_and_await", "block_position": 0.0})
+		conv.wait_queue.append({"member": member, "future": f2, "waiting_kind": "msg_and_await", "block_position": 1.0})
+		assert _wake_one_from(conv) is False
+		assert len(conv.wait_queue) == 0  # dead entries drained, not left to eat future wakes
+		assert member.last_seen_seq == 0
 	asyncio.run(run())
+
+
+def test_wake_one_from_returns_false_on_empty_queue():
+	conv = make_active_conversation(conversation_id="conv-w3")
+	assert _wake_one_from(conv) is False

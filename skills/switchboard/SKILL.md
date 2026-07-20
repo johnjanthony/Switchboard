@@ -11,6 +11,8 @@ This is the single most important rule. If you produce chat text in the terminal
 
 **The tool call IS the acknowledgment.**
 
+**The built-in AskUserQuestion tool is forbidden in away mode.** It renders only in the terminal — John will never see it, and the call blocks until he returns to the desk. Ask via `ask_human` instead, translating each option label into a `suggestions` entry. A PreToolUse guard denies `AskUserQuestion` while away mode is on; if you are denied, re-ask via `ask_human` — do not retry the built-in.
+
 **Away mode is user-managed.** John controls the away-mode flag himself (phone app, etc.). The agent only toggles it in response to **an explicit signal in John's MOST RECENT prompt** — never on conversation history, never on hook prompts, never by inference.
 
 - "I'm stepping away" (or equivalent) in the current turn → call `set_away_mode(true)`.
@@ -19,7 +21,7 @@ This is the single most important rule. If you produce chat text in the terminal
 
 Spawned sessions auto-enter away mode on spawn (the phone auto-enables it) — do not call `set_away_mode(true)` redundantly at spawn time.
 
-**If the turn-end hook blocks you:** If you see an unexpected `block` (Claude) or `deny` (Gemini) message from a turn-end hook injecting "You are in away mode...", the flag is still active server-side. The hook's "call set_away_mode" prompt is **not** authorization to flip the flag — only the user's MOST RECENT prompt is. If this turn's user message contains the explicit back-at-desk signal, call `set_away_mode(false)` first and then resume terminal output. Otherwise, route this turn's output through `ask_human` or `notify_human` and leave the flag alone.
+**If the turn-end hook blocks you:** If you see an unexpected `block` (Claude) or `continue` steering (Antigravity) message from a turn-end hook injecting "You are in away mode...", the flag is still active server-side. The hook's "call set_away_mode" prompt is **not** authorization to flip the flag — only the user's MOST RECENT prompt is. If this turn's user message contains the explicit back-at-desk signal, call `set_away_mode(false)` first and then resume terminal output. Otherwise, route this turn's output through `ask_human` or `notify_human` and leave the flag alone.
 
 1. **Entry:** When John's MOST RECENT prompt says "stepping away", "going away mode", "I'm away", or any equivalent phrasing — even when bundled with other directives in the same message — the trigger fires. Earlier-in-conversation mentions do not count.
    - **`set_away_mode(true)` MUST be your first tool call**, before any other work the message asks you to do. The flag must be set server-side so that subsequent `ask_human` calls block normally instead of triggering the at-desk redirect.
@@ -43,19 +45,14 @@ Switchboard is a local MCP gateway that lets you reach John on his phone while h
 
 **Active tools:**
 
-- **`ask_human(question, sender, title?, format?, suggestions?)`** — blocks until John replies. Returns reply text, `"__TIMEOUT__"`, or (if the conversation ends out from under you while you are blocked — John force-ends it from his phone, or it is merged into another via combine) `"__CONVERSATION_ENDED__"` with a suffix line naming the cause (`(force-ended)` or `(merged into target)`) — a terminal signal: stop and do NOT retry `ask_human` (see Sentinels below, which documents both suffixes).
+- **`ask_human(question, sender, title?, format?, suggestions?)`** — blocks until John replies. Returns the reply text; if no reply can arrive it returns one-line JSON: `{"status":"timeout"}` (window elapsed), `{"status":"superseded"}` (a newer ask_human from your own session replaced this call - the newer question is the live one; do not retry this one), or `{"status":"conversation_ended","cause":...}` (conversation ended out from under you). `cause` values: `force-ended` and `merged into target` are terminal - stop, do NOT retry; `combined into <conv-id>; re-ask your question there` means John merged your conversation while your question was pending - you are already a member of the target conversation, so re-ask the same question once.
 - **`notify_human(message, sender, title?, format?)`** — fire-and-forget. Returns `"ok"` when away mode is on. At-desk it still delivers the notification and returns `"ERROR: John is at his desk (notification delivered to phone anyway)."`; that is routing guidance (continue in the terminal), not a failure, and there is nothing to re-send.
-- **`send_document_human(path, sender, title?, caption?)`** — deliver a file. path relative to your cwd or absolute. Max 5 MB. Returns `"ok"` or `"ERROR: ..."`.
-- **`message_and_await_agent(sender, message, title?)`** — conversations only. `message` is required and non-empty. Send to peers and block until woken. Returns the conversation log since your last wake (excluding your own emissions). When called while NOT in any conversation it returns `"ERROR: not in any conversation. End your turn."` (it does not mint a new room). **Sole-alive behavior depends on whether the conv is the open marker:**
-  - **Open-marker conv (lobby-hold):** blocks like the mint-path `open_conversation` — waits for the next peer to join, then returns `"ok. open_conversation = <id>\nPeer '<name>' joined."`. On timeout returns `"__TIMEOUT__"` but leaves the conv alive so you can poll again or `leave_conversation` explicitly.
-  - **Non-open conv:** returns `"__CONVERSATION_EMPTY__"` (with any unseen peer parting messages appended on following lines as `"<sender>: <text>"`) immediately AND auto-removes you from the conv (mirroring `leave_conversation` — the agent's "I was removed" belief matches reality). The conv transitions to Ended if no members remain.
-- **`open_conversation(sender, title?)`** — promote your current conversation to be the global `openConversation` pointer so other agents can self-join via `enter_conversation()`. **Two behaviors depending on whether you're already in a conversation:**
-  - **Bound caller (promote):** non-blocking. Flips the open marker to your current conv and returns `"ok. open_conversation = <id>"` immediately.
-  - **Unbound caller (mint):** mints a fresh conversation, promotes it, then **blocks** until a peer joins via `enter_conversation()` or times out. On wake, returns `"ok. open_conversation = <id>\nPeer '<name>' joined."` On timeout, the conv is force-ended, the open marker is cleared, and you get `"__TIMEOUT__"` — so failed bootstraps don't leak orphan conversations. After the wake, call `message_and_await_agent` to greet the joiner (their `enter_conversation` is still blocked in the intro queue until someone speaks).
-- **`enter_conversation(sender)`** — unified "join + listen for intro". Blocking. Queues you in your conversation's wait queue; returns the conversation log when the next peer speaks (full history if you just joined, delta since your last wake if already a member). See branching behavior below.
-- **`combine_conversations(source_id, target_id)`** — move all members of `source_id` into `target_id`; source ends. Non-blocking.
-- **`lookup_conversation_ids(cwd_filter?, sender_contains?, title_contains?)`** — find conversation_ids matching filters. At least one filter required. Returns a JSON list.
-- **`leave_conversation(sender, parting_message)`** — leave your current conversation. `parting_message` is required. Session falls back to home conversation (away on) or unbound terminal output (away off).
+- **`send_document_human(path, sender, title?, caption?)`** - deliver a file. path relative to your cwd or absolute. Max 5 MB; shareable file types only (see Constraints). Returns `"ok"` or `"ERROR: ..."`.
+- **`message_and_await_agent(sender, message, title?)`** — conversations only. `message` is required and non-empty. Send to peers and block until woken. If you are alone in the conversation your message parks until a peer joins and replies, the wait times out, or John convenes you. Returns one-line JSON: `{"status":"ok","log":"..."}` (the conversation delta since your last wake, excluding your own emissions), `{"status":"timeout"}`, or `{"status":"conversation_ended","cause":...}` (terminal). When called while NOT in any conversation it returns `"ERROR: not in any conversation. End your turn."`.
+- **`join_conversation(sender, ref?, title?)`** — join a conversation. **Never blocks; idempotent.** Pass `ref` (a conversation_id from `lookup_conversation_ids`, a convene notice, or John's prompt) to join that specific conversation — migrating you out of your current one if needed. Omit `ref` and: if you are already in a conversation, you simply rejoin it (idempotent - collects unseen history; you are never moved). Otherwise the first ref-less joiner mints a fresh room; a second ref-less joiner within about 30 minutes lands in it while it is still solo, otherwise a ref-less join mints a new room of its own. Returns one-line JSON: `{"status":"ok","conversation_id":...,"sender":...,"peers":[...],"log":"...", "minted"?:true, "already_member"?:true}` — `log` is the history you haven't seen (full on first join; unseen delta on re-join), `sender` is your display name after any collision disambiguation. To wait for peers after joining, call `message_and_await_agent`.
+- **`combine_conversations(source_id, target_id)`** — move all members of `source_id` into `target_id`; source ends. Non-blocking. Returns one-line JSON: `{"status":"ok","source":...,"target":...,"detail":...}`; ERROR strings unchanged.
+- **`lookup_conversation_ids(cwd_filter?, sender_contains?, title_contains?)`** — find conversation_ids matching filters. At least one filter required. Returns one-line JSON: `{"status":"ok","conversation_ids":[...]}`; ERROR strings unchanged.
+- **`leave_conversation(sender, parting_message)`** — leave your current conversation. `parting_message` is required. Session falls back to home conversation (away on) or unbound terminal output (away off). Returns one-line JSON: `{"status":"ok","conversation_id":...}`; ERROR strings unchanged.
 - **`set_away_mode(value)`** — flip the global away-mode flag to `true` or `false`. Persisted to Firebase. Flipping to `false` bulk-resolves any pending `ask_human` questions with the at-desk notice (their askers re-ask in their terminals) and reports the count in the return string.
 
 **Retired tools (do not call):**
@@ -65,9 +62,9 @@ Switchboard is a local MCP gateway that lets you reach John on his phone while h
 
 ## Your `sender`
 
-`sender` is your display name in the conversation and on John's phone. Pick a **short, unique, human-readable name** — natural casing is fine and reads better than identifier-style names on the phone. Surface labels like `Claude Win`, `Claude WSL`, or `Gemini` work; role labels like `Reviewer`, `Implementer`, or `Architect` are often clearer in multi-agent collabs. If John named you in your spawn prompt, use that name. Distinctness matters when multiple agents share a conversation: John sees names on bubble attributions; peers see names in message payloads. If you pick a name another member already holds, the server appends a numeric suffix (e.g. `Claude Win 2`).
+`sender` is your display name in the conversation and on John's phone. Pick a **short, unique, human-readable name** — natural casing is fine and reads better than identifier-style names on the phone. Surface labels like `Claude Win`, `Claude WSL`, or `Antigravity` work; role labels like `Reviewer`, `Implementer`, or `Architect` are often clearer in multi-agent collabs. If John named you in your spawn prompt, use that name. Distinctness matters when multiple agents share a conversation: John sees names on bubble attributions; peers see names in message payloads. If you pick a name another member already holds, the server appends a numeric suffix (e.g. `Claude Win 2`).
 
-`sender` is **required** on every tool that takes it (`ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `open_conversation`, `enter_conversation`, `leave_conversation`) -- omitting it there raises a schema error, and there is no default. `combine_conversations`, `lookup_conversation_ids`, and `set_away_mode` do not take a `sender`.
+`sender` is **required** on every tool that takes it (`ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `join_conversation`, `leave_conversation`) -- omitting it there raises a schema error, and there is no default. `combine_conversations`, `lookup_conversation_ids`, and `set_away_mode` do not take a `sender`.
 
 Within a single conversation, **no two members need unique senders by rule**, but collision produces confusing attributions — avoid it. If you are being spawned into an existing conversation, the spawn prompt includes the current member roster; pick a name that doesn't collide with it.
 
@@ -103,7 +100,7 @@ Use suggestions for binary or small-choice decisions where tapping beats typing 
 
 ## Formatting messages
 
-Both tools accept an optional `format` parameter: `"plain"` (default) or `"markdown"`.
+`ask_human` and `notify_human` accept an optional `format` parameter: `"plain"` (default) or `"markdown"`.
 
 When `format="markdown"`, the Android client renders the message using Markdown. Use standard Markdown syntax.
 
@@ -132,9 +129,9 @@ ask_human(
 
 Use `format="markdown"` when the message contains structure that benefits from formatting: status summaries with code snippets, file paths, multi-line output. Keep plain-text messages as `format="plain"` — don't wrap simple one-liners in Markdown.
 
-## Handling `"__TIMEOUT__"`
+## Handling `{"status":"timeout"}`
 
-If `ask_human` returns `"__TIMEOUT__"`, John did not reply within the window. Do not guess and continue. Instead:
+If `ask_human` returns `{"status":"timeout"}`, John did not reply within the window. Do not guess and continue. Instead:
 
 1. Record what you were about to do and why you needed input.
 2. Pause the current work stream. Do not take irreversible actions.
@@ -160,7 +157,7 @@ ask_human("Task done: <one-line summary>. What's next?", sender="Claude Win")
 
 instead of ending your turn. This keeps the session alive so John can queue additional work from his phone without needing to re-spawn you.
 
-Treat `"__TIMEOUT__"` as permission to end the session gracefully.
+Treat `{"status":"timeout"}` as permission to end the session gracefully.
 
 The "discrete task John handed to you" phrasing is load-bearing — do not ping between internal subtasks.
 
@@ -170,9 +167,10 @@ Use this to deliver generated reports, diffs, logs, or spec documents to John's 
 
 **Constraints enforced by the gateway (violations return `"ERROR: ..."`):**
 
-- `path` may be **absolute** or **relative**. Relative paths are resolved against your cwd; `..` traversal that escapes the project root is rejected. Absolute paths are accepted as-is.
+- `path` may be **absolute** or **relative**. Relative paths are resolved against your cwd; absolute paths must also resolve inside your project root. Anything that escapes the project root is rejected.
 - Maximum file size: **5 MB**.
-- Denied filenames: `.env`, `service-account.json` (exact match), and anything matching `*token*`, `*secret*`, `*.pem`, `*.key`, `.env*`, `*.env` (case-insensitive glob — covers `.env.local`, `.envrc`, `prod.env`, etc.).
+- **Extension allowlist** - only these types are deliverable: `.md .markdown .txt .log .csv .tsv .diff .patch .pdf .png .jpg .jpeg .gif .webp`. Everything else (source files, archives, HTML, JSON, key material, extensionless files) is refused; convert content to one of the allowed types first (e.g. write a `.md` report).
+- Known-secret names are refused regardless of extension: `.env`, `service-account.json`, `credentials.json` (exact match), and anything matching `*token*`, `*secret*`, `*.pem`, `*.key`, `.env*`, `*.env` (case-insensitive glob).
 - The gateway logs the resolved path, file size, and SHA-256 hash of every delivered file.
 
 **`caption`** is optional. Use it to give John context: `"Migration diff -- 47 tables affected"`.
@@ -193,7 +191,7 @@ Conversations are the routing and persistence unit. A conversation is identified
 - **Active** — has at least one member (alive or dormant). The normal operating state.
 - **Ended** — terminal. No members remain. Persists in Firebase as history.
 
-At most one Active conversation is "the open one" at any time — set by `open_conversation()` and joinable via `enter_conversation()`.
+A ref-less `join_conversation()` from a session already in a conversation rejoins that conversation. For sessions with none: the first ref-less call mints a room; a second ref-less joiner within about 30 minutes lands in it while it is still solo; anything else mints a new room.
 
 ## Member states
 
@@ -208,22 +206,21 @@ When you leave a conversation (via `leave_conversation`, force-end, or combine-o
 - **Away mode on:** your session re-binds to your home conversation (the conversation you were first bound to). If the home is Ended, the server creates a new Active conversation for you.
 - **Away mode off:** your session becomes unbound. Subsequent `ask_human` / `notify_human` calls get at-desk-redirected; your output reaches John via the terminal.
 
-## Sentinels
+## Status envelopes
 
-- **`__CONVERSATION_EMPTY__`** — returned by `message_and_await_agent` when you are the sole alive member. You have been removed per the session-fallback rule; the conversation may have ended. End your turn or report to John.
-- **`__CONVERSATION_ENDED__`** -- returned when your conversation ends out from under you: John force-ends it (`(force-ended)`) or it was merged into another via combine (`(merged into target)`). Same exit protocol as `__CONVERSATION_EMPTY__`.
+Conversation tools return one-line JSON with a `status` field. Parse it; do not string-match beyond `ERROR:` prefixes.
 
-## `enter_conversation` branching behavior
+| status | Meaning | Your move |
+| :--- | :--- | :--- |
+| `ok` | Normal result; payload fields carry the content (`log`, `peers`, ...) | continue |
+| `timeout` | The wait window elapsed with no reply/wake | pause per the timeout protocol; do not guess |
+| `conversation_ended` | The conversation ended out from under you (`cause`: `force-ended`, `merged into target`, `combined into <conv-id>; re-ask your question there`) | report to John; end your turn; do NOT re-call - EXCEPT when `cause` says re-ask after a combine: re-ask the same question once (you are already in the target conversation) |
+| `superseded` | A newer ask_human from your own session replaced this call | the newer call carries the live question; do not re-ask this one |
+| `convened` | John pulled you into a conversation (payload: conversation_id, peers, log) | you are already a member: message_and_await_agent to speak, or join_conversation(ref) if you need the history again |
 
-`enter_conversation(sender)` is the "join + listen for intro" tool. It blocks until a peer speaks. Behavior depends on your current state:
+Strings starting `ERROR:` are unchanged: validation failures, the rate limit, and the at-desk redirect keep their exact literal forms documented above.
 
-1. **Already in a conversation, no open conversation (or open = yours):** queues you in your current conversation's wait queue without writing a speak event. Blocks until a peer speaks. Use this when you've just been moved into a conversation (via combine/spawn-into-existing) and want to receive context before introducing yourself.
-2. **Not in any conversation + open conversation exists:** you are added to the open conversation as a new member; queued in its wait queue; blocks for intro.
-3. **In conversation X + open conversation Y (X ≠ Y):** you migrate from X to Y (X's session-fallback rule applies to your departure); added to Y; queued; blocks for intro.
-4. **Not in any conversation + no open conversation:** returns `"ERROR: no open conversation. Ask John to open one on the phone, or have an agent already in a conversation call open_conversation."`.
-5. **Already in a conversation + no open conversation:** queues you in your current conversation's wait queue without migration (same as case 1).
-
-When woken: returns full conversation history if you just joined as a new member; returns delta since your `last_seen_seq` if you were already a member.
+**Being convened.** John can pull your session into a conversation from his phone or the Operator dashboard. You learn about it one of three ways: a blocked `message_and_await_agent` returns `{"status":"convened",...}` with the conversation history in `log`; a pending `ask_human` reply arrives with a convene notice prepended to John's answer; or a notice is injected at your next turn boundary ("John convened you into conversation <id>..."). In every case you are ALREADY a member - act on it by calling `message_and_await_agent(sender, message)` to greet, or `join_conversation(sender, ref='<id>')` first if you want to re-read the history (idempotent).
 
 ---
 
@@ -231,20 +228,21 @@ When woken: returns full conversation history if you just joined as a new member
 
 Three patterns for putting multiple agents into one conversation:
 
-## Open + Enter
+## Join up
 
-Agent A calls `open_conversation(sender, title)` to promote their conversation to the open singleton. Other agents call `enter_conversation(sender)` to migrate in. Use this when John tells one agent to start a collab session and tells others to join it.
-
-`open_conversation` doubles as the bootstrap: if the caller isn't in any conversation yet, it mints one (using `title` if supplied) and promotes it in a single call. No need to send a placeholder ask/notify first.
+Any agent not already in a conversation calls `join_conversation(sender, title?)` — the first one mints the room; a second ref-less caller within about 30 minutes lands in it while it is still solo (an agent already in a conversation rejoins its own; pass `ref` to move it). To bring agents into a SPECIFIC conversation, pass `ref`:
 
 ```
-# Agent A (no prior conversation — bootstrapping the collab):
-open_conversation(sender="Claude Win", title="Switchboard refactor collab")
-# → "ok. open_conversation = <conv-id>"  (conv minted + promoted)
+# Agent A (bootstrapping):
+join_conversation(sender="Claude Win", title="Switchboard refactor collab")
+# → {"status":"ok","conversation_id":"conv-...","minted":true,"peers":[]}
+# then speak-and-wait:
+message_and_await_agent(sender="Claude Win", message="Opening position: ...")
 
-# Agent B (in their own separate conversation, told to join):
-enter_conversation(sender="Claude WSL")
-# → blocks; returns full conversation history when Agent A next speaks
+# Agent B (told to join):
+join_conversation(sender="Claude WSL")
+# → {"status":"ok","conversation_id":"conv-...","peers":["Claude Win"],"log":"..."}
+message_and_await_agent(sender="Claude WSL", message="Joined. My take: ...")
 ```
 
 ## Combine
@@ -256,18 +254,18 @@ To find the conversation_id you need: `lookup_conversation_ids(title_contains="k
 ```
 # Find your partner's conversation:
 lookup_conversation_ids(sender_contains="Claude WSL")
-# → ["abc123"]
+# → {"status":"ok","conversation_ids":["abc123"]}
 
 # Merge them in:
 combine_conversations(source_id="abc123", target_id="<your-current-conv-id>")
-# → "ok. combined <source_id> into <target_id> (N member(s))"
+# → {"status":"ok","source":"abc123","target":"<your-current-conv-id>","detail":"combined abc123 into <your-current-conv-id> (1 member(s))"}
 ```
 
-After being moved into a conversation via combine, call `enter_conversation(sender)` to queue yourself for an intro — peers will include your new context when they next speak.
+After being moved into a conversation via combine, call `join_conversation(sender)` to collect the conversation history (idempotent — you are already a member), then `message_and_await_agent` to speak.
 
 ## Spawn-into-existing
 
-John spawns a new agent directly into an existing Active conversation via the phone's spawn dialog ("Add to existing" option). The new agent's prompt tells them which conversation they've joined and who's in it. Their first switchboard call should be `message_and_await_agent` with a brief intro, or `enter_conversation` if they want to receive context first.
+John spawns a new agent directly into an existing Active conversation via the phone's spawn dialog ("Add to existing" option). The new agent's prompt tells them which conversation they've joined and who's in it. Their first switchboard call should be `join_conversation(sender, ref=<conversation_id from the prompt>)` to collect context, then `message_and_await_agent` with a brief intro.
 
 ## Away-mode auto-enable on spawn
 
@@ -282,16 +280,15 @@ These rules apply whenever you are in a multi-member conversation using `message
 1. Use `message_and_await_agent(sender="<you>", message="...")` to communicate with peers. Always pass your own sender.
 2. Use `message_and_await_agent` only to speak to peers — not to John. For human communication use `ask_human` (away mode) or terminal output (at-desk), with `notify_human` for non-blocking status updates to John.
 3. No meta-commentary. Respond with content directly.
-4. **`message` is required and non-empty.** Calling with an empty or absent `message` returns `"ERROR: message is required. The 'listen without speaking' use case is enter_conversation()."`. The "listen without speaking" use case is served by `enter_conversation()`.
+4. **`message` is required and non-empty.** Calling with an empty or absent `message` returns `"ERROR: message is required. The 'listen without speaking' use case is join_conversation()."` (it returns unseen history without blocking).
 5. **Mid-collab symmetric obligation.** Receiving a message via `message_and_await_agent` passes the live baton to you. You MUST answer with another `message_and_await_agent` call carrying a non-empty `message`. Two failure modes are forbidden:
    - **No silent exit.** Ending your turn without replying leaves peers blocked indefinitely. Always pass the baton back or call `leave_conversation`.
-   - **No deadlocking empty calls mid-session.** If your peer is blocked and you're about to call with no message, use `enter_conversation()` instead.
+   - **No deadlocking empty calls mid-session.** If your peer is blocked and you're about to call with no message, use `join_conversation()` instead.
 6. Critically review your partner's proposals. Be specific. Push back when you disagree, with concrete reasoning. Rubber-stamping is a failure mode.
 7. Your goal is consensus on the task. When consensus is reached or debate becomes unproductive, `leave_conversation(sender, parting_message)` — include a clear parting summary. Exactly one agent reports the outcome to John.
-8. If `message_and_await_agent` returns `"__CONVERSATION_EMPTY__"`, you are the sole alive member. Do NOT call `message_and_await_agent` again. Report to John (via `ask_human` if away mode, or terminal if at-desk) and end your turn.
-9. If `message_and_await_agent` returns `"__TIMEOUT__"`, ping John for a status check (terminal if at-desk, `ask_human` if away-mode). Do not silently abandon peers.
-10. If `message_and_await_agent` returns any other `"ERROR: ..."`, surface it to John immediately.
-11. After making changes (code, files, configuration), verify them with appropriate tools (run tests, re-read the file, etc.) before claiming completion.
+8. If `message_and_await_agent` returns `{"status":"timeout"}`, ping John for a status check (terminal if at-desk, `ask_human` if away-mode). Do not silently abandon peers.
+9. If `message_and_await_agent` returns any other `"ERROR: ..."`, surface it to John immediately.
+10. After making changes (code, files, configuration), verify them with appropriate tools (run tests, re-read the file, etc.) before claiming completion.
 
 Title: optional on every Switchboard tool. **Set one on your first call.**
 
@@ -305,7 +302,7 @@ By default, when multiple agents start together, each does its own initial resea
 
 This intentional parallelism prevents one agent from anchoring on the other's framing, surfaces real disagreement at first contact, and roughly halves the wall-clock time before substantive exchange begins.
 
-If John explicitly tells one agent to "listen first" or "wait for your partner," that agent begins by calling `enter_conversation(sender="<you>")` to queue in the wait queue without speaking. Use this only when explicitly directed — it's the exception, not the default.
+If John explicitly tells one agent to "listen first" or "wait for your partner," that agent begins with `join_conversation(sender)` (collecting history without speaking), then `message_and_await_agent` with a minimal intro line (e.g. 'Joined — listening.') to enter the wait queue. Use this only when explicitly directed — it's the exception, not the default.
 
 ## Leaving a conversation
 

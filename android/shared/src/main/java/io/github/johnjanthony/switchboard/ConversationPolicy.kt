@@ -2,6 +2,7 @@ package io.github.johnjanthony.switchboard
 
 import io.github.johnjanthony.switchboard.network.ConversationMember
 import io.github.johnjanthony.switchboard.network.ConversationRow
+import io.github.johnjanthony.switchboard.network.ConversationSummary
 import io.github.johnjanthony.switchboard.network.WidgetRing
 
 /**
@@ -15,6 +16,16 @@ const val ADMIN_CONVERSATION_ID = "_admin"
 /** True for synthetic conversation ids that have no real Firebase node behind them. */
 fun isSyntheticConversation(conversationId: String): Boolean =
 	conversationId == ADMIN_CONVERSATION_ID
+
+/**
+ * True when a just-arrived message on [convId] should zero the server-side
+ * unread counter. Only the open row zeroes, only while the app is actually in
+ * the foreground (a conversation left open on a pocketed phone must not mark
+ * arriving messages read - the zero propagates to every surface), and never
+ * for synthetic rows.
+ */
+fun shouldZeroUnreadOnArrival(selectedConversationId: String?, convId: String, appForeground: Boolean): Boolean =
+	selectedConversationId == convId && appForeground && !isSyntheticConversation(convId)
 
 /** Number of still-open pending questions on a row (cancelled ones excluded). */
 fun pendingReplyCount(row: ConversationRow): Int =
@@ -126,3 +137,13 @@ fun listRowContextRing(members: List<ConversationMember>, ringsBySessionId: Map<
 	val top = members.mapNotNull { ringForMember(it, ringsBySessionId) }.maxByOrNull { it.pct }
 	return top?.takeIf { it.pct > 0.50 }
 }
+
+/**
+ * Conversations offered as a combine/spawn/convene target: active only, with an optional
+ * conversation to exclude (the combine source). Ended conversations are never valid targets
+ * (the server rejects them after the round-trip), so they are filtered out of the pickers
+ * (REV-204). Filter only where a list feeds a picker; other call sites still need ended
+ * conversations for title lookups.
+ */
+fun pickerTargets(all: List<ConversationSummary>, excludeId: String? = null): List<ConversationSummary> =
+	all.filter { it.state == "active" && it.id != excludeId }

@@ -42,6 +42,16 @@ def test_validate_path_accepts_absolute_path(tmp_path):
 	assert resolved == f.resolve()
 
 
+def test_validate_path_rejects_absolute_path_outside_cwd(tmp_path):
+	# An absolute path that resolves outside the project must be rejected. Before
+	# the containment fix, absolute paths skipped the escape check entirely, so any
+	# readable file on the machine could be exfiltrated via send_document_human.
+	outside = tmp_path.parent / "outside.txt"
+	outside.write_text("not yours")
+	with pytest.raises(ValueError, match="escapes"):
+		_validate_path(str(outside), cwd=tmp_path)
+
+
 def test_validate_path_rejects_absolute_path_denylist(tmp_path):
 	f = tmp_path / ".env"
 	f.write_text("SECRET=very_secret")
@@ -99,6 +109,41 @@ def test_validate_path_rejects_denylist_glob(tmp_path, name):
 	f.write_text("secret")
 	with pytest.raises(ValueError, match="restricted pattern"):
 		_validate_path(name, cwd=tmp_path)
+
+
+@pytest.mark.parametrize("name", [
+	"id_rsa",            # extensionless private key (REV-004 gap)
+	"id_ed25519",
+	"backup.p12",
+	"cert.pfx",
+	"key.ppk",
+	"store.jks",
+	"app.keystore",
+	"vault.kdbx",
+	"main.py",           # source is not shareable
+	"archive.zip",
+])
+def test_validate_path_rejects_non_allowlisted_types(tmp_path, name):
+	f = tmp_path / name
+	f.write_text("content")
+	with pytest.raises(ValueError, match="allowlist"):
+		_validate_path(name, cwd=tmp_path)
+
+
+def test_validate_path_rejects_credentials_json(tmp_path):
+	f = tmp_path / "credentials.json"
+	f.write_text("{}")
+	with pytest.raises(ValueError, match="deny list"):
+		_validate_path("credentials.json", cwd=tmp_path)
+
+
+@pytest.mark.parametrize("name", [
+	"report.md", "notes.txt", "run.log", "data.csv", "fix.diff", "shot.png",
+])
+def test_validate_path_accepts_allowlisted_types(tmp_path, name):
+	f = tmp_path / name
+	f.write_text("content")
+	assert _validate_path(name, cwd=tmp_path) == f.resolve()
 
 
 # ── send_document_human handler ───────────────────────────────────────────────

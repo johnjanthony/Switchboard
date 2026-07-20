@@ -36,7 +36,7 @@ def _registry_with_conv(conv_id: str = "conv-fe") -> Registry:
 		cli_session_id="s-1", sender="Claude", cwd="C:/Work/X",
 		surface="windows", joined_at=time.time(),
 	)
-	conv.members_active["Claude"] = member
+	conv.members_active["s-1"] = member
 	registry.conversations[conv_id] = conv
 	registry.bind_session("s-1", conv_id)
 	return registry
@@ -47,8 +47,8 @@ async def test_force_end_resolves_pending_ask_human_future():
 	registry = _registry_with_conv()
 	backend = CancelTrackingBackend()
 
-	# Agent blocked in ask_human: a pending future exists for (conv, sender)
-	future = registry.add("conv-fe", "Claude", request_id="req-1", msg_id="msg-1")
+	# Agent blocked in ask_human: a pending future exists for (conv, cli_session_id)
+	future = registry.add("conv-fe", "s-1", "Claude", request_id="req-1", msg_id="msg-1")
 	assert not future.done()
 
 	await handle_force_end(registry, "conv-fe", backend=backend)
@@ -75,7 +75,7 @@ async def test_force_end_decrements_pending_badge_via_mirror():
 	deltas: list[tuple[str, int]] = []
 	registry.set_pending_mirror(lambda conv_id, delta: deltas.append((conv_id, delta)))
 
-	registry.add("conv-fe", "Claude", request_id="req-1", msg_id="msg-1")
+	registry.add("conv-fe", "s-1", "Claude", request_id="req-1", msg_id="msg-1")
 	await handle_force_end(registry, "conv-fe", backend=backend)
 
 	# +1 on add, -1 on force-end cancellation: badge nets to zero

@@ -18,7 +18,6 @@ from server.registry import Registry
 from tests.test_gateway_notify_human import RecordingBackend
 
 _CWD = "c:/work/sw"
-_SESSION_ID = "test-session-id-abc"
 
 
 @pytest.fixture
@@ -41,8 +40,8 @@ def mcp_instance(cfg):
 
 
 @pytest.mark.asyncio
-async def test_mcp_tool_list_includes_all_ten_tools(cfg):
-	"""All 10 expected tools must be registered in the FastMCP instance."""
+async def test_mcp_tool_list_includes_all_nine_tools(cfg):
+	"""All 9 expected tools must be registered in the FastMCP instance."""
 	logger = JsonlLogger(cfg.log_path)
 	registry = Registry()
 	backend = RecordingBackend()
@@ -56,8 +55,7 @@ async def test_mcp_tool_list_includes_all_ten_tools(cfg):
 		"notify_human",
 		"send_document_human",
 		"message_and_await_agent",
-		"open_conversation",
-		"enter_conversation",
+		"join_conversation",
 		"combine_conversations",
 		"lookup_conversation_ids",
 		"leave_conversation",
@@ -129,21 +127,6 @@ async def test_wrapper_set_away_mode_declares_cli_session_id(cfg):
 	assert "cli_session_id" in param_names
 	assert "cwd" in param_names
 	assert "value" in param_names
-
-
-@pytest.mark.asyncio
-async def test_wrapper_open_and_enter_conversation_registered(cfg):
-	"""open_conversation and enter_conversation must be present in tool list."""
-	logger = JsonlLogger(cfg.log_path)
-	registry = Registry()
-	backend = RecordingBackend()
-	handlers = build_tool_handlers(cfg, registry, backend, logger)
-	mcp = _build_fastmcp(handlers)
-
-	tools = await mcp.list_tools()
-	tool_names = {t.name for t in tools}
-	assert "open_conversation" in tool_names
-	assert "enter_conversation" in tool_names
 
 
 @pytest.mark.asyncio

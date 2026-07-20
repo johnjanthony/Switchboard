@@ -13,7 +13,10 @@ public sealed record WidgetRingDto(
 	[property: JsonPropertyName("status")] string Status,
 	[property: JsonPropertyName("context_tokens")] long ContextTokens,
 	[property: JsonPropertyName("window")] long Window,
-	[property: JsonPropertyName("is_error")] bool IsError);
+	[property: JsonPropertyName("is_error")] bool IsError,
+	[property: JsonPropertyName("name")] string? Name,
+	[property: JsonPropertyName("name_source")] string? NameSource,
+	[property: JsonPropertyName("title_state")] string? TitleState);
 
 public sealed record WidgetQuotaWindowDto(
 	[property: JsonPropertyName("pct")] double Pct,
@@ -31,7 +34,8 @@ public sealed record WidgetSnapshotPayload(
 
 public static class WidgetSnapshotBuilder
 {
-	public static WidgetSnapshotPayload Build(IEnumerable<SessionModel> sessions, QuotaUsage? quota, DateTimeOffset pushedAt)
+	public static WidgetSnapshotPayload Build(IEnumerable<SessionModel> sessions, QuotaUsage? quota, DateTimeOffset pushedAt,
+		IReadOnlyDictionary<string, string>? titleStates = null)
 	{
 		var rings = new List<WidgetRingDto>();
 		foreach (var s in sessions)
@@ -44,7 +48,10 @@ public static class WidgetSnapshotBuilder
 				s.Status == SessionStatus.Live ? "live" : "idle",
 				s.ContextTokens,
 				s.WindowSize,
-				s.IsError));
+				s.IsError,
+				s.Name,
+				s.NameSource,
+				titleStates?.GetValueOrDefault(s.SessionId!)));
 		}
 
 		WidgetQuotaDto? quotaDto = null;

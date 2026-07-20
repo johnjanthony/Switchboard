@@ -1,40 +1,28 @@
 import { html, useState } from "../vendor/htm-preact.js";
-import * as fb from "../firebase.js";
-import { isActive, globalPendingCount, oldestPendingAgeSeconds } from "../derive.js";
-import { awayOnCmd, awayOffCmd, spawnFreshCmd } from "../commands.js";
-import { requestStatus, statusDotClass } from "../statusControl.js";
-
-function push(cmd) {
-	fb.pushValue(cmd.path, cmd.value);
-}
+import { isActive, globalPendingCount, oldestPendingAgeSeconds, formatAge } from "../derive.js";
+import { statusDotClass } from "../statusControl.js";
 
 function healthLampClass(health) {
 	if (!health.reachable) return "lamp lamp-red";
 	return health.healthy ? "lamp lamp-green" : "lamp lamp-amber";
 }
 
-function fmtAge(seconds) {
-	if (seconds == null) return "-";
-	const s = Math.floor(seconds);
-	if (s < 60) return `${s}s`;
-	if (s < 3600) return `${Math.floor(s / 60)}m`;
-	return `${Math.floor(s / 3600)}h`;
-}
-
 // Open a fresh line. The one global action that doesn't act on an existing line,
 // so it lives in the operator header rather than on a conversation.
-function SpawnDialog({ onClose }) {
+function SpawnDialog({ store, onClose }) {
 	const [surface, setSurface] = useState("windows");
 	const [project, setProject] = useState("");
 	const [prompt, setPrompt] = useState("");
 	const [target, setTarget] = useState("");
+	const canSubmit = project.trim().length > 0;
 	const submit = () => {
-		push(spawnFreshCmd({
+		if (!canSubmit) return;
+		store.spawnFresh({
 			surface,
 			project,
 			prompt: prompt || undefined,
-			targetConversationId: target || undefined
-		}, fb.nowIso));
+			targetConversationId: target || undefined,
+		});
 		onClose();
 	};
 	return html`
@@ -53,9 +41,10 @@ function SpawnDialog({ onClose }) {
 			<label>Target conversation id (optional)
 				<input value=${target} onInput=${(e) => setTarget(e.target.value)} /></label>
 			<div class="dialog-actions">
-				<button onClick=${submit}>Open line</button>
+				<button onClick=${submit} disabled=${!canSubmit}>Open line</button>
 				<button class="ghost" onClick=${onClose}>Cancel</button>
 			</div>
+			${!canSubmit ? html`<p class="resume-hint">A project path is required.</p>` : null}
 		</div>
 	`;
 }
@@ -69,7 +58,7 @@ function AwayOffDialog({ store, onClose }) {
 
 	if (pendingCount === 0) {
 		const confirm = () => {
-			push(awayOffCmd({}, fb.nowIso));
+			store.awayOff({});
 			onClose();
 		};
 		return html`
@@ -85,11 +74,11 @@ function AwayOffDialog({ store, onClose }) {
 	}
 
 	const sendDefault = () => {
-		push(awayOffCmd({ decision: "send_default", defaultText }, fb.nowIso));
+		store.awayOff({ decision: "send_default", defaultText });
 		onClose();
 	};
 	const skip = () => {
-		push(awayOffCmd({ decision: "skip" }, fb.nowIso));
+		store.awayOff({ decision: "skip" });
 		onClose();
 	};
 	return html`
@@ -118,7 +107,7 @@ function QuotaReadout({ quota }) {
 	`;
 }
 
-function ClaudeStatusControl({ status }) {
+function ClaudeStatusControl({ status, store }) {
 	const s = status || { watch_state: "idle", button: "check", level: "operational", description: "", incidents: [] };
 	const label = s.button === "stop" ? "Stop" : s.button === "clear" ? "Clear" : "Check";
 	const action = s.button === "check" ? "check" : "stop";
@@ -127,7 +116,7 @@ function ClaudeStatusControl({ status }) {
 		<span class="claude-status" title=${title}>
 			${s.watch_state !== "idle" ? html`<span class=${statusDotClass(s.level)}></span>` : null}
 			<span class="claude-status-label">Claude</span>
-			<button class="claude-status-btn" onClick=${() => requestStatus(action)}>${label}</button>
+			<button class="claude-status-btn" onClick=${() => store.requestClaudeStatus(action)}>${label}</button>
 		</span>
 	`;
 }
@@ -140,8 +129,7 @@ export function StatusBar({ store }) {
 	const activeCount = Object.values(convs)
 		.filter((c) => c && c.meta && isActive(c.meta)).length;
 	const pendingCount = globalPendingCount(convs);
-	const oldest = oldestPendingAgeSeconds(
-		state.pendingsFlat, state.messageTimestampResolver, Date.now());
+	const oldest = oldestPendingAgeSeconds(state.pendingsFlat, Date.now());
 
 	const awayOn = state.globalAway;
 	const onAwayPill = () => {
@@ -149,8 +137,7 @@ export function StatusBar({ store }) {
 			// Turning away OFF opens the dialog (resolves the pendings decision).
 			store.setAwayOffDialogOpen(true);
 		} else {
-			const { path, value } = awayOnCmd(fb.nowIso);
-			fb.pushValue(path, value);
+			store.awayOn();
 		}
 	};
 
@@ -165,7 +152,7 @@ export function StatusBar({ store }) {
 				<span class="status-counts">
 					<span class="count"><b>${activeCount}</b> active</span>
 					<span class="count lit"><b>${pendingCount}</b> lit</span>
-					<span class="count">oldest <b>${fmtAge(oldest)}</b></span>
+					<span class="count">oldest <b>${oldest == null ? "-" : formatAge(oldest)}</b></span>
 				</span>
 				<span class="status-health">
 					<span class=${healthLampClass(state.health)} title="Server health"></span>
@@ -175,12 +162,12 @@ export function StatusBar({ store }) {
 					<span class=${"wsl-indicator " + (state.wslAvailable ? "wsl-on" : "wsl-off")}
 						title="WSL availability">WSL ${state.wslAvailable ? "on" : "off"}</span>
 					<${QuotaReadout} quota=${state.widget.quota} />
-					<${ClaudeStatusControl} status=${state.widget.status} />
+					<${ClaudeStatusControl} status=${state.widget.status} store=${store} />
 				</span>
 				<button class="open-line-btn" onClick=${() => setSpawnOpen(true)}>Open line</button>
 			</div>
 			<div class="header-dialogs">
-				${spawnOpen ? html`<${SpawnDialog} onClose=${() => setSpawnOpen(false)} />` : null}
+				${spawnOpen ? html`<${SpawnDialog} store=${store} onClose=${() => setSpawnOpen(false)} />` : null}
 				${state.ui.awayOffDialogOpen
 					? html`<${AwayOffDialog} store=${store} onClose=${() => store.setAwayOffDialogOpen(false)} />`
 					: null}

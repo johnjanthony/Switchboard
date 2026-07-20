@@ -47,7 +47,7 @@ def _make_member(session_id: str, sender: str, cwd: str, alive: bool = True) -> 
 def _make_conv(conv_id: str, title: str, *members: ConversationMember, state: str = "active") -> Conversation:
 	conv = Conversation(id=conv_id, title=title, state=state)
 	for m in members:
-		conv.members_active[m.sender] = m
+		conv.members_active[m.cli_session_id] = m
 	return conv
 
 
@@ -78,8 +78,8 @@ async def test_lookup_by_title(cfg, logger):
 		cwd="C:/X",
 	)
 
-	ids = json.loads(result)
-	assert ids == ["conv-match"]
+	data = json.loads(result)
+	assert data == {"status": "ok", "conversation_ids": ["conv-match"]}
 
 
 @pytest.mark.asyncio
@@ -105,8 +105,8 @@ async def test_lookup_by_sender(cfg, logger):
 		cwd="C:/A",
 	)
 
-	ids = json.loads(result)
-	assert ids == ["conv-alpha"]
+	data = json.loads(result)
+	assert data == {"status": "ok", "conversation_ids": ["conv-alpha"]}
 
 
 @pytest.mark.asyncio
@@ -132,8 +132,8 @@ async def test_lookup_by_cwd(cfg, logger):
 		cwd="C:/Work/project-x",
 	)
 
-	ids = json.loads(result)
-	assert ids == ["conv-x"]
+	data = json.loads(result)
+	assert data == {"status": "ok", "conversation_ids": ["conv-x"]}
 
 
 @pytest.mark.asyncio
@@ -174,9 +174,10 @@ async def test_lookup_skips_ended_conversations(cfg, logger):
 		cwd="C:/A",
 	)
 
-	ids = json.loads(result)
-	assert "conv-active" in ids
-	assert "conv-ended" not in ids
+	data = json.loads(result)
+	assert data["status"] == "ok"
+	assert "conv-active" in data["conversation_ids"]
+	assert "conv-ended" not in data["conversation_ids"]
 
 
 @pytest.mark.asyncio

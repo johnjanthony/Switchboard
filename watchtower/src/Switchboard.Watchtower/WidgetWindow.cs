@@ -52,13 +52,14 @@ internal sealed class WidgetWindow : Form
 	IntPtr _taskbar;
 	IntPtr _winEventHook;
 	bool _embedded;                                // true once reparented as a WS_CHILD of the taskbar
+	nint _embeddedHandle;   // HWND at the last successful embed; a mismatch on detach = WinForms recreated it
+	bool _ulwFailing;       // last UpdateLayeredWindow outcome, so failures log once per streak
 	readonly uint _taskbarCreatedMsg;
 	readonly Native.WinEventProc _winEventCb; // kept in a field so the GC cannot collect the callback
+	System.Drawing.Rectangle _lastTbRect = System.Drawing.Rectangle.Empty;  // taskbar rect at last reposition
 
 	public event Action<int>? PositionChanged;    // new screen X persisted by the host
 	public Action<string>? Diagnostic;             // optional sink for embed/lifecycle diagnostics
-
-	public bool IsEmbedded => _embedded;
 
 	[System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
 	public int? PreferredX { get; set; }          // screen X from config; null = auto (left of tray)
@@ -100,14 +101,21 @@ internal sealed class WidgetWindow : Form
 		if (_taskbar != IntPtr.Zero)
 			TryEmbed();
 
-		if (_winEventHook == IntPtr.Zero && _taskbar != IntPtr.Zero)
+		// The hook dies with explorer's thread but the handle stays non-zero, so always
+		// unhook before re-registering against the (possibly new) taskbar thread.
+		if (_winEventHook != IntPtr.Zero) { Native.UnhookWinEvent(_winEventHook); _winEventHook = IntPtr.Zero; }
+		if (_taskbar != IntPtr.Zero)
 		{
 			uint thread = Native.GetWindowThreadProcessId(_taskbar, out _);
 			_winEventHook = Native.SetWinEventHook(
 				Native.EVENT_OBJECT_LOCATIONCHANGE, Native.EVENT_OBJECT_LOCATIONCHANGE,
 				IntPtr.Zero, _winEventCb, 0, thread, Native.WINEVENT_OUTOFCONTEXT);
 		}
+		// Explorer-restart recovery of the embedded child otherwise rides the implicit
+		// WinForms child-HWND recreation path (TaskbarCreated does not reach an embedded child).
 		PositionOverTaskbar();
+		if (_embedded)
+			Diagnostic?.Invoke($"re-attach complete: visible={Native.IsWindowVisible(Handle)}");
 	}
 
 	// Reparent this window into the taskbar following the exact sequence the CodeZeno monitor uses:
@@ -118,12 +126,13 @@ internal sealed class WidgetWindow : Form
 	{
 		if (_embedded && Native.GetParent(Handle) == _taskbar) return;
 
-		uint ex = (uint)Native.GetWindowLongPtr(Handle, Native.GWL_EXSTYLE);
-		Native.SetWindowLongPtr(Handle, Native.GWL_EXSTYLE,
-			(nint)(ex | (uint)Native.WS_EX_TOOLWINDOW | (uint)Native.WS_EX_NOACTIVATE));
+		uint origEx = (uint)Native.GetWindowLongPtr(Handle, Native.GWL_EXSTYLE);
+		uint origStyle = (uint)Native.GetWindowLongPtr(Handle, Native.GWL_STYLE);
 
-		uint style = (uint)Native.GetWindowLongPtr(Handle, Native.GWL_STYLE);
-		uint newStyle = (style & ~unchecked((uint)Native.WS_POPUP)) | (uint)Native.WS_CHILD | (uint)Native.WS_CLIPSIBLINGS;
+		Native.SetWindowLongPtr(Handle, Native.GWL_EXSTYLE,
+			(nint)(origEx | (uint)Native.WS_EX_TOOLWINDOW | (uint)Native.WS_EX_NOACTIVATE));
+
+		uint newStyle = (origStyle & ~unchecked((uint)Native.WS_POPUP)) | (uint)Native.WS_CHILD | (uint)Native.WS_CLIPSIBLINGS;
 		Native.SetWindowLongPtr(Handle, Native.GWL_STYLE, (nint)newStyle);
 
 		// Force the frame change to take effect before reparenting (the Rust app gets away without this
@@ -132,10 +141,25 @@ internal sealed class WidgetWindow : Form
 			Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_FRAMECHANGED | Native.SWP_NOACTIVATE);
 
 		Native.SetParent(Handle, _taskbar);
-		_embedded = Native.GetParent(Handle) == _taskbar;
-		if (_embedded) TopMost = false; // meaningless and counter-productive for a child window
+		_embedded = Native.GetParent(Handle) == _taskbar;  // reliable success test; SetParent's NULL return is ambiguous here
+		if (_embedded)
+		{
+			TopMost = false; // meaningless and counter-productive for a child window
+			_embeddedHandle = Handle;
+		}
+		else
+		{
+			// SetParent failed: restore the original styles so the top-most overlay fallback behaves correctly.
+			Native.SetWindowLongPtr(Handle, Native.GWL_EXSTYLE, (nint)origEx);
+			Native.SetWindowLongPtr(Handle, Native.GWL_STYLE, (nint)origStyle);
+			Native.SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
+				Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_FRAMECHANGED | Native.SWP_NOACTIVATE);
+		}
 
-		Diagnostic?.Invoke($"embed attempt: taskbar={_taskbar:X} embedded={_embedded} style=0x{newStyle:X8}");
+		Diagnostic?.Invoke($"embed attempt: taskbar={_taskbar:X} embedded={_embedded} handle=0x{Handle:X}"
+			+ $" visible={Native.IsWindowVisible(Handle)}"
+			+ $" style=0x{(uint)Native.GetWindowLongPtr(Handle, Native.GWL_STYLE):X8}"
+			+ $" ex=0x{(uint)Native.GetWindowLongPtr(Handle, Native.GWL_EXSTYLE):X8}");
 	}
 
 	// The window's true on-screen rectangle. Form.Bounds is parent-relative (and stale) once embedded,
@@ -154,7 +178,10 @@ internal sealed class WidgetWindow : Form
 		// If we were embedded and lost our parent (explorer restart / taskbar recreated), re-attach.
 		if (_embedded && Native.GetParent(Handle) != _taskbar)
 		{
-			Diagnostic?.Invoke("embedded child detached from taskbar; re-attaching");
+			nint h = Handle;
+			Diagnostic?.Invoke(h == _embeddedHandle
+				? $"embedded child detached from taskbar; re-attaching (handle=0x{h:X} unchanged)"
+				: $"embedded child detached from taskbar; re-attaching (handle recreated 0x{_embeddedHandle:X} -> 0x{h:X})");
 			_embedded = false;
 			AttachToTaskbar();
 			return;
@@ -169,6 +196,7 @@ internal sealed class WidgetWindow : Form
 	public void PositionOverTaskbar()
 	{
 		if (!TaskbarLocator.TryGetTaskbarRect(out var tb)) { if (!_embedded) Raise(); Render(); return; }
+		_lastTbRect = tb;
 
 		int? trayLeft = TaskbarLocator.TryGetTrayRect(out var tray) ? tray.Left : null;
 		var place = TaskbarPlacement.Compute(tb, trayLeft, Width, Height, PreferredX, _embedded);
@@ -191,8 +219,16 @@ internal sealed class WidgetWindow : Form
 
 	void OnTrayLocationChanged(IntPtr hHook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
 	{
-		try { if (IsHandleCreated) BeginInvoke(new Action(PositionOverTaskbar)); }
+		try { if (IsHandleCreated) BeginInvoke(new Action(RepositionIfTaskbarMoved)); }
 		catch { /* shutting down */ }
+	}
+
+	// LOCATIONCHANGE is scoped to the whole explorer thread, so it fires per tooltip/animation.
+	// Only reposition (and rebuild the layered bitmap) when the taskbar rect actually changed.
+	void RepositionIfTaskbarMoved()
+	{
+		if (TaskbarLocator.TryGetTaskbarRect(out var tb) && tb == _lastTbRect) return;
+		PositionOverTaskbar();
 	}
 
 	protected override void WndProc(ref Message m)
@@ -370,22 +406,13 @@ internal sealed class WidgetWindow : Form
 	// red (so a near-full context reads the same bright red here and in the popup), while the yellow
 	// midpoint separates the mid/high bands that the shared orange-amber knee renders too alike at this
 	// size. Quota bars and the tray icon still use SeverityGradient directly.
-	static readonly Color RingLow = Color.FromArgb(63, 185, 80);     // green   (== SeverityGradient green)
-	static readonly Color RingMid = Color.FromArgb(240, 205, 40);    // yellow  (rings-only, for separation)
-	static readonly Color RingHigh = Color.FromArgb(248, 81, 73);    // red     (== SeverityGradient red / popup)
+	static readonly Color RingLow = StatusColors.Green;     // == SeverityGradient green
+	static readonly Color RingMid = StatusColors.Yellow;    // rings-only midpoint, for separation
+	static readonly Color RingHigh = StatusColors.Red;      // == SeverityGradient red / popup
 	static Color RingColor(double pct)
 	{
 		double p = Math.Clamp(pct, 0, 1);
-		return p <= 0.5 ? Lerp(RingLow, RingMid, p / 0.5) : Lerp(RingMid, RingHigh, (p - 0.5) / 0.5);
-	}
-
-	static Color Lerp(Color a, Color b, double t)
-	{
-		t = Math.Clamp(t, 0, 1);
-		return Color.FromArgb(
-			(int)(a.R + (b.R - a.R) * t),
-			(int)(a.G + (b.G - a.G) * t),
-			(int)(a.B + (b.B - a.B) * t));
+		return p <= 0.5 ? StatusColors.Lerp(RingLow, RingMid, p / 0.5) : StatusColors.Lerp(RingMid, RingHigh, (p - 0.5) / 0.5);
 	}
 
 	void DrawContent(Graphics g)
@@ -442,7 +469,7 @@ internal sealed class WidgetWindow : Form
 		// Switchboard pending badge: an amber dot in the top-right corner, mirroring
 		// the tray icon, when there are unanswered questions.
 		if (_showBadge && _hasPending)
-			using (var dot = new SolidBrush(Color.FromArgb(210, 153, 34)))
+			using (var dot = new SolidBrush(StatusColors.Amber))
 				g.FillEllipse(dot, Width - 10, 2, 8, 8);
 
 		// Claude service-status dot: centered in the context ring cluster. Pulses while an incident
@@ -571,15 +598,26 @@ internal sealed class WidgetWindow : Form
 				SourceConstantAlpha = 255,
 				AlphaFormat = Native.AC_SRC_ALPHA,
 			};
+			bool ok;
 			if (_embedded)
 			{
 				// Child window: MoveWindow owns position, so pass a NULL pptDst and only update the surface.
-				Native.UpdateLayeredWindowNoMove(Handle, screenDc, IntPtr.Zero, ref size, memDc, ref src, 0, ref blend, Native.ULW_ALPHA);
+				ok = Native.UpdateLayeredWindowNoMove(Handle, screenDc, IntPtr.Zero, ref size, memDc, ref src, 0, ref blend, Native.ULW_ALPHA);
 			}
 			else
 			{
 				var dst = new Native.POINT(Left, Top);
-				Native.UpdateLayeredWindow(Handle, screenDc, ref dst, ref size, memDc, ref src, 0, ref blend, Native.ULW_ALPHA);
+				ok = Native.UpdateLayeredWindow(Handle, screenDc, ref dst, ref size, memDc, ref src, 0, ref blend, Native.ULW_ALPHA);
+			}
+			if (!ok && !_ulwFailing)
+			{
+				_ulwFailing = true;
+				Diagnostic?.Invoke($"UpdateLayeredWindow FAILED err={Marshal.GetLastWin32Error()} embedded={_embedded} handle=0x{Handle:X}");
+			}
+			else if (ok && _ulwFailing)
+			{
+				_ulwFailing = false;
+				Diagnostic?.Invoke("UpdateLayeredWindow recovered");
 			}
 		}
 		finally

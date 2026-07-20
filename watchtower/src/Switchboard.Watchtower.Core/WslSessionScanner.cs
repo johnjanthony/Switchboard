@@ -19,13 +19,9 @@ public static class WslSessionScanner
 		{
 			if (SystemDistros.Contains(distro, StringComparer.OrdinalIgnoreCase)) continue;
 
-			foreach (var path in glob(distro))
-			{
-				DateTime mtime;
-				try { mtime = mtimeOf(path); }
-				catch (IOException) { continue; }
+			var paths = SafeScan.Materialize(() => glob(distro));
+			foreach (var (path, mtime) in SafeScan.WithMtimes(paths, mtimeOf))
 				if (ActiveClassifier.IsActive(mtime, nowUtc, activeWindowMinutes)) yield return (distro, path);
-			}
 		}
 	}
 
@@ -43,13 +39,9 @@ public static class WslSessionScanner
 		{
 			if (SystemDistros.Contains(distro, StringComparer.OrdinalIgnoreCase)) continue;
 
-			foreach (var path in glob(distro))
-			{
-				DateTime mtime;
-				try { mtime = mtimeOf(path); }
-				catch (IOException) { continue; }
+			var paths = SafeScan.Materialize(() => glob(distro));
+			foreach (var (_, mtime) in SafeScan.WithMtimes(paths, mtimeOf))
 				if (max is null || mtime > max) max = mtime;
-			}
 		}
 		return max;
 	}
@@ -73,10 +65,8 @@ public static class WslSessionScanner
 			if (!SafeDirExists(projects)) continue;
 			foreach (var projDir in SafeEnumerateDirs(projects))
 			{
-				IEnumerable<string> files;
-				try { files = Directory.EnumerateFiles(projDir, "*.jsonl", SearchOption.TopDirectoryOnly); }
-				catch { continue; }
-				foreach (var f in files) yield return f;
+				foreach (var f in SafeScan.Materialize(() => Directory.EnumerateFiles(projDir, "*.jsonl", SearchOption.TopDirectoryOnly)))
+					yield return f;
 			}
 		}
 	}
