@@ -15,6 +15,64 @@ export function isActive(meta) {
 	return !!meta && meta.state === 'active';
 }
 
+export function isThinking(agentStatusMap, nowMs = Date.now()) {
+	if (!agentStatusMap) return false;
+	const RECENCY_MS = 30 * 60 * 1000;
+	for (const sender of Object.keys(agentStatusMap)) {
+		const status = agentStatusMap[sender];
+		if (!status) continue;
+		let updatedAt = NaN;
+		if (typeof status.updatedAt === 'number') {
+			updatedAt = status.updatedAt;
+		} else if (typeof status.updated_at === 'number') {
+			updatedAt = status.updated_at;
+		} else if (typeof status.updated_at === 'string') {
+			updatedAt = Date.parse(status.updated_at);
+		}
+		const fresh = !Number.isNaN(updatedAt) && (nowMs - updatedAt) < RECENCY_MS;
+		if (fresh && status.state && status.state !== 'idle' && status.state !== 'clear') {
+			return true;
+		}
+	}
+	return false;
+}
+
+export function agentStatusLabel(agentStatusMap, nowMs = Date.now()) {
+	if (!agentStatusMap) return null;
+	const RECENCY_MS = 30 * 60 * 1000;
+	for (const sender of Object.keys(agentStatusMap)) {
+		const status = agentStatusMap[sender];
+		if (!status) continue;
+		let updatedAt = NaN;
+		if (typeof status.updatedAt === 'number') {
+			updatedAt = status.updatedAt;
+		} else if (typeof status.updated_at === 'number') {
+			updatedAt = status.updated_at;
+		} else if (typeof status.updated_at === 'string') {
+			updatedAt = Date.parse(status.updated_at);
+		}
+		const fresh = !Number.isNaN(updatedAt) && (nowMs - updatedAt) < RECENCY_MS;
+		if (fresh && status.state && status.state !== 'idle' && status.state !== 'clear') {
+			if (status.detail) {
+				return `${status.state}: ${status.detail}`;
+			}
+			return status.state;
+		}
+	}
+	return null;
+}
+
+export function pendingQuestionText(pendingMap) {
+	if (!pendingMap) return null;
+	for (const id of Object.keys(pendingMap)) {
+		const req = pendingMap[id];
+		if (!req || req.cancelled) continue;
+		const q = req.question || req.questionText || req.prompt;
+		if (q && typeof q === 'string') return q;
+	}
+	return null;
+}
+
 export function pendingCountFor(pendingMap) {
 	if (!pendingMap) {
 		return 0;

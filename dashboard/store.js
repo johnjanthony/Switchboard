@@ -30,6 +30,8 @@ export function createStore(deps) {
 	let globalUnsubs = [];
 	// Per-active-conversation pending listener unsubscribes, keyed by convId.
 	const pendingUnsubsByConv = new Map();
+	// Per-active-conversation agentStatus listener unsubscribes, keyed by convId.
+	const agentStatusUnsubsByConv = new Map();
 
 	function getState() {
 		return state;
@@ -331,7 +333,7 @@ export function createStore(deps) {
 
 	function syncPendingListeners() {
 		for (const id of Object.keys(state.conversations)) {
-			const conv = state.conversations[id];
+			let conv = state.conversations[id];
 			const active = !!conv && !!conv.meta && conv.meta.state === 'active';
 			if (active && !pendingUnsubsByConv.has(id)) {
 				const unsub = fb.onValue(
@@ -346,9 +348,26 @@ export function createStore(deps) {
 				// mark_question_cancelled) will never arrive. Clear the already-merged
 				// pending so a stale, answerable question does not freeze in local state.
 				if (conv) {
-					state.conversations[id] = { ...conv, pending: {} };
+					conv = { ...conv, pending: {} };
+					state.conversations[id] = conv;
 				}
 				rebuildPendingsFlat();
+				notify();
+			}
+
+			if (active && !agentStatusUnsubsByConv.has(id)) {
+				const unsub = fb.onValue(
+					paths.agentStatus(id),
+					(val) => mergeConversationAgentStatus(id, val || {}),
+					(err) => setPaneError('global', String(err && err.message ? err.message : err)),
+				);
+				agentStatusUnsubsByConv.set(id, unsub);
+			} else if (!active && agentStatusUnsubsByConv.has(id)) {
+				detachAgentStatusListener(id);
+				if (conv) {
+					conv = { ...conv, agentStatus: {} };
+					state.conversations[id] = conv;
+				}
 				notify();
 			}
 		}
@@ -359,6 +378,14 @@ export function createStore(deps) {
 		if (unsub) {
 			unsub();
 			pendingUnsubsByConv.delete(id);
+		}
+	}
+
+	function detachAgentStatusListener(id) {
+		const unsub = agentStatusUnsubsByConv.get(id);
+		if (unsub) {
+			unsub();
+			agentStatusUnsubsByConv.delete(id);
 		}
 	}
 

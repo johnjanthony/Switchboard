@@ -1,5 +1,5 @@
 import { html, useState } from "../vendor/htm-preact.js";
-import { pendingCountFor, isActive, formatAge } from "../derive.js";
+import { pendingCountFor, isActive, isThinking, agentStatusLabel, pendingQuestionText, formatAge } from "../derive.js";
 import { SessionsRail } from "./SessionsRail.js";
 
 // Relative "last traffic" age from meta.last_activity_at (float epoch SECONDS,
@@ -12,11 +12,14 @@ function fmtLastTraffic(lastActivityAtSec) {
 	return formatAge(ageSec);
 }
 
-// Board lamp: a calling line (active + pending) pulses amber; a connected line
-// (active, quiet) glows green; an ended line is a cold, unlit bead.
-function lampClass(meta, calling) {
+// Board lamp: a calling line (active + pending) pulses amber; an active line with
+// live agent activity shows a radar thinking halo; a connected line (active, quiet)
+// glows green; an ended line is a cold, unlit bead.
+function lampClass(meta, calling, thinking) {
 	if (!isActive(meta)) return "lamp lamp-cold";
-	return calling ? "lamp lamp-calling" : "lamp lamp-green";
+	if (calling) return "lamp lamp-calling";
+	if (thinking) return "lamp lamp-thinking";
+	return "lamp lamp-green";
 }
 
 export function ConversationList({ store }) {
@@ -27,7 +30,12 @@ export function ConversationList({ store }) {
 	// Sort by meta.last_activity_at: numeric epoch seconds, descending (newest first).
 	const byActivity = (a, b) => (b.meta.last_activity_at || 0) - (a.meta.last_activity_at || 0);
 	const all = Object.entries(state.conversations)
-		.map(([id, c]) => ({ id, meta: (c && c.meta) || {}, pending: (c && c.pending) || {} }))
+		.map(([id, c]) => ({
+			id,
+			meta: (c && c.meta) || {},
+			pending: (c && c.pending) || {},
+			agentStatus: (c && c.agentStatus) || {},
+		}))
 		.filter((r) => showHidden || !r.meta.hidden);
 	// Hidden lines always sink to the bottom (below a divider), regardless of activity.
 	const visibleRows = all.filter((r) => !r.meta.hidden).sort(byActivity);
@@ -41,13 +49,17 @@ export function ConversationList({ store }) {
 	const renderRow = (r) => {
 		const count = isActive(r.meta) ? pendingCountFor(r.pending) : 0;
 		const ended = !isActive(r.meta);
+		const questionText = count > 0 ? pendingQuestionText(r.pending) : null;
+		const thinkingLabel = !questionText ? agentStatusLabel(r.agentStatus) : null;
+		const subText = questionText || thinkingLabel || r.meta.preview || r.meta.last_message || "";
+		const subClass = questionText ? "conv-sub-calling" : (thinkingLabel ? "conv-sub-thinking" : "conv-sub-preview");
 		const rowClass = "conv-row" +
 			(r.id === state.selectedConversationId ? " selected" : "") +
 			(ended ? " ended" : "") +
 			(r.meta.hidden ? " hidden" : "");
 		return html`
 			<li key=${r.id} class=${rowClass} onClick=${() => store.selectConversation(r.id)}>
-				<span class=${lampClass(r.meta, count > 0)}></span>
+				<span class=${lampClass(r.meta, count > 0, isThinking(r.agentStatus))}></span>
 				<div class="conv-main">
 					<div class="conv-line-1">
 						<span class="conv-title">${r.meta.title || r.id}</span>
@@ -56,7 +68,7 @@ export function ConversationList({ store }) {
 					</div>
 					<div class="conv-sub">
 						${r.meta.hidden ? html`<span class="hidden-tag">hidden</span>` : null}
-						<span class="conv-state-label">${r.meta.state || "active"}</span>
+						<span class=${subClass}>${subText}</span>
 						<button
 							class="conv-hide"
 							title=${r.meta.hidden ? "Unhide" : "Hide"}
@@ -87,7 +99,7 @@ export function ConversationList({ store }) {
 								title=${r.meta.title || r.id}
 								onClick=${() => store.selectConversation(r.id)}
 							>
-								<span class=${lampClass(r.meta, count > 0)}></span>
+								<span class=${lampClass(r.meta, count > 0, isThinking(r.agentStatus))}></span>
 								${count > 0 ? html`<span class="badge">${count}</span>` : null}
 							</button>
 						`;

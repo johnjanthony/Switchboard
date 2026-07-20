@@ -18,6 +18,8 @@ val InkDim = Color(0xFF889099)   // secondary text / metadata -> onSurfaceVarian
 val Brass     = Color(0xFFC9A24A)   // connected / open / primary action   -> primary
 val BrassDeep = Color(0xFF2A2417)   // brass-tinted container (your reply)  -> primaryContainer
 val Jade      = Color(0xFF57D9A3)   // live / working                      -> secondary
+val NeonCyan  = Color(0xFF00F5D4)   // thinking / radar halo
+val Amber     = Color(0xFFF6A623)   // calling / attention / pending
 val Coral     = Color(0xFFFF7A66)   // waiting on you                      -> tertiary
 val AlertRed  = Color(0xFFE5484D)   // end / reject / stale                -> error
 

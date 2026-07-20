@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { memberState, isActive, pendingCountFor, globalPendingCount, oldestPendingAgeSeconds, predecessorTitle, ringForMember, ringSeverity } from './derive.js';
+import { memberState, isActive, isThinking, agentStatusLabel, pendingQuestionText, pendingCountFor, globalPendingCount, oldestPendingAgeSeconds, predecessorTitle, ringForMember, ringSeverity } from './derive.js';
 import * as derive from './derive.js';
 
 test('memberState: alive member is alive', () => {
@@ -30,6 +30,37 @@ test('isActive: state ended is false', () => {
 test('isActive: missing meta is false', () => {
 	assert.equal(isActive(null), false);
 	assert.equal(isActive(undefined), false);
+});
+
+test('isThinking: fresh thinking or tool state is true', () => {
+	const now = 100000;
+	assert.equal(isThinking({ agent1: { state: 'thinking', updatedAt: now - 5000 } }, now), true);
+	assert.equal(isThinking({ agent1: { state: 'tool:Bash', updated_at: now - 5000 } }, now), true);
+	assert.equal(isThinking({ agent1: { state: 'thinking', updated_at: new Date(now - 5000).toISOString() } }, now), true);
+});
+
+test('isThinking: idle or clear or stale state is false', () => {
+	const now = 100000;
+	assert.equal(isThinking({ agent1: { state: 'idle', updatedAt: now - 5000 } }, now), false);
+	assert.equal(isThinking({ agent1: { state: 'clear', updatedAt: now - 5000 } }, now), false);
+	assert.equal(isThinking({ agent1: { state: 'thinking', updatedAt: now - (31 * 60 * 1000) } }, now), false);
+	assert.equal(isThinking(null, now), false);
+});
+
+test('agentStatusLabel: returns state or state:detail when fresh', () => {
+	const now = 100000;
+	assert.equal(agentStatusLabel({ agent1: { state: 'thinking', updated_at: now - 5000 } }, now), 'thinking');
+	assert.equal(agentStatusLabel({ agent1: { state: 'running', detail: 'view_file', updated_at: now - 5000 } }, now), 'running: view_file');
+	assert.equal(agentStatusLabel({ agent1: { state: 'idle', updated_at: now - 5000 } }, now), null);
+});
+
+test('pendingQuestionText: returns active question text, ignoring cancelled', () => {
+	const map = {
+		req1: { cancelled: true, question: 'Old cancelled question?' },
+		req2: { cancelled: false, question: 'Active question text?' },
+	};
+	assert.equal(pendingQuestionText(map), 'Active question text?');
+	assert.equal(pendingQuestionText(null), null);
 });
 
 test('pendingCountFor: counts non-cancelled children', () => {

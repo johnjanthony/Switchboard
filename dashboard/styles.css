@@ -91,14 +91,40 @@ body {
 	background: radial-gradient(circle at 38% 32%, #2b333e 0%, #161a20 100%);
 	box-shadow: inset 0 0 0 1px #0c0e12, inset 0 1px 2px rgba(0,0,0,0.7);
 }
-/* Calling line: the one orchestrated motion. */
-.lamp-calling { --lamp: var(--lamp-amber); animation: lamp-pulse 1.6s ease-in-out infinite; }
+/* Calling line: pulsing Coral for pending question. */
+.lamp-calling { --lamp: #ff7a66; animation: lamp-pulse 1.6s ease-in-out infinite; }
 @keyframes lamp-pulse {
 	0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--lamp) 50%, #000), 0 0 5px color-mix(in srgb, var(--lamp) 50%, transparent), inset 0 0 2px rgba(255,255,255,0.4); }
 	50%      { box-shadow: 0 0 0 1px color-mix(in srgb, var(--lamp) 60%, #000), 0 0 13px color-mix(in srgb, var(--lamp) 90%, transparent), inset 0 0 2px rgba(255,255,255,0.6); }
 }
+/* Live agent / thinking line: Amber radar halo ripple. */
+.lamp-thinking {
+	--lamp: #f6a623;
+	--lamp-halo: #f6a623;
+	animation: lamp-thinking-pulse 0.8s ease-out infinite;
+}
+@keyframes lamp-thinking-pulse {
+	0% {
+		box-shadow:
+			0 0 0 0px color-mix(in srgb, var(--lamp-halo) 95%, transparent),
+			0 0 4px color-mix(in srgb, var(--lamp-halo) 80%, transparent),
+			inset 0 0 2px rgba(255,255,255,0.7);
+	}
+	70% {
+		box-shadow:
+			0 0 0 6px color-mix(in srgb, var(--lamp-halo) 0%, transparent),
+			0 0 12px color-mix(in srgb, var(--lamp-halo) 90%, transparent),
+			inset 0 0 2px rgba(255,255,255,0.9);
+	}
+	100% {
+		box-shadow:
+			0 0 0 7px color-mix(in srgb, var(--lamp-halo) 0%, transparent),
+			0 0 3px color-mix(in srgb, var(--lamp-halo) 20%, transparent),
+			inset 0 0 2px rgba(255,255,255,0.4);
+	}
+}
 @media (prefers-reduced-motion: reduce) {
-	.lamp-calling { animation: none; }
+	.lamp-calling, .lamp-thinking { animation: none; }
 }
 
 /* ============================================================================
@@ -265,10 +291,19 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 /* Preview line (placeholder until the server denormalizes last-message text).
    For now it carries the line state as the "activity" subtitle. */
 .conv-sub { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--label-dim); }
-.conv-sub .conv-state-label {
+.conv-sub .conv-sub-calling {
 	flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 	font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
-	color: var(--label-faint); text-transform: lowercase;
+	color: #ff7a66; font-weight: 500;
+}
+.conv-sub .conv-sub-thinking {
+	flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+	color: #f6a623; font-weight: 500;
+}
+.conv-sub .conv-sub-preview {
+	flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	font-size: 11.5px; color: var(--label-dim);
 }
 
 .badge {

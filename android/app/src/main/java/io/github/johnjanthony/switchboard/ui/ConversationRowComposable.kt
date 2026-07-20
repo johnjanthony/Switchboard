@@ -52,27 +52,64 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import io.github.johnjanthony.switchboard.network.ConversationRow
 import io.github.johnjanthony.switchboard.network.WidgetRing
+import io.github.johnjanthony.switchboard.ui.theme.Amber
+import io.github.johnjanthony.switchboard.ui.theme.Coral
+import io.github.johnjanthony.switchboard.ui.theme.Jade
 
-// Status lamp: one object, three states. Waiting (coral, pulsing) outranks live (jade,
-// steady); a line with neither sits as a hollow idle bead. Mirrors the conversation feed.
+// Status lamps matching the Operator board annunciators:
+// 1. Pending question: pulsing Coral
+// 2. Live agent / thinking: Amber core with expanding Amber radar halo
+// 3. Active conversation (quiet): glowing Jade core
+// 4. Ended / dormant: hollow outline bead
 @Composable
-private fun StatusLamp(color: Color, pulsing: Boolean) {
-	if (!pulsing) {
-		Box(modifier = Modifier.size(9.dp).background(color, CircleShape))
-		return
-	}
-	val transition = rememberInfiniteTransition(label = "statusLamp")
+private fun StatusLampCalling() {
+	val transition = rememberInfiniteTransition(label = "callingLamp")
 	val a by transition.animateFloat(
 		initialValue = 0.5f, targetValue = 1f,
-		animationSpec = infiniteRepeatable(tween(1400, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+		animationSpec = infiniteRepeatable(tween(1600, easing = FastOutSlowInEasing), RepeatMode.Reverse),
 		label = "alpha",
 	)
 	val s by transition.animateFloat(
-		initialValue = 0.85f, targetValue = 1.12f,
-		animationSpec = infiniteRepeatable(tween(1400, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+		initialValue = 0.85f, targetValue = 1.15f,
+		animationSpec = infiniteRepeatable(tween(1600, easing = FastOutSlowInEasing), RepeatMode.Reverse),
 		label = "scale",
 	)
-	Box(modifier = Modifier.size(9.dp).scale(s).alpha(a).background(color, CircleShape))
+	Box(modifier = Modifier.size(9.dp).scale(s).alpha(a).background(Coral, CircleShape))
+}
+
+@Composable
+private fun StatusLampThinking() {
+	val transition = rememberInfiniteTransition(label = "thinkingLamp")
+	val a by transition.animateFloat(
+		initialValue = 0.95f, targetValue = 0.0f,
+		animationSpec = infiniteRepeatable(tween(750, easing = FastOutSlowInEasing), RepeatMode.Restart),
+		label = "alpha",
+	)
+	val s by transition.animateFloat(
+		initialValue = 1.0f, targetValue = 2.1f,
+		animationSpec = infiniteRepeatable(tween(750, easing = FastOutSlowInEasing), RepeatMode.Restart),
+		label = "scale",
+	)
+	Box(contentAlignment = Alignment.Center) {
+		Box(
+			modifier = Modifier
+				.size(9.dp)
+				.scale(s)
+				.alpha(a)
+				.border(2.dp, Amber, CircleShape)
+		)
+		Box(modifier = Modifier.size(9.dp).background(Amber, CircleShape))
+	}
+}
+
+@Composable
+private fun StatusLampActive() {
+	Box(
+		modifier = Modifier
+			.size(9.dp)
+			.background(Jade, CircleShape)
+			.border(0.5.dp, Jade.copy(alpha = 0.5f), CircleShape)
+	)
 }
 
 @Composable
@@ -221,16 +258,17 @@ fun ConversationRow(
 				verticalAlignment = Alignment.CenterVertically,
 			) {
 				val hasPending = row.summary.pendingResponses > 0
-				val isLive = agentStatus?.isFresh() == true
+				val isThinking = agentStatus?.isFresh() == true
 				Box(
 					modifier = Modifier
-						.size(width = 14.dp, height = 14.dp)
-						.padding(end = 6.dp),
+						.size(width = 18.dp, height = 18.dp)
+						.padding(end = 4.dp),
 					contentAlignment = Alignment.CenterStart,
 				) {
 					when {
-						hasPending -> StatusLamp(MaterialTheme.colorScheme.tertiary, pulsing = true)
-						isLive -> StatusLamp(MaterialTheme.colorScheme.secondary, pulsing = false)
+						hasPending -> StatusLampCalling()
+						isThinking -> StatusLampThinking()
+						isActive -> StatusLampActive()
 						else -> StatusLampIdle()
 					}
 				}
@@ -254,12 +292,31 @@ fun ConversationRow(
 						maxLines = 1,
 						overflow = TextOverflow.Ellipsis,
 					)
-					val preview = row.preview
-					if (!preview.isNullOrBlank()) {
+					val firstPendingQuestion = if (hasPending) {
+						row.pendingQuestions.values.firstOrNull { !it.cancelled }?.questionText
+					} else null
+
+					val line2Text = when {
+						!firstPendingQuestion.isNullOrBlank() -> firstPendingQuestion
+						isThinking -> {
+							val stateStr = agentStatus?.state ?: "thinking"
+							val detailStr = agentStatus?.detail
+							if (!detailStr.isNullOrBlank()) "$stateStr: $detailStr" else stateStr
+						}
+						else -> row.preview
+					}
+
+					val line2Color = when {
+						!firstPendingQuestion.isNullOrBlank() -> Coral
+						isThinking -> Amber
+						else -> MaterialTheme.colorScheme.onSurfaceVariant
+					}
+
+					if (!line2Text.isNullOrBlank()) {
 						Text(
-							text = preview,
+							text = line2Text,
 							style = MaterialTheme.typography.bodySmall,
-							color = MaterialTheme.colorScheme.onSurfaceVariant,
+							color = line2Color,
 							maxLines = 1,
 							overflow = TextOverflow.Ellipsis,
 						)
