@@ -48,11 +48,28 @@ from server.widget_snapshot import WidgetSnapshotStore
 from server.claude_status import ClaudeStatusService
 
 
-def _build_away_mode_route(registry: Registry, session_registry):
+def _build_away_mode_route(registry: Registry, session_registry, backend=None, logger=None):
 	"""GET /away-mode - the turn-end hook's single check. With session_id, the
 	response also delivers (and pops) any queued wake notices for that session;
-	the hook blocks the turn with the notice text so the agent acts on it."""
+	the hook blocks the turn with the notice text so the agent acts on it.
+	POST /away-mode - set global away mode ON."""
 	async def away_mode(request: Request):
+		if request.method == "POST":
+			try:
+				body = await request.json()
+			except Exception:
+				body = {}
+			active = body.get("active", body.get("away", True))
+			if active:
+				registry.global_away_mode = True
+				if backend and hasattr(backend, "set_global_away_mode"):
+					try:
+						await backend.set_global_away_mode(True)
+					except Exception as exc:
+						if logger:
+							await logger.surface_error(f"http_away_mode_enter_persist_failed: {exc}")
+				if logger:
+					await logger.info("http_away_mode_enter_global")
 		notices: list = []
 		session_id = request.query_params.get("session_id")
 		if session_id:
@@ -795,7 +812,7 @@ async def _run(config: Config) -> None:
 		methods=["POST"],
 	)
 	app.add_route("/widget-status", _build_widget_status_route(claude_status_service), methods=["GET", "POST"])
-	app.add_route("/away-mode", _build_away_mode_route(registry, session_registry), methods=["GET"])
+	app.add_route("/away-mode", _build_away_mode_route(registry, session_registry, backend, logger), methods=["GET", "POST"])
 	app.add_route(
 		"/stats",
 		_build_stats_route(registry, backend, loop_sups, session_registry=session_registry),
