@@ -222,7 +222,6 @@ private fun SwitchboardNavHost(
 				onHideConversation = { viewModel.hideConversation(it.id) },
 				onUnhideConversation = { viewModel.unhideConversation(it.id) },
 				onSpawnClick = { showSpawnDialog = true },
-				sessionBadgeCount = sessionBadgeCount(registrySessions, sessionAcks),
 				onSessionsClick = { navController.navigate("sessions") },
 				resumableByConvId = resumableByConvId,
 				onResumeClick = { convId -> resumeConversationId = convId },
@@ -441,6 +440,23 @@ private fun SwitchboardNavHost(
 	}
 }
 
+
+@Composable
+fun OnlineOfflinePillChip(status: io.github.johnjanthony.switchboard.network.WidgetStatus?) {
+	if (status == null || status.level == "operational") return
+
+	val amber = Color(0xFFE0A800)
+
+	androidx.compose.foundation.layout.Box(
+		modifier = Modifier
+			.padding(horizontal = 4.dp)
+			.border(1.dp, amber.copy(alpha = 0.34f), RoundedCornerShape(50))
+			.background(amber.copy(alpha = 0.13f), RoundedCornerShape(50))
+			.padding(horizontal = 10.dp, vertical = 4.dp)
+	) {
+		Text("OFFLINE", style = MaterialTheme.typography.labelSmall, color = amber)
+	}
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable

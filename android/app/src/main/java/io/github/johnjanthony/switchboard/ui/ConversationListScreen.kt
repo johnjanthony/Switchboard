@@ -9,10 +9,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.DropdownMenu
@@ -57,7 +54,6 @@ fun ConversationListScreen(
 	onHideConversation: (ConversationRow) -> Unit,
 	onUnhideConversation: (ConversationRow) -> Unit,
 	onSpawnClick: () -> Unit,
-	sessionBadgeCount: Int = 0,
 	onSessionsClick: () -> Unit = {},
 	resumableByConvId: Map<String, Boolean> = emptyMap(),
 	onResumeClick: (conversationId: String) -> Unit = {},
@@ -96,6 +92,10 @@ fun ConversationListScreen(
 									)
 								}
 								Divider()
+								DropdownMenuItem(
+									text = { Text("Sessions") },
+									onClick = { onSessionsClick(); menuExpanded = false }
+								)
 								HiddenChannelsToggleMenuItem(
 									hiddenCount = hiddenRows.size,
 									showHidden = showHidden,
@@ -108,24 +108,9 @@ fun ConversationListScreen(
 						}
 					}
 				},
-				title = {
-					IconButton(onClick = onSessionsClick) {
-						BadgedBox(
-							badge = {
-								if (sessionBadgeCount > 0) {
-									Badge { Text(sessionBadgeCount.toString()) }
-								}
-							},
-						) {
-							Icon(
-								imageVector = Icons.Default.Hub,
-								contentDescription = "Sessions",
-								tint = if (claudeStatus?.level == "operational") Jade else MaterialTheme.colorScheme.onSurfaceVariant
-							)
-						}
-					}
-				},
+				title = {},
 				actions = {
+					io.github.johnjanthony.switchboard.OnlineOfflinePillChip(status = claudeStatus)
 					AwayModePillChip(
 						active = globalAway,
 						onLongPress = if (globalAway) onExitGlobalAway else onEnterGlobalAway,
