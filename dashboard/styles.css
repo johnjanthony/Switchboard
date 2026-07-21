@@ -195,14 +195,14 @@ body {
 
 /* The one global action that doesn't belong to a line: open a new line. */
 .open-line-btn {
-	display: inline-flex; align-items: center; gap: 7px;
-	border: 1px solid var(--cord); border-radius: var(--radius);
-	background: color-mix(in srgb, var(--cord) 14%, transparent); color: var(--cord-hi);
-	cursor: pointer; font-family: var(--font-legend); text-transform: uppercase;
-	letter-spacing: 0.09em; font-weight: 600; font-size: 12px; padding: 6px 13px;
+	display: inline-flex; align-items: center; justify-content: center;
+	width: 26px; height: 26px; border-radius: var(--radius);
+	border: 1px solid var(--rule);
+	background: var(--panel-hi); color: var(--label-dim);
+	cursor: pointer; font-family: var(--font-legend); font-weight: 600; font-size: 16px;
+	line-height: 1; padding: 0; flex-shrink: 0;
 }
-.open-line-btn:hover { background: var(--cord); color: var(--cord-ink); }
-.open-line-btn::before { content: "+"; font-size: 15px; line-height: 1; margin-top: -1px; }
+.open-line-btn:hover { border-color: var(--label-dim); color: var(--label); background: var(--well); }
 
 /* ============================================================================
    Two-pane shell: line board (left) + line detail (right)
@@ -631,7 +631,41 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .doc-note { color: var(--label-dim); font-family: var(--font-body); }
 .doc-error { color: var(--lamp-red); font-family: var(--font-mono); font-size: 13px; padding: 20px 0; }
 .quota-readout { display: inline-flex; gap: 8px; }
+.quota-graph {
+	flex: 1; min-width: 80px;
+	display: flex; flex-direction: column; gap: 7px; justify-content: center;
+	padding: 0; background: transparent; border: none;
+	font-family: var(--font-mono); font-size: 10px;
+}
+.quota-row { display: flex; align-items: center; width: 100%; }
+.quota-bars { display: flex; flex-direction: column; gap: 2px; width: 100%; }
+.quota-segment-track { display: flex; gap: 2px; height: 4px; width: 100%; }
+.quota-segment { flex: 1; height: 100%; background: #0a0c0f; border-radius: 1px; overflow: hidden; }
+.quota-segment-fill { height: 100%; border-radius: 1px; }
+.quota-segment-fill.ok { background: var(--lamp-green); }
+.quota-segment-fill.warn { background: var(--lamp-amber); }
+.quota-segment-fill.over { background: var(--lamp-red); }
+.quota-pace-track { height: 2px; background: #0a0c0f; border-radius: 1px; overflow: hidden; }
+.quota-pace-fill { height: 100%; background: var(--label-faint); border-radius: 1px; }
+.quota-pace-fill.over-pace { background: var(--lamp-amber); }
+
+.status-pills { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
+
 .claude-status { display: inline-flex; align-items: center; gap: 6px; }
+.claude-pill, .switchboard-pill {
+	display: inline-flex; align-items: center; gap: 6px;
+	border: 1px solid var(--rule); border-radius: 999px; padding: 4px 10px;
+	background: #08090b; color: var(--label-dim);
+	font-family: var(--font-legend); text-transform: uppercase;
+	letter-spacing: 0.1em; font-weight: 600; font-size: 11px;
+}
+.claude-pill.status-green, .switchboard-pill.status-green { color: #636d7d; }
+.claude-pill.status-amber, .switchboard-pill.status-amber { color: #cdd4dd; }
+.claude-pill.status-red,   .switchboard-pill.status-red   { color: #ffffff; }
+.claude-pill.status-cold,  .switchboard-pill.status-cold  { color: var(--label-faint); }
+
+.claude-pill { cursor: pointer; }
+.claude-pill:hover { border-color: var(--label-dim); }
 .claude-status-label { font-family: var(--font-mono); font-size: 11px; color: var(--label-faint); }
 .claude-status-btn { font-family: var(--font-mono); font-size: 11px; padding: 1px 8px; }
 

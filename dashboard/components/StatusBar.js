@@ -96,27 +96,153 @@ function AwayOffDialog({ store, onClose }) {
 	`;
 }
 
+function formatResetAt(resetsAt) {
+	if (!resetsAt) return null;
+	const d = new Date(resetsAt);
+	if (isNaN(d.getTime())) return null;
+	const now = new Date();
+	const isToday = d.toDateString() === now.toDateString();
+	const timeStr = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
+	if (isToday) return timeStr;
+	const dayStr = d.toLocaleDateString([], { weekday: 'short' });
+	return `${dayStr} ${timeStr}`;
+}
+
+function buildWindowTooltip(label, window, durationMs) {
+	if (!window || window.pct == null) return null;
+	const usageFrac = Math.min(1, Math.max(0, Number(window.pct)));
+	const usagePct = Math.round(usageFrac * 100);
+	
+	const resetsAt = window.resetsAt || window.resets_at;
+	let elapsedFrac = null;
+	if (resetsAt) {
+		const resetMs = Date.parse(resetsAt);
+		if (!isNaN(resetMs)) {
+			const startMs = resetMs - durationMs;
+			const nowMs = Date.now();
+			elapsedFrac = Math.min(1, Math.max(0, (nowMs - startMs) / durationMs));
+		}
+	}
+
+	const elapsedPct = elapsedFrac != null ? Math.round(elapsedFrac * 100) : null;
+	const resetStr = formatResetAt(resetsAt);
+	const labelFull = label === "5h" ? "Session (5h)" : "Weekly (7d)";
+	const titleParts = [`${labelFull}`, `Usage: ${usagePct}%`];
+	if (elapsedPct != null) titleParts.push(`Time elapsed: ${elapsedPct}%`);
+	if (resetStr) titleParts.push(`Reset at: ${resetStr}`);
+	return titleParts.join(" · ");
+}
+
+function QuotaWindowGraph({ label, window, durationMs }) {
+	if (!window || window.pct == null) return null;
+	const usageFrac = Math.min(1, Math.max(0, Number(window.pct)));
+	const usagePct = Math.round(usageFrac * 100);
+	
+	const resetsAt = window.resetsAt || window.resets_at;
+	let elapsedFrac = null;
+	let isOverPace = false;
+	if (resetsAt) {
+		const resetMs = Date.parse(resetsAt);
+		if (!isNaN(resetMs)) {
+			const startMs = resetMs - durationMs;
+			const nowMs = Date.now();
+			elapsedFrac = Math.min(1, Math.max(0, (nowMs - startMs) / durationMs));
+			isOverPace = usageFrac > (elapsedFrac + 0.02);
+		}
+	}
+
+	const segments = Array.from({ length: 10 }, (_, i) => {
+		const segStart = i * 10;
+		const fillFrac = Math.min(1, Math.max(0, (usagePct - segStart) / 10));
+		const colorClass = usageFrac > 0.8 ? "over" : usageFrac > 0.6 ? "warn" : "ok";
+		return html`
+			<div class="quota-segment">
+				${fillFrac > 0 ? html`<div class=${"quota-segment-fill " + colorClass} style=${{ width: (fillFrac * 100) + "%" }}></div>` : null}
+			</div>
+		`;
+	});
+
+	return html`
+		<div class="quota-row">
+			<div class="quota-bars">
+				<div class="quota-segment-track">
+					${segments}
+				</div>
+				${elapsedFrac != null ? html`
+					<div class="quota-pace-track">
+						<div class=${"quota-pace-fill " + (isOverPace ? "over-pace" : "")} style=${{ width: (elapsedFrac * 100) + "%" }}></div>
+					</div>
+				` : null}
+			</div>
+		</div>
+	`;
+}
+
 function QuotaReadout({ quota }) {
 	if (!quota) return null;
-	const pct = (w) => (w && w.pct != null ? Math.round(Number(w.pct) * 100) + "%" : "-");
+	const SESSION_5H = 5 * 3600 * 1000;
+	const WEEKLY_7D = 7 * 86400 * 1000;
+
+	const t5h = buildWindowTooltip("5h", quota.session, SESSION_5H);
+	const t7d = buildWindowTooltip("7d", quota.weekly, WEEKLY_7D);
+	const combinedTitle = [t5h, t7d].filter(Boolean).join("\n");
+
 	return html`
-		<span class="quota-readout" title="Plan usage (5h / 7d)">
-			<span class="count">5h <b>${pct(quota.session)}</b></span>
-			<span class="count">7d <b>${pct(quota.weekly)}</b></span>
-		</span>
+		<div class="quota-graph" title=${combinedTitle}>
+			<${QuotaWindowGraph} label="5h" window=${quota.session} durationMs=${SESSION_5H} />
+			<${QuotaWindowGraph} label="7d" window=${quota.weekly} durationMs=${WEEKLY_7D} />
+		</div>
 	`;
+}
+
+function claudeStatusPillClass(level) {
+	switch (level) {
+		case "operational": return "status-green";
+		case "minor": return "status-amber";
+		case "major":
+		case "critical": return "status-red";
+		default: return "status-cold";
+	}
+}
+
+function healthStatusPillClass(health) {
+	if (!health || !health.reachable) return "status-red";
+	return health.healthy ? "status-green" : "status-amber";
 }
 
 function ClaudeStatusControl({ status, store }) {
 	const s = status || { watch_state: "idle", button: "check", level: "operational", description: "", incidents: [] };
-	const label = s.button === "stop" ? "Stop" : s.button === "clear" ? "Clear" : "Check";
-	const action = s.button === "check" ? "check" : "stop";
+	const isWatching = s.watch_state !== "idle" && s.button !== "check";
 	const title = (s.description || "Claude status") + ((s.incidents && s.incidents.length) ? " - " + s.incidents.join("; ") : "");
+	const onClick = () => {
+		const action = (s.button === "check" || s.watch_state === "idle") ? "check" : "stop";
+		store.requestClaudeStatus(action);
+	};
+	const colorClass = isWatching ? claudeStatusPillClass(s.level) : "status-cold";
 	return html`
-		<span class="claude-status" title=${title}>
-			${s.watch_state !== "idle" ? html`<span class=${statusDotClass(s.level)}></span>` : null}
-			<span class="claude-status-label">Claude</span>
-			<button class="claude-status-btn" onClick=${() => store.requestClaudeStatus(action)}>${label}</button>
+		<button
+			class=${"claude-pill " + (isWatching ? "watching " : "idle ") + colorClass}
+			onClick=${onClick}
+			title=${title}
+		>
+			<span class=${statusDotClass(s.level)}></span>
+			<span>CLAUDE</span>
+		</button>
+	`;
+}
+
+function SwitchboardStatusControl({ health }) {
+	const reachable = health && health.reachable;
+	const healthy = health && health.healthy;
+	const title = !reachable
+		? "Switchboard server unreachable"
+		: healthy
+			? "Switchboard server healthy"
+			: "Switchboard server degraded";
+	return html`
+		<span class=${"switchboard-pill " + healthStatusPillClass(health)} title=${title}>
+			<span class=${healthLampClass(health)}></span>
+			<span>SWITCHBOARD</span>
 		</span>
 	`;
 }
@@ -141,30 +267,28 @@ export function StatusBar({ store }) {
 	return html`
 		<div>
 			<div class="status-bar">
-				<button
-					class=${"away-pill " + (awayOn ? "away-on" : "away-off")}
-					onClick=${onAwayPill}
-					title="Toggle global away mode"
-				>
-					<svg class="away-moon-icon" viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
-						<path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-1.14 1.4-2.88 2.26-4.8 2.26-3.31 0-6-2.69-6-6 0-1.92.86-3.66 2.26-4.8C12.92 3.04 12.46 3 12 3z"/>
-					</svg>
-					AWAY
-				</button>
+				<button class="open-line-btn" onClick=${() => setSpawnOpen(true)} title="Open line">+</button>
 				<span class="status-counts">
 					${pendingCount > 0 ? html`
 						<span class="count lit"><b>${pendingCount}</b> ${pendingCount === 1 ? 'question' : 'questions'}</span>
 						<span class="count">age <b>${oldest == null ? "-" : formatAge(oldest)}</b></span>
 					` : null}
 				</span>
-				<span class="status-health">
-					<span class=${healthLampClass(state.health)} title="Server health"></span>
-					<span class=${"wsl-indicator " + (state.wslAvailable ? "wsl-on" : "wsl-off")}
-						title="WSL availability">WSL ${state.wslAvailable ? "on" : "off"}</span>
-					<${QuotaReadout} quota=${state.widget.quota} />
+				<${QuotaReadout} quota=${state.widget.quota} />
+				<span class="status-pills">
 					<${ClaudeStatusControl} status=${state.widget.status} store=${store} />
+					<${SwitchboardStatusControl} health=${state.health} />
+					<button
+						class=${"away-pill " + (awayOn ? "away-on" : "away-off")}
+						onClick=${onAwayPill}
+						title="Toggle global away mode"
+					>
+						<svg class="away-moon-icon" viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
+							<path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-1.14 1.4-2.88 2.26-4.8 2.26-3.31 0-6-2.69-6-6 0-1.92.86-3.66 2.26-4.8C12.92 3.04 12.46 3 12 3z"/>
+						</svg>
+						AWAY
+					</button>
 				</span>
-				<button class="open-line-btn" onClick=${() => setSpawnOpen(true)}>Open line</button>
 			</div>
 			<div class="header-dialogs">
 				${spawnOpen ? html`<${SpawnDialog} store=${store} onClose=${() => setSpawnOpen(false)} />` : null}

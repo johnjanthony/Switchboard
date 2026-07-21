@@ -70,6 +70,7 @@ test('initialState shape is exactly the contract', () => {
 		ui: {
 			leftCollapsed: false, leftWidth: 280, awayOffDialogOpen: false,
 			sessionsCollapsed: false, selectedSessionIds: [],
+			leftActiveTab: 'conversations', showEndedSessions: false,
 		},
 		paneErrors: {},
 	});
