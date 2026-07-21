@@ -49,9 +49,8 @@ fun WidgetStatusHeader(
 	Row(
 		modifier = Modifier
 			.fillMaxWidth()
-			.background(MaterialTheme.colorScheme.surfaceVariant)
 			.clickable { onClick() }
-			.padding(horizontal = 14.dp, vertical = 10.dp),
+			.padding(start = 14.dp, end = 14.dp, top = 2.dp, bottom = 6.dp),
 		verticalAlignment = Alignment.CenterVertically,
 		horizontalArrangement = Arrangement.spacedBy(16.dp),
 	) {
