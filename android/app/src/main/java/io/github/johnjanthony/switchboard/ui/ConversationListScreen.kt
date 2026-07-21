@@ -4,6 +4,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -96,11 +98,6 @@ fun ConversationListScreen(
 									text = { Text("Sessions") },
 									onClick = { onSessionsClick(); menuExpanded = false }
 								)
-								HiddenChannelsToggleMenuItem(
-									hiddenCount = hiddenRows.size,
-									showHidden = showHidden,
-									onToggle = { onToggleShowHidden(); menuExpanded = false },
-								)
 							}
 						}
 						IconButton(onClick = onSpawnClick) {
@@ -125,8 +122,7 @@ fun ConversationListScreen(
 			pushedAt = pushedAt,
 			onClick = { if (quota != null) showQuotaPopup = true }
 		)
-		val displayed = if (showHidden) (rows + hiddenRows) else rows
-		val hasContent = displayed.isNotEmpty() || adminRow != null
+		val hasContent = rows.isNotEmpty() || hiddenRows.isNotEmpty() || adminRow != null
 		when (io.github.johnjanthony.switchboard.emptyStateFor(hasContent, authState)) {
 			io.github.johnjanthony.switchboard.EmptyStateKind.SIGN_IN_FAILED ->
 				Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -164,7 +160,7 @@ fun ConversationListScreen(
 							Divider()
 						}
 					}
-					items(displayed, key = { it.id }) { row ->
+					items(rows, key = { it.id }) { row ->
 						ConversationRow(
 							row = row,
 							resumable = resumableByConvId[row.id] ?: false,
@@ -177,6 +173,35 @@ fun ConversationListScreen(
 							contextRing = listRowContextRing(row.members, rings),
 						)
 						Divider()
+					}
+					if (hiddenRows.isNotEmpty()) {
+						item(key = "_hidden_header") {
+							Text(
+								text = if (showHidden) "▾ Hide ${hiddenRows.size} hidden" else "▸ Show ${hiddenRows.size} hidden",
+								style = MaterialTheme.typography.labelSmall,
+								color = MaterialTheme.colorScheme.onSurfaceVariant,
+								modifier = Modifier
+									.fillMaxWidth()
+									.clickable { onToggleShowHidden() }
+									.padding(horizontal = 16.dp, vertical = 8.dp),
+							)
+						}
+						if (showHidden) {
+							items(hiddenRows, key = { it.id }) { row ->
+								ConversationRow(
+									row = row,
+									resumable = resumableByConvId[row.id] ?: false,
+									onClick = { onSessionClick(row) },
+									onHide = { onHideConversation(row) },
+									onUnhide = { onUnhideConversation(row) },
+									onResumeClick = onResumeClick,
+									onCombineClick = onCombineClick,
+									onEndClick = onEndClick,
+									contextRing = listRowContextRing(row.members, rings),
+								)
+								Divider()
+							}
+						}
 					}
 				}
 		}
