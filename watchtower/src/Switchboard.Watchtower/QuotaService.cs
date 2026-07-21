@@ -131,10 +131,22 @@ internal sealed class QuotaService
 				RedirectStandardOutput = true,
 				RedirectStandardError = true,
 				RedirectStandardInput = true,
+				// Don't inherit Watchtower's cwd (C:\Windows\system32 for a login-launched
+				// widget), which is where the probe's session records were landing.
+				WorkingDirectory = Directory.CreateDirectory(
+					Path.Combine(Path.GetTempPath(), "switchboard-watchtower")).FullName,
 			};
 			if (isCmd) { psi.ArgumentList.Add("/c"); psi.ArgumentList.Add(claude); }
 			psi.ArgumentList.Add("-p");
 			psi.ArgumentList.Add(".");
+			// Load only the project settings layer, not the user layer: the switchboard
+			// plugin (its away-mode Stop hook) and MCP server live in user settings, and
+			// under global away mode the hook would drive this throwaway probe into an
+			// ask_human() call that pings the phone. Excluding user keeps OAuth intact.
+			psi.ArgumentList.Add("--setting-sources");
+			psi.ArgumentList.Add("project");
+			// Fire-and-forget probe: don't write a session transcript.
+			psi.ArgumentList.Add("--no-session-persistence");
 			// So the spawned CLI does not think it is running inside Claude Code.
 			psi.Environment.Remove("CLAUDECODE");
 			psi.Environment.Remove("CLAUDE_CODE_ENTRYPOINT");
