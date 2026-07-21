@@ -62,6 +62,17 @@ internal sealed class AppHost : IDisposable
 		_panel.ClaudeStatusButtonClicked += OnClaudeStatusAction;
 		_tray.OpenDashboardRequested += () => OpenDashboard();
 		_panel.OpenDashboardRequested += () => OpenDashboard();
+		_panel.SetAwayModeOnRequested += () =>
+		{
+			_ = Task.Run(async () =>
+			{
+				if (_switchboardReader is not null)
+				{
+					await _switchboardReader.SetAwayModeOnAsync(CancellationToken.None).ConfigureAwait(false);
+					_widget.Invoke(PollSwitchboard);
+				}
+			});
+		};
 
 		_widget.PreferredX = _config.WidgetX;
 		_widget.PositionChanged += x => { _config.WidgetX = x; SafeSaveConfig(); };

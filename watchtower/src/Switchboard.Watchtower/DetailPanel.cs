@@ -17,8 +17,7 @@ internal sealed class DetailPanel : Form
 	const int GroupGap = 10;     // vertical gap between the two group panels
 	const int PanelMargin = 6;   // horizontal inset of a group panel from the popup edge
 	const int PanelRadius = 6;
-	const int SwitchboardRowH = 24;
-	const int ClaudeStatusRowH = 40;   // status line + incident line
+	const int BottomPillRowH = 26;
 
 	IReadOnlyList<SessionModel> _sessions = Array.Empty<SessionModel>();
 	Palette _palette = new(light: false);
@@ -28,13 +27,16 @@ internal sealed class DetailPanel : Form
 
 	bool _switchboardEnabled;
 	SwitchboardStats? _switchboardStats;   // latest /stats; null means unavailable when enabled
-	readonly Button _openDashboard;
+	readonly PillButton _switchboardPillButton;
 
 	ClaudeStatusView? _claudeStatus;
-	readonly Button _claudeButton;
+	readonly PillButton _claudePillButton;
+	readonly PillButton _awayPillButton;
+	readonly ToolTip _toolTip;
 
 	public event Action? OpenDashboardRequested;
 	public event Action? ClaudeStatusButtonClicked;
+	public event Action? SetAwayModeOnRequested;
 
 	public DetailPanel()
 	{
@@ -46,57 +48,63 @@ internal sealed class DetailPanel : Form
 		Width = 320;
 		Visible = false;
 
-		_openDashboard = new Button
-		{
-			Text = "Open dashboard",
-			FlatStyle = FlatStyle.Flat,
-			AutoSize = false,
-			Height = 26,
-			Visible = false,
-			TabStop = false,
-			Cursor = Cursors.Hand,
-			Font = new Font("Segoe UI", 8.5f),
-		};
-		_openDashboard.FlatAppearance.BorderSize = 0;
-		// Soft, rounded button: clip the corners to a rounded region whenever it
-		// resizes (its width is set during paint to fit the panel).
-		_openDashboard.SizeChanged += (_, _) => ApplyButtonRegion();
-		_openDashboard.Click += (_, _) => OpenDashboardRequested?.Invoke();
-		Controls.Add(_openDashboard);
+		_toolTip = new ToolTip();
 
-		_claudeButton = new Button
+		_claudePillButton = new PillButton
 		{
-			Text = "Check Claude status",
-			FlatStyle = FlatStyle.Flat,
-			AutoSize = false,
-			Height = 26,
+			Text = "CLAUDE",
 			Visible = true,
-			TabStop = false,
-			Cursor = Cursors.Hand,
-			Font = new Font("Segoe UI", 8.5f),
 		};
-		_claudeButton.FlatAppearance.BorderSize = 0;
-		_claudeButton.SizeChanged += (_, _) => ApplyClaudeButtonRegion();
-		_claudeButton.Click += (_, _) => ClaudeStatusButtonClicked?.Invoke();
-		Controls.Add(_claudeButton);
+		_claudePillButton.Click += (_, _) => OnClaudePillClicked();
+		Controls.Add(_claudePillButton);
+
+		_switchboardPillButton = new PillButton
+		{
+			Text = "SWITCHBOARD",
+			Visible = true,
+		};
+		_switchboardPillButton.Click += (_, _) => OpenDashboardRequested?.Invoke();
+		Controls.Add(_switchboardPillButton);
+
+		_awayPillButton = new PillButton
+		{
+			Text = "AWAY",
+			HasMoonIcon = true,
+			Visible = true,
+		};
+		_awayPillButton.Click += (_, _) => OnAwayPillClicked();
+		Controls.Add(_awayPillButton);
 	}
 
-	void ApplyButtonRegion()
+	void OnAwayPillClicked()
 	{
-		if (_openDashboard.Width <= 0 || _openDashboard.Height <= 0) return;
-		using var path = RoundedRect(_openDashboard.Width, _openDashboard.Height, 7);
-		var old = _openDashboard.Region;
-		_openDashboard.Region = new Region(path);
-		old?.Dispose();
+		bool awayOn = _switchboardStats is { AwayMode: true };
+		if (awayOn)
+		{
+			OpenDashboardRequested?.Invoke();
+		}
+		else
+		{
+			SetAwayModeOnRequested?.Invoke();
+		}
 	}
 
-	void ApplyClaudeButtonRegion()
+	void OnClaudePillClicked()
 	{
-		if (_claudeButton.Width <= 0 || _claudeButton.Height <= 0) return;
-		using var path = RoundedRect(_claudeButton.Width, _claudeButton.Height, 7);
-		var old = _claudeButton.Region;
-		_claudeButton.Region = new Region(path);
-		old?.Dispose();
+		var level = _claudeStatus?.DotLevel ?? ClaudeStatusLevel.Unknown;
+		bool isGreen = _claudeStatus is null || level == ClaudeStatusLevel.Operational || level == ClaudeStatusLevel.Unknown;
+		if (isGreen)
+		{
+			ClaudeStatusButtonClicked?.Invoke();
+		}
+		else
+		{
+			try
+			{
+				System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://status.claude.com") { UseShellExecute = true });
+			}
+			catch { }
+		}
 	}
 
 	static GraphicsPath RoundedRectPath(RectangleF r, int radius)
@@ -131,6 +139,9 @@ internal sealed class DetailPanel : Form
 		_sessions = sessions;
 		_palette = new Palette(lightTheme);
 		_lastActivityUtc = lastActivityUtc;
+		_claudePillButton.SurfaceColor = _palette.Surface;
+		_switchboardPillButton.SurfaceColor = _palette.Surface;
+		_awayPillButton.SurfaceColor = _palette.Surface;
 		RecomputeHeight();
 		Invalidate();
 	}
@@ -152,27 +163,94 @@ internal sealed class DetailPanel : Form
 		Invalidate();
 	}
 
-	// Latest Switchboard /stats (null == unavailable). enabled gates the whole block; when false it is hidden.
+	// Latest Switchboard /stats (null == unavailable).
 	public void UpdateSwitchboard(bool enabled, SwitchboardStats? stats)
 	{
 		_switchboardEnabled = enabled;
 		_switchboardStats = stats;
-		_openDashboard.Visible = enabled;
+
+		bool reachable = enabled && stats is not null;
+		bool healthy = stats is { Healthy: true };
+
+		Color dotColor = !reachable
+			? StatusColors.Red
+			: (healthy ? StatusColors.Green : StatusColors.Yellow);
+
+		Color textColor = !reachable
+			? Color.White
+			: (healthy ? Color.FromArgb(99, 109, 125) : Color.FromArgb(205, 212, 221));
+
+		_switchboardPillButton.DotColor = dotColor;
+		_switchboardPillButton.ForeColor = textColor;
+		_switchboardPillButton.SurfaceColor = _palette.Surface;
+		_switchboardPillButton.BackColor = Color.FromArgb(8, 9, 11);
+		_switchboardPillButton.BorderColor = _palette.Track;
+
+		string sbTitle = !reachable
+			? "Switchboard server unreachable"
+			: (healthy ? "Switchboard server healthy" : "Switchboard server degraded");
+		_toolTip.SetToolTip(_switchboardPillButton, sbTitle);
+
+		bool awayOn = stats is { AwayMode: true };
+		Color awayTextColor = awayOn ? StatusColors.Amber : Color.FromArgb(100, 110, 125);
+		Color awayBgColor = awayOn ? Color.FromArgb(52, 37, 16) : Color.FromArgb(8, 9, 11);
+		Color awayBorderColor = awayOn ? Color.FromArgb(145, 96, 15) : _palette.Track;
+
+		_awayPillButton.MoonIconColor = awayTextColor;
+		_awayPillButton.ForeColor = awayTextColor;
+		_awayPillButton.SurfaceColor = _palette.Surface;
+		_awayPillButton.BackColor = awayBgColor;
+		_awayPillButton.BorderColor = awayBorderColor;
+
+		string awayTooltip = awayOn
+			? "Away mode active - open Operator dashboard"
+			: "Turn on global away mode";
+		_toolTip.SetToolTip(_awayPillButton, awayTooltip);
+
 		RecomputeHeight();
 		Invalidate();
 	}
 
 	// Latest Claude status view (published by the server, parsed via ClaudeServerStatus.ParseView).
-	// Always shown: the button is the entry point for a manual check even before any data exists.
 	public void UpdateClaudeStatus(ClaudeStatusView view)
 	{
 		_claudeStatus = view;
-		_claudeButton.Text = view.Button switch
+		var level = view?.DotLevel ?? ClaudeStatusLevel.Unknown;
+		bool isWatching = view is not null && view.Button != ClaudeStatusButton.CheckNow;
+		bool isGreen = view is null || level == ClaudeStatusLevel.Operational || level == ClaudeStatusLevel.Unknown;
+
+		Color dotColor = isGreen
+			? (view is { HasData: true } || view is { DotVisible: true } ? StatusColors.Green : _palette.Muted)
+			: Palette.ForClaudeStatus(level);
+
+		Color textColor = !isGreen
+			? (level == ClaudeStatusLevel.Minor ? Color.FromArgb(205, 212, 221) : Color.White)
+			: Color.FromArgb(99, 109, 125);
+
+		_claudePillButton.DotColor = dotColor;
+		_claudePillButton.ForeColor = textColor;
+		_claudePillButton.SurfaceColor = _palette.Surface;
+		_claudePillButton.BackColor = Color.FromArgb(8, 9, 11);
+		_claudePillButton.BorderColor = _palette.Track;
+
+		string claudeTitle = view is null || !view.HasData
+			? "Claude status"
+			: (!string.IsNullOrEmpty(view.Description) ? view.Description : "Claude status");
+
+		if (view is { IncidentNames.Count: > 0 })
 		{
-			ClaudeStatusButton.StopWatching => "Stop watching",
-			ClaudeStatusButton.Clear => "Clear",
-			_ => "Check Claude status",
-		};
+			string incidentsText = string.Join("; ", view.IncidentNames);
+			if (string.IsNullOrEmpty(claudeTitle) || claudeTitle.Contains("all systems operational", StringComparison.OrdinalIgnoreCase))
+			{
+				claudeTitle = incidentsText;
+			}
+			else if (!claudeTitle.Contains(incidentsText, StringComparison.OrdinalIgnoreCase))
+			{
+				claudeTitle = claudeTitle + " - " + incidentsText;
+			}
+		}
+		_toolTip.SetToolTip(_claudePillButton, claudeTitle);
+
 		RecomputeHeight();
 		Invalidate();
 	}
@@ -182,9 +260,9 @@ internal sealed class DetailPanel : Form
 		int quotaContentH = (_quota.HasValue ? 2 * QuotaWindowRowH : 0) + (_quotaAuthPaused ? QuotaPausedRowH : 0);
 		int quotaH = quotaContentH > 0 ? quotaContentH + 2 * GroupVPad + GroupGap : 0;
 		int ctxH = Math.Max(1, _sessions.Count) * RowH + 2 * GroupVPad;
-		int sbH = _switchboardEnabled ? SwitchboardRowH + _openDashboard.Height + 2 * GroupVPad + GroupGap : 0;
-		int csH = ClaudeStatusRowH + _claudeButton.Height + 2 * GroupVPad + GroupGap;
-		Height = Pad + quotaH + ctxH + sbH + csH + Pad;
+		int group3H = BottomPillRowH + 2 * GroupVPad + GroupGap;
+		int group4H = BottomPillRowH + 2 * GroupVPad + GroupGap;
+		Height = Pad + quotaH + ctxH + group3H + group4H + Pad;
 	}
 
 	public void ShowAbove(Rectangle widgetScreenBounds)
@@ -286,72 +364,136 @@ internal sealed class DetailPanel : Form
 			y += RowH;
 		}
 
-		// Group 3: Switchboard readout (gated by config). One line of counts plus a launch button.
-		if (_switchboardEnabled)
+		// Group 3: Group panel containing Claude & Switchboard indicator pills.
+		int group3Top = ctxTop + ctxH + GroupGap;
+		int group3H = BottomPillRowH + 2 * GroupVPad;
+		DrawGroupPanel(g, group3Top, group3H);
+
+		int btn3Y = group3Top + GroupVPad;
+		int padX = 14;
+		int btnGap = 8;
+		int availableW = Width - 2 * padX - btnGap;
+		int btnW = availableW / 2;
+
+		_claudePillButton.Location = new Point(padX, btn3Y);
+		_claudePillButton.Size = new Size(btnW, BottomPillRowH);
+
+		_switchboardPillButton.Location = new Point(padX + btnW + btnGap, btn3Y);
+		_switchboardPillButton.Size = new Size(btnW, BottomPillRowH);
+
+		// Group 4: Single group panel containing the Away Mode pill button.
+		int group4Top = group3Top + group3H + GroupGap;
+		int group4H = BottomPillRowH + 2 * GroupVPad;
+		DrawGroupPanel(g, group4Top, group4H);
+
+		int btn4Y = group4Top + GroupVPad;
+		int fullW = Width - 2 * padX;
+
+		_awayPillButton.Location = new Point(padX, btn4Y);
+		_awayPillButton.Size = new Size(fullW, BottomPillRowH);
+	}
+
+	private sealed class PillButton : Button
+	{
+		[System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+		public Color DotColor { get; set; } = Color.Gray;
+
+		[System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+		public Color BorderColor { get; set; } = Color.FromArgb(30, 41, 59);
+
+		[System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+		public Color SurfaceColor { get; set; } = Color.FromArgb(42, 42, 42);
+
+		[System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+		public bool HasMoonIcon { get; set; }
+
+		[System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+		public Color MoonIconColor { get; set; } = Color.Gray;
+
+		public PillButton()
 		{
-			int sbTop = ctxTop + ctxH + GroupGap;
-			int sbH = SwitchboardRowH + _openDashboard.Height + 2 * GroupVPad;
-			DrawGroupPanel(g, sbTop, sbH);
-			string sbLine = _switchboardStats is SwitchboardStats st
-				? $"Switchboard: {st.ActiveConversations} active - {st.PendingCount} pending - away {(st.AwayMode ? "ON" : "OFF")}"
-				: "Switchboard: unavailable";
-			g.DrawString(sbLine, label, textBrush, Pad, sbTop + GroupVPad);
-			_openDashboard.Location = new Point(Pad, sbTop + GroupVPad + SwitchboardRowH);
-			_openDashboard.Width = Width - 2 * Pad;
-			// Soft, theme-aware colors so the button blends into the dark panel
-			// rather than using the stark default system button face.
-			_openDashboard.BackColor = _palette.Track;
-			_openDashboard.ForeColor = _palette.Text;
-			_openDashboard.FlatAppearance.MouseOverBackColor = ControlPaint.Light(_palette.Track, 0.2f);
-			_openDashboard.FlatAppearance.MouseDownBackColor = _palette.Surface;
-			y = sbTop + sbH;
+			FlatStyle = FlatStyle.Flat;
+			FlatAppearance.BorderSize = 0;
+			AutoSize = false;
+			TabStop = false;
+			Cursor = Cursors.Hand;
+			Font = new Font("Segoe UI", 8f, FontStyle.Bold);
+			SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
 		}
 
-		// Group 4: Claude service status (always shown; the button drives the manual check loop).
+		protected override void OnPaint(PaintEventArgs e)
 		{
-			// Compute the top from a reliable base: the switchboard block (when drawn) already set y to its
-			// absolute bottom; otherwise the context group's bottom is ctxTop + ctxH (y drifts short of it).
-			int prevBottom = _switchboardEnabled ? y : ctxTop + ctxH;
-			int csTop = prevBottom + GroupGap;
-			int csH = ClaudeStatusRowH + _claudeButton.Height + 2 * GroupVPad;
-			DrawGroupPanel(g, csTop, csH);
-			int inner = csTop + GroupVPad;
+			var g = e.Graphics;
+			g.SmoothingMode = SmoothingMode.AntiAlias;
+			g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
-			var view = _claudeStatus;
-			var level = view?.DotLevel ?? ClaudeStatusLevel.Unknown;
-			Color dotColor = view is { HasData: true } || view is { DotVisible: true }
-				? Palette.ForClaudeStatus(level)
-				: _palette.Muted;
-			using (var dot = new SolidBrush(dotColor)) g.FillEllipse(dot, Pad, inner + 3, 8, 8);
+			g.Clear(SurfaceColor);
 
-			string headline = view is null || !view.HasData
-				? "Claude status: not checked"
-				: $"Claude: {(view.Description.Length > 0 ? view.Description : level.ToString())}";
-			g.DrawString(Ellipsize(g, headline, label, Width - (Pad + 16) - Pad), label, textBrush, Pad + 16, inner);
-
-			// "checked N ago" sits on line 2 (right) so it never collides with a long headline.
-			string ago = view is { FetchedAtUtc: DateTime fetched }
-				? "checked " + RelativeTime.Ago(fetched, DateTime.UtcNow)
-				: "";
-			float agoW = ago.Length > 0 ? g.MeasureString(ago, small).Width : 0f;
-			if (ago.Length > 0)
-				g.DrawString(ago, small, mutedBrush, Width - Pad - agoW, inner + 18);
-
-			string second = view is { IncidentNames.Count: > 0 }
-				? string.Join("; ", view.IncidentNames)
-				: "";
-			if (second.Length > 0)
+			int r = Height / 2;
+			using (var path = RoundedRectPath(new RectangleF(0, 0, Width, Height), r))
+			using (var bgBrush = new SolidBrush(BackColor))
 			{
-				float avail = Width - (Pad + 16) - agoW - 8f;
-				g.DrawString(Ellipsize(g, second, small, avail), small, mutedBrush, Pad + 16, inner + 18);
+				g.FillPath(bgBrush, path);
 			}
 
-			_claudeButton.Location = new Point(Pad, csTop + GroupVPad + ClaudeStatusRowH);
-			_claudeButton.Width = Width - 2 * Pad;
-			_claudeButton.BackColor = _palette.Track;
-			_claudeButton.ForeColor = _palette.Text;
-			_claudeButton.FlatAppearance.MouseOverBackColor = ControlPaint.Light(_palette.Track, 0.2f);
-			_claudeButton.FlatAppearance.MouseDownBackColor = _palette.Surface;
+			using (var borderPen = new Pen(BorderColor, 1f))
+			using (var borderPath = RoundedRectPath(new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f), r))
+			{
+				g.DrawPath(borderPen, borderPath);
+			}
+
+			float textW = g.MeasureString(Text, Font, PointF.Empty, StringFormat.GenericTypographic).Width;
+			float iconW = HasMoonIcon ? 13f : 6f;
+			float iconGap = 6f;
+			float contentW = iconW + iconGap + textW;
+			float startX = (Width - contentW) / 2f;
+
+			if (HasMoonIcon)
+			{
+				float moonSize = 13f;
+				float moonY = (Height - moonSize) / 2f;
+				using var moonPath = CreateMoonPath(startX, moonY, moonSize);
+				using var moonBrush = new SolidBrush(MoonIconColor);
+				g.FillPath(moonBrush, moonPath);
+			}
+			else
+			{
+				float dotDiameter = 6f;
+				float dotY = (Height - dotDiameter) / 2f;
+				using var dotBrush = new SolidBrush(DotColor);
+				g.FillEllipse(dotBrush, startX, dotY, dotDiameter, dotDiameter);
+			}
+
+			float textX = startX + iconW + iconGap;
+			var textRect = new RectangleF(textX, 0, textW + 2f, Height);
+			using var sf = new StringFormat(StringFormat.GenericTypographic)
+			{
+				LineAlignment = StringAlignment.Center
+			};
+			using (var textBrush = new SolidBrush(ForeColor))
+			{
+				g.DrawString(Text, Font, textBrush, textRect, sf);
+			}
+		}
+
+		static GraphicsPath CreateMoonPath(float x, float y, float size)
+		{
+			var path = new GraphicsPath();
+			float s = size / 24f;
+			PointF P(float px, float py) => new PointF(x + px * s, y + py * s);
+
+			// SVG: M12 3 c-4.97 0 -9 4.03 -9 9 s4.03 9 9 9 s9 -4.03 9 -9 c0 -.46 -.04 -.92 -.1 -1.36 c-1.14 1.4 -2.88 2.26 -4.8 2.26 c-3.31 0 -6 -2.69 -6 -6 c0 -1.92 .86 -3.66 2.26 -4.8 C12.92 3.04 12.46 3 12 3z
+			path.AddBezier(P(12, 3), P(7.03f, 3), P(3, 7.03f), P(3, 12));
+			path.AddBezier(P(3, 12), P(3, 16.97f), P(7.03f, 21), P(12, 21));
+			path.AddBezier(P(12, 21), P(16.97f, 21), P(21, 16.97f), P(21, 12));
+			path.AddBezier(P(21, 12), P(21, 11.54f), P(20.96f, 11.08f), P(20.9f, 10.64f));
+			path.AddBezier(P(20.9f, 10.64f), P(19.76f, 12.04f), P(18.02f, 12.9f), P(16.1f, 12.9f));
+			path.AddBezier(P(16.1f, 12.9f), P(12.79f, 12.9f), P(10.1f, 10.21f), P(10.1f, 6.9f));
+			path.AddBezier(P(10.1f, 6.9f), P(10.1f, 4.98f), P(10.96f, 3.24f), P(12.36f, 2.1f));
+			path.AddBezier(P(12.36f, 2.1f), P(12.92f, 3.04f), P(12.46f, 3f), P(12, 3));
+
+			path.CloseFigure();
+			return path;
 		}
 	}
 
