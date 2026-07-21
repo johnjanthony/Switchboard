@@ -941,7 +941,7 @@ def build_tool_handlers(
 		session_id is the sole routing key: it resolves conv_id + sender. If the
 		session is unbound or the conversation cannot be found, the write is
 		dropped — agent status outside an active conversation has nowhere to go."""
-		if not registry.global_away_mode:
+		if not registry.global_away_mode and state != "clear":
 			return
 		# Truncate oversized detail rather than rejecting the write.
 		if detail is not None and len(detail) > 200:
