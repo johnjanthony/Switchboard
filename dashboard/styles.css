@@ -226,10 +226,42 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .rail { background: var(--panel); overflow-y: auto; display: flex; flex-direction: column; }
 .rail-left { border-right: 1px solid var(--rule); }
 .rail-collapsed { align-items: center; padding-top: 10px; }
+.rail-tabs {
+	display: flex; align-items: center; justify-content: space-between;
+	padding: 10px 14px; border-bottom: 1px solid var(--rule);
+	background: var(--panel); position: sticky; top: 0; z-index: 2;
+}
+.rail-collapsed .rail-tabs {
+	flex-direction: column; gap: 10px; padding: 0; border-bottom: none; position: static;
+}
+.rail-tabs-inner {
+	display: flex; gap: 6px;
+}
+.rail-collapsed .rail-tabs-inner {
+	flex-direction: column;
+}
+.rail-tab {
+	background: transparent; color: var(--label-dim); border: 1px solid transparent;
+	border-radius: 5px; padding: 5px 10px; cursor: pointer;
+	font-family: var(--font-legend); text-transform: uppercase; letter-spacing: 0.08em;
+	font-weight: 600; font-size: 12px; display: flex; align-items: center; gap: 6px;
+}
+.rail-tab:hover { color: var(--label); background: var(--well); }
+.rail-tab.active {
+	color: var(--cord-hi); background: var(--well); border-color: var(--rule);
+}
+.rail-collapsed .rail-tab {
+	padding: 8px; justify-content: center;
+}
+.rail-collapsed .tab-label { display: none; }
+.tab-icon { font-size: 14px; line-height: 1; }
+.rail-toggle-tab { margin-left: auto; }
+.rail-collapsed .rail-toggle-tab { margin-left: 0; margin-top: 4px; }
+
 .rail-head {
 	display: flex; align-items: center; gap: 10px;
 	padding: 12px 14px; border-bottom: 1px solid var(--rule);
-	position: sticky; top: 0; background: var(--panel); z-index: 2;
+	position: sticky; top: 49px; background: var(--panel); z-index: 2;
 }
 .rail-title { font-family: var(--font-legend); text-transform: uppercase; letter-spacing: 0.13em; font-weight: 600; font-size: 13px; color: var(--label); }
 .rail-toggle {
@@ -320,6 +352,9 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 	letter-spacing: 0.14em; text-transform: uppercase; color: var(--label-faint);
 	background: var(--well); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
 }
+.conv-divider.clickable { cursor: pointer; }
+.conv-divider.clickable:hover { color: var(--label); background: var(--panel-hi); border-color: var(--cord); }
+.conv-divider-caret { display: inline-block; width: 14px; }
 .conv-row.hidden { opacity: 0.5; }
 .conv-row.hidden:hover { opacity: 0.72; }
 .conv-dot.hidden { opacity: 0.45; }
@@ -603,13 +638,10 @@ body.resizing-col { cursor: col-resize; user-select: none; }
    Sessions rail - roster of every Claude Code session the hub knows about,
    mounted above the line board; independently collapsible.
    ============================================================================ */
-.sessions-rail { border-bottom: 1px solid var(--rule); padding: 4px 0; }
-.sessions-header { display: flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer; user-select: none; }
-.sessions-title { font-weight: 600; }
+.sessions-rail { padding: 0; }
 .sessions-count { opacity: 0.6; font-size: 0.85em; }
-.sessions-caret { margin-left: auto; opacity: 0.6; }
 .sessions-sensor-offline { padding: 2px 10px; font-size: 0.8em; opacity: 0.7; font-style: italic; }
-.sessions-list { list-style: none; margin: 0; padding: 0; max-height: 40vh; overflow-y: auto; }
+.sessions-list { list-style: none; margin: 0; padding: 0; }
 .session-row { display: flex; align-items: center; gap: 6px; padding: 3px 10px; cursor: pointer; }
 .session-row:hover { background: var(--panel-hi); }
 .session-project { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

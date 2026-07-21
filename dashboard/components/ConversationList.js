@@ -25,6 +25,7 @@ function lampClass(meta, calling, thinking) {
 export function ConversationList({ store }) {
 	const state = store.getState();
 	const collapsed = state.ui.leftCollapsed;
+	const activeTab = state.ui.leftActiveTab;
 	const [showHidden, setShowHidden] = useState(false);
 
 	// Sort by meta.last_activity_at: numeric epoch seconds, descending (newest first).
@@ -35,12 +36,10 @@ export function ConversationList({ store }) {
 			meta: (c && c.meta) || {},
 			pending: (c && c.pending) || {},
 			agentStatus: (c && c.agentStatus) || {},
-		}))
-		.filter((r) => showHidden || !r.meta.hidden);
-	// Hidden lines always sink to the bottom (below a divider), regardless of activity.
+		}));
 	const visibleRows = all.filter((r) => !r.meta.hidden).sort(byActivity);
 	const hiddenRows = all.filter((r) => r.meta.hidden).sort(byActivity);
-	const rows = visibleRows.concat(hiddenRows);
+	const rows = showHidden ? visibleRows.concat(hiddenRows) : visibleRows;
 
 	const onHideToggle = (id, currentlyHidden) => {
 		store.setHidden(id, !currentlyHidden);
@@ -80,54 +79,76 @@ export function ConversationList({ store }) {
 		`;
 	};
 
+	const renderTabStrip = () => {
+		return html`
+			<div class="rail-tabs">
+				<div class="rail-tabs-inner">
+					<button class=${"rail-tab" + (activeTab === 'conversations' ? " active" : "")}
+						title="Conversations"
+						onClick=${() => store.setLeftActiveTab('conversations')}>
+						<span class="tab-icon">💬</span>
+						${collapsed ? null : html`<span class="tab-label">Conversations</span>`}
+					</button>
+					<button class=${"rail-tab" + (activeTab === 'sessions' ? " active" : "")}
+						title="Sessions"
+						onClick=${() => store.setLeftActiveTab('sessions')}>
+						<span class="tab-icon">🔌</span>
+						${collapsed ? null : html`<span class="tab-label">Sessions</span>`}
+					</button>
+				</div>
+				<button class="rail-toggle rail-toggle-tab" title=${collapsed ? "Expand rail" : "Collapse rail"}
+					onClick=${() => store.toggleLeftCollapsed()}>${collapsed ? "»" : "«"}</button>
+			</div>
+		`;
+	};
+
 	if (collapsed) {
 		return html`
 			<aside class="rail rail-left rail-collapsed">
-				<button class="rail-toggle" title="Expand board"
-					onClick=${() => store.toggleLeftCollapsed()}>»</button>
-				<div class="rail-icons">
-					${rows.map((r) => {
-						// Only an active line shows a pending badge; an ended line must not
-						// surface a stale, answerable question count.
-						const count = isActive(r.meta) ? pendingCountFor(r.pending) : 0;
-						return html`
-							<button
-								key=${r.id}
-								class=${"conv-dot" +
-									(r.id === state.selectedConversationId ? " selected" : "") +
-									(r.meta.hidden ? " hidden" : "")}
-								title=${r.meta.title || r.id}
-								onClick=${() => store.selectConversation(r.id)}
-							>
-								<span class=${lampClass(r.meta, count > 0, isThinking(r.agentStatus))}></span>
-								${count > 0 ? html`<span class="badge">${count}</span>` : null}
-							</button>
-						`;
-					})}
-				</div>
+				${renderTabStrip()}
+				${activeTab === 'conversations' ? html`
+					<div class="rail-icons">
+						${rows.map((r) => {
+							const count = isActive(r.meta) ? pendingCountFor(r.pending) : 0;
+							return html`
+								<button
+									key=${r.id}
+									class=${"conv-dot" +
+										(r.id === state.selectedConversationId ? " selected" : "") +
+										(r.meta.hidden ? " hidden" : "")}
+									title=${r.meta.title || r.id}
+									onClick=${() => store.selectConversation(r.id)}
+								>
+									<span class=${lampClass(r.meta, count > 0, isThinking(r.agentStatus))}></span>
+									${count > 0 ? html`<span class="badge">${count}</span>` : null}
+								</button>
+							`;
+						})}
+					</div>
+				` : html`
+					<${SessionsRail} store=${store} collapsed=${true} />
+				`}
 			</aside>
 		`;
 	}
 
 	return html`
 		<aside class="rail rail-left">
-			<${SessionsRail} store=${store} />
-			<div class="rail-head">
-				<span class="rail-title">Board</span>
-				<label class="show-hidden">
-					<input type="checkbox" checked=${showHidden}
-						onChange=${(e) => setShowHidden(e.target.checked)} /> show hidden
-				</label>
-				<button class="rail-toggle" title="Collapse board"
-					onClick=${() => store.toggleLeftCollapsed()}>«</button>
-			</div>
-			<ul class="conv-list">
-				${visibleRows.map(renderRow)}
-				${hiddenRows.length
-					? html`<li class="conv-divider" key="__hidden_divider__">Hidden</li>`
-					: null}
-				${hiddenRows.map(renderRow)}
-			</ul>
+			${renderTabStrip()}
+			${activeTab === 'conversations' ? html`
+				<ul class="conv-list">
+					${visibleRows.map(renderRow)}
+					${hiddenRows.length > 0 ? html`
+						<li class="conv-divider clickable" onClick=${() => setShowHidden(!showHidden)}>
+							<span class="conv-divider-caret">${showHidden ? "▾" : "▸"}</span>
+							${showHidden ? "Hide" : "Show"} ${hiddenRows.length} hidden
+						</li>
+					` : null}
+					${showHidden ? hiddenRows.map(renderRow) : null}
+				</ul>
+			` : html`
+				<${SessionsRail} store=${store} collapsed=${false} />
+			`}
 		</aside>
 	`;
 }

@@ -180,6 +180,18 @@ export function createStore(deps) {
 		notify();
 	}
 
+	function setLeftActiveTab(tab) {
+		state.ui.leftActiveTab = tab;
+		storage.setItem('sb.leftActiveTab', tab);
+		notify();
+	}
+
+	function setShowEndedSessions(show) {
+		state.ui.showEndedSessions = !!show;
+		storage.setItem('sb.showEndedSessions', String(state.ui.showEndedSessions));
+		notify();
+	}
+
 	function toggleSessionSelected(id) {
 		const selected = state.ui.selectedSessionIds;
 		state.ui.selectedSessionIds = selected.includes(id)
@@ -507,6 +519,8 @@ export function createStore(deps) {
 		toggleLeftCollapsed,
 		setLeftCollapsed,
 		toggleSessionsCollapsed,
+		setLeftActiveTab,
+		setShowEndedSessions,
 		setLeftWidth,
 		mergeConversationMessages,
 		mergeConversationMembers,
@@ -559,6 +573,8 @@ function initialState(storage) {
 			awayOffDialogOpen: false,
 			sessionsCollapsed: storage.getItem('sb.sessionsCollapsed') === 'true',
 			selectedSessionIds: [],
+			leftActiveTab: storage.getItem('sb.leftActiveTab') || 'conversations',
+			showEndedSessions: storage.getItem('sb.showEndedSessions') === 'true',
 		},
 		paneErrors: {},
 	};
