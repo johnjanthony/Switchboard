@@ -125,9 +125,6 @@ export function StatusBar({ store }) {
 	const state = store.getState();
 	const convs = state.conversations;
 	const [spawnOpen, setSpawnOpen] = useState(false);
-
-	const activeCount = Object.values(convs)
-		.filter((c) => c && c.meta && isActive(c.meta)).length;
 	const pendingCount = globalPendingCount(convs);
 	const oldest = oldestPendingAgeSeconds(state.pendingsFlat, Date.now());
 
@@ -155,15 +152,13 @@ export function StatusBar({ store }) {
 					AWAY
 				</button>
 				<span class="status-counts">
-					<span class="count"><b>${activeCount}</b> active</span>
-					<span class="count lit"><b>${pendingCount}</b> lit</span>
-					<span class="count">oldest <b>${oldest == null ? "-" : formatAge(oldest)}</b></span>
+					${pendingCount > 0 ? html`
+						<span class="count lit"><b>${pendingCount}</b> ${pendingCount === 1 ? 'question' : 'questions'}</span>
+						<span class="count">age <b>${oldest == null ? "-" : formatAge(oldest)}</b></span>
+					` : null}
 				</span>
 				<span class="status-health">
 					<span class=${healthLampClass(state.health)} title="Server health"></span>
-					${state.health.totalAnswered != null
-						? html`<span class="count">${state.health.totalAnswered} answered</span>`
-						: null}
 					<span class=${"wsl-indicator " + (state.wslAvailable ? "wsl-on" : "wsl-off")}
 						title="WSL availability">WSL ${state.wslAvailable ? "on" : "off"}</span>
 					<${QuotaReadout} quota=${state.widget.quota} />
