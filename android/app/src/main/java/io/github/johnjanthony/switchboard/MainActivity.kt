@@ -13,6 +13,7 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Row
@@ -443,18 +444,23 @@ private fun SwitchboardNavHost(
 
 @Composable
 fun OnlineOfflinePillChip(status: io.github.johnjanthony.switchboard.network.WidgetStatus?) {
-	if (status == null || status.level == "operational") return
+	if (status == null || status.level == "operational" || status.level == "none") return
 
-	val amber = Color(0xFFE0A800)
+	val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+	val levelLower = status.level.lowercase()
+	val isRed = levelLower.contains("major") || levelLower.contains("critical") || levelLower.contains("outage")
+	val color = if (isRed) Color(0xFFE05555) else Color(0xFFE0A800)
+	val labelText = if (status.level.isNotBlank()) status.level.uppercase().replace('_', ' ') else "OFFLINE"
 
 	androidx.compose.foundation.layout.Box(
 		modifier = Modifier
 			.padding(horizontal = 4.dp)
-			.border(1.dp, amber.copy(alpha = 0.34f), RoundedCornerShape(50))
-			.background(amber.copy(alpha = 0.13f), RoundedCornerShape(50))
+			.border(1.dp, color.copy(alpha = 0.34f), RoundedCornerShape(50))
+			.background(color.copy(alpha = 0.13f), RoundedCornerShape(50))
+			.clickable { uriHandler.openUri("https://status.claude.com") }
 			.padding(horizontal = 10.dp, vertical = 4.dp)
 	) {
-		Text("OFFLINE", style = MaterialTheme.typography.labelSmall, color = amber)
+		Text(labelText, style = MaterialTheme.typography.labelSmall, color = color)
 	}
 }
 

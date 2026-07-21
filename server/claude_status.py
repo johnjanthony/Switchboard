@@ -15,7 +15,17 @@ MAX_WATCH_MINUTES = 180
 # Incident statuses meaning "no longer active".
 _CLOSED = {"resolved", "postmortem", "completed"}
 _DEGRADED = {"minor", "major", "critical"}
-_INDICATOR_TO_LEVEL = {"none": "operational", "minor": "minor", "major": "major", "critical": "critical"}
+_INDICATOR_TO_LEVEL = {
+	"none": "operational",
+	"minor": "minor",
+	"minor_outage": "minor",
+	"degraded_performance": "minor",
+	"partial_outage": "minor",
+	"major": "major",
+	"major_outage": "major",
+	"critical": "critical",
+	"critical_outage": "critical",
+}
 
 
 @dataclass(frozen=True)
@@ -44,6 +54,9 @@ def parse_status(json_text: str, fetched_at: datetime) -> ClaudeStatus | None:
 	level = _INDICATOR_TO_LEVEL.get(indicator, "unknown")
 	description = status.get("description") if isinstance(status.get("description"), str) else ""
 	incidents: list[str] = []
+	highest_impact = "none"
+	impact_rank = {"critical": 3, "major": 2, "minor": 1, "none": 0}
+
 	arr = root.get("incidents")
 	if isinstance(arr, list):
 		for inc in arr:
@@ -54,6 +67,16 @@ def parse_status(json_text: str, fetched_at: datetime) -> ClaudeStatus | None:
 			name = inc.get("name")
 			if isinstance(name, str) and name:
 				incidents.append(name)
+				impact = str(inc.get("impact", "")).lower()
+				if impact_rank.get(impact, 0) > impact_rank.get(highest_impact, 0):
+					highest_impact = impact
+
+	if incidents and level == "operational":
+		if highest_impact in _INDICATOR_TO_LEVEL and highest_impact != "none":
+			level = _INDICATOR_TO_LEVEL[highest_impact]
+		else:
+			level = "minor"
+
 	return ClaudeStatus(level=level, description=description, incidents=incidents, fetched_at=fetched_at)
 
 

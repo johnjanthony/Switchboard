@@ -196,13 +196,12 @@ function QuotaReadout({ quota }) {
 }
 
 function claudeStatusPillClass(level) {
-	switch (level) {
-		case "operational": return "status-green";
-		case "minor": return "status-amber";
-		case "major":
-		case "critical": return "status-red";
-		default: return "status-cold";
-	}
+	if (!level) return "status-cold";
+	const l = String(level).toLowerCase();
+	if (l === "operational" || l === "none") return "status-green";
+	if (l.includes("major") || l.includes("critical") || l.includes("outage")) return "status-red";
+	if (l.includes("minor") || l.includes("degraded") || l.includes("partial")) return "status-amber";
+	return "status-cold";
 }
 
 function healthStatusPillClass(health) {
@@ -213,12 +212,27 @@ function healthStatusPillClass(health) {
 function ClaudeStatusControl({ status, store }) {
 	const s = status || { watch_state: "idle", button: "check", level: "operational", description: "", incidents: [] };
 	const isWatching = s.watch_state !== "idle" && s.button !== "check";
-	const title = (s.description || "Claude status") + ((s.incidents && s.incidents.length) ? " - " + s.incidents.join("; ") : "");
+	const isGreen = !s.level || s.level === "operational" || s.level === "none";
+
+	let desc = s.description || "Claude status";
+	if (s.incidents && s.incidents.length > 0) {
+		const incidentsText = s.incidents.join("; ");
+		if (!desc || desc.toLowerCase().includes("all systems operational")) {
+			desc = incidentsText;
+		} else if (!desc.includes(incidentsText)) {
+			desc = desc + " - " + incidentsText;
+		}
+	}
+	const title = desc;
 	const onClick = () => {
+		if (!isGreen) {
+			window.open("https://status.claude.com", "_blank");
+			return;
+		}
 		const action = (s.button === "check" || s.watch_state === "idle") ? "check" : "stop";
 		store.requestClaudeStatus(action);
 	};
-	const colorClass = isWatching ? claudeStatusPillClass(s.level) : "status-cold";
+	const colorClass = isGreen ? (isWatching ? "status-green" : "status-cold") : claudeStatusPillClass(s.level);
 	return html`
 		<button
 			class=${"claude-pill " + (isWatching ? "watching " : "idle ") + colorClass}

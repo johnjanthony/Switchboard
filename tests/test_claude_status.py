@@ -42,6 +42,15 @@ def test_parse_incident_status_filter_is_case_insensitive():
 	assert s.incidents == []
 
 
+def test_parse_promotes_level_when_unresolved_incidents_exist_even_if_indicator_is_none():
+	incidents = [
+		{"name": "Elevated errors on several models", "status": "monitoring", "impact": "critical"}
+	]
+	s = parse_status(_summary("none", "All Systems Operational", incidents), T0)
+	assert s.level == "critical"
+	assert s.incidents == ["Elevated errors on several models"]
+
+
 def test_parse_returns_none_on_malformed_or_missing_indicator():
 	assert parse_status("not json", T0) is None
 	assert parse_status('{"status": {}}', T0) is None

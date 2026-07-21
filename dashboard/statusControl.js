@@ -12,11 +12,10 @@ export function requestStatus(action) {
 
 // Map a Claude status level to a lamp color class (reusing the palette).
 export function statusDotClass(level) {
-	switch (level) {
-		case 'operational': return 'lamp lamp-green';
-		case 'minor': return 'lamp lamp-amber';
-		case 'major':
-		case 'critical': return 'lamp lamp-red';
-		default: return 'lamp lamp-cold';
-	}
+	if (!level) return 'lamp lamp-cold';
+	const l = String(level).toLowerCase();
+	if (l === 'operational' || l === 'none') return 'lamp lamp-green';
+	if (l.includes('major') || l.includes('critical') || l.includes('outage')) return 'lamp lamp-red';
+	if (l.includes('minor') || l.includes('degraded') || l.includes('partial')) return 'lamp lamp-amber';
+	return 'lamp lamp-cold';
 }
