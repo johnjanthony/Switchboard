@@ -1,6 +1,7 @@
 package io.github.johnjanthony.switchboard
 
 import java.time.OffsetDateTime
+import kotlin.math.roundToInt
 
 /**
  * Short countdown until a quota window resets ("3d" / "2h" / "5m"). Returns "" when the
@@ -38,4 +39,20 @@ fun widgetStale(nowMs: Long, pushedAtIso: String?, thresholdMs: Long = 5L * 60L 
 		return true
 	}
 	return (nowMs - ms) > thresholdMs
+}
+
+/**
+ * Calculates the percentage of the quota window that has elapsed based on its reset time and total duration.
+ * Returns a formatted string like "42%" or null if unparseable/absent.
+ */
+fun formatTimeElapsedPercentage(nowMs: Long, resetsAtIso: String?, durationMs: Long): String? {
+	if (resetsAtIso.isNullOrBlank()) return null
+	val resetsAtMs = try {
+		OffsetDateTime.parse(resetsAtIso).toInstant().toEpochMilli()
+	} catch (_: Exception) {
+		return null
+	}
+	val remainingMs = (resetsAtMs - nowMs).coerceAtLeast(0L)
+	val elapsedMs = (durationMs - remainingMs).coerceIn(0L, durationMs)
+	return "${(elapsedMs.toDouble() / durationMs.toDouble() * 100).roundToInt()}%"
 }

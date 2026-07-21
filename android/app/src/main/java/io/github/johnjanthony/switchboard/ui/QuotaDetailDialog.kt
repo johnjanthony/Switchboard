@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.github.johnjanthony.switchboard.formatResetCountdown
+import io.github.johnjanthony.switchboard.formatTimeElapsedPercentage
 import io.github.johnjanthony.switchboard.network.WidgetQuota
 import io.github.johnjanthony.switchboard.network.WidgetQuotaWindow
 import kotlin.math.roundToInt
@@ -28,8 +29,8 @@ fun QuotaDetailDialog(
 		title = { Text("Service Quota", style = MaterialTheme.typography.titleMedium) },
 		text = {
 			Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-				QuotaSection("Weekly (7d)", quota.weekly)
-				QuotaSection("Session (5h)", quota.session)
+				QuotaSection("Weekly (7d)", quota.weekly, 7L * 24L * 60L * 60L * 1000L)
+				QuotaSection("Session (5h)", quota.session, 5L * 60L * 60L * 1000L)
 			}
 		},
 		confirmButton = {
@@ -41,7 +42,7 @@ fun QuotaDetailDialog(
 }
 
 @Composable
-private fun QuotaSection(label: String, window: WidgetQuotaWindow?) {
+private fun QuotaSection(label: String, window: WidgetQuotaWindow?, durationMs: Long) {
 	Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
 		Text(
 			label.uppercase(),
@@ -52,7 +53,12 @@ private fun QuotaSection(label: String, window: WidgetQuotaWindow?) {
 			Text("No data", style = MaterialTheme.typography.bodySmall)
 		} else {
 			DetailRow("Usage", "${(window.pct * 100).roundToInt()}%")
-			val countdown = formatResetCountdown(System.currentTimeMillis(), window.resetsAt)
+			val nowMs = System.currentTimeMillis()
+			val elapsedPct = formatTimeElapsedPercentage(nowMs, window.resetsAt, durationMs)
+			if (elapsedPct != null) {
+				DetailRow("Time elapsed", elapsedPct)
+			}
+			val countdown = formatResetCountdown(nowMs, window.resetsAt)
 			DetailRow("Reset in", if (countdown.isNotEmpty()) countdown else "now")
 			DetailRow("Reset at", formatBubbleTimestamp(window.resetsAt))
 		}
