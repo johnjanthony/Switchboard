@@ -2,6 +2,7 @@ package io.github.johnjanthony.switchboard.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -175,6 +176,7 @@ fun SessionsBoardScreen(
 						modifier = Modifier
 							.fillMaxWidth()
 							.clickable { endedExpanded = !endedExpanded }
+							.background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
 							.padding(horizontal = 16.dp, vertical = 8.dp),
 					)
 				}

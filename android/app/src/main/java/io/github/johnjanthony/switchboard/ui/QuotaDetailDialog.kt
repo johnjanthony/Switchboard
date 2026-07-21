@@ -13,7 +13,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import io.github.johnjanthony.switchboard.formatResetCountdown
 import io.github.johnjanthony.switchboard.formatTimeElapsedPercentage
 import io.github.johnjanthony.switchboard.network.WidgetQuota
 import io.github.johnjanthony.switchboard.network.WidgetQuotaWindow
@@ -58,8 +57,6 @@ private fun QuotaSection(label: String, window: WidgetQuotaWindow?, durationMs: 
 			if (elapsedPct != null) {
 				DetailRow("Time elapsed", elapsedPct)
 			}
-			val countdown = formatResetCountdown(nowMs, window.resetsAt)
-			DetailRow("Reset in", if (countdown.isNotEmpty()) countdown else "now")
 			DetailRow("Reset at", formatBubbleTimestamp(window.resetsAt))
 		}
 	}
