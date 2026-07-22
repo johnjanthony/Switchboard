@@ -106,4 +106,78 @@ public class LastKnownTests
 		var models = LastKnownStore.ToSessionModels(state);
 		Assert.Equal(SessionStatus.Idle, models[0].Status);
 	}
+
+	[Fact]
+	public void NeedsYou_round_trips_through_save_and_load()
+	{
+		var path = Path.Combine(Path.GetTempPath(), "lk-" + Guid.NewGuid().ToString("N") + ".json");
+		var stats = new SwitchboardStats(1, 1, 90.0, false, true)
+		{
+			NeedsYou = new Dictionary<string, NeedsYouEntry> { ["sid-1"] = new("ask", 512.0) },
+		};
+		var state = LastKnownStore.From(Array.Empty<SessionModel>(), null, null, stats, Now);
+		try
+		{
+			Assert.True(LastKnownStore.SaveTo(state, path));
+			var loaded = LastKnownStore.LoadFrom(path);
+			var roundTripped = LastKnownStore.ToStats(loaded!);
+			Assert.NotNull(roundTripped);
+			Assert.Equal(new NeedsYouEntry("ask", 512.0), roundTripped!.NeedsYou["sid-1"]);
+		}
+		finally { File.Delete(path); }
+	}
+
+	[Fact]
+	public void ToStats_empty_needs_you_uses_shared_empty_instance()
+	{
+		// Preserves record value-equality for stats without needs-you entries.
+		var state = LastKnownStore.From(Array.Empty<SessionModel>(), null, null, new SwitchboardStats(3, 1, 247.0, true, true), Now);
+		Assert.Same(SwitchboardStats.EmptyNeedsYou, LastKnownStore.ToStats(state)!.NeedsYou);
+	}
+
+	[Fact]
+	public void Pre_needs_you_cache_file_loads_with_empty_map()
+	{
+		var path = Path.Combine(Path.GetTempPath(), "lk-" + Guid.NewGuid().ToString("N") + ".json");
+		File.WriteAllText(path, "{\"Version\":1,\"SavedAtUtc\":\"2026-06-12T12:00:00Z\",\"Sessions\":[]," +
+			"\"Stats\":{\"ActiveConversations\":1,\"PendingCount\":0,\"OldestPendingAgeSeconds\":null,\"AwayMode\":false,\"Healthy\":true}}");
+		try
+		{
+			var loaded = LastKnownStore.LoadFrom(path);
+			Assert.NotNull(loaded);
+			Assert.Empty(loaded!.Stats!.NeedsYou);
+		}
+		finally { File.Delete(path); }
+	}
+
+	static SessionModel CachedSession(string id) =>
+		new("proj", null, 1000, 200000, "opus", SessionStatus.Idle, Now.AddHours(-3), false, id);
+
+	[Fact]
+	public void RenderableSessions_fresh_cache_returns_everything()
+	{
+		var state = LastKnownStore.From(new[] { CachedSession("sid-1"), CachedSession("sid-2") }, null, null, null, Now);
+		var rendered = LastKnownStore.RenderableSessions(state, Now.AddMinutes(30));
+		Assert.Equal(2, rendered.Count);
+	}
+
+	[Fact]
+	public void RenderableSessions_stale_cache_returns_only_needs_you_rows()
+	{
+		var stats = new SwitchboardStats(1, 1, 90.0, false, true)
+		{
+			NeedsYou = new Dictionary<string, NeedsYouEntry> { ["sid-2"] = new("ask", 512.0) },
+		};
+		var state = LastKnownStore.From(new[] { CachedSession("sid-1"), CachedSession("sid-2") }, null, null, stats, Now);
+		var rendered = LastKnownStore.RenderableSessions(state, Now.AddHours(2));
+		Assert.Single(rendered);
+		Assert.Equal("sid-2", rendered[0].SessionId);
+	}
+
+	[Fact]
+	public void RenderableSessions_stale_cache_without_needs_you_returns_nothing()
+	{
+		var state = LastKnownStore.From(new[] { CachedSession("sid-1") }, null, null, null, Now);
+		Assert.Empty(LastKnownStore.RenderableSessions(state, Now.AddHours(2)));
+	}
 }

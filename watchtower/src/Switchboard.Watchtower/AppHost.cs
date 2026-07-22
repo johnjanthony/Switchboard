@@ -148,6 +148,10 @@ internal sealed class AppHost : IDisposable
 		var now = DateTime.UtcNow;
 		if (!_scanGate.TryEnter(now)) return;
 		var cfg = _config;
+		// Captured on the UI thread: the scan body runs on a worker and must not touch _lastSwitchboardStats.
+		IReadOnlySet<string>? retain = _lastSwitchboardStats is { } st && st.NeedsYou.Count > 0
+			? st.NeedsYou.Keys.ToHashSet()
+			: null;
 
 		Task.Run(() =>
 		{
@@ -155,11 +159,11 @@ internal sealed class AppHost : IDisposable
 			DateTime? lastActivityUtc = null;
 			try
 			{
-				var win = WindowsSessionScanner.ActiveTranscripts(WindowsSessionScanner.DefaultProjectsRoot, now, cfg.ActiveWindowMinutes);
+				var win = WindowsSessionScanner.ActiveTranscripts(WindowsSessionScanner.DefaultProjectsRoot, now, cfg.ActiveWindowMinutes, retain);
 				IEnumerable<(string, string)> wsl = Array.Empty<(string, string)>();
 				if (cfg.ScanWsl)
 				{
-					wsl = WslSessionScanner.ActiveTranscripts(_distroLister, now, cfg.ActiveWindowMinutes, WslSessionScanner.DefaultGlob);
+					wsl = WslSessionScanner.ActiveTranscripts(_distroLister, now, cfg.ActiveWindowMinutes, WslSessionScanner.DefaultGlob, retainIds: retain);
 				}
 				result = SessionAggregator.Collect(win, wsl, now, cfg.LiveThresholdSeconds, LogError);
 
@@ -301,13 +305,14 @@ internal sealed class AppHost : IDisposable
 	{
 		// The panel's Switchboard section always needs its enabled seed, cache or no cache.
 		var cachedStats = state is not null && _config.Switchboard.Enabled ? LastKnownStore.ToStats(state) : null;
+		if (cachedStats is not null) _lastSwitchboardStats = cachedStats;
 		_panel.UpdateSwitchboard(_config.Switchboard.Enabled, cachedStats);
 		if (state is null) return;
 
 		bool light = _config.LightThemeOverride ?? ThemeReader.IsLightTaskbar();
-		if (LastKnownStore.SessionsFresh(state.SavedAtUtc, DateTime.UtcNow))
+		var sessions = LastKnownStore.RenderableSessions(state, DateTime.UtcNow);
+		if (sessions.Count > 0)
 		{
-			var sessions = LastKnownStore.ToSessionModels(state);
 			_widget.UpdateSessions(sessions, light);
 			_panel.UpdateSessions(sessions, light, state.LastActivityUtc);
 			var gauge = TrayGauge.From(sessions);

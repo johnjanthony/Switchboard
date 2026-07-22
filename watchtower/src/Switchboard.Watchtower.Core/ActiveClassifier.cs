@@ -13,4 +13,9 @@ public static class ActiveClassifier
 		var ageSeconds = (nowUtc - mtimeUtc).TotalSeconds;
 		return ageSeconds <= liveThresholdSeconds ? SessionStatus.Live : SessionStatus.Idle;
 	}
+
+	// A needs-you session's transcript is listed regardless of transcript age; the id set
+	// (cli_session_id == transcript filename stem) comes from the server's /stats needs_you map.
+	public static bool IsRetained(string path, IReadOnlySet<string>? retainIds) =>
+		retainIds is { Count: > 0 } && retainIds.Contains(Path.GetFileNameWithoutExtension(path));
 }

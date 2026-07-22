@@ -8,6 +8,7 @@ import json as _json
 import logging
 import os
 import signal
+from datetime import datetime, timezone
 from pathlib import Path as _Path
 
 import uvicorn
@@ -39,7 +40,7 @@ from server.http_auth import TokenAuthMiddleware
 from server.hydration import hydrate_from_firebase
 from server.logging_jsonl import JsonlLogger
 from server.registry import Registry
-from server.session_registry import SessionRegistry
+from server.session_registry import SessionRegistry, TERMINAL_STATES
 from server.rate_limiter import RateLimiter
 from server.firebase import FirebaseBackend
 from server.firebase_supervisor import LoopSupervisor
@@ -180,6 +181,33 @@ def _compute_healthy(listeners, loop_failures) -> bool:
 	return not listener_unhealthy and not loop_unhealthy
 
 
+def _iso_age_seconds(iso: str, now: datetime) -> float:
+	try:
+		return max(0.0, (now - datetime.fromisoformat(iso)).total_seconds())
+	except (ValueError, TypeError):
+		return 0.0
+
+
+def _compute_needs_you(registry: Registry, session_registry) -> dict:
+	"""Sessions blocked on John, for Watchtower's per-session dot: every pending
+	ask (live or parked - parked pendings can outlive their session record) plus
+	non-terminal records blocked on a terminal permission prompt. ask wins when
+	both apply (the phone-answerable fact is the more actionable one); a session
+	pending in several conversations reports its oldest age."""
+	now = datetime.now(timezone.utc)
+	needs_you: dict[str, dict] = {}
+	for p in registry.all_pending():
+		age = (now - p.started_at).total_seconds()
+		prev = needs_you.get(p.cli_session_id)
+		if prev is None or age > prev["age_seconds"]:
+			needs_you[p.cli_session_id] = {"reason": "ask", "age_seconds": age}
+	if session_registry is not None:
+		for rec in session_registry.snapshot():
+			if rec.blocked_on_approval and rec.state not in TERMINAL_STATES and rec.cli_session_id not in needs_you:
+				needs_you[rec.cli_session_id] = {"reason": "approval", "age_seconds": _iso_age_seconds(rec.last_event_at, now)}
+	return needs_you
+
+
 def _build_stats_route(registry: Registry, backend, loop_sups: dict, session_registry=None):
 	"""GET /stats - the widget-facing roll-up (localhost, unauthenticated, same
 	trust model as /healthz and /away-mode). The widget polls this so it never
@@ -213,6 +241,7 @@ def _build_stats_route(registry: Registry, backend, loop_sups: dict, session_reg
 				"total": len(session_registry.snapshot()) if session_registry is not None else 0,
 				"by_state": session_registry.counts_by_state() if session_registry is not None else {},
 			},
+			"needs_you": _compute_needs_you(registry, session_registry),
 		})
 	return stats
 

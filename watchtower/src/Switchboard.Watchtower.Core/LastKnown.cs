@@ -46,6 +46,13 @@ public sealed class LastKnownStats
 	public double? OldestPendingAgeSeconds { get; set; }
 	public bool AwayMode { get; set; }
 	public bool Healthy { get; set; }
+	public Dictionary<string, LastKnownNeedsYou> NeedsYou { get; set; } = new();
+}
+
+public sealed class LastKnownNeedsYou
+{
+	public string Reason { get; set; } = "";
+	public double AgeSeconds { get; set; }
 }
 
 public static class LastKnownStore
@@ -125,6 +132,8 @@ public static class LastKnownStore
 					OldestPendingAgeSeconds = st.OldestPendingAgeSeconds,
 					AwayMode = st.AwayMode,
 					Healthy = st.Healthy,
+					NeedsYou = st.NeedsYou.ToDictionary(
+						kv => kv.Key, kv => new LastKnownNeedsYou { Reason = kv.Value.Reason, AgeSeconds = kv.Value.AgeSeconds }),
 				}
 				: null,
 		};
@@ -144,5 +153,22 @@ public static class LastKnownStore
 	public static SwitchboardStats? ToStats(LastKnownState state) =>
 		state.Stats is LastKnownStats st
 			? new SwitchboardStats(st.ActiveConversations, st.PendingCount, st.OldestPendingAgeSeconds, st.AwayMode, st.Healthy)
+			{
+				NeedsYou = st.NeedsYou.Count == 0
+					? SwitchboardStats.EmptyNeedsYou
+					: st.NeedsYou.ToDictionary(kv => kv.Key, kv => new NeedsYouEntry(kv.Value.Reason, kv.Value.AgeSeconds)),
+			}
 			: null;
+
+	// All cached sessions while the cache is fresh; when stale, only needs-you rows survive -
+	// an unanswered question is still true however old the cache, but a stale Live bar would
+	// advertise an agent that is long gone.
+	public static List<SessionModel> RenderableSessions(LastKnownState state, DateTime nowUtc)
+	{
+		var sessions = ToSessionModels(state);
+		if (SessionsFresh(state.SavedAtUtc, nowUtc)) return sessions;
+		var needsYou = state.Stats?.NeedsYou;
+		if (needsYou is null || needsYou.Count == 0) return new List<SessionModel>();
+		return sessions.Where(s => s.SessionId is not null && needsYou.ContainsKey(s.SessionId)).ToList();
+	}
 }

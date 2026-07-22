@@ -27,6 +27,7 @@ internal sealed class DetailPanel : Form
 
 	bool _switchboardEnabled;
 	SwitchboardStats? _switchboardStats;   // latest /stats; null means unavailable when enabled
+	IReadOnlyDictionary<string, NeedsYouEntry> _needsYou = SwitchboardStats.EmptyNeedsYou;   // last-good needs-you map; held across unavailable polls
 	readonly PillButton _switchboardPillButton;
 
 	ClaudeStatusView? _claudeStatus;
@@ -168,6 +169,7 @@ internal sealed class DetailPanel : Form
 	{
 		_switchboardEnabled = enabled;
 		_switchboardStats = stats;
+		if (stats is not null) _needsYou = stats.NeedsYou;   // null poll = unreachable: keep the dots, the stats line shows the outage
 
 		bool reachable = enabled && stats is not null;
 		bool healthy = stats is { Healthy: true };
@@ -327,10 +329,11 @@ internal sealed class DetailPanel : Form
 			g.DrawString(msg, small, mutedBrush, (Width - ms.Width) / 2, ctxTop + (ctxH - ms.Height) / 2);
 		}
 		y += GroupVPad;
-		foreach (var s in _sessions)   // no-op when empty (message drawn above)
+		foreach (var s in OrderedSessions())   // no-op when empty (message drawn above)
 		{
-			// status dot
-			var dotColor = s.Status == SessionStatus.Live ? StatusColors.Green : _palette.Muted;
+			// status dot: needs-you (amber) outranks liveness
+			bool needsYou = s.SessionId is not null && _needsYou.ContainsKey(s.SessionId);
+			var dotColor = needsYou ? StatusColors.Amber : (s.Status == SessionStatus.Live ? StatusColors.Green : _palette.Muted);
 			using (var dot = new SolidBrush(dotColor)) g.FillEllipse(dot, Pad, y + 3, 8, 8);
 
 			// line 1: [WSL] label .................... model/window tag
@@ -587,4 +590,11 @@ internal sealed class DetailPanel : Form
 	}
 
 	static string WindowTag(long window) => window >= 1_000_000 ? "1M" : $"{window / 1000}K";
+
+	// Needs-you rows first: attention outranks context usage. Stable within each group.
+	IEnumerable<SessionModel> OrderedSessions()
+	{
+		if (_needsYou.Count == 0) return _sessions;
+		return _sessions.OrderByDescending(s => s.SessionId is not null && _needsYou.ContainsKey(s.SessionId));
+	}
 }

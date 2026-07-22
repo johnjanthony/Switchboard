@@ -11,7 +11,8 @@ public static class WslSessionScanner
 		DateTime nowUtc,
 		int activeWindowMinutes,
 		Func<string, IEnumerable<string>> glob,
-		Func<string, DateTime>? mtimeOf = null)
+		Func<string, DateTime>? mtimeOf = null,
+		IReadOnlySet<string>? retainIds = null)
 	{
 		mtimeOf ??= File.GetLastWriteTimeUtc;
 
@@ -21,7 +22,7 @@ public static class WslSessionScanner
 
 			var paths = SafeScan.Materialize(() => glob(distro));
 			foreach (var (path, mtime) in SafeScan.WithMtimes(paths, mtimeOf))
-				if (ActiveClassifier.IsActive(mtime, nowUtc, activeWindowMinutes)) yield return (distro, path);
+				if (ActiveClassifier.IsActive(mtime, nowUtc, activeWindowMinutes) || ActiveClassifier.IsRetained(path, retainIds)) yield return (distro, path);
 		}
 	}
 

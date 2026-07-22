@@ -7,7 +7,7 @@ public static class WindowsSessionScanner
 
 	// Top-level session transcripts are <projectsRoot>/<encoded-cwd>/<uuid>.jsonl. Subagent transcripts
 	// live one level deeper under <uuid>/subagents/ and are excluded by TopDirectoryOnly enumeration.
-	public static IEnumerable<string> ActiveTranscripts(string projectsRoot, DateTime nowUtc, int activeWindowMinutes)
+	public static IEnumerable<string> ActiveTranscripts(string projectsRoot, DateTime nowUtc, int activeWindowMinutes, IReadOnlySet<string>? retainIds = null)
 	{
 		if (!Directory.Exists(projectsRoot)) yield break;
 
@@ -15,7 +15,7 @@ public static class WindowsSessionScanner
 		{
 			var files = SafeScan.Materialize(() => Directory.EnumerateFiles(projDir, "*.jsonl", SearchOption.TopDirectoryOnly));
 			foreach (var (file, mtime) in SafeScan.WithMtimes(files, File.GetLastWriteTimeUtc))
-				if (ActiveClassifier.IsActive(mtime, nowUtc, activeWindowMinutes)) yield return file;
+				if (ActiveClassifier.IsActive(mtime, nowUtc, activeWindowMinutes) || ActiveClassifier.IsRetained(file, retainIds)) yield return file;
 		}
 	}
 

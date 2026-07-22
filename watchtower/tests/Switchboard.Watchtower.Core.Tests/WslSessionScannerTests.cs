@@ -82,4 +82,15 @@ public class WslSessionScannerTests
 		Assert.Single(found);
 		Assert.Equal("Ubuntu-22.04", found[0].distro);
 	}
+
+	[Fact]
+	public void Retained_stem_bypasses_the_active_window()
+	{
+		var lister = new FakeLister("Ubuntu-22.04");
+		IEnumerable<string> FakeGlob(string d) => new[] { @"\\wsl.localhost\Ubuntu-22.04\home\j\.claude\projects\p\needs-you-uuid.jsonl" };
+		var retain = new HashSet<string> { "needs-you-uuid" };
+		var found = WslSessionScanner.ActiveTranscripts(lister, Now, 5, FakeGlob, mtimeOf: _ => Now.AddMinutes(-30), retainIds: retain).ToList();
+		Assert.Single(found);
+		Assert.Equal("Ubuntu-22.04", found[0].distro);
+	}
 }

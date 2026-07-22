@@ -61,6 +61,14 @@ On first launch it registers itself under `HKCU\...\Run` (autostart is on by def
 
 **To update the running Release widget** (e.g. to pick up a rebuild): quit the running instance first via the tray icon's **Quit** — only one instance runs at a time (enforced by a named mutex), and the running EXE is otherwise locked — then re-run the `dotnet publish` above and relaunch `publish\Switchboard.Watchtower.exe`.
 
+Or run the one-shot deploy script from the `watchtower/` directory, which does all three steps (stop the running instance, publish, relaunch):
+
+```
+.\deploy-widget.ps1
+```
+
+Pass `-NoLaunch` to stop and publish without relaunching.
+
 ## Configuration
 
 Settings live at `%APPDATA%\Switchboard\Watchtower\config.json` and are created on first run. Defaults:

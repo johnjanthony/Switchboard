@@ -1,6 +1,7 @@
 """Tests for the GET /stats endpoint (widget-facing roll-up)."""
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -60,7 +61,7 @@ async def test_stats_returns_all_keys_and_counts():
 	body = json.loads(resp.body)
 	assert set(body.keys()) == {
 		"active_conversations", "pending_count",
-		"oldest_pending_age_seconds", "away_mode", "healthy", "sessions",
+		"oldest_pending_age_seconds", "away_mode", "healthy", "sessions", "needs_you",
 	}
 	assert body["active_conversations"] == 3
 	assert body["pending_count"] == 2
@@ -190,3 +191,80 @@ def test_compute_healthy_true_on_empty_inputs():
 
 def test_compute_healthy_ignores_non_dict_listener_entries():
 	assert _compute_healthy([None, {"state": "live"}], [0]) is True
+
+
+@pytest.mark.asyncio
+async def test_stats_needs_you_live_pending_is_ask():
+	registry = _registry(active=1)
+	registry.add(conversation_id="a0", cli_session_id="s-live", sender="Claude", request_id="r1")
+	route = _build_stats_route(registry, _FakeBackend([]), {"d": _FakeLoopSup(0)})
+	body = json.loads((await route(_make_request())).body)
+	assert body["needs_you"]["s-live"]["reason"] == "ask"
+	assert 0.0 <= body["needs_you"]["s-live"]["age_seconds"] < 60.0
+
+
+@pytest.mark.asyncio
+async def test_stats_needs_you_includes_parked_pending():
+	registry = _registry(active=1)
+	registry.add_parked(conversation_id="a0", cli_session_id="s-parked", sender="Claude", request_id="r1",
+		started_at=datetime.now(timezone.utc) - timedelta(seconds=300))
+	route = _build_stats_route(registry, _FakeBackend([]), {"d": _FakeLoopSup(0)})
+	body = json.loads((await route(_make_request())).body)
+	assert body["needs_you"]["s-parked"]["reason"] == "ask"
+	assert body["needs_you"]["s-parked"]["age_seconds"] >= 300.0
+
+
+@pytest.mark.asyncio
+async def test_stats_needs_you_oldest_age_wins_across_conversations():
+	registry = _registry(active=2)
+	registry.add(conversation_id="a0", cli_session_id="s-x", sender="Claude", request_id="r1")
+	registry.add_parked(conversation_id="a1", cli_session_id="s-x", sender="Claude", request_id="r2",
+		started_at=datetime.now(timezone.utc) - timedelta(seconds=500))
+	route = _build_stats_route(registry, _FakeBackend([]), {"d": _FakeLoopSup(0)})
+	body = json.loads((await route(_make_request())).body)
+	assert body["needs_you"]["s-x"]["age_seconds"] >= 500.0
+
+
+@pytest.mark.asyncio
+async def test_stats_needs_you_blocked_on_approval():
+	registry = _registry()
+	sreg = SessionRegistry()
+	sreg.upsert_from_hook("s-appr", state="active", event="PreToolUse", in_tool=True)
+	sreg.apply_rings({"s-appr": {"title_state": "star"}})
+	route = _build_stats_route(registry, _FakeBackend([]), {"d": _FakeLoopSup(0)}, session_registry=sreg)
+	body = json.loads((await route(_make_request())).body)
+	assert body["needs_you"]["s-appr"]["reason"] == "approval"
+	assert body["needs_you"]["s-appr"]["age_seconds"] >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_stats_needs_you_excludes_terminal_approval_records():
+	registry = _registry()
+	sreg = SessionRegistry()
+	sreg.upsert_from_hook("s-lost", state="active", event="PreToolUse", in_tool=True)
+	sreg.apply_rings({"s-lost": {"title_state": "star"}})
+	rec = sreg.get("s-lost")
+	rec.state = "lost"  # belt test: terminal transitions normally clear the flag; force the stale combination
+	route = _build_stats_route(registry, _FakeBackend([]), {"d": _FakeLoopSup(0)}, session_registry=sreg)
+	body = json.loads((await route(_make_request())).body)
+	assert "s-lost" not in body["needs_you"]
+
+
+@pytest.mark.asyncio
+async def test_stats_needs_you_ask_wins_over_approval():
+	registry = _registry(active=1)
+	registry.add(conversation_id="a0", cli_session_id="s-both", sender="Claude", request_id="r1")
+	sreg = SessionRegistry()
+	sreg.upsert_from_hook("s-both", state="active", event="PreToolUse", in_tool=True)
+	sreg.apply_rings({"s-both": {"title_state": "star"}})
+	route = _build_stats_route(registry, _FakeBackend([]), {"d": _FakeLoopSup(0)}, session_registry=sreg)
+	body = json.loads((await route(_make_request())).body)
+	assert body["needs_you"]["s-both"]["reason"] == "ask"
+
+
+@pytest.mark.asyncio
+async def test_stats_needs_you_empty_when_nothing_pending():
+	registry = _registry(active=1)
+	route = _build_stats_route(registry, _FakeBackend([]), {"d": _FakeLoopSup(0)})
+	body = json.loads((await route(_make_request())).body)
+	assert body["needs_you"] == {}

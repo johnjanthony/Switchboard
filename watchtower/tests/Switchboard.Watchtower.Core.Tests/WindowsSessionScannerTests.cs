@@ -71,4 +71,29 @@ public class WindowsSessionScannerTests
 		var missing = Path.Combine(Path.GetTempPath(), "no-such-" + Guid.NewGuid().ToString("N"));
 		Assert.Null(WindowsSessionScanner.MostRecentActivityUtc(missing));
 	}
+
+	[Fact]
+	public void Retained_stem_bypasses_the_active_window()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "ccproj-" + Guid.NewGuid().ToString("N"));
+		var projA = Path.Combine(root, "C--Work");
+		Directory.CreateDirectory(projA);
+
+		var stale = Path.Combine(projA, "needs-you-uuid.jsonl");
+		File.WriteAllText(stale, "{}\n");
+		File.SetLastWriteTimeUtc(stale, Now.AddMinutes(-30));
+
+		var otherStale = Path.Combine(projA, "other-uuid.jsonl");
+		File.WriteAllText(otherStale, "{}\n");
+		File.SetLastWriteTimeUtc(otherStale, Now.AddMinutes(-30));
+
+		try
+		{
+			var retain = new HashSet<string> { "needs-you-uuid" };
+			var found = WindowsSessionScanner.ActiveTranscripts(root, Now, activeWindowMinutes: 5, retainIds: retain).ToList();
+			Assert.Single(found);
+			Assert.Equal(stale, found[0]);
+		}
+		finally { Directory.Delete(root, recursive: true); }
+	}
 }
