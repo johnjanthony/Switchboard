@@ -290,3 +290,43 @@ def test_write_indexes(tmp_path):
 	ri = (vault / "Rationale Index.md").read_text(encoding="utf-8")
 	assert "## Pkg" in ri and "[[Why hello]]" in ri
 	assert "graphify/generated-index" in fi and "graphify/generated-index" in ri
+
+
+def test_python_excerpt_class_includes_field_lines():
+	src = (
+		'class Rec:\n'
+		'\t"""Doc."""\n'
+		'\n'
+		'\tcli_session_id: str\n'
+		'\tcwd: str = ""\n'
+		'\tCONST = 5\n'
+		'\n'
+		'\tdef go(self):\n'
+		'\t\treturn 1\n'
+	)
+	out = vpl.python_excerpt(src, 1)
+	assert "cli_session_id: str" in out
+	assert 'cwd: str = ""' in out
+	assert "CONST = 5" in out
+	assert "def go(self):" in out
+	assert "return 1" not in out
+
+
+def test_enrich_vault_parses_each_python_source_once(tmp_path, monkeypatch):
+	import ast as ast_mod
+	repo = tmp_path / "repo"
+	vault = tmp_path / "vault"
+	(repo / "pkg").mkdir(parents=True)
+	vault.mkdir()
+	(repo / "pkg" / "mod.py").write_text(
+		'def one():\n\treturn 1\n\n\ndef two():\n\treturn 2\n\n\ndef three():\n\treturn 3\n', encoding="utf-8")
+	for name, loc in (("one()", "L1"), ("two()", "L5"), ("three()", "L9")):
+		(vault / f"{name}.md").write_text(
+			f'---\nsource_file: "pkg/mod.py"\ntype: "code"\nlocation: "{loc}"\n---\n\n# {name}\n', encoding="utf-8")
+	calls = []
+	real_parse = ast_mod.parse
+	monkeypatch.setattr(ast_mod, "parse", lambda *a, **k: calls.append(1) or real_parse(*a, **k))
+	enriched, skipped = vpl.enrich_vault(vault, repo)
+	assert (enriched, skipped) == (3, 0)
+	assert len(calls) == 1
+	assert "return 2" in (vault / "two().md").read_text(encoding="utf-8")

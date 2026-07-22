@@ -133,14 +133,24 @@ def parse_location(loc):
 	return int(m.group(1)) if m else None
 
 
-def python_excerpt(text, line, cap=30):
-	"""The def/class at `line`: full source for functions (docstring included by
-	construction), signature + docstring + member signatures for classes. None
-	when `line` is not on/inside a definition or the file does not parse."""
+def _parse_python(text):
 	import ast
 	try:
-		tree = ast.parse(text)
+		return ast.parse(text)
 	except SyntaxError:
+		return None
+
+
+def python_excerpt(text, line, cap=30, tree=None):
+	"""The def/class at `line`: full source for functions (docstring included by
+	construction), signature + docstring + field lines + member signatures for
+	classes. None when `line` is not on/inside a definition or the file does
+	not parse. Callers enriching many notes from one file pass the module's
+	pre-parsed `tree` so each source is parsed at most once."""
+	import ast
+	if tree is None:
+		tree = _parse_python(text)
+	if tree is None:
 		return None
 	exact = containing = None
 	for node in ast.walk(tree):
@@ -158,12 +168,17 @@ def python_excerpt(text, line, cap=30):
 	if isinstance(target, ast.ClassDef):
 		out = [lines[target.lineno - 1]]
 		body = target.body
+		start = 0
 		if body and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant) \
 				and isinstance(body[0].value.value, str):
 			out += lines[body[0].lineno - 1: body[0].end_lineno]
-		for item in body:
+			start = 1
+		for item in body[start:]:
 			if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
 				out.append(lines[item.lineno - 1])
+			elif isinstance(item, (ast.AnnAssign, ast.Assign)):
+				# Field lines ARE the payload for dataclasses/config records.
+				out += lines[item.lineno - 1: item.end_lineno]
 	else:
 		out = lines[target.lineno - 1: target.end_lineno]
 	if len(out) > cap:
@@ -284,6 +299,7 @@ def enrich_vault(vault_dir, repo_root):
 	never abort the refresh, so failures count as skipped and move on."""
 	vault_dir, repo_root = Path(vault_dir), Path(repo_root)
 	sources = {}
+	trees = {}
 	enriched = skipped = 0
 	for p in sorted(vault_dir.glob("*.md")):
 		try:
@@ -306,7 +322,9 @@ def enrich_vault(vault_dir, repo_root):
 				if ext == ".md":
 					body, lang = markdown_section(stext, line), "md-section"
 				elif ext == ".py":
-					body = python_excerpt(stext, line) or window_excerpt(stext, line)
+					if src not in trees:
+						trees[src] = _parse_python(stext)
+					body = python_excerpt(stext, line, tree=trees[src]) or window_excerpt(stext, line)
 				else:
 					body = window_excerpt(stext, line)
 			p.write_text(insert_excerpt(text, excerpt_section(src, line, body, lang)), encoding="utf-8", newline="\n")
