@@ -15,6 +15,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import vault_pipeline_lib as vpl
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = REPO_ROOT / os.environ.get("GRAPHIFY_OUT", "graphify-out")
 SRC_GRAPH = OUT_DIR / "graph.json"
@@ -51,6 +54,17 @@ def main():
 		if len(members) >= 2:
 			kept_hyper.append({**h, "nodes": members})
 
+	kept_nodes, kept_links, kept_hyper, junked = vpl.drop_junk_nodes(kept_nodes, kept_links, kept_hyper)
+	kept_nodes, kept_links, kept_hyper, merged = vpl.merge_bare_duplicates(kept_nodes, kept_links, kept_hyper)
+	membership = vpl.recompute_communities(kept_nodes, kept_links)
+	names = vpl.name_communities(kept_nodes, kept_links, membership)
+	for n in kept_nodes:
+		cid = membership.get(n["id"])
+		n["community"] = cid
+		n["community_name"] = names.get(cid)
+	(OUT_DIR / ".graphify_labels_src.json").write_text(
+		json.dumps({str(cid): name for cid, name in names.items()}, ensure_ascii=False), encoding="utf-8")
+
 	out = dict(graph)
 	out["nodes"] = kept_nodes
 	out["links"] = kept_links
@@ -65,8 +79,9 @@ def main():
 	isolated = sum(1 for n in kept_nodes if n["id"] not in linked)
 
 	DST_GRAPH.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
-	print(f"graph-src-view: {len(nodes)} -> {len(kept_nodes)} nodes ({len(nodes) - len(kept_nodes)} test nodes stripped), "
-		f"{len(links)} -> {len(kept_links)} edges, {isolated} now-isolated production nodes kept")
+	print(f"graph-src-view: {len(nodes)} -> {len(kept_nodes)} nodes ({len(nodes) - len(kept_nodes)} stripped: "
+		f"tests + {junked} junk + {merged} merged duplicates), {len(links)} -> {len(kept_links)} edges, "
+		f"{isolated} now-isolated production nodes kept, {len(names)} communities named")
 	return 0
 
 

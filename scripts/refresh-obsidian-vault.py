@@ -24,9 +24,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = REPO_ROOT / os.environ.get("GRAPHIFY_OUT", "graphify-out")
 SRC_GRAPH = OUT_DIR / "graph-src.json"
-LABELS = OUT_DIR / ".graphify_labels.json"
+LABELS = OUT_DIR / ".graphify_labels_src.json"
 VAULT = OUT_DIR / "obsidian"
 MANIFEST = VAULT / ".graphify_obsidian_manifest.json"
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import vault_pipeline_lib as vpl
 
 
 def load_graph():
@@ -104,6 +107,10 @@ def main():
 	if not SRC_GRAPH.exists():
 		print(f"refresh-obsidian-vault: {SRC_GRAPH} not found; run scripts/graphify-src-view.py first")
 		return 1
+	full_graph = OUT_DIR / "graph.json"
+	if full_graph.exists() and full_graph.stat().st_mtime > SRC_GRAPH.stat().st_mtime:
+		print("refresh-obsidian-vault: WARNING graph-src.json is older than graph.json - "
+			"run scripts/graphify-src-view.py first (the hook chain may have dropped it)")
 	from graphify.export import to_canvas, to_obsidian
 	G, communities = load_graph()
 	labels = load_labels()
@@ -112,7 +119,12 @@ def main():
 	to_canvas(G, communities, str(VAULT / "graph.canvas"), community_labels=labels)
 	rename = dedot()
 	sync_manifest(rename)
-	print(f"refresh-obsidian-vault: {n} notes exported from {SRC_GRAPH.name}, {len(rename)} dedotted, manifest synced")
+	node_dicts = [{"id": nid, "label": d.get("label", ""), "source_file": d.get("source_file", "")}
+		for nid, d in G.nodes(data=True)]
+	enriched, skipped = vpl.enrich_vault(VAULT, REPO_ROOT)
+	vpl.write_indexes(VAULT, node_dicts, G.graph.get("hyperedges", []))
+	print(f"refresh-obsidian-vault: {n} notes exported from {SRC_GRAPH.name}, {len(rename)} dedotted, "
+		f"manifest synced, {enriched} enriched ({skipped} skipped), indexes written")
 	return 0
 
 
