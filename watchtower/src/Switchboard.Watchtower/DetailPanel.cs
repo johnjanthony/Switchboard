@@ -384,23 +384,29 @@ internal sealed class DetailPanel : Form
 			var dotColor = needsYou ? StatusColors.Amber : (s.Status == SessionStatus.Live ? StatusColors.Green : _palette.Muted);
 			using (var dot = new SolidBrush(dotColor)) g.FillEllipse(dot, Pad, y + 3, 8, 8);
 
-			// line 1: [WSL] label .................... model/window tag
+			// line 1: [WSL] label model .................... tokens ratio (e.g. 260K / 1.0M)
 			int labelX = Pad + 16;
 			if (s.Distro is not null)
 			{
 				g.DrawString("WSL", small, mutedBrush, labelX, y + 2);
 				labelX += (int)Math.Ceiling(g.MeasureString("WSL", small).Width) + 6;
 			}
-			var tag = $"{ShortModel(s.Model)} · {WindowTag(s.WindowSize)}";
-			var tagSize = g.MeasureString(tag, small);
-			float maxLabelW = Width - Pad - tagSize.Width - labelX - 6;
-			string displayLabel = Ellipsize(g, s.Label, label, maxLabelW);
-			g.DrawString(displayLabel, label, textBrush, labelX, y);
-			g.DrawString(tag, small, mutedBrush, Width - Pad - tagSize.Width, y + 1);
+			var tokens = s.IsError ? "?" : $"{Human(s.ContextTokens)} / {Human(s.WindowSize)}";
+			var tokensSize = g.MeasureString(tokens, small);
+			g.DrawString(tokens, small, mutedBrush, Width - Pad - tokensSize.Width, y + 1);
 
-			// line 2: bar + tokens + pct
+			string modelStr = "w/ " + ShortModel(s.Model);
+			var modelSize = g.MeasureString(modelStr, small, PointF.Empty, StringFormat.GenericTypographic);
+			float maxLine1W = Width - Pad - tokensSize.Width - labelX - 6;
+			float maxCwdW = maxLine1W - modelSize.Width - 5;
+			string displayLabel = Ellipsize(g, s.Label, label, maxCwdW);
+			g.DrawString(displayLabel, label, textBrush, labelX, y);
+			float cwdW = g.MeasureString(displayLabel, label, PointF.Empty, StringFormat.GenericTypographic).Width;
+			g.DrawString(modelStr, small, mutedBrush, labelX + cwdW + 5, y + 1);
+
+			// line 2: bar + pct
 			int barY = y + 22;
-			int barW = Width - Pad * 2 - 120;
+			int barW = Width - Pad * 2 - 42;
 			using (var track = new SolidBrush(_palette.Track))
 				g.FillRectangle(track, Pad, barY, barW, 8);
 			if (!s.IsError)
@@ -408,8 +414,6 @@ internal sealed class DetailPanel : Form
 				using var fill = new SolidBrush(SeverityGradient.For(s.Pct));
 				g.FillRectangle(fill, Pad, barY, (int)(barW * Math.Clamp(s.Pct, 0, 1)), 8);
 			}
-			var tokens = s.IsError ? "?" : $"{Human(s.ContextTokens)} / {Human(s.WindowSize)}";
-			g.DrawString(tokens, small, mutedBrush, Pad + barW + 8, barY - 2);
 			var pct = s.IsError ? "?" : $"{(int)Math.Round(s.Pct * 100)}%";
 			using var pctBrush = new SolidBrush(s.IsError ? _palette.Warning : SeverityGradient.For(s.Pct));
 			g.DrawString(pct, label, pctBrush, Width - Pad - 34, barY - 4);
@@ -561,7 +565,19 @@ internal sealed class DetailPanel : Form
 		using var mutedBrush = new SolidBrush(_palette.Muted);
 
 		// line 1: window name (left) + exact reset time (right)
-		g.DrawString(name, label, textBrush, Pad, y);
+		int wIndex = name.IndexOf(" w/ ", StringComparison.Ordinal);
+		if (wIndex >= 0)
+		{
+			string mainPart = name.Substring(0, wIndex);
+			string subPart = name.Substring(wIndex + 1);
+			g.DrawString(mainPart, label, textBrush, Pad, y);
+			float mainW = g.MeasureString(mainPart, label, PointF.Empty, StringFormat.GenericTypographic).Width;
+			g.DrawString(subPart, small, mutedBrush, Pad + mainW + 5, y + 1);
+		}
+		else
+		{
+			g.DrawString(name, label, textBrush, Pad, y);
+		}
 		string reset = QuotaFormat.FormatResetTime(w.ResetsAt, now);
 		if (reset.Length > 0)
 		{
@@ -646,8 +662,6 @@ internal sealed class DetailPanel : Form
 		}
 		return model.Length > 12 ? model.Substring(0, 10) + "..." : model;
 	}
-
-	static string WindowTag(long window) => window >= 1_000_000 ? "1M" : $"{window / 1000}K";
 
 	// Needs-you rows first: attention outranks context usage. Stable within each group.
 	IEnumerable<SessionModel> OrderedSessions()
