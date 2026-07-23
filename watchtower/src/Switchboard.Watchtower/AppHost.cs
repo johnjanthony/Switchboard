@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using Switchboard.Watchtower.Core;
 
@@ -96,6 +97,8 @@ internal sealed class AppHost : IDisposable
 			Autostart.Apply(on, Application.ExecutablePath);
 			SafeSaveConfig();
 		};
+		_tray.WakeTimeRequested += ConfigureWakeTime;
+		_tray.SetWakeTime(_config.DailyAnchorEnabled, _config.DailyAnchorTimeOfDay);
 		_tray.QuitRequested += () => Application.Exit();
 
 		_timer.Interval = Math.Max(5, _config.PollIntervalSeconds) * 1000;
@@ -426,6 +429,21 @@ internal sealed class AppHost : IDisposable
 	{
 		try { if (!_config.Save()) LogInfo("config-save", "skipped: config load was degraded; not overwriting"); }
 		catch (Exception ex) { LogError("config-save", ex); }
+	}
+
+	void ConfigureWakeTime()
+	{
+		using var dlg = new WakeTimeDialog(_config.DailyAnchorEnabled, _config.DailyAnchorTimeOfDay);
+		if (dlg.ShowDialog() == DialogResult.OK)
+		{
+			_config.DailyAnchorEnabled = dlg.WakeTimeEnabled;
+			_config.DailyAnchorTime = dlg.WakeTime.ToString("HH:mm", CultureInfo.InvariantCulture);
+			SafeSaveConfig();
+			_tray.SetWakeTime(_config.DailyAnchorEnabled, _config.DailyAnchorTimeOfDay);
+			LogInfo("wake-time", _config.DailyAnchorEnabled
+				? $"wake time updated to {_config.DailyAnchorTime}"
+				: "wake feature disabled");
+		}
 	}
 
 	// Open the Operator dashboard in the default browser. conversationId, when supplied, deep-links via #conv=.

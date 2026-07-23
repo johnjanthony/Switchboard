@@ -148,4 +148,20 @@ public class AppConfigTests
 		Assert.Equal(new TimeOnly(7, 0), cfg.DailyAnchorTimeOfDay);
 		Assert.False(cfg.LoadDegraded);   // a bad time string must never block config saves
 	}
+
+	[Fact]
+	public void DailyAnchor_round_trips()
+	{
+		var path = Path.Combine(Path.GetTempPath(), "cccfg-anchor-" + Guid.NewGuid().ToString("N") + ".json");
+		try
+		{
+			var c = new AppConfig { DailyAnchorEnabled = false, DailyAnchorTime = "09:45" };
+			c.SaveTo(path);
+			var loaded = AppConfig.LoadFrom(path);
+			Assert.False(loaded.DailyAnchorEnabled);
+			Assert.Equal("09:45", loaded.DailyAnchorTime);
+			Assert.Equal(new TimeOnly(9, 45), loaded.DailyAnchorTimeOfDay);
+		}
+		finally { if (File.Exists(path)) File.Delete(path); }
+	}
 }

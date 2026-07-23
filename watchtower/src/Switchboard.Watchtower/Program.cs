@@ -14,7 +14,7 @@ internal static class Program
 			{
 				try
 				{
-					if (!mutex.WaitOne(TimeSpan.Zero, false))
+					if (!mutex.WaitOne(TimeSpan.FromSeconds(2), false))
 					{
 						WatchtowerLog.Info("mutex", "already running or mutex held; exiting new instance");
 						return;
@@ -35,7 +35,9 @@ internal static class Program
 			var config = AppConfig.Load();
 			using var host = new AppHost(config);
 			host.Start();
+			WatchtowerLog.Info("startup", "Watchtower host started, entering Application.Run()");
 			Application.Run();
+			WatchtowerLog.Info("startup", "Application.Run() exited");
 		}
 		catch (Exception ex)
 		{

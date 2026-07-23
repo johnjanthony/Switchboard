@@ -24,7 +24,7 @@ $procs = Get-Process -Name $ProcName -ErrorAction SilentlyContinue
 if ($procs) {
 	$procs | Stop-Process -Force
 	foreach ($p in $procs) { $p.WaitForExit(10000) | Out-Null }
-	Start-Sleep -Milliseconds 500   # brief grace for the file handle to drop
+	Start-Sleep -Milliseconds 1000   # brief grace for the file handle and named mutex to drop
 	Write-Host "  stopped $($procs.Count) instance(s)."
 } else {
 	Write-Host "  none running."

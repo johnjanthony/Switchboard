@@ -14,6 +14,7 @@ internal sealed class TrayIcon : IDisposable
 	readonly ToolStripMenuItem _clearTypeItem;
 	readonly ToolStripMenuItem _showQuotaItem;
 	readonly ToolStripMenuItem _claudeStatusItem;
+	readonly ToolStripMenuItem _wakeTimeItem;
 	readonly List<ToolStripMenuItem> _intervalItems = new();
 	IntPtr _hicon;
 	Icon? _ownedIcon;
@@ -26,6 +27,7 @@ internal sealed class TrayIcon : IDisposable
 
 	public event Action? RefreshRequested;
 	public event Action? ClaudeStatusActionRequested;
+	public event Action? WakeTimeRequested;
 	public event Action<bool>? AutostartToggled;
 	public event Action<bool>? RenderModeToggled;    // true = opaque ClearType, false = true transparency
 	public event Action<bool>? QuotaShowToggled;     // show/hide the plan-usage block
@@ -74,6 +76,9 @@ internal sealed class TrayIcon : IDisposable
 		}
 		menu.Items.Add(intervalMenu);
 
+		_wakeTimeItem = new ToolStripMenuItem("Daily wake time", null, (_, _) => WakeTimeRequested?.Invoke());
+		menu.Items.Add(_wakeTimeItem);
+
 		menu.Items.Add(new ToolStripSeparator());
 		menu.Items.Add("Open Switchboard dashboard", null, (_, _) => OpenDashboardRequested?.Invoke());
 
@@ -88,6 +93,14 @@ internal sealed class TrayIcon : IDisposable
 			ContextMenuStrip = menu,
 		};
 		SetGauge(0, anyError: false, Severity.Green, light: false);
+	}
+
+	public void SetWakeTime(bool enabled, TimeOnly timeOfDay)
+	{
+		string formatted = DateTime.Today.Add(timeOfDay.ToTimeSpan()).ToString("h:mm tt");
+		_wakeTimeItem.Text = enabled
+			? $"Daily wake time ({formatted})"
+			: "Daily wake time (Off)";
 	}
 
 	// Render the tray icon as a ring gauge of the busiest session's context fullness, like the VS Code

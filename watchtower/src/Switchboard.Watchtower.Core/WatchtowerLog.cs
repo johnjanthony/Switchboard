@@ -14,7 +14,7 @@ public static class WatchtowerLog
 		=> Append(source, message, path);
 
 	public static void Error(string source, Exception ex, string? path = null)
-		=> Append(source, $"{ex.GetType().Name}: {ex.Message}", path);
+		=> Append(source, ex.ToString(), path);
 
 	static void Append(string source, string message, string? path)
 	{
