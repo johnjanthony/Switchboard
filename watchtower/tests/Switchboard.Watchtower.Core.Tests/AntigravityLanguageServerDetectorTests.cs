@@ -39,4 +39,21 @@ public class AntigravityLanguageServerDetectorTests
 	{
 		Assert.Null(AntigravityLanguageServerDetector.SelectBest(System.Array.Empty<(int, string)>()));
 	}
+
+	[Fact]
+	public void SelectBest_PrefersMainServerOverLspSubProcess()
+	{
+		var mainServer = (63376, @"c:\...\antigravity\bin\language_server_windows_x64.exe --csrf_token MAIN123 --extension_server_port 60389 --subclient_type ide");
+		var lspWorker = (65916, @"c:\...\antigravity\bin\language_server_windows_x64.exe --enable_lsp --csrf_token LSP456 --extension_server_port 60427 --workspace_id file_c_3A_Work_Switchboard");
+
+		var best = AntigravityLanguageServerDetector.SelectBest(new[] { lspWorker, mainServer });
+		Assert.NotNull(best);
+		Assert.Equal(63376, best!.Value.Pid);
+		Assert.Equal("MAIN123", best.Value.CsrfToken);
+
+		var ordered = AntigravityLanguageServerDetector.SelectOrdered(new[] { lspWorker, mainServer });
+		Assert.Equal(2, ordered.Count);
+		Assert.Equal(63376, ordered[0].Pid);
+		Assert.Equal(65916, ordered[1].Pid);
+	}
 }

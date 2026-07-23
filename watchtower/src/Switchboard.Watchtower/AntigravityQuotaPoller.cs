@@ -23,10 +23,14 @@ internal sealed class AntigravityQuotaPoller
 		try
 		{
 			var procs = LanguageServerProcesses();
-			var best = AntigravityLanguageServerDetector.SelectBest(procs);
-			if (best is null) return null;
-			var ports = ListeningPorts(best.Value.Pid);
-			return _client.Fetch(best.Value.Pid, best.Value.CsrfToken, ports);
+			var candidates = AntigravityLanguageServerDetector.SelectOrdered(procs);
+			foreach (var candidate in candidates)
+			{
+				var ports = ListeningPorts(candidate.Pid);
+				var result = _client.Fetch(candidate.Pid, candidate.CsrfToken, ports);
+				if (result is not null) return result;
+			}
+			return null;
 		}
 		catch (Exception ex) { _error?.Invoke("agy-quota-poll", ex); return null; }
 	}
