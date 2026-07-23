@@ -34,14 +34,24 @@ class WidgetModelsTest {
 		val q = WidgetQuota()
 		assertEquals(null, q.session)
 		assertEquals(null, q.weekly)
+		assertEquals(null, q.antigravity)
 		assertEquals("", q.polledAt)
+		val group = WidgetQuotaGroup(
+			displayName = "Gemini Models",
+			session = WidgetQuotaWindow(pct = 0.25, resetsAt = "2026-06-26T20:00:00Z"),
+			weekly = WidgetQuotaWindow(pct = 0.50, resetsAt = "2026-06-30T00:00:00Z"),
+		)
 		val filled = WidgetQuota(
 			session = WidgetQuotaWindow(pct = 0.42, resetsAt = "2026-06-26T20:00:00Z"),
 			weekly = WidgetQuotaWindow(pct = 0.18, resetsAt = "2026-06-30T00:00:00Z"),
 			polledAt = "2026-06-26T15:00:00Z",
+			antigravity = listOf(group),
 		)
 		assertEquals(0.42, filled.session!!.pct, 0.0)
 		assertEquals("2026-06-30T00:00:00Z", filled.weekly!!.resetsAt)
+		assertEquals(1, filled.antigravity!!.size)
+		assertEquals("Gemini Models", filled.antigravity!![0].displayName)
+		assertEquals(0.25, filled.antigravity!![0].session!!.pct, 0.0)
 	}
 
 	@Test

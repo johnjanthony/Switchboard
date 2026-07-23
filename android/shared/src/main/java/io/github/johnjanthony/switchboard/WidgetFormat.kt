@@ -56,3 +56,23 @@ fun formatTimeElapsedPercentage(nowMs: Long, resetsAtIso: String?, durationMs: L
 	val elapsedMs = (durationMs - remainingMs).coerceIn(0L, durationMs)
 	return "${(elapsedMs.toDouble() / durationMs.toDouble() * 100).roundToInt()}%"
 }
+
+fun groupSortKey(displayName: String): Int {
+	val d = displayName.lowercase()
+	if (d.contains("claude")) return 0
+	if (d.contains("gemini")) return 1
+	return 2
+}
+
+fun formatAgyGroupName(displayName: String): String {
+	val d = displayName.lowercase()
+	if (d.contains("claude")) return "Antigravity w/ Claude"
+	if (d.contains("gemini")) return "Antigravity w/ Gemini"
+	return displayName.ifBlank { "Antigravity" }
+}
+
+fun isAgyGroupVisible(group: io.github.johnjanthony.switchboard.network.WidgetQuotaGroup): Boolean {
+	val sPct = group.session?.pct ?: 0.0
+	val wPct = group.weekly?.pct ?: 0.0
+	return sPct > 0.0 || wPct > 0.0
+}

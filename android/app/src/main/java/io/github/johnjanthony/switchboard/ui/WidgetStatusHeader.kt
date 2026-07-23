@@ -25,6 +25,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.unit.dp
+import io.github.johnjanthony.switchboard.groupSortKey
+import io.github.johnjanthony.switchboard.isAgyGroupVisible
 import io.github.johnjanthony.switchboard.network.WidgetQuota
 import io.github.johnjanthony.switchboard.network.WidgetQuotaWindow
 import io.github.johnjanthony.switchboard.widgetStale
@@ -46,35 +48,71 @@ fun WidgetStatusHeader(
 	onClick: () -> Unit,
 ) {
 	val stale = widgetStale(System.currentTimeMillis(), pushedAt)
-	Row(
+	val rawAgy = quota?.antigravity ?: emptyList()
+	val visibleAgy = rawAgy
+		.filter { isAgyGroupVisible(it) }
+		.sortedBy { groupSortKey(it.displayName) }
+
+	val hasClaude = quota?.session != null || quota?.weekly != null
+	val hasAny = visibleAgy.isNotEmpty() || hasClaude
+
+	Column(
 		modifier = Modifier
 			.fillMaxWidth()
 			.clickable { onClick() }
 			.padding(start = 14.dp, end = 14.dp, top = 2.dp, bottom = 6.dp),
-		verticalAlignment = Alignment.CenterVertically,
-		horizontalArrangement = Arrangement.spacedBy(16.dp),
+		verticalArrangement = Arrangement.spacedBy(6.dp)
 	) {
-		if (quota == null) {
+		if (quota == null || !hasAny) {
 			Text(
 				"No quota data",
 				style = MaterialTheme.typography.labelSmall,
 				color = MaterialTheme.colorScheme.onSurfaceVariant,
 			)
 		} else {
-			// 7d graph first (left), 5h graph second (right)
-			QuotaGraph(
-				window = quota.weekly,
-				durationMs = 7L * 24 * 60 * 60 * 1000,
-				stale = stale,
-				modifier = Modifier.weight(1f)
-			)
-			QuotaGraph(
-				window = quota.session,
-				durationMs = 5L * 60 * 60 * 1000,
-				stale = stale,
-				modifier = Modifier.weight(1f)
-			)
+			for (group in visibleAgy) {
+				QuotaPairRow(
+					sessionWindow = group.session,
+					weeklyWindow = group.weekly,
+					stale = stale
+				)
+			}
+			if (hasClaude) {
+				QuotaPairRow(
+					sessionWindow = quota?.session,
+					weeklyWindow = quota?.weekly,
+					stale = stale
+				)
+			}
 		}
+	}
+}
+
+@Composable
+private fun QuotaPairRow(
+	sessionWindow: WidgetQuotaWindow?,
+	weeklyWindow: WidgetQuotaWindow?,
+	stale: Boolean,
+	modifier: Modifier = Modifier,
+) {
+	Row(
+		modifier = modifier.fillMaxWidth(),
+		verticalAlignment = Alignment.CenterVertically,
+		horizontalArrangement = Arrangement.spacedBy(16.dp),
+	) {
+		// 5h graph first (left), 7d graph second (right)
+		QuotaGraph(
+			window = sessionWindow,
+			durationMs = 5L * 60 * 60 * 1000,
+			stale = stale,
+			modifier = Modifier.weight(1f)
+		)
+		QuotaGraph(
+			window = weeklyWindow,
+			durationMs = 7L * 24 * 60 * 60 * 1000,
+			stale = stale,
+			modifier = Modifier.weight(1f)
+		)
 	}
 }
 

@@ -140,10 +140,18 @@ data class WidgetQuotaWindow(
 )
 
 @IgnoreExtraProperties
+data class WidgetQuotaGroup(
+	@get:PropertyName("display_name") @set:PropertyName("display_name") var displayName: String = "",
+	@get:PropertyName("session") @set:PropertyName("session") var session: WidgetQuotaWindow? = null,
+	@get:PropertyName("weekly") @set:PropertyName("weekly") var weekly: WidgetQuotaWindow? = null,
+)
+
+@IgnoreExtraProperties
 data class WidgetQuota(
 	@get:PropertyName("session") @set:PropertyName("session") var session: WidgetQuotaWindow? = null,
 	@get:PropertyName("weekly") @set:PropertyName("weekly") var weekly: WidgetQuotaWindow? = null,
 	@get:PropertyName("polled_at") @set:PropertyName("polled_at") var polledAt: String = "",
+	@get:PropertyName("antigravity") @set:PropertyName("antigravity") var antigravity: List<WidgetQuotaGroup>? = null,
 )
 
 @IgnoreExtraProperties

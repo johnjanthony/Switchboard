@@ -13,7 +13,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import io.github.johnjanthony.switchboard.formatAgyGroupName
 import io.github.johnjanthony.switchboard.formatTimeElapsedPercentage
+import io.github.johnjanthony.switchboard.groupSortKey
+import io.github.johnjanthony.switchboard.isAgyGroupVisible
 import io.github.johnjanthony.switchboard.network.WidgetQuota
 import io.github.johnjanthony.switchboard.network.WidgetQuotaWindow
 import kotlin.math.roundToInt
@@ -23,13 +28,35 @@ fun QuotaDetailDialog(
 	quota: WidgetQuota,
 	onDismiss: () -> Unit,
 ) {
+	val rawAgy = quota.antigravity ?: emptyList()
+	val visibleAgy = rawAgy
+		.filter { isAgyGroupVisible(it) }
+		.sortedBy { groupSortKey(it.displayName) }
+
+	val hasClaude = quota.session != null || quota.weekly != null
+
 	AlertDialog(
 		onDismissRequest = onDismiss,
 		title = { Text("Service Quota", style = MaterialTheme.typography.titleMedium) },
 		text = {
-			Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-				QuotaSection("Weekly (7d)", quota.weekly, 7L * 24L * 60L * 60L * 1000L)
-				QuotaSection("Session (5h)", quota.session, 5L * 60L * 60L * 1000L)
+			Column(
+				modifier = Modifier.verticalScroll(rememberScrollState()),
+				verticalArrangement = Arrangement.spacedBy(20.dp)
+			) {
+				for (group in visibleAgy) {
+					GroupQuotaSection(
+						title = formatAgyGroupName(group.displayName),
+						sessionWindow = group.session,
+						weeklyWindow = group.weekly,
+					)
+				}
+				if (hasClaude) {
+					GroupQuotaSection(
+						title = "Claude Code",
+						sessionWindow = quota.session,
+						weeklyWindow = quota.weekly,
+					)
+				}
 			}
 		},
 		confirmButton = {
@@ -41,12 +68,29 @@ fun QuotaDetailDialog(
 }
 
 @Composable
-private fun QuotaSection(label: String, window: WidgetQuotaWindow?, durationMs: Long) {
-	Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+private fun GroupQuotaSection(
+	title: String,
+	sessionWindow: WidgetQuotaWindow?,
+	weeklyWindow: WidgetQuotaWindow?,
+) {
+	Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
 		Text(
-			label.uppercase(),
+			title.uppercase(),
 			style = MaterialTheme.typography.labelSmall,
 			color = MaterialTheme.colorScheme.primary,
+		)
+		QuotaWindowBlock("Session (5h)", sessionWindow, 5L * 60L * 60L * 1000L)
+		QuotaWindowBlock("Weekly (7d)", weeklyWindow, 7L * 24L * 60L * 60L * 1000L)
+	}
+}
+
+@Composable
+private fun QuotaWindowBlock(label: String, window: WidgetQuotaWindow?, durationMs: Long) {
+	Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+		Text(
+			label,
+			style = MaterialTheme.typography.bodySmall,
+			color = MaterialTheme.colorScheme.onSurfaceVariant,
 		)
 		if (window == null) {
 			Text("No data", style = MaterialTheme.typography.bodySmall)
@@ -61,6 +105,8 @@ private fun QuotaSection(label: String, window: WidgetQuotaWindow?, durationMs: 
 		}
 	}
 }
+
+
 
 @Composable
 private fun DetailRow(label: String, value: String) {
