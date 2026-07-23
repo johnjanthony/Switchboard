@@ -13,7 +13,7 @@ public static class UsageReader
 		var mtime = File.GetLastWriteTimeUtc(path);
 		var window = ModelWindowMap.EffectiveWindow(turn.Model, turn.Usage.ContextTokens);
 		var status = ActiveClassifier.StatusFor(mtime, nowUtc, liveThresholdSeconds);
-		var label = turn.Cwd is not null ? CwdLabeler.Label(turn.Cwd) : FolderFallbackLabel(path);
+		var label = turn.Cwd is not null ? CwdLabeler.Label(turn.Cwd, distro: distro) : FolderFallbackLabel(path);
 
 		var sessionId = Path.GetFileNameWithoutExtension(path);
 		var (name, nameSource) = TranscriptTitles.Read(path, sessionId);

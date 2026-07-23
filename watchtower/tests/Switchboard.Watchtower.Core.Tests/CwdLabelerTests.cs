@@ -21,4 +21,36 @@ public class CwdLabelerTests
 	{
 		Assert.Equal("(unknown)", CwdLabeler.Label(cwd));
 	}
+
+	[Fact]
+	public void Label_finds_git_repository_root_and_parent()
+	{
+		var tempDir = Path.Combine(Path.GetTempPath(), "CwdLabelerTest_" + Guid.NewGuid().ToString("N"));
+		var parentDir = Path.Combine(tempDir, "ParentFolder");
+		var repoDir = Path.Combine(parentDir, "RepoRoot");
+		var gitDir = Path.Combine(repoDir, ".git");
+		var subDir = Path.Combine(repoDir, "src", "sub");
+
+		try
+		{
+			Directory.CreateDirectory(gitDir);
+			Directory.CreateDirectory(subDir);
+
+			// When CWD is deep inside subDir, label resolves to ParentFolder/RepoRoot
+			var label = CwdLabeler.Label(subDir);
+			Assert.Equal("ParentFolder/RepoRoot", label);
+
+			// When CWD is at repo root itself, label resolves to ParentFolder/RepoRoot
+			var rootLabel = CwdLabeler.Label(repoDir);
+			Assert.Equal("ParentFolder/RepoRoot", rootLabel);
+		}
+		finally
+		{
+			if (Directory.Exists(tempDir))
+			{
+				Directory.Delete(tempDir, true);
+			}
+		}
+	}
 }
+
