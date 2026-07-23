@@ -8,11 +8,14 @@ namespace Switchboard.Watchtower;
 
 internal enum QuotaStatus { Ok, NoCredentials, AuthRequired, RateLimited, Failed }
 
+internal enum AnchorOutcome { Fired, SkippedWindowOpen, Failed }
+
 internal readonly record struct QuotaResult(QuotaStatus Status, QuotaUsage? Usage);
 
 // Fetches Claude plan usage (5h / 7d) the same way the CodeZeno monitor does: read the OAuth token
-// from ~/.claude/.credentials.json, call GET /api/oauth/usage, and (if the token is expired or rejected)
-// force a refresh by spawning the Claude CLI headlessly. All calls block; run on a background thread.
+// from ~/.claude/.credentials.json and call GET /api/oauth/usage. Poll never spawns; an expired or
+// rejected token keeps the last-known display. Starting a session window is the daily anchor's job
+// (TryRunDailyAnchor -> RunHeadlessAnchorTurn). All calls block; run on a background thread.
 internal sealed class QuotaService
 {
 	const string UsageUrl = "https://api.anthropic.com/api/oauth/usage";
@@ -20,7 +23,6 @@ internal sealed class QuotaService
 
 	readonly Action<string>? _info;
 	readonly Action<string, Exception>? _error;
-	readonly QuotaBackoff _backoff = new(TimeSpan.FromHours(24));
 
 	public QuotaService(Action<string>? info = null, Action<string, Exception>? error = null)
 	{
@@ -36,43 +38,13 @@ internal sealed class QuotaService
 		var creds = ReadCredentials();
 		if (creds is null) return new QuotaResult(QuotaStatus.NoCredentials, null);
 
-		// While backed off after an auth failure, spend nothing (no CLI spawn, no HTTP) until the
-		// credentials file changes or the retry interval elapses. The skipped tick still reports
-		// AuthRequired so the UI keeps showing the paused state.
-		string fingerprint = QuotaBackoff.Fingerprint(creds.Value.Token, creds.Value.ExpiresAtMs);
-		if (!_backoff.ShouldAttempt(fingerprint, DateTime.UtcNow))
+		// Option C: never spawn to refresh. An expired token reports AuthRequired so the app keeps
+		// last-known usage (accurate while idle, since usage does not change). The daily anchor is the
+		// only thing that ever starts a session window; a reactive refresh would start it at an unchosen time.
+		if (QuotaParser.IsExpired(creds.Value.ExpiresAtMs, DateTimeOffset.UtcNow))
 			return new QuotaResult(QuotaStatus.AuthRequired, null);
 
-		// Proactively refresh an expired token before spending a request on a guaranteed 401.
-		if (QuotaParser.IsExpired(creds.Value.ExpiresAtMs, DateTimeOffset.UtcNow))
-		{
-			RefreshViaCli();
-			creds = ReadCredentials();
-			if (creds is null) return new QuotaResult(QuotaStatus.NoCredentials, null);
-		}
-
-		var result = FetchUsage(creds.Value.Token);
-		if (result.Status == QuotaStatus.AuthRequired)
-		{
-			// Token was rejected despite not looking expired; refresh once and retry.
-			RefreshViaCli();
-			var refreshed = ReadCredentials();
-			if (refreshed is null) return new QuotaResult(QuotaStatus.NoCredentials, null);
-			creds = refreshed;
-			result = FetchUsage(refreshed.Value.Token);
-		}
-
-		if (result.Status == QuotaStatus.AuthRequired)
-		{
-			// The refreshed token and the endpoint agree: auth is gone. Stop spending spawns.
-			_backoff.RecordAuthFailure(QuotaBackoff.Fingerprint(creds.Value.Token, creds.Value.ExpiresAtMs), DateTime.UtcNow);
-			_info?.Invoke("auth failure - quota polling backed off until credentials change (24h retry)");
-		}
-		else if (result.Status == QuotaStatus.Ok)
-		{
-			_backoff.RecordSuccess();
-		}
-		return result;
+		return FetchUsage(creds.Value.Token);
 	}
 
 	(string Token, long? ExpiresAtMs)? ReadCredentials()
@@ -114,14 +86,40 @@ internal sealed class QuotaService
 		catch (Exception ex) { _error?.Invoke("quota-fetch", ex); return new QuotaResult(QuotaStatus.Failed, null); }
 	}
 
-	// Force the Claude CLI to refresh its OAuth token (claude -p .), discarding output, up to 30s.
-	void RefreshViaCli()
+	// The once-a-day anchor decision. With a valid token, ask the server whether a 5-hour window is
+	// already open; if so, skip (a window is already anchored, and firing would rotate the refresh
+	// token under the live session that opened it). Otherwise (no open window, or an expired/rejected
+	// token, which implies no recent activity) deliberately start the window. Blocking HTTP + up to a
+	// 30s spawn: call from a background thread.
+	public AnchorOutcome TryRunDailyAnchor(DateTimeOffset now)
+	{
+		var creds = ReadCredentials();
+		if (creds is null) return AnchorOutcome.Failed;   // no auth at all; a spawn would only fail
+
+		if (!QuotaParser.IsExpired(creds.Value.ExpiresAtMs, now))
+		{
+			var result = FetchUsage(creds.Value.Token);
+			if (result.Status == QuotaStatus.Ok && result.Usage is QuotaUsage u
+				&& u.Session.ResetsAt is DateTimeOffset reset && reset > now
+				&& u.Session.Percentage > 0)
+				return AnchorOutcome.SkippedWindowOpen;   // future reset WITH usage = a genuinely open window
+			// Ok-with-no-open-window (incl. a stale future reset at 0 usage), or rate-limited / auth / failed: fall through and anchor.
+		}
+
+		return RunHeadlessAnchorTurn() ? AnchorOutcome.Fired : AnchorOutcome.Failed;
+	}
+
+	// Deliberately start (anchor) the 5-hour session window by running one headless `claude -p .` turn,
+	// discarding output, up to 30s. Isolation is load-bearing: --setting-sources project excludes the
+	// user settings layer so the switchboard away-mode Stop hook and MCP server do not drive this
+	// throwaway turn into an ask_human() phone ping, and CLAUDECODE removal keeps it from acting nested.
+	bool RunHeadlessAnchorTurn()
 	{
 		try
 		{
 			string claude = ResolveClaudePath();
 			bool isCmd = claude.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase);
-			_info?.Invoke($"refreshing Claude token via {claude}");
+			_info?.Invoke($"anchoring session window via {claude}");
 
 			var psi = new ProcessStartInfo
 			{
@@ -152,15 +150,16 @@ internal sealed class QuotaService
 			psi.Environment.Remove("CLAUDE_CODE_ENTRYPOINT");
 
 			using var p = Process.Start(psi);
-			if (p is null) return;
+			if (p is null) return false;
 			// Drain both streams concurrently; unread redirected output over the ~4KB pipe buffer
 			// would otherwise block the child and stall this call for the full 30s timeout.
 			var drainOut = p.StandardOutput.ReadToEndAsync();
 			var drainErr = p.StandardError.ReadToEndAsync();
 			p.StandardInput.Close();
-			if (!p.WaitForExit(30000)) { try { p.Kill(true); } catch { /* already gone */ } }
+			if (!p.WaitForExit(30000)) { try { p.Kill(true); } catch { /* already gone */ } return false; }
+			return p.ExitCode == 0;
 		}
-		catch (Exception ex) { _error?.Invoke("quota-refresh", ex); }
+		catch (Exception ex) { _error?.Invoke("quota-anchor", ex); return false; }
 	}
 
 	static string ResolveClaudePath()

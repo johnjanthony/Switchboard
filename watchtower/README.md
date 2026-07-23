@@ -4,7 +4,7 @@ A small Windows taskbar widget that shows, at a glance, how full the **context w
 
 Part of the Switchboard suite (sibling to Switchboard Operator, the dashboard).
 
-It reads only local Claude Code session transcripts. No API calls, no credentials, no network.
+The context-fullness bars read only local Claude Code session transcripts (no network). The optional plan-usage feature additionally reads the OAuth token from `~/.claude/.credentials.json` and calls Anthropic's usage endpoint, and the once-a-day session anchor runs a single headless `claude -p .` turn.
 
 ## What it shows
 
@@ -84,6 +84,8 @@ Settings live at `%APPDATA%\Switchboard\Watchtower\config.json` and are created 
   "LightThemeOverride": null,
   "ShowQuota": true,
   "QuotaPollMinutes": 5,
+  "DailyAnchorEnabled": true,
+  "DailyAnchorTime": "07:00",
   "Switchboard": {
     "Enabled": false,
     "StatsUrl": "http://localhost:9876/stats",
@@ -102,6 +104,8 @@ Settings live at `%APPDATA%\Switchboard\Watchtower\config.json` and are created 
 - `LightThemeOverride`: force light (`true`) or dark (`false`) rendering; `null` follows the taskbar theme.
 - `ShowQuota`: show the plan-usage block.
 - `QuotaPollMinutes`: plan-usage poll cadence (1, 5, 15, or 60).
+- `DailyAnchorEnabled`: fire a once-a-day headless turn to start (anchor) your 5-hour session window at a chosen time (default on).
+- `DailyAnchorTime`: local `HH:mm` for the daily anchor (default `07:00`); a malformed value falls back to `07:00`.
 - `Switchboard`: gates the Switchboard/Operator stats line, the dashboard launcher, and an optional tray pending badge.
 
 Errors are logged to `%APPDATA%\Switchboard\Watchtower\log.txt`.
@@ -112,6 +116,8 @@ Errors are logged to `%APPDATA%\Switchboard\Watchtower\log.txt`.
 - **Read**: it tails the transcript (growing the read window as needed for very active sessions) to find the last assistant turn, then sums `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` for the current context size.
 - **Window**: Claude Code transcripts record only the base model id (the `[1m]` 1M-context marker is not persisted), so the window is inferred by model family (Opus and Fable run at 1M here; an explicit `[1m]` is also 1M; everything else defaults to 200K) and then floored up to the smallest standard tier that fits the observed context, so the displayed fullness never exceeds 100%.
 - **Placement**: the widget tries to embed itself as a true child window of the taskbar (the same SetParent reparenting CodeZeno's monitor uses), so it moves with the taskbar and needs no per-tick re-raise; if reparenting fails it falls back to a top-most window painted over the taskbar that re-asserts position and top-most about once a second. Either way it repositions when the taskbar moves and re-attaches after an Explorer restart. It is a layered window; by default it renders an opaque taskbar-matching background with crisp ClearType text (the background pixels are masked to near-invisible so it reads as transparent), and a tray toggle switches to true per-pixel-alpha transparency.
+- **Plan usage**: when `ShowQuota` is on, it reads the OAuth token from `~/.claude/.credentials.json` and polls Anthropic's usage endpoint for the 5-hour and 7-day windows. It never refreshes the token itself: an expired token just keeps the last-known display, and starting a session window is the daily anchor's job.
+- **Daily anchor**: once a day at `DailyAnchorTime` (only when the workstation is awake), it starts your 5-hour session window with one headless `claude -p .` turn, so the day's resets fall on your schedule instead of whenever a session first happened to run. It skips when a window is already open (so it never fires mid-session or rotates the OAuth token under a live session), and it does not wake the machine or catch up a missed time.
 
 ## Project layout
 

@@ -35,6 +35,9 @@ internal sealed class AppHost : IDisposable
 	volatile bool _claudeStatusScanning;
 	ClaudeStatusView _claudeStatusView;                               // latest server view (drives the surfaces)
 	readonly System.Windows.Forms.Timer _claudePulseTimer = new();
+	readonly System.Windows.Forms.Timer _anchorTimer = new();   // once-a-day session-window anchor
+	DateOnly? _anchorHandledDate;                                // in-memory; the day the anchor was last decided
+	volatile bool _anchorRunning;
 
 	static int QuotaIntervalMs(int minutes) => Math.Clamp(minutes, 1, 60) * 60_000;
 
@@ -107,6 +110,9 @@ internal sealed class AppHost : IDisposable
 		_quotaTimer.Interval = QuotaIntervalMs(_config.QuotaPollMinutes);
 		_quotaTimer.Tick += (_, _) => PollQuota();
 		_countdownTimer.Tick += (_, _) => { _widget.RefreshQuotaCountdown(); ScheduleCountdown(); };
+
+		_anchorTimer.Interval = 60_000;
+		_anchorTimer.Tick += (_, _) => MaybeFireDailyAnchor();
 	}
 
 	public void Start()
@@ -124,6 +130,7 @@ internal sealed class AppHost : IDisposable
 		if (_config.Switchboard.Enabled) { _switchboardTimer.Start(); PollSwitchboard(); }
 		_claudeStatusTimer.Start();
 		PollClaudeStatus();
+		_anchorTimer.Start();
 	}
 
 	// Tooltip-style: show the panel while the cursor is over the widget (or the panel itself), hide otherwise.
@@ -254,6 +261,27 @@ internal sealed class AppHost : IDisposable
 			{
 				LogInfo("quota", $"poll status={r.Status} (keeping last-known data)");
 			}
+		}, TaskScheduler.FromCurrentSynchronizationContext());
+	}
+
+	// Once-a-day anchor: on the first minute-tick inside [anchorTime, anchorTime + grace) that has not
+	// been handled today, decide on a background thread whether to skip (a window is already open) or
+	// fire the headless anchor turn. Awake-only and no catch-up fall out of the narrow gate window.
+	void MaybeFireDailyAnchor()
+	{
+		if (!_config.DailyAnchorEnabled || _anchorRunning) return;
+		var now = DateTimeOffset.Now;
+		if (!DailyAnchorSchedule.ShouldEvaluate(now.LocalDateTime, _config.DailyAnchorTimeOfDay, DailyAnchorSchedule.Grace, _anchorHandledDate))
+			return;
+
+		_anchorRunning = true;
+		Task.Run(() => _quotaService.TryRunDailyAnchor(now)).ContinueWith(t =>
+		{
+			_anchorRunning = false;
+			if (t.IsFaulted) { LogError("anchor", t.Exception!); return; }
+			if (t.Result != AnchorOutcome.Failed)
+				_anchorHandledDate = DateOnly.FromDateTime(now.LocalDateTime);
+			LogInfo("anchor", $"daily session anchor: {t.Result}");
 		}, TaskScheduler.FromCurrentSynchronizationContext());
 	}
 
@@ -422,6 +450,7 @@ internal sealed class AppHost : IDisposable
 		_switchboardTimer.Dispose();
 		_claudeStatusTimer.Dispose();
 		_claudePulseTimer.Dispose();
+		_anchorTimer.Dispose();
 		_tray.Dispose();
 		_panel.Dispose();
 		_widget.Dispose();

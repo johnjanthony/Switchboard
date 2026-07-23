@@ -74,6 +74,7 @@ android/                     Three Gradle modules: app (phone UI), shared (libra
   app/build.gradle           Markwon, Firebase, Compose dependencies
 watchtower/                  Windows client (.NET 9 / WinForms taskbar widget) — "Switchboard Watchtower"
   Switchboard.Watchtower.sln
+  deploy-widget.ps1                  Rebuild + relaunch the widget: stop the running instance -> publish single-file EXE -> relaunch (-NoLaunch to skip relaunch). Full build/publish detail in README.md.
   src/Switchboard.Watchtower/        WinForms app (widget, hover popup, tray, Win32 taskbar placement, Claude status indicator)
   src/Switchboard.Watchtower.Core/   Pure logic (transcript parsing, session scanners, quota, window math, config, Claude status parse; the status watch state machine lives server-side)
   tests/Switchboard.Watchtower.Core.Tests/   xUnit tests for the Core library

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
@@ -20,6 +21,16 @@ public sealed class AppConfig
 	public bool? LightThemeOverride { get; set; } = null;
 	public bool ShowQuota { get; set; } = true;
 	public int QuotaPollMinutes { get; set; } = 5;   // plan-usage poll cadence; 1, 5, 15, or 60
+	public bool DailyAnchorEnabled { get; set; } = true;
+	public string DailyAnchorTime { get; set; } = "07:00";   // local "HH:mm"; the daily session-anchor fire time
+
+	// Parsed anchor time; falls back to 07:00 on a malformed value WITHOUT flagging degraded,
+	// so a bad time string can never block config saves (LoadDegraded gates SaveTo).
+	[JsonIgnore]
+	public TimeOnly DailyAnchorTimeOfDay =>
+		TimeOnly.TryParseExact(DailyAnchorTime, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var t)
+			? t : new TimeOnly(7, 0);
+
 	public SwitchboardConfig Switchboard { get; set; } = new();
 	public ClaudeStatusConfig ClaudeStatus { get; set; } = new();
 

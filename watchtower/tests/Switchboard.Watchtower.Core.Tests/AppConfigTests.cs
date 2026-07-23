@@ -124,4 +124,28 @@ public class AppConfigTests
 		}
 		finally { foreach (var p in new[] { path, path + ".tmp" }) if (File.Exists(p)) File.Delete(p); }
 	}
+
+	[Fact]
+	public void DailyAnchor_defaults_are_enabled_at_seven_am()
+	{
+		var cfg = new AppConfig();
+		Assert.True(cfg.DailyAnchorEnabled);
+		Assert.Equal("07:00", cfg.DailyAnchorTime);
+		Assert.Equal(new TimeOnly(7, 0), cfg.DailyAnchorTimeOfDay);
+	}
+
+	[Fact]
+	public void DailyAnchorTimeOfDay_parses_a_valid_value()
+	{
+		var cfg = new AppConfig { DailyAnchorTime = "06:30" };
+		Assert.Equal(new TimeOnly(6, 30), cfg.DailyAnchorTimeOfDay);
+	}
+
+	[Fact]
+	public void DailyAnchorTimeOfDay_falls_back_to_seven_am_on_a_malformed_value()
+	{
+		var cfg = new AppConfig { DailyAnchorTime = "not-a-time" };
+		Assert.Equal(new TimeOnly(7, 0), cfg.DailyAnchorTimeOfDay);
+		Assert.False(cfg.LoadDegraded);   // a bad time string must never block config saves
+	}
 }
