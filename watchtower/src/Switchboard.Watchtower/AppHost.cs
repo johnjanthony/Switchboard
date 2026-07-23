@@ -39,6 +39,9 @@ internal sealed class AppHost : IDisposable
 	readonly System.Windows.Forms.Timer _anchorTimer = new();   // once-a-day session-window anchor
 	DateOnly? _anchorHandledDate;                                // in-memory; the day the anchor was last decided
 	volatile bool _anchorRunning;
+	readonly System.Windows.Forms.Timer _agyQuotaTimer = new();
+	readonly AntigravityQuotaPoller _agyQuotaPoller;
+	volatile bool _agyQuotaScanning;
 
 	static int QuotaIntervalMs(int minutes) => Math.Clamp(minutes, 1, 60) * 60_000;
 
@@ -47,6 +50,7 @@ internal sealed class AppHost : IDisposable
 		_config = config;
 		_logPath = Path.Combine(Path.GetDirectoryName(AppConfig.DefaultPath)!, "log.txt");
 		_quotaService = new QuotaService(m => LogInfo("quota", m), LogError);
+		_agyQuotaPoller = new AntigravityQuotaPoller(m => LogInfo("agy-quota", m), LogError);
 		_tray = new TrayIcon(_config.Autostart, _config.ShowQuota, _config.QuotaPollMinutes);
 
 		if (_config.Switchboard.Enabled)
@@ -116,6 +120,9 @@ internal sealed class AppHost : IDisposable
 
 		_anchorTimer.Interval = 60_000;
 		_anchorTimer.Tick += (_, _) => MaybeFireDailyAnchor();
+
+		_agyQuotaTimer.Interval = Math.Max(15, _config.AntigravityQuotaPollIntervalSeconds) * 1000;
+		_agyQuotaTimer.Tick += (_, _) => PollAntigravityQuota();
 	}
 
 	public void Start()
@@ -129,6 +136,7 @@ internal sealed class AppHost : IDisposable
 		_widget.SetShowQuota(_config.ShowQuota);
 		RenderLastKnown(LastKnownStore.LoadFrom(LastKnownStore.DefaultPath));
 		if (_config.ShowQuota) { _quotaTimer.Start(); PollQuota(); }
+		if (_config.PollAntigravityQuota) { _agyQuotaTimer.Start(); PollAntigravityQuota(); }
 		Scan();
 		if (_config.Switchboard.Enabled) { _switchboardTimer.Start(); PollSwitchboard(); }
 		_claudeStatusTimer.Start();
@@ -269,6 +277,21 @@ internal sealed class AppHost : IDisposable
 			{
 				LogInfo("quota", $"poll status={r.Status} (keeping last-known data)");
 			}
+		}, TaskScheduler.FromCurrentSynchronizationContext());
+	}
+
+	// Fire-and-forget agy quota poll; result marshaled back to the UI thread. Null result (IDE not
+	// running / no language server) clears the widget+popup agy block.
+	void PollAntigravityQuota()
+	{
+		if (_agyQuotaScanning) return;
+		_agyQuotaScanning = true;
+		Task.Run(() => _agyQuotaPoller.Poll()).ContinueWith(t =>
+		{
+			_agyQuotaScanning = false;
+			if (t.IsFaulted) { LogError("agy-quota-poll", t.Exception!); return; }
+			_widget.UpdateAntigravityQuota(t.Result);
+			_panel.UpdateAntigravityQuota(t.Result);
 		}, TaskScheduler.FromCurrentSynchronizationContext());
 	}
 
@@ -474,6 +497,7 @@ internal sealed class AppHost : IDisposable
 		_claudeStatusTimer.Dispose();
 		_claudePulseTimer.Dispose();
 		_anchorTimer.Dispose();
+		_agyQuotaTimer.Dispose();
 		_tray.Dispose();
 		_panel.Dispose();
 		_widget.Dispose();

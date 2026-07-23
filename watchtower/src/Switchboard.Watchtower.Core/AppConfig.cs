@@ -24,6 +24,8 @@ public sealed class AppConfig
 	public int QuotaPollMinutes { get; set; } = 5;   // plan-usage poll cadence; 1, 5, 15, or 60
 	public bool DailyAnchorEnabled { get; set; } = true;
 	public string DailyAnchorTime { get; set; } = "07:00";   // local "HH:mm"; the daily session-anchor fire time
+	public bool PollAntigravityQuota { get; set; } = true;
+	public int AntigravityQuotaPollIntervalSeconds { get; set; } = 60;
 
 	// Parsed anchor time; falls back to 07:00 on a malformed value WITHOUT flagging degraded,
 	// so a bad time string can never block config saves (LoadDegraded gates SaveTo).

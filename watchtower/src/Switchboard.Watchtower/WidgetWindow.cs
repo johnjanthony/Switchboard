@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
+using System.Linq;
 using System.Runtime.InteropServices;
 using Switchboard.Watchtower.Core;
 
@@ -34,6 +35,7 @@ internal sealed class WidgetWindow : Form
 	bool _light;
 	bool _clearType = true;   // true = opaque theme bg + ClearType text (monitor style, default); false = true per-pixel-alpha transparency
 	QuotaUsage? _quota;       // latest Claude plan usage (5h/7d); null until first successful poll
+	IReadOnlyList<AntigravityQuotaGroup> _agyGroups = Array.Empty<AntigravityQuotaGroup>();
 	bool _showQuota = true;   // user preference; the block also requires _quota to have a value
 	bool _showBadge;          // Switchboard ShowBadge preference
 	bool _hasPending;         // Switchboard has unanswered questions -> draw the amber badge
@@ -44,6 +46,9 @@ internal sealed class WidgetWindow : Form
 
 	bool QuotaVisible => _showQuota && _quota.HasValue;
 	public QuotaUsage? Quota => _quota;
+
+	// One quota "set" per visible source: the Claude set (when shown) + each touched agy group.
+	int VisibleSetCount => (QuotaVisible ? 1 : 0) + _agyGroups.Count;
 
 	Point _dragStart;
 	bool _pressed;
@@ -265,6 +270,16 @@ internal sealed class WidgetWindow : Form
 		PositionOverTaskbar();
 	}
 
+	// Store only the touched groups (untouched agy groups are hidden per the visibility rule).
+	public void UpdateAntigravityQuota(AntigravityQuotaSummary? summary)
+	{
+		_agyGroups = summary is null
+			? Array.Empty<AntigravityQuotaGroup>()
+			: summary.Groups.Where(AntigravityQuota.IsGroupVisible).ToList();
+		RecomputeSize();
+		PositionOverTaskbar();
+	}
+
 	// Show/clear the Switchboard pending badge (an amber dot), mirroring the tray icon.
 	// No size change, so this only repaints.
 	public void SetPending(bool showBadge, bool hasPending)
@@ -302,15 +317,15 @@ internal sealed class WidgetWindow : Form
 	// paint time, so the host can tick this faster than the poll without refetching.
 	public void RefreshQuotaCountdown()
 	{
-		if (QuotaVisible) Render();
+		if (QuotaVisible || _agyGroups.Count > 0) Render();
 	}
 
 	void RecomputeSize()
 	{
-		int quotaW = QuotaVisible ? QuotaBlockW : 0;
+		int quotaW = VisibleSetCount * QuotaBlockW;
 		int cluster = RingClusterW + OverflowTextRoom;   // fixed: no longer scales with session count
 		Width = Math.Max(72, GrabW + quotaW + PadAfterGrab + cluster + RightMargin);
-		Height = QuotaVisible ? HeightWithQuota : HeightContextOnly;
+		Height = VisibleSetCount > 0 ? HeightWithQuota : HeightContextOnly;
 	}
 
 	protected override void OnMouseDown(MouseEventArgs e)
@@ -428,12 +443,18 @@ internal sealed class WidgetWindow : Form
 		using (var grip = new SolidBrush(gripColor))
 			g.FillRectangle(grip, 5, (Height - gripH) / 2, 2, gripH);
 
-		if (QuotaVisible) DrawQuota(g);
+		DrawAllQuotaSets(g);
+
+		// Grip separators between quota pairs, matching the far-left grab bar (drawn in the gap before each set after the first).
+		if (VisibleSetCount > 1)
+			using (var sepGrip = new SolidBrush(gripColor))
+				for (int i = 1; i < VisibleSetCount; i++)
+					g.FillRectangle(sepGrip, GrabW + i * QuotaBlockW - QSep / 2 - 1, (Height - gripH) / 2, 2, gripH);
 
 		// Context rings (busiest-first, nested fullest-outermost): each session is a crisp gradient-coloured
 		// arc, no track circle. Capped at RingMaxCount so each ring has room at taskbar size. Sort/cap/
 		// overflow live in ContextRingLayout; this just draws the result.
-		int originX = GrabW + (QuotaVisible ? QuotaBlockW : 0) + PadAfterGrab;
+		int originX = GrabW + VisibleSetCount * QuotaBlockW + PadAfterGrab;
 		var layout = ContextRingLayout.Build(_sessions, originX, Height, thickness: RingThickness, gap: RingGap, maxRings: RingMaxCount);
 		foreach (var ring in layout.Rings)
 		{
@@ -495,13 +516,28 @@ internal sealed class WidgetWindow : Form
 		}
 	}
 
-	// Two usage rows (5h on top, 7d below), left of the context rings.
-	void DrawQuota(Graphics g)
+	// Draw the Claude set (if shown) then each touched agy group, side by side. Each set = 2 rows.
+	void DrawAllQuotaSets(Graphics g)
 	{
-		var u = _quota!.Value;
 		int rowH = Height / 2;
-		DrawQuotaRow(g, GrabW, rowH / 2, u.Session, QuotaPacing.SessionDuration);
-		DrawQuotaRow(g, GrabW, rowH + rowH / 2, u.Weekly, QuotaPacing.WeeklyDuration);
+		int set = 0;
+		// Antigravity groups first (left-to-right: w/ Claude, then w/ Gemini), matching the popup's top-down order.
+		foreach (var group in _agyGroups.OrderBy(AntigravityQuota.GroupSortKey))
+		{
+			int x = GrabW + set * QuotaBlockW;
+			DrawQuotaRow(g, x, rowH / 2, AntigravityQuota.ToUsedWindow(group, "5h"), QuotaPacing.SessionDuration);
+			DrawQuotaRow(g, x, rowH + rowH / 2, AntigravityQuota.ToUsedWindow(group, "weekly"), QuotaPacing.WeeklyDuration);
+			set++;
+		}
+		// Claude Code set last (rightmost), matching the popup's bottom position.
+		if (QuotaVisible)
+		{
+			var u = _quota!.Value;
+			int x = GrabW + set * QuotaBlockW;
+			DrawQuotaRow(g, x, rowH / 2, u.Session, QuotaPacing.SessionDuration);
+			DrawQuotaRow(g, x, rowH + rowH / 2, u.Weekly, QuotaPacing.WeeklyDuration);
+			set++;
+		}
 	}
 
 	// One usage row: a 10-segment gradient bar with a thin muted pace bar (filled to the elapsed-time
