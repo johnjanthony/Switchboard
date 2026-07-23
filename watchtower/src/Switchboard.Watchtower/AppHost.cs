@@ -42,6 +42,7 @@ internal sealed class AppHost : IDisposable
 	readonly System.Windows.Forms.Timer _agyQuotaTimer = new();
 	readonly AntigravityQuotaPoller _agyQuotaPoller;
 	volatile bool _agyQuotaScanning;
+	AntigravityQuotaSummary? _lastAgyQuota;
 
 	static int QuotaIntervalMs(int minutes) => Math.Clamp(minutes, 1, 60) * 60_000;
 
@@ -290,8 +291,10 @@ internal sealed class AppHost : IDisposable
 		{
 			_agyQuotaScanning = false;
 			if (t.IsFaulted) { LogError("agy-quota-poll", t.Exception!); return; }
+			_lastAgyQuota = t.Result;
 			_widget.UpdateAntigravityQuota(t.Result);
 			_panel.UpdateAntigravityQuota(t.Result);
+			PushSnapshot();
 		}, TaskScheduler.FromCurrentSynchronizationContext());
 	}
 
@@ -340,7 +343,7 @@ internal sealed class AppHost : IDisposable
 	{
 		if (_snapshotPusher is null || _snapshotPushing) return;
 		_snapshotPushing = true;
-		var payload = WidgetSnapshotBuilder.Build(_lastSessions, _lastQuota, DateTimeOffset.Now, _lastTitleStates);
+		var payload = WidgetSnapshotBuilder.Build(_lastSessions, _lastQuota, DateTimeOffset.Now, _lastTitleStates, _lastAgyQuota?.Groups);
 		_snapshotPusher.PushAsync(payload, CancellationToken.None).ContinueWith(t =>
 		{
 			_snapshotPushing = false;

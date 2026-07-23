@@ -630,9 +630,9 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .doc-pdf { width: 100%; height: 82vh; border: 1px solid var(--rule-soft); border-radius: var(--radius); }
 .doc-note { color: var(--label-dim); font-family: var(--font-body); }
 .doc-error { color: var(--lamp-red); font-family: var(--font-mono); font-size: 13px; padding: 20px 0; }
-.quota-readout { display: inline-flex; gap: 8px; }
+.quota-readout { display: flex; flex: 1; gap: 12px; min-width: 0; margin: 0 4px; }
 .quota-graph {
-	flex: 1; min-width: 80px;
+	flex: 1; min-width: 0;
 	display: flex; flex-direction: column; gap: 7px; justify-content: center;
 	padding: 0; background: transparent; border: none;
 	font-family: var(--font-mono); font-size: 10px;

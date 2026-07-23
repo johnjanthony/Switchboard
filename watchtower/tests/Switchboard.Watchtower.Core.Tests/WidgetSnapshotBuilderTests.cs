@@ -90,4 +90,38 @@ public class WidgetSnapshotBuilderTests
 		Assert.Contains("\"title_state\":\"star\"", json);
 		Assert.Contains("\"title_state\":null", json);
 	}
+
+	[Fact]
+	public void Build_includes_antigravity_quota_groups()
+	{
+		var gGemini = new AntigravityQuotaGroup("Gemini Models", "desc", new[]
+		{
+			new AntigravityQuotaBucket("5h", 0.80, Pushed),
+			new AntigravityQuotaBucket("weekly", 0.70, Pushed)
+		});
+		var gClaude = new AntigravityQuotaGroup("Claude and GPT models", "desc", new[]
+		{
+			new AntigravityQuotaBucket("5h", 0.90, Pushed),
+			new AntigravityQuotaBucket("weekly", 0.50, Pushed)
+		});
+		var gUntouched = new AntigravityQuotaGroup("Untouched", "desc", new[]
+		{
+			new AntigravityQuotaBucket("5h", 1.0, Pushed),
+			new AntigravityQuotaBucket("weekly", 1.0, Pushed)
+		});
+
+		var p = WidgetSnapshotBuilder.Build(Array.Empty<SessionModel>(), null, Pushed, agyGroups: new[] { gGemini, gUntouched, gClaude });
+		Assert.NotNull(p.Quota);
+		Assert.NotNull(p.Quota!.Antigravity);
+		Assert.Equal(2, p.Quota.Antigravity!.Count);
+		// GroupSortKey order: Claude (0) then Gemini (1)
+		Assert.Equal("Claude and GPT models", p.Quota.Antigravity[0].DisplayName);
+		Assert.Equal("Gemini Models", p.Quota.Antigravity[1].DisplayName);
+		Assert.InRange(p.Quota.Antigravity[0].Session.Pct, 0.09, 0.11); // used = 1 - 0.90 = 0.10
+		Assert.InRange(p.Quota.Antigravity[0].Weekly.Pct, 0.49, 0.51);  // used = 1 - 0.50 = 0.50
+
+		var json = JsonSerializer.Serialize(p);
+		Assert.Contains("\"antigravity\":[", json);
+		Assert.Contains("\"display_name\":\"Claude and GPT models\"", json);
+	}
 }
