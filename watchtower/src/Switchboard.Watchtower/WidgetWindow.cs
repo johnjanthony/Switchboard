@@ -16,7 +16,7 @@ internal sealed class WidgetWindow : Form
 	const int RingMaxCount = 3;         // cap visible rings so each gets room at this size; rest roll into "+K"
 	const int RingClusterW = 28;        // == ContextRingLayout dMax cap; horizontal room for the rings
 	const int OverflowTextRoom = 14;    // room to the right of the cluster for the "+K" indicator
-	const int GrabW = 12;          // left grab-handle strip; the ONLY drag target
+	const int GrabW = 14;          // left grab-handle strip; the ONLY drag target
 	const int PadAfterGrab = 4;
 	const int RightMargin = 8;     // small trailing gap (the max-% label is gone)
 
@@ -25,7 +25,7 @@ internal sealed class WidgetWindow : Form
 	const int QBarW = QSegCount * (QSegW + QSegGap) - QSegGap;          // 49
 	const int QPaceH = 2;                                               // pace (elapsed-time) bar height (skinny + calm on the widget)
 	const int QPaceGap = 2;                                             // gap between the usage bar and the pace bar
-	const int QSep = 10;                                                // gap before the context rings
+	const int QSep = 14;                                                // gap before the context rings
 	const int QuotaBlockW = QBarW + QSep;
 	const int HeightWithQuota = 44;
 	const int HeightContextOnly = 34;

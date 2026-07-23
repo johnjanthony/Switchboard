@@ -2,7 +2,7 @@
 
 **Author:** Antigravity (Claude Opus 4.6)
 **Revised:** 2026-07-23 by Claude Fable 5 (live-verified the data source and reworked the UI with John)
-**Status:** Implemented 2026-07-23 (subagent-driven; tree-only, commit pending). Live widget check passed. See the As-Built at the end.
+**Status:** Implemented and committed `103c437` (2026-07-23, subagent-driven). Live widget check passed. See the As-Built at the end.
 **Tracking:** T-245
 
 ## Problem
@@ -255,7 +255,7 @@ Recorded so the rejection is not re-litigated. Querying `cloudcode-pa.googleapis
 
 ## As-Built (2026-07-23)
 
-Implemented subagent-driven (Profile B: sonnet implementers, opus reviewers), all seven code tasks two-stage-reviewed, whole-branch review "Ready to merge: Yes" (zero Critical/Important). Tree-only, no commits (repo convention; John commits). Watchtower Core suite 201 → 215. Tracking: T-245 (no prior backlog item; spec → plan → SDD direct).
+Implemented subagent-driven (Profile B: sonnet implementers, opus reviewers), all seven code tasks two-stage-reviewed, whole-branch review "Ready to merge: Yes" (zero Critical/Important). Committed as `103c437` (2026-07-23). Watchtower Core suite 201 → 215. Tracking: T-245 (no prior backlog item; spec → plan → SDD direct).
 
 **As designed.** Data source is the language server `RetrieveUserQuotaSummary` Connect RPC over loopback with RPC-port discovery (probing the PID's listening ports, not `--extension_server_port`); generic group/bucket parsing; used framing (`used = 1 − remainingFraction`) reusing the existing Claude bar and pace renderers; agy groups hidden when untouched or when no language server is running; the Claude set unchanged.
 
