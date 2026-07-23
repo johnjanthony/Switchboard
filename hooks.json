@@ -1,0 +1,42 @@
+{
+	"switchboard": {
+		"PreInvocation": [
+			{
+				"type": "command",
+				"command": "python ./scripts/agy-identity-hook.py --event PreInvocation",
+				"timeout": 10
+			}
+		],
+		"PreToolUse": [
+			{
+				"matcher": "*",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "python ./scripts/agy-identity-hook.py --event PreToolUse",
+						"timeout": 10
+					}
+				]
+			}
+		],
+		"PostToolUse": [
+			{
+				"matcher": "*",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "python ./scripts/agy-identity-hook.py --event PostToolUse",
+						"timeout": 10
+					}
+				]
+			}
+		],
+		"Stop": [
+			{
+				"type": "command",
+				"command": "python ./scripts/turn-end-hook-away-mode.py --cli antigravity",
+				"timeout": 10
+			}
+		]
+	}
+}
