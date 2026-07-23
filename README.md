@@ -117,9 +117,15 @@ WSL must use bridge networking (NOT mirrored). The Windows server requires `SWIT
 
 ### Antigravity CLI (agy)
 
-Antigravity CLI sessions are first-class agents (spec: `docs/superpowers/specs/2026-07-14-antigravity-cli-support-design.md`). Requirements: `agy` >= 1.1.2 on PATH. The wiring is delivered by the chezmoi dotfiles repo, not a plugin: `~/.gemini/config/mcp_config.json` (the `serverUrl` MCP entry), `~/.gemini/config/hooks.json` (PreInvocation/PreToolUse/PostToolUse/Stop hooks pointing at `scripts/agy-identity-hook.py` and `scripts/turn-end-hook-away-mode.py --cli antigravity` in this repo), and a switchboard protocol section in `~/.gemini/GEMINI.md`.
+Antigravity CLI sessions are first-class agents (spec: `docs/superpowers/specs/2026-07-14-antigravity-cli-support-design.md`). Requirements: `agy` >= 1.1.2 on PATH. Switchboard is now structured as a native Antigravity plugin repository, sitting directly alongside the Claude plugin.
 
-Identity model: agy hooks cannot rewrite tool arguments, so the model passes `cli_session_id` (its conversation UUID) and `cwd` explicitly inside every switchboard call's Arguments; a PreInvocation ephemeral message teaches the values each turn and a PreToolUse hook denies non-compliant calls with the correction. Contrast: Claude Code wires via the plugin and gets silent hook injection.
+To install the plugin for Antigravity, run:
+```bash
+agy plugin install C:\Work\switchboard
+```
+This automatically wires the MCP server (via `mcp_config.json`), the turn-end and identity hooks (via `hooks.json`), and the `skills/` directory containing the away-mode protocol rules.
+
+Identity model: agy hooks cannot rewrite tool arguments, so the model passes `cli_session_id` (its conversation UUID) and `cwd` explicitly inside every switchboard call's Arguments; a PreInvocation ephemeral message teaches the values each turn and a PreToolUse hook denies non-compliant calls with the correction. Contrast: Claude Code wires via the `.claude-plugin` manifest and gets silent hook injection.
 
 ## Android App
 
