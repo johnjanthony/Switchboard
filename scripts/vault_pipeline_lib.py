@@ -272,13 +272,17 @@ def excerpt_section(source_rel, line, body, lang):
 
 def insert_excerpt(text, section):
 	"""Insert or replace the '## Excerpt' section before '## Connections' (or at
-	EOF when the note has none). Idempotent so hand re-runs never stack."""
+	EOF when the note has none). A None section strips any existing excerpt and
+	adds nothing (for notes with no extractable content). Idempotent so hand
+	re-runs never stack."""
 	i = text.find("\n## Excerpt")
 	if i >= 0:
 		# Bound the strip to '## Connections', not any '## ' heading: the excerpt
 		# body is a raw source fence and can itself contain a column-0 '## ' line.
 		j = text.find("\n## Connections", i + 1)
 		text = text[:i] + (text[j:] if j >= 0 else "\n")
+	if section is None:
+		return text
 	anchor = text.find("\n## Connections")
 	if anchor >= 0:
 		return text[:anchor + 1] + section + "\n" + text[anchor + 1:]
@@ -294,9 +298,12 @@ def scan_vault(vault_dir):
 
 
 def enrich_vault(vault_dir, repo_root):
-	"""Add an Excerpt section to every note that names a resolvable source
-	file. (enriched, skipped) counts returned; a single bad note or source must
-	never abort the refresh, so failures count as skipped and move on."""
+	"""Add an Excerpt section to every note whose source file resolves AND yields
+	an extractable body. Notes with no extractable content (unresolved location,
+	moved file, empty section) get no excerpt and count as skipped, rather than a
+	headerless block that only repeats the frontmatter. (enriched, skipped)
+	returned; a single bad note or source must never abort the refresh, so
+	failures count as skipped and move on."""
 	vault_dir, repo_root = Path(vault_dir), Path(repo_root)
 	sources = {}
 	trees = {}
@@ -327,6 +334,14 @@ def enrich_vault(vault_dir, repo_root):
 					body = python_excerpt(stext, line, tree=trees[src]) or window_excerpt(stext, line)
 				else:
 					body = window_excerpt(stext, line)
+			if not body:
+				# No extractable content: strip any prior empty excerpt and add
+				# nothing, so the note keeps only real sections.
+				new = insert_excerpt(text, None)
+				if new != text:
+					p.write_text(new, encoding="utf-8", newline="\n")
+				skipped += 1
+				continue
 			p.write_text(insert_excerpt(text, excerpt_section(src, line, body, lang)), encoding="utf-8", newline="\n")
 			enriched += 1
 		except Exception:

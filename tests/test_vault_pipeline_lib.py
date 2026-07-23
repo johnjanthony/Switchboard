@@ -330,3 +330,43 @@ def test_enrich_vault_parses_each_python_source_once(tmp_path, monkeypatch):
 	assert (enriched, skipped) == (3, 0)
 	assert len(calls) == 1
 	assert "return 2" in (vault / "two().md").read_text(encoding="utf-8")
+
+
+def test_insert_excerpt_none_strips_existing():
+	# A None section strips any prior "## Excerpt" and adds nothing, so a note
+	# with no extractable content keeps only its "## Connections".
+	section = vpl.excerpt_section("a.py", 1, "def hello():\n\tpass", "python")
+	withexc = vpl.insert_excerpt(NOTE, section)
+	assert "## Excerpt" in withexc
+	stripped = vpl.insert_excerpt(withexc, None)
+	assert "## Excerpt" not in stripped
+	assert "## Connections" in stripped
+	assert vpl.insert_excerpt(stripped, None) == stripped
+	eof = vpl.insert_excerpt('---\ntype: "code"\n---\n\n# x\n', section)
+	assert "## Excerpt" in eof
+	assert "## Excerpt" not in vpl.insert_excerpt(eof, None)
+
+
+def test_enrich_vault_suppresses_bodyless_excerpt(tmp_path):
+	repo = tmp_path / "repo"
+	vault = tmp_path / "vault"
+	(repo / "docs").mkdir(parents=True)
+	vault.mkdir()
+	(repo / "docs" / "spec.md").write_text("# Title\n\nbody\n", encoding="utf-8")
+	# Concept node: source resolves but the location is a section id, not L<n>,
+	# so nothing is extractable and no "## Excerpt" should be written.
+	note = vault / "Concept.md"
+	note.write_text(
+		'---\nsource_file: "docs/spec.md"\ntype: "concept"\nlocation: "SS7"\n---\n\n# Concept\n\n## Connections\n- [[X]]\n',
+		encoding="utf-8")
+	enriched, skipped = vpl.enrich_vault(vault, repo)
+	assert (enriched, skipped) == (0, 1)
+	out = note.read_text(encoding="utf-8")
+	assert "## Excerpt" not in out
+	assert "## Connections" in out
+	# A previously-written empty excerpt is stripped on the next run.
+	note.write_text(
+		'---\nsource_file: "docs/spec.md"\ntype: "concept"\nlocation: "SS7"\n---\n\n# Concept\n\n'
+		'## Excerpt\n\nSource: `docs/spec.md`\n\n## Connections\n- [[X]]\n', encoding="utf-8")
+	vpl.enrich_vault(vault, repo)
+	assert "## Excerpt" not in note.read_text(encoding="utf-8")
