@@ -22,28 +22,31 @@ public static class TaskbarPlacement
 	/// parent-relative coordinates for a taskbar child window; false for a screen-coordinate overlay.
 	/// </summary>
 	public static WidgetPlacement Compute(
-		Rectangle taskbar, int? trayLeft, int widgetWidth, int widgetHeight, int? preferredScreenX, bool embedded)
+		Rectangle taskbar, int? trayLeft, int widgetWidth, int widgetHeight, int? preferredRightX, bool embedded)
 	{
 		int y = taskbar.Top + (taskbar.Height - widgetHeight) / 2;
-		int x;
-		if (preferredScreenX is int px)
-			x = ClampScreenX(px, taskbar, trayLeft, widgetWidth);
+		int rightX;
+		if (preferredRightX is int prx)
+			rightX = ClampScreenRightX(prx, taskbar, trayLeft, widgetWidth);
 		else if (trayLeft is int tl)
-			x = tl - widgetWidth - TrayGap;
+			rightX = tl - TrayGap;
 		else
-			x = taskbar.Right - widgetWidth - NoTrayInset;
+			rightX = taskbar.Right - NoTrayInset;
+
+		int x = rightX - widgetWidth;
 		// A WS_CHILD of the taskbar takes coordinates relative to the parent's client origin, so
 		// convert the screen anchor by subtracting the taskbar origin. The overlay keeps screen coords.
 		return embedded ? new(x - taskbar.Left, y - taskbar.Top) : new(x, y);
 	}
 
 	/// <summary>
-	/// Clamp a desired screen X so the widget stays within the taskbar and left of the tray cluster
-	/// (so it can't be dragged over the clock). Falls back to the taskbar right edge when the tray is unknown.
+	/// Clamp a desired screen right-edge X so the widget's right edge stays left of the tray cluster
+	/// and its left edge stays on the taskbar. Falls back to the taskbar right edge when the tray is unknown.
 	/// </summary>
-	public static int ClampScreenX(int desiredScreenX, Rectangle taskbar, int? trayLeft, int widgetWidth)
+	public static int ClampScreenRightX(int desiredRightX, Rectangle taskbar, int? trayLeft, int widgetWidth)
 	{
-		int rightLimit = (trayLeft ?? taskbar.Right) - widgetWidth;
-		return Math.Clamp(desiredScreenX, taskbar.Left, Math.Max(taskbar.Left, rightLimit));
+		int maxRight = trayLeft ?? taskbar.Right;
+		int minRight = taskbar.Left + widgetWidth;
+		return Math.Clamp(desiredRightX, minRight, Math.Max(minRight, maxRight));
 	}
 }

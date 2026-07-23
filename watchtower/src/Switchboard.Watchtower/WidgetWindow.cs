@@ -67,7 +67,7 @@ internal sealed class WidgetWindow : Form
 	public Action<string>? Diagnostic;             // optional sink for embed/lifecycle diagnostics
 
 	[System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
-	public int? PreferredX { get; set; }          // screen X from config; null = auto (left of tray)
+	public int? PreferredX { get; set; }          // right-edge screen X from config; null = auto (left of tray)
 
 	public WidgetWindow()
 	{
@@ -174,7 +174,7 @@ internal sealed class WidgetWindow : Form
 			? Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom)
 			: Bounds;
 
-	int CurrentScreenLeft() => IsHandleCreated && Native.GetWindowRect(Handle, out var r) ? r.Left : Left;
+	int CurrentScreenRight() => IsHandleCreated && Native.GetWindowRect(Handle, out var r) ? r.Right : Right;
 
 	public void KeepOnTop()
 	{
@@ -354,8 +354,8 @@ internal sealed class WidgetWindow : Form
 				// Work in screen coordinates (Left is parent-relative/stale once embedded); let
 				// PositionOverTaskbar convert to parent-relative as needed. Clamp left of the tray.
 				int? trayLeft = TaskbarLocator.TryGetTrayRect(out var tray) ? tray.Left : null;
-				int desiredScreenX = CurrentScreenLeft() + (e.X - _dragStart.X);
-				PreferredX = TaskbarPlacement.ClampScreenX(desiredScreenX, tb, trayLeft, Width);
+				int desiredRightX = CurrentScreenRight() + (e.X - _dragStart.X);
+				PreferredX = TaskbarPlacement.ClampScreenRightX(desiredRightX, tb, trayLeft, Width);
 				PositionOverTaskbar();
 			}
 		}
