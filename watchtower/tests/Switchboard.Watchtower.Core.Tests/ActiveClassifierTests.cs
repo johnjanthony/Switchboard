@@ -24,4 +24,13 @@ public class ActiveClassifierTests
 		var mtime = Now.AddSeconds(-secondsAgo);
 		Assert.Equal(expected, ActiveClassifier.StatusFor(mtime, Now, liveThresholdSeconds: 90));
 	}
+
+	[Fact]
+	public void IsRetainedById_checks_sessionId_in_retain_set()
+	{
+		var set = new HashSet<string> { "uuid-1234", "uuid-5678" };
+		Assert.True(ActiveClassifier.IsRetainedById("uuid-1234", set));
+		Assert.False(ActiveClassifier.IsRetainedById("uuid-9999", set));
+		Assert.False(ActiveClassifier.IsRetainedById("uuid-1234", null));
+	}
 }

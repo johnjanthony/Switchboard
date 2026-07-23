@@ -52,4 +52,33 @@ public class SessionAggregatorTests
 		}
 		finally { File.Delete(bad); }
 	}
+
+	[Fact]
+	public void Collect_handles_antigravity_transcripts_and_error_derived_session_id()
+	{
+		var dir = Path.Combine(Path.GetTempPath(), "agagg-" + Guid.NewGuid().ToString("N"), "uuid-7777", ".system_generated", "logs");
+		Directory.CreateDirectory(dir);
+		var badAg = Path.Combine(dir, "transcript_full.jsonl");
+		File.WriteAllText(badAg, ""); // empty file -> throws InvalidDataException
+		File.SetLastWriteTimeUtc(badAg, Now.AddSeconds(-10));
+
+		var errors = new List<string>();
+		try
+		{
+			var result = SessionAggregator.Collect(
+				Array.Empty<string>(),
+				Array.Empty<(string, string)>(),
+				new[] { badAg },
+				Now, 90, (p, e) => errors.Add(p));
+
+			Assert.Single(result);
+			Assert.True(result[0].IsError);
+			Assert.Equal("uuid-7777", result[0].SessionId); // directory-derived SessionId, not "transcript_full"
+			Assert.Single(errors);
+		}
+		finally
+		{
+			try { Directory.Delete(Path.GetDirectoryName(Path.GetDirectoryName(dir)!), recursive: true); } catch { }
+		}
+	}
 }

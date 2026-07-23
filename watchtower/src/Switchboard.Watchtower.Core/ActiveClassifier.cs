@@ -18,4 +18,7 @@ public static class ActiveClassifier
 	// (cli_session_id == transcript filename stem) comes from the server's /stats needs_you map.
 	public static bool IsRetained(string path, IReadOnlySet<string>? retainIds) =>
 		retainIds is { Count: > 0 } && retainIds.Contains(Path.GetFileNameWithoutExtension(path));
+
+	public static bool IsRetainedById(string sessionId, IReadOnlySet<string>? retainIds) =>
+		retainIds is { Count: > 0 } && retainIds.Contains(sessionId);
 }

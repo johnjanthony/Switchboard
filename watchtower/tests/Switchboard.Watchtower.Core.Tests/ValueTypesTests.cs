@@ -14,6 +14,8 @@ public class ValueTypesTests
 	[InlineData("claude-opus-4-8[1m]", 1_000_000)]
 	[InlineData("claude-opus-4-7", 1_000_000)]
 	[InlineData("claude-fable-5", 1_000_000)]
+	[InlineData("Gemini 3.1 Pro (High)", 1_000_000)]
+	[InlineData("Gemini 3.6 Flash (High)", 1_000_000)]
 	[InlineData("claude-sonnet-4-6", 200_000)]
 	[InlineData(null, 200_000)]
 	[InlineData("", 200_000)]

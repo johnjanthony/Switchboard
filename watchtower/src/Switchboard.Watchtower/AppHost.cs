@@ -175,7 +175,12 @@ internal sealed class AppHost : IDisposable
 				{
 					wsl = WslSessionScanner.ActiveTranscripts(_distroLister, now, cfg.ActiveWindowMinutes, WslSessionScanner.DefaultGlob, retainIds: retain);
 				}
-				result = SessionAggregator.Collect(win, wsl, now, cfg.LiveThresholdSeconds, LogError);
+				IEnumerable<string> antigravity = Array.Empty<string>();
+				if (cfg.ScanAntigravity)
+				{
+					antigravity = AntigravitySessionScanner.ActiveTranscripts(AntigravitySessionScanner.DefaultRoots, now, cfg.ActiveWindowMinutes, retainIds: retain);
+				}
+				result = SessionAggregator.Collect(win, wsl, antigravity, now, cfg.LiveThresholdSeconds, LogError);
 
 				// When nothing is active, find the newest transcript so the popup can say "last active agent N ago".
 				if (result.Count == 0)

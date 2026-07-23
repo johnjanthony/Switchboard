@@ -358,9 +358,11 @@ internal sealed class DetailPanel : Form
 				g.DrawString("WSL", small, mutedBrush, labelX, y + 2);
 				labelX += (int)Math.Ceiling(g.MeasureString("WSL", small).Width) + 6;
 			}
-			g.DrawString(s.Label, label, textBrush, labelX, y);
 			var tag = $"{ShortModel(s.Model)} · {WindowTag(s.WindowSize)}";
 			var tagSize = g.MeasureString(tag, small);
+			float maxLabelW = Width - Pad - tagSize.Width - labelX - 6;
+			string displayLabel = Ellipsize(g, s.Label, label, maxLabelW);
+			g.DrawString(displayLabel, label, textBrush, labelX, y);
 			g.DrawString(tag, small, mutedBrush, Width - Pad - tagSize.Width, y + 1);
 
 			// line 2: bar + tokens + pct
@@ -603,7 +605,13 @@ internal sealed class DetailPanel : Form
 		if (model.Contains("opus", StringComparison.OrdinalIgnoreCase)) return "Opus";
 		if (model.Contains("sonnet", StringComparison.OrdinalIgnoreCase)) return "Sonnet";
 		if (model.Contains("haiku", StringComparison.OrdinalIgnoreCase)) return "Haiku";
-		return model;
+		if (model.Contains("gemini", StringComparison.OrdinalIgnoreCase))
+		{
+			if (model.Contains("flash", StringComparison.OrdinalIgnoreCase)) return "Gemini Flash";
+			if (model.Contains("pro", StringComparison.OrdinalIgnoreCase)) return "Gemini Pro";
+			return "Gemini";
+		}
+		return model.Length > 12 ? model.Substring(0, 10) + "..." : model;
 	}
 
 	static string WindowTag(long window) => window >= 1_000_000 ? "1M" : $"{window / 1000}K";

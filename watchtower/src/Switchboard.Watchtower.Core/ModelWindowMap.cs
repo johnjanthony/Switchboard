@@ -14,6 +14,7 @@ public static class ModelWindowMap
 		if (model.Contains("[1m]", StringComparison.OrdinalIgnoreCase)) return LargeWindow;
 		if (model.Contains("opus", StringComparison.OrdinalIgnoreCase)) return LargeWindow;
 		if (model.Contains("fable", StringComparison.OrdinalIgnoreCase)) return LargeWindow;
+		if (model.Contains("gemini", StringComparison.OrdinalIgnoreCase)) return LargeWindow;
 		return DefaultWindow;
 	}
 

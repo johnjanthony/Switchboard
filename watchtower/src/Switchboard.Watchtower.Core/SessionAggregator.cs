@@ -7,6 +7,15 @@ public static class SessionAggregator
 		IEnumerable<(string distro, string path)> wslTranscripts,
 		DateTime nowUtc,
 		int liveThresholdSeconds,
+		Action<string, Exception> onError) =>
+		Collect(windowsTranscripts, wslTranscripts, Array.Empty<string>(), nowUtc, liveThresholdSeconds, onError);
+
+	public static List<SessionModel> Collect(
+		IEnumerable<string> windowsTranscripts,
+		IEnumerable<(string distro, string path)> wslTranscripts,
+		IEnumerable<string> antigravityTranscripts,
+		DateTime nowUtc,
+		int liveThresholdSeconds,
 		Action<string, Exception> onError)
 	{
 		var list = new List<SessionModel>();
@@ -16,6 +25,9 @@ public static class SessionAggregator
 
 		foreach (var (distro, path) in wslTranscripts)
 			TryAdd(list, path, distro, nowUtc, liveThresholdSeconds, onError);
+
+		foreach (var path in antigravityTranscripts)
+			TryAddAntigravity(list, path, nowUtc, liveThresholdSeconds, onError);
 
 		list.Sort((a, b) => b.Pct.CompareTo(a.Pct)); // busiest first
 		return list;
@@ -34,6 +46,22 @@ public static class SessionAggregator
 			try { mtime = File.GetLastWriteTimeUtc(path); } catch { mtime = nowUtc; }
 			var label = Path.GetFileName(Path.GetDirectoryName(path) ?? "") is { Length: > 0 } d ? d : "(error)";
 			list.Add(new SessionModel(label, distro, 0, ModelWindowMap.DefaultWindow, null, SessionStatus.Idle, mtime, IsError: true, SessionId: Path.GetFileNameWithoutExtension(path)));
+		}
+	}
+
+	static void TryAddAntigravity(List<SessionModel> list, string path, DateTime nowUtc, int liveThresholdSeconds, Action<string, Exception> onError)
+	{
+		try
+		{
+			list.Add(AntigravityUsageReader.Read(path, nowUtc, liveThresholdSeconds));
+		}
+		catch (Exception ex)
+		{
+			onError(path, ex);
+			DateTime mtime;
+			try { mtime = File.GetLastWriteTimeUtc(path); } catch { mtime = nowUtc; }
+			string sessionId = AntigravityUsageReader.DeriveSessionId(path);
+			list.Add(new SessionModel("Antigravity", null, 0, ModelWindowMap.DefaultWindow, null, SessionStatus.Idle, mtime, IsError: true, SessionId: sessionId));
 		}
 	}
 }

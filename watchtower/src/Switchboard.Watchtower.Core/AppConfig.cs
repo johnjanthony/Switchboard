@@ -16,6 +16,7 @@ public sealed class AppConfig
 	public int ActiveWindowMinutes { get; set; } = 5;
 	public int LiveThresholdSeconds { get; set; } = 90;
 	public bool ScanWsl { get; set; } = true;
+	public bool ScanAntigravity { get; set; } = true;
 	public bool Autostart { get; set; } = true;
 	public int? WidgetX { get; set; } = null;
 	public bool? LightThemeOverride { get; set; } = null;
