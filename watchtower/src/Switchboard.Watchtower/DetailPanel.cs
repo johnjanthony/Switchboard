@@ -19,6 +19,16 @@ internal sealed class DetailPanel : Form
 	const int PanelRadius = 6;
 	const int BottomPillRowH = 26;
 
+	// Backdrop color, keyed to full transparency (Form.TransparencyKey). The card fills are anti-aliased
+	// and a color key only removes exact-key pixels, so the blended edge pixels survive as a fringe. This
+	// value tunes how that fringe reads: a pure grey partway between the card surface (#2A2A2A) and black,
+	// so the AA edge fades card-grey -> this grey as a soft rim with enough range to keep the corners
+	// smooth. Lighter (toward surface) = subtler rim but harder corners; darker (toward black) = smoother
+	// gradient but heavier rim. It is a pure grey (R=G=B): the only anti-aliased edge that lands exactly
+	// on it is the card fading into the backdrop, so no other element (pills, borders, dots - all off the
+	// grey axis or lighter) gets a pixel keyed out by accident.
+	static readonly Color BackdropKey = Color.FromArgb(20, 20, 20);
+
 	IReadOnlyList<SessionModel> _sessions = Array.Empty<SessionModel>();
 	Palette _palette = new(light: false);
 	QuotaUsage? _quota;   // latest Claude plan usage (5h/7d); null until first successful poll -> section hidden
@@ -46,6 +56,9 @@ internal sealed class DetailPanel : Form
 		TopMost = true;
 		StartPosition = FormStartPosition.Manual;
 		DoubleBuffered = true;
+		// Color-key the non-card backdrop to transparency so the rounded cards float over the desktop.
+		BackColor = BackdropKey;
+		TransparencyKey = BackdropKey;
 		Width = 320;
 		Visible = false;
 
@@ -284,9 +297,11 @@ internal sealed class DetailPanel : Form
 	{
 		var g = e.Graphics;
 		g.SmoothingMode = SmoothingMode.AntiAlias;
-		// Opaque panel background, so ClearType sub-pixel text renders crisply (matches the widget).
+		// Fill the backdrop with the transparency key so the desktop shows through the margins and
+		// inter-card gaps. Every string is drawn on an opaque group panel below, not on this backdrop,
+		// so ClearType sub-pixel text still renders crisply against a solid surface.
 		g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
-		g.Clear(_palette.Background);
+		g.Clear(BackdropKey);
 
 		using var label = new Font("Segoe UI", 9f, FontStyle.Bold);
 		using var small = new Font("Segoe UI", 7.5f);
@@ -560,7 +575,9 @@ internal sealed class DetailPanel : Form
 		return y + QuotaWindowRowH;
 	}
 
-	// Filled rounded surface panel behind a group of rows (the "group box" treatment).
+	// Filled rounded surface panel behind a group of rows (the "group box" treatment). Anti-aliased for
+	// smooth corners; the grey transparency key (see BackdropKey) keeps the AA edge a soft rim
+	// instead of a bright fringe.
 	void DrawGroupPanel(Graphics g, int top, int height)
 	{
 		using var b = new SolidBrush(_palette.Surface);
