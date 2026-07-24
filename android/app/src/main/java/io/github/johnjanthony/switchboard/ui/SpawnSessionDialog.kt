@@ -40,9 +40,10 @@ fun SpawnSessionDialog(
 	activeConversations: List<ConversationSummary>,
 	wslAvailable: Boolean,
 	onDismiss: () -> Unit,
-	onSpawn: (surface: String, project: String, prompt: String, targetConversationId: String?) -> Unit,
+	onSpawn: (agent: String, surface: String, project: String, prompt: String, targetConversationId: String?) -> Unit,
 	onRemoveFromMru: (String) -> Unit,
 ) {
+	var agent by remember { mutableStateOf("claude") }
 	var surface by remember { mutableStateOf("windows") }
 	var project by remember { mutableStateOf("") }
 	var prompt by remember { mutableStateOf("") }
@@ -59,7 +60,7 @@ fun SpawnSessionDialog(
 
 	AlertDialog(
 		onDismissRequest = onDismiss,
-		title = { Text("Spawn Claude Session") },
+		title = { Text("Spawn Session") },
 		text = {
 			Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
 				// Surface radio
@@ -81,6 +82,22 @@ fun SpawnSessionDialog(
 						color = if (wslAvailable) MaterialTheme.colorScheme.onSurface
 						        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
 					)
+				}
+
+				// Agent radio
+				Text("Agent", style = MaterialTheme.typography.labelMedium)
+				Row(verticalAlignment = Alignment.CenterVertically) {
+					RadioButton(
+						selected = agent == "claude",
+						onClick = { agent = "claude" },
+					)
+					Text("Claude")
+					Spacer(Modifier.width(16.dp))
+					RadioButton(
+						selected = agent == "antigravity",
+						onClick = { agent = "antigravity" },
+					)
+					Text("Antigravity")
 				}
 
 				// Project picker (MRU dropdown)
@@ -221,6 +238,7 @@ fun SpawnSessionDialog(
 			Button(
 				onClick = {
 					onSpawn(
+						agent,
 						surface,
 						project.trim(),
 						prompt.trim(),

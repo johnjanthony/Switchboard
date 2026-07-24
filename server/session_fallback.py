@@ -104,7 +104,8 @@ def apply_fallback(registry, session_id: str, backend=None) -> None:
 		# available; the defaults keep a roster-less registry working. No
 		# sender disambiguation: the conversation is brand-new and solo.
 		record = registry.sessions.get(session_id) if registry.sessions is not None else None
-		member_sender = (record.sender if record is not None else None) or "Claude"
+		default_sender = "Antigravity" if (record is not None and record.cli == "antigravity") else "Claude"
+		member_sender = (record.sender if record is not None else None) or default_sender
 		member_cwd = (record.cwd if record is not None else "") or ""
 		member = ConversationMember(
 			cli_session_id=session_id,

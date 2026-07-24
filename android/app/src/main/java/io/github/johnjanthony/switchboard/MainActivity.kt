@@ -363,8 +363,8 @@ private fun SwitchboardNavHost(
 			activeConversations = pickerTargets(activeConversations),
 			wslAvailable = wslAvailable,
 			onDismiss = { showSpawnDialog = false },
-			onSpawn = { surface, project, prompt, targetConversationId ->
-				val wasAwayOff = viewModel.spawnSession(surface, project, prompt, targetConversationId)
+			onSpawn = { agent, surface, project, prompt, targetConversationId ->
+				val wasAwayOff = viewModel.spawnSession(agent, surface, project, prompt, targetConversationId)
 				if (wasAwayOff) {
 					Toast.makeText(context, "Away mode enabled", Toast.LENGTH_SHORT).show()
 				}

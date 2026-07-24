@@ -50,11 +50,12 @@ foreach ($f in $pendingFiles) {
 		# Each agent specifies its surface ("windows" or "wsl") and cli_session_id.
 		foreach ($agent in $params.agents) {
 			$surface   = if ($agent.PSObject.Properties.Name -contains 'surface') { $agent.surface } else { "windows" }
+			$agentType = if ($agent.PSObject.Properties.Name -contains 'agent') { $agent.agent } else { "claude" }
 			$sessionId = $agent.cli_session_id
 			$rawPath   = $agent.project_path
 			$rawPrompt = $agent.prompt
 
-			Write-LauncherLog "agent[$([Array]::IndexOf($params.agents, $agent))] surface=$surface session=$sessionId path='$rawPath' prompt-bytes=$($rawPrompt.Length)"
+			Write-LauncherLog "agent[$([Array]::IndexOf($params.agents, $agent))] agent=$agentType surface=$surface session=$sessionId path='$rawPath' prompt-bytes=$($rawPrompt.Length)"
 			if ($surface -eq "wsl") {
 				# Versioned static script + per-spawn prompt file. The launcher
 				# writes only the prompt (short text, no quoting required) to
@@ -87,6 +88,9 @@ foreach ($f in $pendingFiles) {
 
 				# Static script lives in the plugin's scripts/ directory.
 				$staticScriptWsl = "/mnt/c/Work/Switchboard/scripts/spawn-claude-wsl.sh"
+				if ($agentType -eq "antigravity") {
+					$staticScriptWsl = "/mnt/c/Work/Switchboard/scripts/spawn-agy-wsl.sh"
+				}
 
 				Write-LauncherLog "wsl spawn (static-script): wt new-tab -- wsl.exe -e bash -l $staticScriptWsl '$rawPath' $sessionFlag $sessionId $promptWslPath (prompt-bytes=$($promptForFile.Length))"
 				try {
@@ -99,7 +103,16 @@ foreach ($f in $pendingFiles) {
 				# PowerShell single-quote escape: ' → ''
 				$psSafePath   = $rawPath   -replace "'", "''"
 				$psSafePrompt = $rawPrompt -replace "'", "''"
-				$cli = "claude '$psSafePrompt' $sessionFlag '$sessionId' --dangerously-skip-permissions"
+				
+				if ($agentType -eq "antigravity") {
+					if ($psSafePrompt) {
+						$cli = "agy -i '$psSafePrompt' --add-dir '$psSafePath' --conversation '$sessionId' --dangerously-skip-permissions"
+					} else {
+						$cli = "agy --add-dir '$psSafePath' --conversation '$sessionId' --dangerously-skip-permissions"
+					}
+				} else {
+					$cli = "claude '$psSafePrompt' $sessionFlag '$sessionId' --dangerously-skip-permissions"
+				}
 				$command = "Set-Location '$psSafePath'; $cli"
 				$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 				Start-Process -FilePath "wt" -ArgumentList "new-tab", "--", "powershell.exe", "-EncodedCommand", $encoded

@@ -10,6 +10,7 @@ function healthLampClass(health) {
 // Open a fresh line. The one global action that doesn't act on an existing line,
 // so it lives in the operator header rather than on a conversation.
 function SpawnDialog({ store, onClose }) {
+	const [agent, setAgent] = useState("claude");
 	const [surface, setSurface] = useState("windows");
 	const [project, setProject] = useState("");
 	const [prompt, setPrompt] = useState("");
@@ -18,6 +19,7 @@ function SpawnDialog({ store, onClose }) {
 	const submit = () => {
 		if (!canSubmit) return;
 		store.spawnFresh({
+			agent,
 			surface,
 			project,
 			prompt: prompt || undefined,
@@ -28,6 +30,12 @@ function SpawnDialog({ store, onClose }) {
 	return html`
 		<div class="dialog" role="dialog">
 			<h3>Open a line</h3>
+			<label>Agent
+				<select value=${agent} onChange=${(e) => setAgent(e.target.value)}>
+					<option value="claude">Claude</option>
+					<option value="antigravity">Antigravity</option>
+				</select>
+			</label>
 			<label>Surface
 				<select value=${surface} onChange=${(e) => setSurface(e.target.value)}>
 					<option value="windows">windows</option>

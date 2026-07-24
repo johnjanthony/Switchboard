@@ -64,6 +64,17 @@ test('spawnFreshCmd includes optional prompt and target_conversation_id when giv
 	});
 });
 
+test('spawnFreshCmd includes optional agent when given', () => {
+	const cmd = spawnFreshCmd({ agent: 'antigravity', surface: 'windows', project: 'C:/Work/X' }, nowIso);
+	assert.deepEqual(cmd.value, {
+		type: 'fresh',
+		agent: 'antigravity',
+		surface: 'windows',
+		project: 'C:/Work/X',
+		issued_at: FIXED_ISO,
+	});
+});
+
 test('resumeCmd has source_conversation_id and NO surface/project/target', () => {
 	const cmd = resumeCmd({ sourceConversationId: 'c3' }, nowIso);
 	assert.equal(cmd.path, 'spawn_commands');

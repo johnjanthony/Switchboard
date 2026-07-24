@@ -116,12 +116,6 @@ class SpawnHandler:
 		rec = sessions.get(session_id) if sessions is not None else None
 		return rec is not None and rec.cli == "antigravity"
 
-	async def _notify_manual_resume(self, label: str, session_id: str, cwd: str) -> None:
-		await self._backend.send_text(
-			f"'{label}' is an Antigravity session; auto-resume is not supported yet. "
-			f"Resume manually: agy --conversation {session_id} in {cwd}"
-		)
-
 	async def _cancel_prior_pending(self, conversation_id: str) -> None:
 		"""Cancel any pending ask_human requests left over for this conversation before launching
 		a new agent. Without this, a prior agent that died without reaching its tool-handler
@@ -184,6 +178,7 @@ class SpawnHandler:
 			"John is currently away. All communications MUST go through the switchboard MCP. "
 			"Tool calls auto-inject your cli_session_id; you don't need to provide it manually. "
 		)
+		agent_label = "Antigravity" if cmd.get("agent") == "antigravity" else "Claude"
 		if join_existing:
 			roster_parts: list[str] = []
 			for m in conv.members_active.values():
@@ -209,9 +204,9 @@ class SpawnHandler:
 				f"You're joining the conversation \"{conv.title}\". "
 				f"Current members: {roster}. "
 				"Pick a short human-readable sender name distinct from those — surface labels "
-				"(e.g. 'Claude Win', 'Claude WSL') or role labels (e.g. 'Reviewer', 'Implementer') "
+				f"(e.g. '{agent_label} Win', '{agent_label} WSL') or role labels (e.g. 'Reviewer', 'Implementer') "
 				"both work. If you pick a name already in use, the server appends a numeric suffix "
-				"(e.g. 'Claude Win 2'). "
+				f"(e.g. '{agent_label} Win 2'). "
 				f"Call join_conversation(sender='<your_name>', ref='{conv.id}') as your first "
 				"switchboard action to collect the recent log right away. After you have that "
 				"context, introduce yourself via message_and_await_agent, which blocks until a "
@@ -220,7 +215,7 @@ class SpawnHandler:
 			)
 		else:
 			base += (
-				"Pick a short human-readable sender name (e.g. 'Claude Win', 'Implementer'). "
+				f"Pick a short human-readable sender name (e.g. '{agent_label} Win', 'Implementer'). "
 				"Your first switchboard tool call registers you as a member of this conversation. "
 			)
 			user_prompt = cmd.get("prompt")
@@ -275,6 +270,7 @@ class SpawnHandler:
 		from server.registry import Conversation
 		from server.clock import now_iso
 
+		agent = cmd.get("agent", "claude")
 		surface = cmd.get("surface", "windows")
 		project = cmd.get("project")
 		if not project:
@@ -340,11 +336,12 @@ class SpawnHandler:
 		else:
 			conv_id = "conv-" + uuid.uuid4().hex
 			conv = Conversation(id=conv_id, title=f"{project} ({surface})", origin="spawn")
+			agent_label = "Antigravity" if agent == "antigravity" else "Claude"
 			spawn_msg = {
 				"seq": 0,
 				"sender": "<system>",
 				"type": "system",
-				"text": f"Spawning Claude in {project} ({surface})",
+				"text": f"Spawning {agent_label} in {project} ({surface})",
 				"timestamp": now_iso(),
 			}
 			conv.messages.append(spawn_msg)
@@ -402,6 +399,7 @@ class SpawnHandler:
 			"type": "fresh",
 			"conversation_id": conv_id,
 			"agents": [{
+				"agent": agent,
 				"surface": surface,
 				"cli_session_id": new_session_id,
 				"prompt": prompt,
@@ -471,9 +469,6 @@ class SpawnHandler:
 		resumable = []
 		for m in source.members_active.values():
 			if m.alive or m.session_lost_permanently:
-				continue
-			if self._is_antigravity_session(m.cli_session_id):
-				await self._notify_manual_resume(m.sender, m.cli_session_id, m.cwd)
 				continue
 			bound_to = self._registry.session_to_conversation_id.get(m.cli_session_id)
 			if bound_to is not None:
@@ -550,6 +545,7 @@ class SpawnHandler:
 			new_conv.members_active[m.cli_session_id] = m
 			del source.members_active[m.cli_session_id]
 			agents.append({
+				"agent": "antigravity" if self._is_antigravity_session(m.cli_session_id) else "claude",
 				"surface": m.surface,
 				"cli_session_id": m.cli_session_id,
 				"prompt": self._format_resume_prompt(cmd, m, new_id, solo_resume),
@@ -615,14 +611,12 @@ class SpawnHandler:
 	) -> bool:
 		"""Queue one claude --resume launch. No away-mode side effect - the caller
 		owns that policy (resume paths enable it; convene never does)."""
-		if self._is_antigravity_session(session_id):
-			await self._notify_manual_resume(session_id[:8], session_id, cwd)
-			return False
 		if not await self._user_has_interactive_session():
 			return False
 		pending = {
 			"type": "resume_session",
 			"agents": [{
+				"agent": "antigravity" if self._is_antigravity_session(session_id) else "claude",
 				"surface": surface,
 				"cli_session_id": session_id,
 				"prompt": prompt,
@@ -656,9 +650,6 @@ class SpawnHandler:
 			return
 		if not rec.cwd:
 			await self._backend.send_text(f"Cannot resume {session_id[:8]}: no working directory recorded.")
-			return
-		if rec.cli == "antigravity":
-			await self._notify_manual_resume(session_id[:8], session_id, rec.cwd)
 			return
 
 		target_id = cmd.get("target_conversation_id")

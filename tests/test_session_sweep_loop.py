@@ -40,6 +40,82 @@ async def test_sweep_once_marks_lost_when_rings_fresh():
 
 
 @pytest.mark.asyncio
+async def test_sweep_flips_lost_antigravity_member_dormant_and_resumable():
+	"""Antigravity has no SessionEnd hook, so the silence sweep is the only signal
+	that can flip its conversation member dormant. When the sweep marks an agy
+	session lost, the bound member must become dormant (alive=False) and resumable
+	(not permanently lost), and the session must be unbound - otherwise phone /
+	Operator resume finds no resumable members and silently no-ops."""
+	from server.gateway.dispatch import _session_sweep_once
+
+	reg = _reg()
+	reg.record_session_start("agy-sess", cwd="C:/Work/client", cli="antigravity")
+	store = WidgetSnapshotStore()
+	store.rings = {}
+
+	registry = Registry()
+	registry.sessions = reg
+	conv = Conversation(id="conv-1", title="client (windows)")
+	member = ConversationMember(
+		cli_session_id="agy-sess", sender="Antigravity Win", cwd="C:/Work/client",
+		surface="windows", joined_at=0.0, alive=True,
+	)
+	conv.members_active["agy-sess"] = member
+	registry.conversations["conv-1"] = conv
+	registry.bind_session("agy-sess", "conv-1")
+
+	import datetime as _dt
+	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
+	now_ts = last + 1000
+	store.pushed_at = datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat()
+
+	await _session_sweep_once(
+		reg, store, lost_after_seconds=900, retention_hours=72, now_ts=now_ts, registry=registry,
+	)
+
+	assert member.alive is False
+	assert member.session_lost_permanently is False
+	assert registry.session_to_conversation_id.get("agy-sess") is None
+
+
+@pytest.mark.asyncio
+async def test_sweep_leaves_lost_claude_member_untouched():
+	"""The propagation is Antigravity-only: a lost Claude session's member is left
+	for the SessionEnd-marker path, not flipped by the silence sweep (avoids
+	altering Claude lifecycle as a side effect)."""
+	from server.gateway.dispatch import _session_sweep_once
+
+	reg = _reg()
+	reg.record_session_start("cc-sess", cwd="C:/Work/X", cli="claude")
+	store = WidgetSnapshotStore()
+	store.rings = {}
+
+	registry = Registry()
+	registry.sessions = reg
+	conv = Conversation(id="conv-2", title="X (windows)")
+	member = ConversationMember(
+		cli_session_id="cc-sess", sender="Claude Win", cwd="C:/Work/X",
+		surface="windows", joined_at=0.0, alive=True,
+	)
+	conv.members_active["cc-sess"] = member
+	registry.conversations["conv-2"] = conv
+	registry.bind_session("cc-sess", "conv-2")
+
+	import datetime as _dt
+	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
+	now_ts = last + 1000
+	store.pushed_at = datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat()
+
+	await _session_sweep_once(
+		reg, store, lost_after_seconds=900, retention_hours=72, now_ts=now_ts, registry=registry,
+	)
+
+	assert reg.get("cc-sess").state == "lost"
+	assert member.alive is True
+	assert registry.session_to_conversation_id.get("cc-sess") == "conv-2"
+
+
+@pytest.mark.asyncio
 async def test_sweep_once_suspends_lost_marking_when_rings_stale():
 	"""A stale (or absent) Watchtower push means ring absence proves nothing, so
 	lost-marking is suspended rather than guessed."""

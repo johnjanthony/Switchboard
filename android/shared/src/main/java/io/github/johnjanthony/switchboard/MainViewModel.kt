@@ -855,6 +855,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	 * Returns true if away mode was auto-enabled (caller can show a toast).
 	 */
 	fun spawnSession(
+		agent: String,
 		surface: String,
 		project: String,
 		prompt: String,
@@ -867,6 +868,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		}
 		val record = mutableMapOf<String, Any>(
 			"type" to "fresh",
+			"agent" to agent,
 			"surface" to surface,
 			"project" to project,
 			"issued_at" to nowIso(),

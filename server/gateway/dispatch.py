@@ -608,8 +608,34 @@ async def _parked_sweep_once(registry, backend, logger, *, max_age_hours, now=No
 	return len(expired)
 
 
+async def _propagate_agy_lost_to_members(session_registry, registry, backend, logger):
+	"""Flip a lost Antigravity session's conversation member dormant (resumable).
+
+	Antigravity has no SessionEnd hook, so a dead agy session never drives the
+	member-dormancy path a Claude SessionEnd marker does - the member stays
+	alive forever and phone/Operator resume finds nothing resumable. When the
+	silence sweep marks an agy session lost, run the same dormancy path
+	(member alive->False, not permanently lost) so it becomes resumable.
+
+	Idempotent: handle_session_end unbinds the session and record_session_end
+	flips the roster record to 'ended', so a later tick finds neither a 'lost'
+	state nor a binding and skips it."""
+	from server.clock import now_iso
+	from server.cli_session_end import handle_session_end
+	for rec in session_registry.snapshot():
+		if rec.state != "lost" or rec.cli != "antigravity":
+			continue
+		if registry.session_to_conversation_id.get(rec.cli_session_id) is None:
+			continue
+		await handle_session_end(
+			registry, rec.cli_session_id, reason="presumed-dead", now=now_iso,
+			backend=backend, logger=logger, session_registry=session_registry,
+		)
+
+
 async def _session_sweep_once(
 	session_registry, widget_store, *, lost_after_seconds, retention_hours, now_ts=None, registry=None,
+	backend=None, logger=None,
 ):
 	"""One tick of the staleness sweep, factored out so tests can drive it
 	directly instead of running the infinite loop. Reads the widget store's
@@ -629,7 +655,7 @@ async def _session_sweep_once(
 				fut = entry.get("future")
 				if member is not None and fut is not None and not fut.done():
 					live_wait_ids.add(member.cli_session_id)
-	return session_registry.sweep(
+	pruned = session_registry.sweep(
 		now_ts=now,
 		lost_after_seconds=lost_after_seconds,
 		retention_seconds=retention_hours * 3600,
@@ -638,6 +664,9 @@ async def _session_sweep_once(
 		live_ask_ids=live_ask_ids,
 		live_wait_ids=live_wait_ids,
 	)
+	if registry is not None:
+		await _propagate_agy_lost_to_members(session_registry, registry, backend, logger)
+	return pruned
 
 
 async def _maybe_warn_marker_health(session_registry, logger, marker_dir) -> None:
@@ -663,7 +692,7 @@ async def dispatch_session_sweep(
 			pruned = await _session_sweep_once(
 				session_registry, widget_store,
 				lost_after_seconds=lost_after_seconds, retention_hours=retention_hours,
-				registry=registry,
+				registry=registry, backend=backend, logger=logger,
 			)
 			if pruned:
 				await logger.info(f"session_sweep_pruned: {len(pruned)}")

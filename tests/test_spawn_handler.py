@@ -893,7 +893,8 @@ def _registry_with_dormant_agy(session_id: str = "agy-sess-1") -> Registry:
 
 
 @pytest.mark.asyncio
-async def test_handle_resume_skips_antigravity_member_with_notice(tmp_path):
+async def test_handle_resume_launches_antigravity_member(tmp_path):
+	import json
 	from server.spawn import SpawnHandler
 	cfg = make_config_with_wsl(tmp_path)
 	backend = make_backend()
@@ -901,15 +902,16 @@ async def test_handle_resume_skips_antigravity_member_with_notice(tmp_path):
 	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()) as launcher:
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle_resume({"type": "resume", "source_conversation_id": "conv-src"})
-	assert _find_pending_files(cfg) == []
-	launcher.assert_not_awaited()
-	backend.send_text.assert_awaited()
-	notices = " ".join(str(c.args[0]) for c in backend.send_text.await_args_list)
-	assert "agy --conversation agy-sess-1" in notices
+	files = _find_pending_files(cfg)
+	assert len(files) == 1
+	launcher.assert_awaited_once()
+	payload = json.loads(files[0].read_text(encoding="utf-8"))
+	assert payload["agents"][0]["agent"] == "antigravity"
 
 
 @pytest.mark.asyncio
-async def test_handle_resume_session_rejects_antigravity(tmp_path):
+async def test_handle_resume_session_launches_antigravity(tmp_path):
+	import json
 	from server.spawn import SpawnHandler
 	from server.session_registry import SessionRegistry
 	cfg = make_config_with_wsl(tmp_path)
@@ -918,15 +920,18 @@ async def test_handle_resume_session_rejects_antigravity(tmp_path):
 	registry.sessions = SessionRegistry()
 	registry.sessions.record_session_start("agy-sess-2", cwd="C:/Work/X", cli="antigravity")
 	registry.sessions.record_session_end("agy-sess-2", reason="exit", ended_at="2026-07-14T00:00:00Z")
-	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
-	await handler.handle_resume_session({"session_id": "agy-sess-2"})
-	assert _find_pending_files(cfg) == []
-	backend.send_text.assert_awaited()
-	assert "agy --conversation agy-sess-2" in backend.send_text.await_args.args[0]
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()) as launcher:
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle_resume_session({"session_id": "agy-sess-2"})
+	files = _find_pending_files(cfg)
+	assert len(files) == 1
+	launcher.assert_awaited_once()
+	payload = json.loads(files[0].read_text(encoding="utf-8"))
+	assert payload["agents"][0]["agent"] == "antigravity"
 
 
 @pytest.mark.asyncio
-async def test_launch_resume_agent_returns_false_for_antigravity(tmp_path):
+async def test_launch_resume_agent_returns_true_for_antigravity(tmp_path):
 	from server.spawn import SpawnHandler
 	from server.session_registry import SessionRegistry
 	cfg = make_config_with_wsl(tmp_path)
@@ -934,13 +939,15 @@ async def test_launch_resume_agent_returns_false_for_antigravity(tmp_path):
 	registry = Registry()
 	registry.sessions = SessionRegistry()
 	registry.sessions.record_session_start("agy-sess-3", cwd="C:/Work/X", cli="antigravity")
-	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
-	ok = await handler.launch_resume_agent(
-		session_id="agy-sess-3", surface="windows", cwd="C:/Work/X", prompt="p", prior_sender=None,
-	)
-	assert ok is False
-	assert _find_pending_files(cfg) == []
-	assert "agy --conversation agy-sess-3" in backend.send_text.await_args.args[0]
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()) as launcher:
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		ok = await handler.launch_resume_agent(
+			session_id="agy-sess-3", surface="windows", cwd="C:/Work/X", prompt="p", prior_sender=None,
+		)
+	assert ok is True
+	files = _find_pending_files(cfg)
+	assert len(files) == 1
+	launcher.assert_awaited_once()
 
 
 # ===========================================================================
