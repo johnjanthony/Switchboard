@@ -223,9 +223,14 @@ async def flow_restart_survival(ctx, rep, args):
 	else:
 		raise SmokeFailure("blocked call survived restart?!")
 
+	# Away mode PERSISTS across restart (T-029, 2026-07-24). It was ON before the
+	# restart (the blocking ask above required it), so it must still be ON after.
+	# This replaces the old "startup forces away OFF" assertion - the startup
+	# reset was removed, and Claude Code reconnects its MCP session on its own, so
+	# a pre-restart agent resumes rather than getting stuck.
 	away = http_get_json(f"{ctx.base_url}/away-mode")
-	if away.get("active") is not False:
-		raise SmokeFailure(f"away mode not reset to False after restart (startup reset contract): {away!r}")
+	if away.get("active") is not True:
+		raise SmokeFailure(f"away mode did not persist across restart (T-029 contract): {away!r}")
 
 	# Check the Storage-independent startup sweep FIRST, so an isolation-caused parked
 	# surprise below cannot mask the retention-sweep verification (this used to run after

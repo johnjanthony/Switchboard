@@ -130,7 +130,7 @@ class TestResponsePollerContract:
 
 class TestAwayModeMirrorContract:
 	"""Contract tests for AwayModeMirror (load_away_mode_snapshot,
-	start_away_mode_listeners, reset_all_away_mode, delete_legacy_away_mode_node).
+	start_away_mode_listeners, clear_pending_away_mode_commands, delete_legacy_away_mode_node).
 	The legacy per-cwd mirror was retired in the conversations redesign — the
 	global flag is the only away-mode signal."""
 
@@ -139,7 +139,7 @@ class TestAwayModeMirrorContract:
 		for method_name in (
 			"load_away_mode_snapshot",
 			"start_away_mode_listeners",
-			"reset_all_away_mode",
+			"clear_pending_away_mode_commands",
 			"delete_legacy_away_mode_node",
 		):
 			assert hasattr(AwayModeMirror, method_name), f"Missing: {method_name}"

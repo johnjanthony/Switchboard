@@ -442,7 +442,7 @@ Setting a Firebase node to `None` via `ref.set(None)` raises `ValueError('Value 
 
 On startup, `server/hydration.py:hydrate_from_firebase` rebuilds the in-memory registry from Firebase:
 
-1. **Global settings** — `away_mode`, `open_conversation_id`.
+1. **Global settings** — `away_mode` (persists across restart; the former startup force-off was removed 2026-07-24, T-029 - a restart no longer clears away mode), `open_conversation_id`.
 2. **Conversations** — every `conversations/<id>/` node whose `meta/state == "active"` is restored. Ended conversations are skipped (they live in Firebase as history but aren't loaded into memory). For each hydrated Active conversation, messages are additionally read from the companion top-level `messages/<id>` node.
 3. **Open-pointer validation** — if `_open_conversation_id` is set but the referenced conv wasn't hydrated (Ended or missing), hydration clears the pointer in-memory AND calls `backend.set_open_conversation_id(None)` to delete the Firebase node. The system self-heals from dangling pointers without requiring manual intervention.
 4. **Session home pointers** — `cli_sessions/<session_id>/home_conversation_id`, skipping any pointer whose home isn't in the hydrated set (avoids re-binding to Ended homes).

@@ -172,10 +172,10 @@ class AwayModeMirror(ABC):
 		single global flag remains. No-op default."""
 		pass
 
-	async def reset_all_away_mode(self) -> None:
-		"""Force away mode off globally and clear all per-channel overrides on
-		startup. Decouples post-restart away-mode state from the now-broken MCP
-		sessions of any pre-restart agents. No-op default; FirebaseBackend overrides."""
+	async def clear_pending_away_mode_commands(self) -> None:
+		"""Clear the queued /away_mode_commands on startup so a stale toggle from
+		before the restart cannot replay. Does NOT reset the away flag - away mode
+		persists across restart (T-029). No-op default; FirebaseBackend overrides."""
 		pass
 
 	async def delete_legacy_away_mode_node(self) -> None:

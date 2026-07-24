@@ -18,14 +18,15 @@ def backend(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reset_all_away_mode_writes_global_false(backend):
-	"""Startup reset: global goes to false. Per-channel overrides retired —
-	the function no longer touches /channels/*/away_mode."""
+async def test_startup_command_clear_does_not_touch_away_flag(backend):
+	"""Startup clears the queued away commands but must NOT write the away flag:
+	away mode persists across restart (T-029). Per-channel overrides retired."""
 	be, mock_db = backend
-	await be.reset_all_away_mode()
+	await be.clear_pending_away_mode_commands()
 	calls = [str(c) for c in mock_db.reference.call_args_list]
-	assert any("global_settings/away_mode" in c for c in calls)
-	mock_db.reference.return_value.set.assert_called_with(False)
+	assert any("away_mode_commands" in c for c in calls)
+	# The flag is never written on startup anymore.
+	assert not any("global_settings/away_mode" in c for c in calls)
 	# Must NOT walk /channels or issue multi-path updates against channel away_mode.
 	assert not any("channels/" in c and "away_mode" in c for c in calls)
 

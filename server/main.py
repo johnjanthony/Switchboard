@@ -732,17 +732,17 @@ async def _run(config: Config) -> None:
 		logger=logger,
 	)
 
-	# Reset away-mode state BEFORE loading the snapshot. In stateful HTTP mode
-	# (which we use to get cancel-notification propagation), a server restart
-	# invalidates every pre-existing CC session and those agents lose access to
-	# switchboard tools. Leaving away_mode=true would trap them in a Stop-hook
-	# loop ("call ask_human" → tool unavailable → repeat). Resetting to off
-	# lets them gracefully fall back to terminal output. The user re-enables
-	# away mode from the phone (via /away_mode_commands) or from a spawned
-	# agent (via the set_away_mode MCP tool).
-	await backend.reset_all_away_mode()
-	# Populate cache from Firebase (now reflects the post-reset state), start
-	# listeners, zero pending counters.
+	# Clear any away-mode commands left queued from before the restart
+	# (crash-before-delete) so the command listener's initial snapshot cannot
+	# replay a stale toggle (M06). Must run before start_away_mode_listeners.
+	# The away flag itself is NOT reset here: it persists across restart (T-029),
+	# hydrated by load_away_mode_snapshot below. Removing the old forced reset is
+	# safe because Claude Code re-establishes its MCP session after a restart
+	# (verified 2026-07-24), so a pre-restart agent resumes rather than getting
+	# stuck in a Stop-hook loop.
+	await backend.clear_pending_away_mode_commands()
+	# Populate cache from Firebase (the persisted away state), start listeners,
+	# zero pending counters.
 	await backend.load_away_mode_snapshot(registry)
 	await backend.delete_legacy_away_mode_node()
 	await backend.delete_open_conversation_node()

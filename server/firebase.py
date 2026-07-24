@@ -339,31 +339,22 @@ class FirebaseBackend(
 			})
 		await asyncio.to_thread(_delete)
 
-	async def reset_all_away_mode(self) -> None:
-		"""Force away mode off globally.
+	async def clear_pending_away_mode_commands(self) -> None:
+		"""Clear the queued /away_mode_commands on server startup, before the
+		command listener attaches, so a stale toggle left by a crash-before-delete
+		cannot replay from the listener's initial snapshot and silently flip away
+		mode (M06, decided 2026-06-11).
 
-		Called once on server startup. Rationale: in stateful HTTP mode, a server
-		restart invalidates every active CC session — those agents lose access to
-		the switchboard MCP tools (issue #27142) and can no longer call
-		ask_human / notify_human / etc. If we left away_mode=true on restart,
-		the Stop hook would block their turn-end with "call ask_human" but the
-		tool isn't available, producing a useless loop until the user manually
-		`/exit`s and relaunches CC.
-
-		Resetting away mode on startup means pre-restart agents fall back to
-		normal terminal output (which they can do without switchboard tools).
-		The user re-enables away mode via the phone toggle.
-		Clears /away_mode_commands in the same pass so stale queued toggles cannot replay after the reset (decided 2026-06-11).
+		Does NOT reset the away flag. Away mode persists across a service restart
+		(T-029); the flag is hydrated from Firebase by load_away_mode_snapshot.
+		Forcing it off on startup used to be necessary when a restart left
+		pre-restart agents without MCP tools, but Claude Code re-establishes its
+		MCP session after a restart (verified 2026-07-24), so a pre-restart agent
+		resumes rather than getting stuck in a Stop-hook loop.
 		"""
-		def _reset():
-			db.reference('global_settings/away_mode').set(False)
-			# Also drop any queued away commands from before the restart: this
-			# reset is an authoritative state decision, so a stale enter_global
-			# left behind by a crash must not replay from the command
-			# listener's initial snapshot and silently re-enable away mode
-			# (M06). The command listener attaches after startup runs this.
+		def _clear():
 			db.reference('away_mode_commands').delete()
-		await asyncio.to_thread(_reset)
+		await asyncio.to_thread(_clear)
 
 	async def delete_legacy_away_mode_node(self) -> None:
 		"""One-shot startup migration: delete the old away_mode/ top-level node.
