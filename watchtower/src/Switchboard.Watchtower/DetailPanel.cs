@@ -11,7 +11,7 @@ internal sealed class DetailPanel : Form
 	const int WS_EX_NOACTIVATE = 0x08000000;
 	const int RowH = 42;
 	const int Pad = 12;
-	const int QuotaWindowRowH = 46;
+	const int QuotaWindowRowH = 42;
 	const int QuotaPausedRowH = 18;
 	const int GroupVPad = 8;     // inner top/bottom padding inside a group panel
 	const int GroupGap = 10;     // vertical gap between the two group panels
@@ -587,8 +587,8 @@ internal sealed class DetailPanel : Form
 		}
 
 		// line 2: continuous usage bar (severity gradient), matching the popup's session-row bars
-		int barY = y + 18;
-		int barW = Width - Pad * 2;
+		int barY = y + 22;
+		int barW = Width - Pad * 2 - 42;
 		using (var track = new SolidBrush(_palette.Track))
 			g.FillRectangle(track, Pad, barY, barW, 8);
 		using (var fill = new SolidBrush(color))
@@ -606,22 +606,9 @@ internal sealed class DetailPanel : Form
 			g.FillRectangle(ghostFill, Pad, ghostY, (int)(barW * ef), 3);
 		}
 
-		// caption: "NN% used · time elapsed NN%" - the elapsed part tints amber when burning ahead of pace
-		int capY = ghostY + 6;
-		string usedText = $"{(int)Math.Round(w.Percentage)}% used";
-		using (var ub = new SolidBrush(color))
-			g.DrawString(usedText, small, ub, Pad, capY);
-		if (pace.ElapsedFraction is double ef2)
-		{
-			float usedW = g.MeasureString(usedText, small).Width;
-			const string sep = " · ";
-			float sepW = g.MeasureString(sep, small).Width;
-			g.DrawString(sep, small, mutedBrush, Pad + usedW, capY);
-			string elapsedText = $"time elapsed {(int)Math.Round(ef2 * 100)}%";
-			var paceColor = pace.Verdict == PaceVerdict.Over ? _palette.Warning : _palette.Muted;
-			using var pb = new SolidBrush(paceColor);
-			g.DrawString(elapsedText, small, pb, Pad + usedW + sepW, capY);
-		}
+		string pctText = $"{(int)Math.Round(w.Percentage)}%";
+		using (var pctBrush = new SolidBrush(color))
+			g.DrawString(pctText, label, pctBrush, Width - Pad - 34, barY - 4);
 
 		return y + QuotaWindowRowH;
 	}
