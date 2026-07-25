@@ -19,6 +19,52 @@ internal sealed class DetailPanel : Form
 	const int PanelRadius = 6;
 	const int BottomPillRowH = 26;
 
+	const int WS_EX_TRANSPARENT = 0x00000020;
+
+	private sealed class BackgroundForm : Form
+	{
+		[System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+		static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
+		public BackgroundForm()
+		{
+			FormBorderStyle = FormBorderStyle.None;
+			ShowInTaskbar = false;
+			TopMost = true;
+			StartPosition = FormStartPosition.Manual;
+			BackColor = Color.FromArgb(80, 80, 80);
+			Opacity = 0.40;
+		}
+
+		protected override void OnHandleCreated(EventArgs e)
+		{
+			base.OnHandleCreated(e);
+			try
+			{
+				int value = 3; // DWMSBT_TRANSIENTWINDOW (Acrylic)
+				DwmSetWindowAttribute(Handle, 38, ref value, 4); // DWMWA_SYSTEMBACKDROP_TYPE
+
+				int borderColor = unchecked((int)0xFFFFFFFE); // DWMWA_COLOR_NONE
+				DwmSetWindowAttribute(Handle, 34, ref borderColor, 4); // DWMWA_BORDER_COLOR
+
+				int corner = 1; // DWMWCP_DONOTROUND
+				DwmSetWindowAttribute(Handle, 33, ref corner, 4); // DWMWA_WINDOW_CORNER_PREFERENCE
+			}
+			catch { }
+		}
+
+
+
+		protected override bool ShowWithoutActivation => true;
+
+		protected override CreateParams CreateParams
+		{
+			get { var cp = base.CreateParams; cp.ExStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT; return cp; }
+		}
+	}
+
+	readonly BackgroundForm _bgForm = new();
+
 	// Backdrop color, keyed to full transparency (Form.TransparencyKey). The card fills are anti-aliased
 	// and a color key only removes exact-key pixels, so the blended edge pixels survive as a fringe. This
 	// value tunes how that fringe reads: a pure grey partway between the card surface (#2A2A2A) and black,
@@ -134,6 +180,8 @@ internal sealed class DetailPanel : Form
 		return path;
 	}
 
+
+
 	static GraphicsPath RoundedRect(int w, int h, int r) => RoundedRectPath(new RectangleF(0, 0, w, h), r);
 
 	static void FillRoundedRect(Graphics g, Brush brush, Rectangle r, int radius)
@@ -143,6 +191,29 @@ internal sealed class DetailPanel : Form
 	}
 
 	protected override bool ShowWithoutActivation => true;
+
+	protected override void OnVisibleChanged(EventArgs e)
+	{
+		base.OnVisibleChanged(e);
+		if (!Visible) _bgForm.Hide();
+	}
+
+	[System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+	static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
+	protected override void OnHandleCreated(EventArgs e)
+	{
+		base.OnHandleCreated(e);
+		try
+		{
+			int borderColor = unchecked((int)0xFFFFFFFE); // DWMWA_COLOR_NONE
+			DwmSetWindowAttribute(Handle, 34, ref borderColor, 4); // DWMWA_BORDER_COLOR
+
+			int corner = 1; // DWMWCP_DONOTROUND
+			DwmSetWindowAttribute(Handle, 33, ref corner, 4); // DWMWA_WINDOW_CORNER_PREFERENCE
+		}
+		catch { }
+	}
 
 	protected override CreateParams CreateParams
 	{
@@ -297,6 +368,10 @@ internal sealed class DetailPanel : Form
 		int x = Math.Max(0, widgetScreenBounds.Right - Width);
 		int y = widgetScreenBounds.Top - Height;   // touch the widget's top edge so hover doesn't break crossing a gap
 		Location = new Point(x, y);
+		_bgForm.Size = Size;
+		_bgForm.Location = Location;
+		if (!_bgForm.Visible) _bgForm.Show();
+		_bgForm.BringToFront();
 		if (!Visible) Show();
 		BringToFront();
 	}
