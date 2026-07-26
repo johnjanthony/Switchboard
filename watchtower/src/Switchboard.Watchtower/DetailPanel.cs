@@ -23,8 +23,41 @@ internal sealed class DetailPanel : Form
 
 	private sealed class BackgroundForm : Form
 	{
-		[System.Runtime.InteropServices.DllImport("dwmapi.dll")]
-		static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+		[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+		public struct POINT { public int x; public int y; }
+
+		[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+		public struct SIZE { public int cx; public int cy; }
+
+		[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, Pack = 1)]
+		public struct BLENDFUNCTION
+		{
+			public byte BlendOp;
+			public byte BlendFlags;
+			public byte SourceConstantAlpha;
+			public byte AlphaFormat;
+		}
+
+		[System.Runtime.InteropServices.DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+		public static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr hdcDst, ref POINT pptDst, ref SIZE psize, IntPtr hdcSrc, ref POINT pptSrc, int crKey, ref BLENDFUNCTION pblend, int dwFlags);
+
+		[System.Runtime.InteropServices.DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+		public static extern IntPtr GetDC(IntPtr hWnd);
+
+		[System.Runtime.InteropServices.DllImport("user32.dll", ExactSpelling = true)]
+		public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+		[System.Runtime.InteropServices.DllImport("gdi32.dll", ExactSpelling = true, SetLastError = true)]
+		public static extern IntPtr CreateCompatibleDC(IntPtr hDC);
+
+		[System.Runtime.InteropServices.DllImport("gdi32.dll", ExactSpelling = true, SetLastError = true)]
+		public static extern bool DeleteDC(IntPtr hdc);
+
+		[System.Runtime.InteropServices.DllImport("gdi32.dll", ExactSpelling = true)]
+		public static extern IntPtr SelectObject(IntPtr hDC, IntPtr hObject);
+
+		[System.Runtime.InteropServices.DllImport("gdi32.dll", ExactSpelling = true, SetLastError = true)]
+		public static extern bool DeleteObject(IntPtr hObject);
 
 		public BackgroundForm()
 		{
@@ -32,34 +65,45 @@ internal sealed class DetailPanel : Form
 			ShowInTaskbar = false;
 			TopMost = true;
 			StartPosition = FormStartPosition.Manual;
-			BackColor = Color.FromArgb(80, 80, 80);
-			Opacity = 0.40;
 		}
 
-		protected override void OnHandleCreated(EventArgs e)
+		public void PushFrame(Bitmap frame)
 		{
-			base.OnHandleCreated(e);
+			if (!IsHandleCreated) return;
+			IntPtr screenDc = GetDC(IntPtr.Zero);
+			IntPtr memDc = CreateCompatibleDC(screenDc);
+			IntPtr hBmp = IntPtr.Zero;
+			IntPtr old = IntPtr.Zero;
+
 			try
 			{
-				int value = 3; // DWMSBT_TRANSIENTWINDOW (Acrylic)
-				DwmSetWindowAttribute(Handle, 38, ref value, 4); // DWMWA_SYSTEMBACKDROP_TYPE
+				hBmp = frame.GetHbitmap(Color.FromArgb(0));
+				old = SelectObject(memDc, hBmp);
 
-				int borderColor = unchecked((int)0xFFFFFFFE); // DWMWA_COLOR_NONE
-				DwmSetWindowAttribute(Handle, 34, ref borderColor, 4); // DWMWA_BORDER_COLOR
+				POINT dst = new POINT { x = Left, y = Top };
+				SIZE size = new SIZE { cx = frame.Width, cy = frame.Height };
+				POINT src = new POINT { x = 0, y = 0 };
+				BLENDFUNCTION blend = new BLENDFUNCTION { BlendOp = 0, BlendFlags = 0, SourceConstantAlpha = 255, AlphaFormat = 1 };
 
-				int corner = 1; // DWMWCP_DONOTROUND
-				DwmSetWindowAttribute(Handle, 33, ref corner, 4); // DWMWA_WINDOW_CORNER_PREFERENCE
+				UpdateLayeredWindow(Handle, screenDc, ref dst, ref size, memDc, ref src, 0, ref blend, 2);
 			}
-			catch { }
+			finally
+			{
+				if (hBmp != IntPtr.Zero)
+				{
+					SelectObject(memDc, old);
+					DeleteObject(hBmp);
+				}
+				DeleteDC(memDc);
+				ReleaseDC(IntPtr.Zero, screenDc);
+			}
 		}
-
-
 
 		protected override bool ShowWithoutActivation => true;
 
 		protected override CreateParams CreateParams
 		{
-			get { var cp = base.CreateParams; cp.ExStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT; return cp; }
+			get { var cp = base.CreateParams; cp.ExStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | 0x80000; return cp; }
 		}
 	}
 
@@ -370,7 +414,67 @@ internal sealed class DetailPanel : Form
 		Location = new Point(x, y);
 		_bgForm.Size = Size;
 		_bgForm.Location = Location;
-		if (!_bgForm.Visible) _bgForm.Show();
+
+		if (!_bgForm.Visible)
+		{
+			int stripW = Width;
+			int stripH = Height + 300;
+			int stripY = widgetScreenBounds.Top - stripH;
+			if (stripY < 0)
+			{
+				stripH += stripY;
+				stripY = 0;
+			}
+
+			using var materialBmp = new Bitmap(stripW, stripH, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+			using (var g = Graphics.FromImage(materialBmp))
+			{
+				g.CopyFromScreen(x, stripY, 0, 0, new Size(stripW, stripH));
+			}
+
+			var rect = new Rectangle(0, 0, stripW, stripH);
+			var data = materialBmp.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadWrite, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+			int len = stripW * stripH;
+			int[] pixels = new int[len];
+			if (data.Stride == stripW * 4)
+			{
+				System.Runtime.InteropServices.Marshal.Copy(data.Scan0, pixels, 0, len);
+			}
+			else
+			{
+				for (int i = 0; i < stripH; i++)
+					System.Runtime.InteropServices.Marshal.Copy(data.Scan0 + i * data.Stride, pixels, i * stripW, stripW);
+			}
+
+			FrostMaterial.ApplyFrost(pixels, stripW, stripH);
+
+			if (data.Stride == stripW * 4)
+			{
+				System.Runtime.InteropServices.Marshal.Copy(pixels, 0, data.Scan0, len);
+			}
+			else
+			{
+				for (int i = 0; i < stripH; i++)
+					System.Runtime.InteropServices.Marshal.Copy(pixels, i * stripW, data.Scan0 + i * data.Stride, stripW);
+			}
+			materialBmp.UnlockBits(data);
+
+			using var targetBmp = new Bitmap(Width, Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+			using (var g = Graphics.FromImage(targetBmp))
+			{
+				g.Clear(Color.Transparent);
+				g.SmoothingMode = SmoothingMode.AntiAlias;
+				using var path = RoundedRectPath(new Rectangle(0, 0, Width, Height), 8);
+				using var brush = new TextureBrush(materialBmp);
+				// Offset brush so it grabs the bottom 'Height' portion of the strip
+				brush.TranslateTransform(0, -(stripH - Height));
+				g.FillPath(brush, path);
+			}
+
+			_bgForm.PushFrame(targetBmp);
+			_bgForm.Show();
+		}
+
 		_bgForm.BringToFront();
 		if (!Visible) Show();
 		BringToFront();
@@ -661,13 +765,29 @@ internal sealed class DetailPanel : Form
 			g.DrawString(resetText, small, mutedBrush, Width - Pad - rs.Width, y + 2);
 		}
 
-		// line 2: continuous usage bar (severity gradient), matching the popup's session-row bars
+		// line 2: segmented usage bar (severity gradient)
 		int barY = y + 22;
 		int barW = Width - Pad * 2 - 42;
+		int segmentCount = duration == QuotaPacing.SessionDuration ? 5 : 7;
+		int segGap = 2;
 		using (var track = new SolidBrush(_palette.Track))
-			g.FillRectangle(track, Pad, barY, barW, 8);
 		using (var fill = new SolidBrush(color))
-			g.FillRectangle(fill, Pad, barY, (int)(barW * usage01), 8);
+		{
+			int currentX = Pad;
+			for (int i = 0; i < segmentCount; i++)
+			{
+				int totalAvailable = barW - (segmentCount - 1) * segGap;
+				int segW = totalAvailable / segmentCount;
+				if (i < totalAvailable % segmentCount) segW++;
+
+				g.FillRectangle(track, currentX, barY, segW, 8);
+				double frac = QuotaFormat.SegmentFill(w.Percentage, i, segmentCount);
+				if (frac > 0)
+					g.FillRectangle(fill, currentX, barY, Math.Max(1, (int)Math.Round(segW * frac)), 8);
+				
+				currentX += segW + segGap;
+			}
+		}
 
 		// ghost pace bar beneath: fill to the elapsed-time fraction, amber when burning over pace
 		// (matching the caption tint), muted otherwise. Omitted when reset unknown.

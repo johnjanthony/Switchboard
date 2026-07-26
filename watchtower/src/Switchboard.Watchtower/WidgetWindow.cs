@@ -20,9 +20,9 @@ internal sealed class WidgetWindow : Form
 	const int PadAfterGrab = 4;
 	const int RightMargin = 8;     // small trailing gap (the max-% label is gone)
 
-	// Quota block (5h/7d rows): a 10-segment usage bar with a thin muted pace (elapsed-time) bar beneath.
-	const int QSegW = 9, QSegGap = 1, QSegCount = 10, QSegH = 8;
-	const int QBarW = QSegCount * (QSegW + QSegGap) - QSegGap;          // 49
+	// Quota block (5h/7d rows): a 5- or 7-segment usage bar with a thin muted pace (elapsed-time) bar beneath.
+	const int QSegGap = 1, QSegH = 8;
+	const int QBarW = 99;                                               // fixed width for both 5 and 7 segment bars
 	const int QPaceH = 2;                                               // pace (elapsed-time) bar height (skinny + calm on the widget)
 	const int QPaceGap = 2;                                             // gap between the usage bar and the pace bar
 	const int QSep = 14;                                                // gap before the context rings
@@ -550,16 +550,23 @@ internal sealed class WidgetWindow : Form
 		int stackTop = centerY - (QSegH + QPaceGap + QPaceH) / 2;
 
 		int segY = stackTop;
+		int segmentCount = duration == QuotaPacing.SessionDuration ? 5 : 7;
 		using (var track = new SolidBrush(_palette.Track))
 		using (var fill = new SolidBrush(fillColor))
 		{
-			for (int i = 0; i < QSegCount; i++)
+			int currentX = barX;
+			for (int i = 0; i < segmentCount; i++)
 			{
-				int segX = barX + i * (QSegW + QSegGap);
-				g.FillRectangle(track, segX, segY, QSegW, QSegH);
-				double frac = QuotaFormat.SegmentFill(w.Percentage, i, QSegCount);
+				int totalAvailable = QBarW - (segmentCount - 1) * QSegGap;
+				int segW = totalAvailable / segmentCount;
+				if (i < totalAvailable % segmentCount) segW++;
+
+				g.FillRectangle(track, currentX, segY, segW, QSegH);
+				double frac = QuotaFormat.SegmentFill(w.Percentage, i, segmentCount);
 				if (frac > 0)
-					g.FillRectangle(fill, segX, segY, Math.Max(1, (int)Math.Round(QSegW * frac)), QSegH);
+					g.FillRectangle(fill, currentX, segY, Math.Max(1, (int)Math.Round(segW * frac)), QSegH);
+				
+				currentX += segW + QSegGap;
 			}
 		}
 

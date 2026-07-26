@@ -159,9 +159,12 @@ function QuotaWindowGraph({ label, window, durationMs }) {
 		}
 	}
 
-	const segments = Array.from({ length: 10 }, (_, i) => {
-		const segStart = i * 10;
-		const fillFrac = Math.min(1, Math.max(0, (usagePct - segStart) / 10));
+	const segmentCount = label === "5h" ? 5 : label === "7d" ? 7 : 10;
+	const segPct = 100 / segmentCount;
+
+	const segments = Array.from({ length: segmentCount }, (_, i) => {
+		const segStart = i * segPct;
+		const fillFrac = Math.min(1, Math.max(0, (usagePct - segStart) / segPct));
 		const colorClass = usageFrac > 0.8 ? "over" : usageFrac > 0.6 ? "warn" : "ok";
 		return html`
 			<div class="quota-segment">
