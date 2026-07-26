@@ -159,25 +159,12 @@ function QuotaWindowGraph({ label, window, durationMs }) {
 		}
 	}
 
-	const segmentCount = label === "5h" ? 5 : label === "7d" ? 7 : 10;
-	const segPct = 100 / segmentCount;
-
-	const segments = Array.from({ length: segmentCount }, (_, i) => {
-		const segStart = i * segPct;
-		const fillFrac = Math.min(1, Math.max(0, (usagePct - segStart) / segPct));
-		const colorClass = usageFrac > 0.8 ? "over" : usageFrac > 0.6 ? "warn" : "ok";
-		return html`
-			<div class="quota-segment">
-				${fillFrac > 0 ? html`<div class=${"quota-segment-fill " + colorClass} style=${{ width: (fillFrac * 100) + "%" }}></div>` : null}
-			</div>
-		`;
-	});
-
 	return html`
 		<div class="quota-row">
 			<div class="quota-bars">
 				<div class="quota-segment-track">
-					${segments}
+					<div class="quota-segment gradient-fill" style=${{ clipPath: `inset(0 ${(1 - usageFrac) * 100}% 0 0 round 99px)` }}>
+					</div>
 				</div>
 				${elapsedFrac != null ? html`
 					<div class="quota-pace-track">

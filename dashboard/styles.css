@@ -638,15 +638,21 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 	font-family: var(--font-mono); font-size: 10px;
 }
 .quota-row { display: flex; align-items: center; width: 100%; }
-.quota-bars { display: flex; flex-direction: column; gap: 2px; width: 100%; }
-.quota-segment-track { display: flex; gap: 2px; height: 4px; width: 100%; }
-.quota-segment { flex: 1; height: 100%; background: #0a0c0f; border-radius: 1px; overflow: hidden; }
-.quota-segment-fill { height: 100%; border-radius: 1px; }
+.quota-bars { display: flex; flex-direction: column; gap: 3px; width: 100%; }
+.quota-segment-track { display: flex; gap: 2px; height: 6px; width: 100%; border-radius: 99px; background: #0a0c0f; }
+.quota-segment { flex: 1; height: 100%; border-radius: 99px; overflow: hidden; }
+.quota-segment-fill { height: 100%; border-radius: 99px; }
 .quota-segment-fill.ok { background: var(--lamp-green); }
 .quota-segment-fill.warn { background: var(--lamp-amber); }
 .quota-segment-fill.over { background: var(--lamp-red); }
-.quota-pace-track { height: 2px; background: #0a0c0f; border-radius: 1px; overflow: hidden; }
-.quota-pace-fill { height: 100%; background: var(--label-faint); border-radius: 1px; }
+
+.quota-segment.gradient-fill {
+	background: linear-gradient(to right, var(--lamp-green) 0%, var(--lamp-amber) 60%, var(--lamp-red) 100%);
+	width: 100%;
+}
+
+.quota-pace-track { height: 4px; background: #0a0c0f; border-radius: 99px; overflow: hidden; }
+.quota-pace-fill { height: 100%; background: var(--label-faint); border-radius: 99px; }
 .quota-pace-fill.over-pace { background: var(--lamp-amber); }
 
 .status-pills { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }

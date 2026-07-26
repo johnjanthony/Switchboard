@@ -212,10 +212,21 @@ internal sealed class DetailPanel : Form
 		}
 	}
 
-	static GraphicsPath RoundedRectPath(RectangleF r, int radius)
+	static GraphicsPath RoundedRectPath(RectangleF r, float radius)
 	{
-		int d = radius * 2;
+		float d = radius * 2;
 		var path = new GraphicsPath();
+		if (d <= 0)
+		{
+			path.AddRectangle(r);
+			return path;
+		}
+		d = Math.Min(d, Math.Min(r.Width, r.Height));
+		if (d <= 0)
+		{
+			path.AddRectangle(r);
+			return path;
+		}
 		path.AddArc(r.X, r.Y, d, d, 180, 90);
 		path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
 		path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
@@ -586,12 +597,21 @@ internal sealed class DetailPanel : Form
 			// line 2: bar + pct
 			int barY = y + 22;
 			int barW = Width - Pad * 2 - 42;
+			using var trackPath = RoundedRectPath(new RectangleF(Pad, barY, barW, 8), 4);
 			using (var track = new SolidBrush(_palette.Track))
-				g.FillRectangle(track, Pad, barY, barW, 8);
-			if (!s.IsError)
+				g.FillPath(track, trackPath);
+			if (!s.IsError && s.Pct > 0)
 			{
-				using var fill = new SolidBrush(SeverityGradient.For(s.Pct));
-				g.FillRectangle(fill, Pad, barY, (int)(barW * Math.Clamp(s.Pct, 0, 1)), 8);
+				using var gradientFill = new LinearGradientBrush(new Rectangle(Pad, barY, Math.Max(1, barW), 8), Color.White, Color.Black, LinearGradientMode.Horizontal);
+				var blend = new ColorBlend(3)
+				{
+					Colors = new[] { StatusColors.Green, StatusColors.Amber, StatusColors.Red },
+					Positions = new[] { 0f, 0.6f, 1f }
+				};
+				gradientFill.InterpolationColors = blend;
+				int fillW = Math.Max(1, (int)Math.Round(barW * Math.Clamp(s.Pct, 0, 1)));
+				using var fillPath = RoundedRectPath(new RectangleF(Pad, barY, fillW, 8), 4);
+				g.FillPath(gradientFill, fillPath);
 			}
 			var pct = s.IsError ? "?" : $"{(int)Math.Round(s.Pct * 100)}%";
 			using var pctBrush = new SolidBrush(s.IsError ? _palette.Warning : SeverityGradient.For(s.Pct));
@@ -737,8 +757,6 @@ internal sealed class DetailPanel : Form
 	{
 		var now = DateTimeOffset.Now;
 		var pace = QuotaPacing.Compute(w, duration, now);
-		double usage01 = Math.Clamp(w.Percentage / 100.0, 0, 1);
-		var color = SeverityGradient.For(usage01);
 
 		using var textBrush = new SolidBrush(_palette.Text);
 		using var mutedBrush = new SolidBrush(_palette.Muted);
@@ -770,22 +788,39 @@ internal sealed class DetailPanel : Form
 		int barW = Width - Pad * 2 - 42;
 		int segmentCount = duration == QuotaPacing.SessionDuration ? 5 : 7;
 		int segGap = 2;
+		
+		using var trackPath = RoundedRectPath(new RectangleF(Pad, barY, barW, 8), 4);
 		using (var track = new SolidBrush(_palette.Track))
-		using (var fill = new SolidBrush(color))
+			g.FillPath(track, trackPath);
+
+		if (w.Percentage > 0)
+		{
+			using var gradientFill = new LinearGradientBrush(new Rectangle(Pad, barY, Math.Max(1, barW), 8), Color.White, Color.Black, LinearGradientMode.Horizontal);
+			var blend = new ColorBlend(3)
+			{
+				Colors = new[] { StatusColors.Green, StatusColors.Amber, StatusColors.Red },
+				Positions = new[] { 0f, 0.6f, 1f }
+			};
+			gradientFill.InterpolationColors = blend;
+			
+			int fillW = Math.Max(1, (int)Math.Round(barW * Math.Clamp(w.Percentage / 100.0, 0, 1)));
+			using var fillPath = RoundedRectPath(new RectangleF(Pad, barY, fillW, 8), 4);
+			g.FillPath(gradientFill, fillPath);
+		}
+
+		// Draw gaps over the bar to create segments
+		using (var bgBrush = new SolidBrush(_palette.Background))
 		{
 			int currentX = Pad;
-			for (int i = 0; i < segmentCount; i++)
+			for (int i = 0; i < segmentCount - 1; i++)
 			{
 				int totalAvailable = barW - (segmentCount - 1) * segGap;
 				int segW = totalAvailable / segmentCount;
 				if (i < totalAvailable % segmentCount) segW++;
-
-				g.FillRectangle(track, currentX, barY, segW, 8);
-				double frac = QuotaFormat.SegmentFill(w.Percentage, i, segmentCount);
-				if (frac > 0)
-					g.FillRectangle(fill, currentX, barY, Math.Max(1, (int)Math.Round(segW * frac)), 8);
 				
-				currentX += segW + segGap;
+				currentX += segW;
+				g.FillRectangle(bgBrush, currentX, barY, segGap, 8);
+				currentX += segGap;
 			}
 		}
 
@@ -794,15 +829,18 @@ internal sealed class DetailPanel : Form
 		int ghostY = barY + 10;
 		if (pace.ElapsedFraction is double ef)
 		{
+			using var ghostTrackPath = RoundedRectPath(new RectangleF(Pad, ghostY, barW, 3), 1.5f);
 			using var ghostTrack = new SolidBrush(_palette.Track);
-			g.FillRectangle(ghostTrack, Pad, ghostY, barW, 3);
+			g.FillPath(ghostTrack, ghostTrackPath);
 			var ghostColor = pace.Verdict == PaceVerdict.Over ? _palette.Warning : _palette.Muted;
 			using var ghostFill = new SolidBrush(ghostColor);
-			g.FillRectangle(ghostFill, Pad, ghostY, (int)(barW * ef), 3);
+			int ghostFillW = Math.Max(1, (int)Math.Round(barW * ef));
+			using var ghostFillPath = RoundedRectPath(new RectangleF(Pad, ghostY, ghostFillW, 3), 1.5f);
+			g.FillPath(ghostFill, ghostFillPath);
 		}
 
 		string pctText = $"{(int)Math.Round(w.Percentage)}%";
-		using (var pctBrush = new SolidBrush(color))
+		using (var pctBrush = new SolidBrush(SeverityGradient.For(Math.Clamp(w.Percentage / 100.0, 0, 1))))
 			g.DrawString(pctText, label, pctBrush, Width - Pad - 34, barY - 4);
 
 		return y + QuotaWindowRowH;

@@ -545,39 +545,66 @@ internal sealed class WidgetWindow : Form
 	// comparing the two bar lengths.
 	void DrawQuotaRow(Graphics g, int xStart, int centerY, QuotaWindow w, TimeSpan duration)
 	{
-		var fillColor = SeverityGradient.For(w.Percentage / 100.0);
 		int barX = xStart;
 		int stackTop = centerY - (QSegH + QPaceGap + QPaceH) / 2;
 
 		int segY = stackTop;
-		int segmentCount = duration == QuotaPacing.SessionDuration ? 5 : 7;
+		using var trackPath = RoundedRectPath(new Rectangle(barX, segY, QBarW, QSegH), QSegH / 2);
 		using (var track = new SolidBrush(_palette.Track))
-		using (var fill = new SolidBrush(fillColor))
-		{
-			int currentX = barX;
-			for (int i = 0; i < segmentCount; i++)
-			{
-				int totalAvailable = QBarW - (segmentCount - 1) * QSegGap;
-				int segW = totalAvailable / segmentCount;
-				if (i < totalAvailable % segmentCount) segW++;
+			g.FillPath(track, trackPath);
 
-				g.FillRectangle(track, currentX, segY, segW, QSegH);
-				double frac = QuotaFormat.SegmentFill(w.Percentage, i, segmentCount);
-				if (frac > 0)
-					g.FillRectangle(fill, currentX, segY, Math.Max(1, (int)Math.Round(segW * frac)), QSegH);
-				
-				currentX += segW + QSegGap;
-			}
+		if (w.Percentage > 0)
+		{
+			using var gradientFill = new LinearGradientBrush(new Rectangle(barX, segY, Math.Max(1, QBarW), QSegH), Color.White, Color.Black, LinearGradientMode.Horizontal);
+			var blend = new ColorBlend(3)
+			{
+				Colors = new[] { StatusColors.Green, StatusColors.Amber, StatusColors.Red },
+				Positions = new[] { 0f, 0.6f, 1f }
+			};
+			gradientFill.InterpolationColors = blend;
+			
+			int fillW = Math.Max(1, (int)Math.Round(QBarW * Math.Clamp(w.Percentage / 100.0, 0, 1)));
+			using var fillPath = RoundedRectPath(new Rectangle(barX, segY, fillW, QSegH), QSegH / 2);
+			g.FillPath(gradientFill, fillPath);
 		}
 
 		// Pace bar: muted track + muted fill to the elapsed-time fraction (omitted when reset unknown).
 		int paceY = stackTop + QSegH + QPaceGap;
 		var pace = QuotaPacing.Compute(w, duration, DateTimeOffset.Now);
+		using var paceTrackPath = RoundedRectPath(new Rectangle(barX, paceY, QBarW, QPaceH), QPaceH / 2);
 		using (var paceTrack = new SolidBrush(_palette.Track))
-			g.FillRectangle(paceTrack, barX, paceY, QBarW, QPaceH);
+			g.FillPath(paceTrack, paceTrackPath);
 		if (pace.ElapsedFraction is double ef)
+		{
+			int paceW = Math.Max(1, (int)Math.Round(QBarW * ef));
+			using var paceFillPath = RoundedRectPath(new Rectangle(barX, paceY, paceW, QPaceH), QPaceH / 2);
 			using (var paceFill = new SolidBrush(_palette.Muted))
-				g.FillRectangle(paceFill, barX, paceY, Math.Max(1, (int)Math.Round(QBarW * ef)), QPaceH);
+				g.FillPath(paceFill, paceFillPath);
+		}
+	}
+
+	static GraphicsPath RoundedRectPath(Rectangle r, int radius)
+	{
+		var path = new GraphicsPath();
+		if (radius <= 0)
+		{
+			path.AddRectangle(r);
+			return path;
+		}
+		int d = radius * 2;
+		d = Math.Min(d, Math.Min(r.Width, r.Height));
+		if (d <= 0)
+		{
+			path.AddRectangle(r);
+			return path;
+		}
+		var rX = r.X; var rY = r.Y; var rW = r.Width; var rH = r.Height;
+		path.AddArc(rX, rY, d, d, 180, 90);
+		path.AddArc(rX + rW - d, rY, d, d, 270, 90);
+		path.AddArc(rX + rW - d, rY + rH - d, d, d, 0, 90);
+		path.AddArc(rX, rY + rH - d, d, d, 90, 90);
+		path.CloseFigure();
+		return path;
 	}
 
 	// Force background-colored pixels to alpha 1 and everything else to alpha 255 (the monitor's trick:
