@@ -5,8 +5,9 @@ namespace Switchboard.Watchtower;
 internal static class Program
 {
 	[STAThread]
-	static void Main()
+	static void Main(string[] args)
 	{
+		bool isDemo = args.Any(a => a.Equals("--demo", StringComparison.OrdinalIgnoreCase));
 		try
 		{
 			using var mutex = new Mutex(initiallyOwned: true, "Switchboard.Watchtower.SingleInstance", out bool isNew);
@@ -31,9 +32,9 @@ internal static class Program
 				if (e.ExceptionObject is Exception ex) WatchtowerLog.Error("appdomain", ex);
 			};
 
-			WatchtowerLog.Info("startup", "starting Watchtower host");
+			WatchtowerLog.Info("startup", $"starting Watchtower host (demo={isDemo})");
 			var config = AppConfig.Load();
-			using var host = new AppHost(config);
+			using var host = new AppHost(config, isDemo: isDemo);
 			host.Start();
 			WatchtowerLog.Info("startup", "Watchtower host started, entering Application.Run()");
 			Application.Run();

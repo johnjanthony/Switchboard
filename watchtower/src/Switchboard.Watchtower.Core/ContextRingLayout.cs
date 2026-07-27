@@ -57,7 +57,9 @@ public static class ContextRingLayout
 		{
 			var s = ordered[i];
 			float inset = i * step;
-			var bounds = new RectangleF(ox + inset, oy + inset, od - 2f * inset, od - 2f * inset);
+			float d = od - 2f * inset;
+			if (d <= 0f) break;
+			var bounds = new RectangleF(ox + inset, oy + inset, d, d);
 			float sweep = s.IsError ? 360f : (float)(360.0 * Math.Clamp(s.Pct, 0, 1));
 			rings.Add(new ContextRing(bounds, sweep, s.Pct, s.IsError));
 		}

@@ -44,11 +44,14 @@ internal sealed class AppHost : IDisposable
 	volatile bool _agyQuotaScanning;
 	AntigravityQuotaSummary? _lastAgyQuota;
 
+	readonly bool _isDemo;
+
 	static int QuotaIntervalMs(int minutes) => Math.Clamp(minutes, 1, 60) * 60_000;
 
-	public AppHost(AppConfig config)
+	public AppHost(AppConfig config, bool isDemo = false)
 	{
 		_config = config;
+		_isDemo = isDemo;
 		_logPath = Path.Combine(Path.GetDirectoryName(AppConfig.DefaultPath)!, "log.txt");
 		_quotaService = new QuotaService(m => LogInfo("quota", m), LogError);
 		_agyQuotaPoller = new AntigravityQuotaPoller(m => LogInfo("agy-quota", m), LogError);
@@ -131,10 +134,17 @@ internal sealed class AppHost : IDisposable
 		Autostart.Apply(_config.Autostart, Application.ExecutablePath);
 		_widget.Show();
 		_widget.AttachToTaskbar();
-		_timer.Start();
 		_embedWatchdog.Start();
 		_hoverTimer.Start();
 		_widget.SetShowQuota(_config.ShowQuota);
+
+		if (_isDemo)
+		{
+			ApplyDemoData();
+			return;
+		}
+
+		_timer.Start();
 		RenderLastKnown(LastKnownStore.LoadFrom(LastKnownStore.DefaultPath));
 		if (_config.ShowQuota) { _quotaTimer.Start(); PollQuota(); }
 		if (_config.PollAntigravityQuota) { _agyQuotaTimer.Start(); PollAntigravityQuota(); }
@@ -143,6 +153,74 @@ internal sealed class AppHost : IDisposable
 		_claudeStatusTimer.Start();
 		PollClaudeStatus();
 		_anchorTimer.Start();
+	}
+
+	void ApplyDemoData()
+	{
+		bool light = _config.LightThemeOverride ?? ThemeReader.IsLightTaskbar();
+		var now = DateTime.UtcNow;
+
+		var sessions = new List<SessionModel>
+		{
+			new("Switchboard", null, 112000, 200000, "claude-3-7-fable", SessionStatus.Live, now, false, "demo-1", "Switchboard", "project"),
+			new("Switchboard", "Ubuntu", 94000, 200000, "claude-3-5-sonnet", SessionStatus.Live, now, false, "demo-2", "Switchboard", "project"),
+			new("Switchboard", null, 380000, 1000000, "gemini-2.5-pro", SessionStatus.Live, now, false, "demo-3", "Switchboard", "project"),
+			new("Switchboard", null, 44000, 200000, "claude-3-opus", SessionStatus.Live, now, false, "demo-4", "Switchboard", "project"),
+			new("Switchboard", null, 24000, 200000, "claude-3-5-haiku", SessionStatus.Idle, now, false, "demo-5", "Switchboard", "project"),
+		};
+
+		var quota = new QuotaUsage(
+			Session: new QuotaWindow(84.0, DateTimeOffset.Now.AddHours(1).AddMinutes(30)),
+			Weekly: new QuotaWindow(85.0, DateTimeOffset.Now.AddHours(15).AddMinutes(7))
+		);
+
+		var agyQuota = new AntigravityQuotaSummary(new List<AntigravityQuotaGroup>
+		{
+			new("Gemini 2.5 Pro", null, new List<AntigravityQuotaBucket>
+			{
+				new("5h", 0.55, DateTimeOffset.Now.AddHours(1).AddMinutes(54)),
+				new("weekly", 0.28, DateTimeOffset.Now.AddDays(1).AddHours(11).AddMinutes(17))
+			}),
+			new("Claude 3.7 Sonnet", null, new List<AntigravityQuotaBucket>
+			{
+				new("5h", 0.24, DateTimeOffset.Now.AddHours(2).AddMinutes(6)),
+				new("weekly", 0.12, DateTimeOffset.Now.AddHours(10).AddMinutes(5))
+			})
+		});
+
+		var needsYou = new Dictionary<string, NeedsYouEntry>
+		{
+			["demo-1"] = new("AskUserQuestion pending", 45.0)
+		};
+
+		var stats = new SwitchboardStats(
+			ActiveConversations: 2,
+			PendingCount: 1,
+			OldestPendingAgeSeconds: 45.0,
+			AwayMode: true,
+			Healthy: true
+		) { NeedsYou = needsYou };
+
+		_lastSessions = sessions;
+		_lastQuota = quota;
+		_lastAgyQuota = agyQuota;
+
+		_widget.UpdateQuota(quota);
+		_panel.UpdateQuota(quota);
+
+		_widget.UpdateAntigravityQuota(agyQuota);
+		_panel.UpdateAntigravityQuota(agyQuota);
+
+		_widget.UpdateSessions(sessions, light);
+		_panel.UpdateSessions(sessions, light, lastActivityUtc: null);
+
+		_panel.UpdateSwitchboard(enabled: true, stats);
+		_panel.UpdateClaudeStatus(ClaudeServerStatus.ParseView(""));
+		_tray.SetPending(showBadge: true, hasPending: true);
+		_widget.SetPending(showBadge: true, hasPending: true);
+
+		var gauge = TrayGauge.From(sessions);
+		_tray.SetGauge(gauge.Max, gauge.AnyError, gauge.MaxSeverity, light);
 	}
 
 	// Tooltip-style: show the panel while the cursor is over the widget (or the panel itself), hide otherwise.

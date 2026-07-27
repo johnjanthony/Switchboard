@@ -452,7 +452,7 @@ internal sealed class WidgetWindow : Form
 
 		foreach (var ring in layout.Rings)
 		{
-			if (ring.SweepDegrees <= 0f) continue;
+			if (ring.Bounds.Width <= 0f || ring.Bounds.Height <= 0f || ring.SweepDegrees <= 0f) continue;
 			// Transparent mode draws over an unknown taskbar background; a dark halo under the arc
 			// keeps it legible on a light taskbar. ClearType mode draws over the known dark bg.
 			if (!_clearType)
@@ -485,13 +485,15 @@ internal sealed class WidgetWindow : Form
 			}
 		}
 
-		// Overflow "+K": sessions that did not get a ring, at the top-right of the cluster.
+		// Overflow "+K": sessions that did not get a ring, at the lower-right of the cluster.
 		if (layout.Overflow > 0)
 		{
 			using var ofont = new Font("Segoe UI", 7.5f, FontStyle.Bold);
 			string ktext = "+" + layout.Overflow;
 			float kx = originX + RingClusterW + 1f;
-			float ky = (Height - Math.Min(Height - 8f, 34f)) / 2f;   // top of the cluster
+			float clusterH = Math.Min(Height - 8f, 34f);
+			var ksz = g.MeasureString(ktext, ofont, PointF.Empty, StringFormat.GenericTypographic);
+			float ky = (Height + clusterH) / 2f - ksz.Height;   // bottom of the cluster
 			if (!_clearType)
 				using (var khalo = new SolidBrush(Color.FromArgb(190, 0, 0, 0)))
 					for (int dx = -1; dx <= 1; dx++)
@@ -502,11 +504,14 @@ internal sealed class WidgetWindow : Form
 				g.DrawString(ktext, ofont, kbrush, kx, ky);
 		}
 
-		// Switchboard pending badge: an amber dot in the top-right corner, mirroring
-		// the tray icon, when there are unanswered questions.
+		// Switchboard pending badge: an amber dot at the top-left of the ring cluster
+		// when there are unanswered questions.
 		if (_showBadge && _hasPending)
+		{
+			float ky = (Height - Math.Min(Height - 8f, 34f)) / 2f;
 			using (var dot = new SolidBrush(StatusColors.Amber))
-				g.FillEllipse(dot, Width - 10, 2, 8, 8);
+				g.FillEllipse(dot, originX - 3, (int)ky - 3, 8, 8);
+		}
 
 		// Claude service-status dot: centered in the context ring cluster. Pulses while an incident
 		// is active (Watching); steady once resolved (sticky until acknowledged). A thin dark outline

@@ -160,6 +160,11 @@ internal sealed class DetailPanel : Form
 		{
 			Text = "CLAUDE",
 			Visible = true,
+			BackColor = Color.FromArgb(8, 9, 11),
+			BorderColor = Color.FromArgb(30, 41, 59),
+			SurfaceColor = Color.FromArgb(42, 42, 42),
+			ForeColor = Color.FromArgb(99, 109, 125),
+			DotColor = Color.FromArgb(154, 160, 166),
 		};
 		_claudePillButton.Click += (_, _) => OnClaudePillClicked();
 		Controls.Add(_claudePillButton);
@@ -877,6 +882,7 @@ internal sealed class DetailPanel : Form
 	static string ShortModel(string? model)
 	{
 		if (string.IsNullOrEmpty(model)) return "model?";
+		if (model.Contains("fable", StringComparison.OrdinalIgnoreCase)) return "Fable";
 		if (model.Contains("opus", StringComparison.OrdinalIgnoreCase)) return "Opus";
 		if (model.Contains("sonnet", StringComparison.OrdinalIgnoreCase)) return "Sonnet";
 		if (model.Contains("haiku", StringComparison.OrdinalIgnoreCase)) return "Haiku";

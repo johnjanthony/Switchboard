@@ -4,9 +4,11 @@
 #
 # Run from anywhere; paths resolve relative to this script's own directory.
 #   .\deploy-widget.ps1              # stop, publish, relaunch
+#   .\deploy-widget.ps1 -Demo        # stop, publish, relaunch in demo mode
 #   .\deploy-widget.ps1 -NoLaunch    # stop and publish, but do not relaunch
 param(
-	[switch]$NoLaunch
+	[switch]$NoLaunch,
+	[switch]$Demo
 )
 $ErrorActionPreference = "Stop"
 
@@ -47,7 +49,11 @@ if ($NoLaunch) {
 }
 
 Write-Host "--- Relaunching widget ---"
-Start-Process -FilePath $Exe
+if ($Demo) {
+	Start-Process -FilePath $Exe -ArgumentList "--demo"
+} else {
+	Start-Process -FilePath $Exe
+}
 Start-Sleep -Milliseconds 1500
 if (Get-Process -Name $ProcName -ErrorAction SilentlyContinue) {
 	Write-Host "Done. Widget relaunched from $Exe" -ForegroundColor Green
