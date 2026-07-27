@@ -4,6 +4,9 @@ Switchboard is a locally-hosted MCP gateway that lets AI agents (Claude Code, Ge
 
 This doc is the single design reference for the running system. Implementation files are the ultimate source of truth; the dated specs under `docs/superpowers/specs/` retain the historical reasoning and are no longer authoritative for current behavior.
 
+> **Staleness warning (2026-07-27).** Sections 2.1, 2.4, 3, 4, 7, 8.1 and 10 still document the retired open-conversation model - `open_conversation`, `enter_conversation`, the `open_conversation_id` singleton pointer, and the lobby-hold / lobby-timeout branches - none of which exist in the code. Ref-less joining now follows the candidate rule in `server/conversation_ops.py`, and joining is `join_conversation(sender, ref?, title?)`.
+> Those sections also predate the 2026-07-27 collab-protocol UX change, so they omit `post_agent_message`, `message_and_await_agent`'s `timeout_seconds` and `{"status":"superseded"}`, the structured `peers` objects, and `lookup_conversation_ids`' metadata rows. For current agent-facing behavior read `skills/switchboard/SKILL.md`; for the component map read the repo `CLAUDE.md`.
+
 ---
 
 ## 1. Architecture

@@ -19,13 +19,13 @@ Switchboard is a local MCP gateway with cloud-synchronized state (Firebase) that
 ## Features
 
 - **Session-id routing**: Each agent session is identified by a `cli_session_id` injected automatically by the PreToolUse hook. Agents only pass `sender` and tool arguments.
-- **Conversations**: Messages, members, and state persist in Firebase as named conversations (Active / Ended). At most one is "open" — joinable by any new agent via `join_conversation`.
+- **Conversations**: Messages, members, and state persist in Firebase as named conversations (Active / Ended). An agent joins a specific one by `ref`, or goes ref-less to land in the single still-solo conversation another agent minted ref-less in the last ~30 minutes — with no such candidate, a fresh room is minted.
 - **Asynchronous updates**: Send non-blocking notifications or deliver documents directly to your phone.
 - **In-line replies**: View your responses directly in the chat history for full context.
 - **Global away mode**: Single server-wide flag. Toggle from the phone's top-bar pill or via the `set_away_mode` MCP tool.
 - **Activity indicators**: Prominent high-visibility indicators for unseen activity or pending questions.
 - **Session spawning**: Launch fresh agent sessions on your desktop directly from your phone — choose surface (Windows / WSL), project, optional prompt, and whether to create a new conversation or add to an existing one.
-- **Conversation composition**: Open + enter, resume dormant sessions, or combine two conversations into one — all from the phone's long-press menu.
+- **Conversation composition**: Join a conversation (by `ref` or ref-less), resume dormant sessions, or combine two conversations into one — resume and combine are also on the phone's long-press menu.
 - **Rich Markdown**: Full support for bold, italic, code blocks, checklists, and tables.
 
 ## Design & Architecture
@@ -61,7 +61,7 @@ The model is built around **away mode** (a single global flag: when set, agents 
 
 Switchboard was architected and built by John Anthony, directing a multi-agent workflow of off-the-shelf coding agents (Claude Code among them) coordinated, fittingly, through Switchboard itself.
 
-For an agent-oriented project tour, see [`CLAUDE.md`](CLAUDE.md). The current design is documented in [`docs/switchboard-design-spec-comprehensive.md`](docs/switchboard-design-spec-comprehensive.md) — covers the Conversation primitive, session-id routing, MCP tool surface, hook plumbing, Firebase schema, spawn (fresh / resume / combine), away mode, hydration, and the Android UI surface.
+For an agent-oriented project tour, see [`CLAUDE.md`](CLAUDE.md). The end-to-end design is documented in [`docs/switchboard-design-spec-comprehensive.md`](docs/switchboard-design-spec-comprehensive.md) — covers architecture, session-id routing, hook plumbing, Firebase schema, spawn (fresh / resume / combine), away mode, hydration, and the Android UI surface. Its conversation-model and MCP-tool-surface sections carry a staleness warning; [`skills/switchboard/SKILL.md`](skills/switchboard/SKILL.md) is the current reference for the tool surface.
 
 ## Install
 
@@ -84,9 +84,9 @@ Switchboard reads its configuration from OS env vars. A `.env` file is loaded as
 | **Server Settings** | | | |
 | `SWITCHBOARD_HOST` | No | `127.0.0.1` | Local bind address for the SSE/HTTP server. |
 | `SWITCHBOARD_PORT` | No | `9876` | Local port for the SSE/HTTP server. |
-| `SWITCHBOARD_TIMEOUT_SECONDS` | No | `86400` | How long `ask_human` blocks before returning `__TIMEOUT__`. |
+| `SWITCHBOARD_TIMEOUT_SECONDS` | No | `86400` | Default blocking window for `ask_human` and `message_and_await_agent`, and the ceiling that `message_and_await_agent`'s optional `timeout_seconds` is clamped to. |
 | `SWITCHBOARD_LOG_PATH` | No | `./logs/switchboard.jsonl` | Path to the event audit log. |
-| `SWITCHBOARD_RATE_LIMIT` | No | `30` | Max messages per minute per conversation before `ask_human` / `notify_human` / `send_document_human` are rejected. |
+| `SWITCHBOARD_RATE_LIMIT` | No | `30` | Max messages per minute per conversation. Past the limit `ask_human` / `notify_human` / `send_document_human` are rejected, while `message_and_await_agent` / `post_agent_message` still write and still wake peers, suppressing only the phone push. |
 | **Android & Firebase** | | | |
 | `FIREBASE_DATABASE_URL` | Yes | | The URL of your Firebase Realtime Database. |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Yes | | Absolute path to your Firebase service account key JSON file. |
@@ -111,7 +111,7 @@ Switchboard ships as a Claude Code plugin. From any Claude Code session:
 /plugin install switchboard@switchboard
 ```
 
-The plugin install wires the skill and the Claude turn-end + agent-status hooks. The MCP server connection is bootstrapped per host by a parallel chezmoi dotfiles effort (Windows uses `localhost:9876`; WSL uses the Windows host IP, resolvable from `/etc/resolv.conf` or `ip route show default | awk '{print $3}'`). If you are not using chezmoi, run `claude mcp add switchboard --scope user --transport http <resolved-url>` per host.
+The plugin install wires the skill and six Claude Code hook events: away-mode turn-end enforcement, the agent-status activity indicator, the `cli_session_id` injector, an away-mode guard on the built-in `AskUserQuestion` tool, and session start / end tracking. The MCP server connection is bootstrapped per host by a parallel chezmoi dotfiles effort (Windows uses `localhost:9876`; WSL uses the Windows host IP, resolvable from `/etc/resolv.conf` or `ip route show default | awk '{print $3}'`). If you are not using chezmoi, run `claude mcp add switchboard --scope user --transport http <resolved-url>` per host.
 
 WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` AND `SWITCHBOARD_TOKEN` set - the server refuses to start non-loopback without a token (REV-003 fail-closed), and every non-loopback client must send `Authorization: Bearer <token>` on all routes except `/healthz` (loopback callers are exempt). The firewall inbound rule for TCP 9876 from the WSL subnet remains recommended as defense-in-depth; the token is the enforced control.
 
@@ -219,7 +219,7 @@ Switchboard correlates your reply to the waiting `ask_human` call via the Androi
 
 Multiple agents can share a conversation without spawning. Any agent calls `join_conversation(sender, title?)` — the first ref-less call mints the room, and a second ref-less caller within about 30 minutes lands in it while it is still solo; pass `ref` to target a specific conversation. Agents in the same conversation communicate through `message_and_await_agent` (speak and block) or `post_agent_message` (speak and keep working).
 
-You can also merge two existing conversations with `combine_conversations(source_id, target_id)` — dormant members of the source are migrated into the target and revived. All three flows are also available from the phone's long-press menu on any conversation row.
+You can also merge two existing conversations with `combine_conversations(source_id, target_id)` — dormant members of the source are migrated into the target and revived. Combining, and resuming a dormant session, are also available from the phone's long-press menu on any conversation row.
 
 ### Spawning a new agent session
 
@@ -230,7 +230,7 @@ With a spawn root configured, you can launch a fresh agent session directly from
 - **Prompt:** Optional starting prompt for the agent.
 - **Conversation:** Create a new conversation, or add the spawned agent into an existing one.
 
-Spawn auto-enables global away mode if it is currently off; the phone shows a confirmation toast. Claude is the only supported spawn target.
+Spawn auto-enables global away mode if it is currently off; the phone shows a confirmation toast. Claude Code and Antigravity (`agy`) are both supported spawn targets.
 
 **Prerequisites:**
 
