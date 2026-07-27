@@ -9,8 +9,8 @@ namespace Switchboard.Watchtower.Core;
 /// in degrees from 12 o'clock, and the source values the view uses to pick the arc colour.</summary>
 public readonly record struct ContextRing(RectangleF Bounds, float SweepDegrees, double Pct, bool IsError);
 
-/// <summary>Ordered rings (outermost first) plus the count of sessions that did not get a ring.</summary>
-public readonly record struct ContextRingLayoutResult(IReadOnlyList<ContextRing> Rings, int Overflow);
+/// <summary>Ordered rings (outermost first), count of sessions that did not get a ring, and the outermost ring bounding rect.</summary>
+public readonly record struct ContextRingLayoutResult(IReadOnlyList<ContextRing> Rings, int Overflow, RectangleF OutermostBounds);
 
 /// <summary>
 /// Pure layout for the widget's nested context rings. Sorts sessions fullest-first (error sessions
@@ -27,23 +27,24 @@ public static class ContextRingLayout
 		float gap = 0.5f,
 		int maxRings = 4)
 	{
-		if (sessions.Count == 0)
-			return new ContextRingLayoutResult(Array.Empty<ContextRing>(), 0);
-
-		float dMax = Math.Min(height - 8f, 28f);              // outer diameter, capped
+		float dMax = Math.Min(height - 8f, 34f);              // outer diameter, capped
 		float penInset = thickness / 2f + 1f;                 // keep the outer stroke unclipped (matches RenderGauge)
 		float step = thickness + gap;                         // radial distance between consecutive rings
 		float od = dMax - 2f * penInset;                      // outer centreline-ellipse diameter
 		float outerRadius = od / 2f;
 
+		float clusterTop = (height - dMax) / 2f;
+		float ox = originX + penInset;
+		float oy = clusterTop + penInset;
+		var outerBounds = new RectangleF(ox, oy, od, od);
+
+		if (sessions.Count == 0)
+			return new ContextRingLayoutResult(Array.Empty<ContextRing>(), 0, outerBounds);
+
 		// How many concentric rings keep a bounding radius >= thickness (innermost never degenerate).
 		int fitCount = outerRadius < thickness ? 0 : (int)Math.Floor((outerRadius - thickness) / step) + 1;
 		int visible = Math.Min(Math.Min(sessions.Count, maxRings), fitCount);
 		int overflow = sessions.Count - visible;
-
-		float clusterTop = (height - dMax) / 2f;
-		float ox = originX + penInset;
-		float oy = clusterTop + penInset;
 
 		// Stable sort: error sessions sort as "fullest" so an error always claims an outer ring.
 		var ordered = sessions
@@ -61,6 +62,6 @@ public static class ContextRingLayout
 			rings.Add(new ContextRing(bounds, sweep, s.Pct, s.IsError));
 		}
 
-		return new ContextRingLayoutResult(rings, overflow);
+		return new ContextRingLayoutResult(rings, overflow, outerBounds);
 	}
 }

@@ -13,8 +13,8 @@ internal sealed class WidgetWindow : Form
 	const int DragThreshold = 4;
 	const float RingThickness = 3f;     // pen width; MUST match ContextRingLayout's thickness arg
 	const float RingGap = 0.5f;         // minimal gap between concentric rings, for separation
-	const int RingMaxCount = 3;         // cap visible rings so each gets room at this size; rest roll into "+K"
-	const int RingClusterW = 28;        // == ContextRingLayout dMax cap; horizontal room for the rings
+	const int RingMaxCount = 4;         // cap visible rings so each gets room at this size; rest roll into "+K"
+	const int RingClusterW = 34;        // == ContextRingLayout dMax cap; horizontal room for the rings
 	const int OverflowTextRoom = 14;    // room to the right of the cluster for the "+K" indicator
 	const int GrabW = 14;          // left grab-handle strip; the ONLY drag target
 	const int PadAfterGrab = 4;
@@ -25,7 +25,7 @@ internal sealed class WidgetWindow : Form
 	const int QBarW = 99;                                               // fixed width for both 5 and 7 segment bars
 	const int QPaceH = 2;                                               // pace (elapsed-time) bar height (skinny + calm on the widget)
 	const int QPaceGap = 2;                                             // gap between the usage bar and the pace bar
-	const int QSep = 14;                                                // gap before the context rings
+	const int QSep = 7;                                                 // gap before the context rings
 	const int QuotaBlockW = QBarW + QSep;
 	const int HeightWithQuota = 44;
 	const int HeightContextOnly = 34;
@@ -441,10 +441,15 @@ internal sealed class WidgetWindow : Form
 					g.FillRectangle(sepGrip, GrabW + i * QuotaBlockW - QSep / 2 - 1, (Height - gripH) / 2, 2, gripH);
 
 		// Context rings (busiest-first, nested fullest-outermost): each session is a crisp gradient-coloured
-		// arc, no track circle. Capped at RingMaxCount so each ring has room at taskbar size. Sort/cap/
+		// arc. Capped at RingMaxCount so each ring has room at taskbar size. Sort/cap/
 		// overflow live in ContextRingLayout; this just draws the result.
 		int originX = GrabW + VisibleSetCount * QuotaBlockW + PadAfterGrab;
 		var layout = ContextRingLayout.Build(_sessions, originX, Height, thickness: RingThickness, gap: RingGap, maxRings: RingMaxCount);
+
+		// Ever-present dark grey marker ring at the outermost context ring location
+		using (var trackPen = new Pen(_palette.Track, RingThickness))
+			g.DrawEllipse(trackPen, layout.OutermostBounds);
+
 		foreach (var ring in layout.Rings)
 		{
 			if (ring.SweepDegrees <= 0f) continue;
@@ -486,7 +491,7 @@ internal sealed class WidgetWindow : Form
 			using var ofont = new Font("Segoe UI", 7.5f, FontStyle.Bold);
 			string ktext = "+" + layout.Overflow;
 			float kx = originX + RingClusterW + 1f;
-			float ky = (Height - Math.Min(Height - 8f, 28f)) / 2f;   // top of the cluster
+			float ky = (Height - Math.Min(Height - 8f, 34f)) / 2f;   // top of the cluster
 			if (!_clearType)
 				using (var khalo = new SolidBrush(Color.FromArgb(190, 0, 0, 0)))
 					for (int dx = -1; dx <= 1; dx++)
@@ -508,7 +513,7 @@ internal sealed class WidgetWindow : Form
 		// separates it from a ring arc of a similar color.
 		if (_claudeDotVisible)
 		{
-			float dMax = Math.Min(Height - 8f, 28f);
+			float dMax = Math.Min(Height - 8f, 34f);
 			float penInset = RingThickness / 2f + 1f;
 			float od = dMax - 2f * penInset;
 			float clusterTop = (Height - dMax) / 2f;

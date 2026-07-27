@@ -10,11 +10,15 @@ public class ContextRingLayoutTests
 		new("s", null, (long)(pct * 1000), 1000, "claude", SessionStatus.Live, DateTime.UnixEpoch, error);
 
 	[Fact]
-	public void Empty_session_list_yields_no_rings()
+	public void Empty_session_list_yields_no_rings_but_computes_outermost_bounds()
 	{
-		var r = ContextRingLayout.Build(Array.Empty<SessionModel>(), 0f, 34f);
+		var r = ContextRingLayout.Build(Array.Empty<SessionModel>(), 0f, 34f, thickness: 3f);
 		Assert.Empty(r.Rings);
 		Assert.Equal(0, r.Overflow);
+		Assert.Equal(2.5f, r.OutermostBounds.X, 3);
+		Assert.Equal(6.5f, r.OutermostBounds.Y, 3);
+		Assert.Equal(21f, r.OutermostBounds.Width, 3);
+		Assert.Equal(21f, r.OutermostBounds.Height, 3);
 	}
 
 	[Fact]

@@ -9,6 +9,7 @@ internal sealed class DetailPanel : Form
 {
 	const int WS_EX_TOOLWINDOW = 0x00000080;
 	const int WS_EX_NOACTIVATE = 0x08000000;
+	const int MinWidth = 320;
 	const int RowH = 42;
 	const int Pad = 12;
 	const int QuotaWindowRowH = 42;
@@ -150,7 +151,7 @@ internal sealed class DetailPanel : Form
 		// Color-key the non-card backdrop to transparency so the rounded cards float over the desktop.
 		BackColor = BackdropKey;
 		TransparencyKey = BackdropKey;
-		Width = 320;
+		Width = MinWidth;
 		Visible = false;
 
 		_toolTip = new ToolTip();
@@ -420,6 +421,11 @@ internal sealed class DetailPanel : Form
 
 	public void ShowAbove(Rectangle widgetScreenBounds)
 	{
+		int targetWidth = Math.Max(MinWidth, widgetScreenBounds.Width);
+		if (Width != targetWidth)
+		{
+			Width = targetWidth;
+		}
 		int x = Math.Max(0, widgetScreenBounds.Right - Width);
 		int y = widgetScreenBounds.Top - Height;   // touch the widget's top edge so hover doesn't break crossing a gap
 		Location = new Point(x, y);
