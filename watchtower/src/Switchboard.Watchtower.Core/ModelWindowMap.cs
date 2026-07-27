@@ -8,6 +8,7 @@ public static class ModelWindowMap
 	// Base window inferred from the model family. Claude Code transcripts record the BASE model
 	// id (e.g. "claude-opus-4-7") even when 1M (Fast) mode is active — the "[1m]" marker is not
 	// persisted — so Opus and Fable are treated as 1M here, matching how they are actually run.
+	// Sonnet 5 also launched with a native 1M context window; Sonnet 4.x (200K) falls through.
 	public static long WindowFor(string? model)
 	{
 		if (string.IsNullOrEmpty(model)) return DefaultWindow;
@@ -15,6 +16,7 @@ public static class ModelWindowMap
 		if (model.Contains("opus", StringComparison.OrdinalIgnoreCase)) return LargeWindow;
 		if (model.Contains("fable", StringComparison.OrdinalIgnoreCase)) return LargeWindow;
 		if (model.Contains("gemini", StringComparison.OrdinalIgnoreCase)) return LargeWindow;
+		if (model.Contains("sonnet-5", StringComparison.OrdinalIgnoreCase)) return LargeWindow;
 		return DefaultWindow;
 	}
 
