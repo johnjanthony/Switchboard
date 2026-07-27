@@ -417,18 +417,7 @@ internal sealed class WidgetWindow : Form
 		SetBitmap(bmp);
 	}
 
-	// Rings-only palette: green -> true yellow -> red. The endpoints match SeverityGradient's green and
-	// red (so a near-full context reads the same bright red here and in the popup), while the yellow
-	// midpoint separates the mid/high bands that the shared orange-amber knee renders too alike at this
-	// size. Quota bars and the tray icon still use SeverityGradient directly.
-	static readonly Color RingLow = StatusColors.Green;     // == SeverityGradient green
-	static readonly Color RingMid = StatusColors.Yellow;    // rings-only midpoint, for separation
-	static readonly Color RingHigh = StatusColors.Red;      // == SeverityGradient red / popup
-	static Color RingColor(double pct)
-	{
-		double p = Math.Clamp(pct, 0, 1);
-		return p <= 0.5 ? StatusColors.Lerp(RingLow, RingMid, p / 0.5) : StatusColors.Lerp(RingMid, RingHigh, (p - 0.5) / 0.5);
-	}
+
 
 	void DrawContent(Graphics g)
 	{
@@ -459,15 +448,36 @@ internal sealed class WidgetWindow : Form
 		foreach (var ring in layout.Rings)
 		{
 			if (ring.SweepDegrees <= 0f) continue;
-			// Rings use the green->yellow->red palette (endpoints match the popup); error stays warning.
-			var arcColor = ring.IsError ? _palette.Warning : RingColor(ring.Pct);
 			// Transparent mode draws over an unknown taskbar background; a dark halo under the arc
 			// keeps it legible on a light taskbar. ClearType mode draws over the known dark bg.
 			if (!_clearType)
 				using (var halo = new Pen(Color.FromArgb(190, 0, 0, 0), RingThickness + 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
 					g.DrawArc(halo, ring.Bounds, -90f, ring.SweepDegrees);
-			using (var arcPen = new Pen(arcColor, RingThickness) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-				g.DrawArc(arcPen, ring.Bounds, -90f, ring.SweepDegrees);   // 12 o'clock, clockwise
+
+			if (ring.IsError)
+			{
+				using (var arcPen = new Pen(_palette.Warning, RingThickness) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+					g.DrawArc(arcPen, ring.Bounds, -90f, ring.SweepDegrees);
+			}
+			else
+			{
+				const float stepDeg = 4f;
+				float totalSweep = ring.SweepDegrees;
+				for (float current = 0f; current < totalSweep; current += stepDeg)
+				{
+					float sweepStep = Math.Min(stepDeg, totalSweep - current);
+					float angleStart = -90f + current;
+					double frac = (current + sweepStep / 2.0) / 360.0;
+					Color segColor = SeverityGradient.For(frac);
+
+					using var segPen = new Pen(segColor, RingThickness)
+					{
+						StartCap = current == 0f ? LineCap.Round : LineCap.Flat,
+						EndCap = (current + sweepStep >= totalSweep) ? LineCap.Round : LineCap.Flat
+					};
+					g.DrawArc(segPen, ring.Bounds, angleStart, sweepStep);
+				}
+			}
 		}
 
 		// Overflow "+K": sessions that did not get a ring, at the top-right of the cluster.

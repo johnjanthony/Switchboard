@@ -7,10 +7,10 @@ namespace Switchboard.Watchtower.Core;
 // System.Drawing.Primitives (shared framework, cross-platform) - no WinForms dependency.
 public static class StatusColors
 {
-	public static readonly Color Green = Color.FromArgb(63, 185, 80);    // ok / live / low usage
-	public static readonly Color Amber = Color.FromArgb(210, 153, 34);   // warning / pending badge / gradient knee
-	public static readonly Color Red = Color.FromArgb(248, 81, 73);      // error / critical / high usage
-	public static readonly Color Yellow = Color.FromArgb(240, 205, 40);  // ring midpoint / minor incident
+	public static readonly Color Green = Color.FromArgb(50, 215, 75);     // ok / live / low usage (vivid green)
+	public static readonly Color Amber = Color.FromArgb(255, 170, 0);    // warning / pending badge / gradient knee (vivid amber)
+	public static readonly Color Red = Color.FromArgb(255, 69, 58);      // error / critical / high usage (vivid red)
+	public static readonly Color Yellow = Color.FromArgb(255, 214, 10);   // ring midpoint / minor incident (vivid yellow)
 	public static readonly Color Grey = Color.FromArgb(154, 160, 166);   // muted / unknown
 
 	public static Color Lerp(Color a, Color b, double t)

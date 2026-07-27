@@ -7,10 +7,10 @@ public class StatusColorsTests
 	[Fact]
 	public void Constants_match_the_pinned_rgb_triples()
 	{
-		Assert.Equal(Color.FromArgb(63, 185, 80), StatusColors.Green);
-		Assert.Equal(Color.FromArgb(210, 153, 34), StatusColors.Amber);
-		Assert.Equal(Color.FromArgb(248, 81, 73), StatusColors.Red);
-		Assert.Equal(Color.FromArgb(240, 205, 40), StatusColors.Yellow);
+		Assert.Equal(Color.FromArgb(50, 215, 75), StatusColors.Green);
+		Assert.Equal(Color.FromArgb(255, 170, 0), StatusColors.Amber);
+		Assert.Equal(Color.FromArgb(255, 69, 58), StatusColors.Red);
+		Assert.Equal(Color.FromArgb(255, 214, 10), StatusColors.Yellow);
 		Assert.Equal(Color.FromArgb(154, 160, 166), StatusColors.Grey);
 	}
 
