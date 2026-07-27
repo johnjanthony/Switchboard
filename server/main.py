@@ -730,6 +730,7 @@ async def _run(config: Config) -> None:
 		database_url=config.firebase_database_url,
 		storage_bucket=config.firebase_storage_bucket,
 		logger=logger,
+		away_mode_provider=lambda: registry.global_away_mode,
 	)
 
 	# Clear any away-mode commands left queued from before the restart

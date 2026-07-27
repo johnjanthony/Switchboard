@@ -88,9 +88,11 @@ class FirebaseBackend(
 		database_url: str,
 		storage_bucket: str | None = None,
 		logger: JsonlLogger | None = None,
+		away_mode_provider=None,
 	) -> None:
 		self._logger = logger
 		self._database_url = database_url
+		self._away_mode_provider = away_mode_provider
 		if storage_bucket and storage_bucket.startswith("gs://"):
 			self._storage_bucket = storage_bucket[5:]
 		else:
@@ -834,6 +836,15 @@ class FirebaseBackend(
 		# FCM notification (same topics / payload as write_channel_message).
 		# suppress_push (REV-109): a rate-limited agent_msg still writes and
 		# bumps unread, but must not buzz the phone.
+		if message_type != "human" and not suppress_push:
+			# At-desk gate: only allowlist types buzz when away mode is off
+			provider = getattr(self, "_away_mode_provider", None)
+			if provider is not None:
+				is_away = provider()
+				is_allowlisted = message_type in ("question", "notify", "document")
+				if not is_away and not is_allowlisted:
+					suppress_push = True
+
 		if message_type != "human" and not suppress_push:
 			fcm_data: dict = {
 				"conv_id": conv_id,

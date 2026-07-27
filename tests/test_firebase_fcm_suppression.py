@@ -48,3 +48,46 @@ async def test_suppress_push_skips_fcm_but_still_writes(monkeypatch):
 	# ref's set() was invoked) and the method returned normally.
 	assert result is not None
 	assert fb_module.db.reference.called
+
+
+@pytest.mark.asyncio
+async def test_away_mode_gate_matrix(monkeypatch):
+	from server import firebase as fb_module
+
+	loop = asyncio.get_running_loop()
+	be = _make_backend(monkeypatch, loop)
+	calls = _install_fcm_recorder(be)
+	
+	# Default provider: away mode ON
+	be._away_mode_provider = lambda: True
+
+	# 1. Away ON, non-allowlist => FCM SENT
+	await be.write_conversation_message("conv-1", "Claude-A", "agent_msg", "hi")
+	assert len(calls) == 1
+	calls.clear()
+
+	# 2. Away ON, allowlist => FCM SENT
+	await be.write_conversation_message("conv-1", "John", "question", "hi")
+	assert len(calls) == 1
+	calls.clear()
+
+	# Change provider: away mode OFF
+	be._away_mode_provider = lambda: False
+
+	# 3. Away OFF, allowlist ("question") => FCM SENT
+	await be.write_conversation_message("conv-1", "John", "question", "hi")
+	assert len(calls) == 1
+	calls.clear()
+	
+	# 4. Away OFF, allowlist ("notify") => FCM SENT
+	await be.write_conversation_message("conv-1", "system", "notify", "hi")
+	assert len(calls) == 1
+	calls.clear()
+
+	# 5. Away OFF, non-allowlist ("agent_msg") => NO FCM
+	await be.write_conversation_message("conv-1", "Claude-A", "agent_msg", "hi")
+	assert len(calls) == 0
+
+	# 6. Away OFF, non-allowlist ("parting") => NO FCM
+	await be.write_conversation_message("conv-1", "Claude-A", "parting", "bye")
+	assert len(calls) == 0
