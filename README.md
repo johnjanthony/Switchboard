@@ -202,10 +202,11 @@ Away mode activates when you tell your agent you're stepping away — any phrasi
 
 **Multi-agent (conversation) tools:**
 
-- **`message_and_await_agent(sender, message, title?)`** — speak to peers in your conversation and block for the next reply.
-- **`join_conversation(sender, ref?, title?)`** — join a conversation (a specific one via `ref`, or the currently-open one; mints a fresh room when none exists). Never blocks; returns the unseen history. Replaces the deprecated `open_conversation`/`enter_conversation` pair.
+- **`message_and_await_agent(sender, message, title?, timeout_seconds?)`** — speak to peers in your conversation and block for the next reply. `timeout_seconds` caps that wait, clamped server-side to [10s, the server default window].
+- **`post_agent_message(sender, message, title?)`** — speak *without* blocking: writes the message, wakes one blocked peer, and returns immediately with the caller's unseen delta. Used to acknowledge a request before starting long work.
+- **`join_conversation(sender, ref?, title?)`** — join a conversation. Pass `ref` for a specific one. Ref-less, the candidate rule applies: a session already in an Active conversation rejoins it, while an unbound session lands in the single Active conversation that was itself minted ref-less, is still solo, and is younger than ~30 minutes — zero or several such candidates both mint a fresh room instead. Never blocks; returns the unseen history. Replaces the deprecated `open_conversation`/`enter_conversation` pair.
 - **`combine_conversations(source_id, target_id)`** — merge two conversations; dormant members of `source_id` are migrated and auto-resumed.
-- **`lookup_conversation_ids(cwd_filter?, sender_contains?, title_contains?)`** — find conversation IDs to feed `combine_conversations`.
+- **`lookup_conversation_ids(cwd_filter?, sender_contains?, title_contains?)`** — find Active conversations matching the filters. Returns a metadata row per match (`conversation_id`, `title`, `last_activity_at`, `created_at`, `origin`, and each member's `sender` + state), most recently active first — enough to pick a target for `join_conversation` or `combine_conversations`.
 - **`leave_conversation(sender, parting_message)`** — leave the conversation with a final summary; session falls back to its home conversation (away on) or terminal output (away off).
 
 To exit away mode, reply *"I'm back"*. The agent will provide a **Welcome Back Summary** of what was accomplished while you were away and then resume normal terminal output.
@@ -216,7 +217,7 @@ Switchboard correlates your reply to the waiting `ask_human` call via the Androi
 
 ### Conversation composition
 
-Multiple agents can share a conversation without spawning. Any agent calls `join_conversation(sender, title?)` — the first mints the room and it becomes the open one; later ref-less callers land in it, and `ref` targets a specific conversation. Agents in the same conversation communicate through `message_and_await_agent`.
+Multiple agents can share a conversation without spawning. Any agent calls `join_conversation(sender, title?)` — the first ref-less call mints the room, and a second ref-less caller within about 30 minutes lands in it while it is still solo; pass `ref` to target a specific conversation. Agents in the same conversation communicate through `message_and_await_agent` (speak and block) or `post_agent_message` (speak and keep working).
 
 You can also merge two existing conversations with `combine_conversations(source_id, target_id)` — dormant members of the source are migrated into the target and revived. All three flows are also available from the phone's long-press menu on any conversation row.
 

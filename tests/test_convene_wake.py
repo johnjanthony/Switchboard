@@ -71,6 +71,37 @@ async def test_wake_resolves_blocked_message_and_await(logger):
 	assert envelope["conversation_id"] == "conv-X"
 	assert "John convened" in envelope["log"]
 	assert len(conv.wait_queue) == 0
+	# This envelope resolves a blocked message_and_await_agent future, so its
+	# peers must carry the same objects that tool's ok envelope carries - bare
+	# name strings make the documented p["sender"] a TypeError.
+	(peer,) = envelope["peers"]
+	assert peer["sender"] == "Claude-A"
+	assert peer["state"] == "alive"
+	assert set(peer) == {"sender", "state", "waiting", "last_spoke_at"}
+
+
+@pytest.mark.asyncio
+async def test_queued_notice_renders_bare_peer_names(logger):
+	"""The hook-delivered notice is human-readable prose, so it keeps consuming
+	bare sender names - it must not start rendering the envelope's peer objects."""
+	registry = make_registry_with_loopback()
+	session_registry = SessionRegistry()
+	registry.sessions = session_registry
+
+	session_registry.record_session_start("s-idle", cwd="C:/I")
+	session_registry.set_sender("s-idle", "Idle")
+
+	conv = make_active_conversation(
+		conversation_id="conv-Y", member_session_id="s-A", sender="Claude-A", cwd="C:/A",
+	)
+	registry.conversations["conv-Y"] = conv
+	registry.bind_session("s-A", "conv-Y")
+
+	cmd = {"session_ids": ["s-idle"], "target": "conv-Y", "title": None, "issued_at": "x"}
+	await _perform_convene(registry, session_registry, cmd, logger)
+
+	rec = session_registry.get("s-idle")
+	assert "(peers: Claude-A)" in rec.pending_notices[0]
 
 
 @pytest.mark.asyncio

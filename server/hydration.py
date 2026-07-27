@@ -89,6 +89,15 @@ async def hydrate_from_firebase(registry: Registry, backend, logger, session_reg
 						v for _k, v in sorted(messages_node.items())
 						if isinstance(v, dict) and v.get("type") in _LIVE_MESSAGE_TYPES
 					)
+					for m in conv.members_active.values():
+						for msg in reversed(conv.messages):
+							if msg.get("sender") == m.sender:
+								ts = msg.get("timestamp")
+								try:
+									m.last_spoke_at = datetime.fromisoformat(ts).timestamp() if ts else None
+								except (TypeError, ValueError):
+									m.last_spoke_at = None
+								break
 	except Exception as exc:
 		await logger.surface_error(f"hydration_conversations_read_failed: {exc}")
 

@@ -83,7 +83,7 @@ async def test_ref_absent_second_joiner_lands_with_first(cfg, logger):
 	data_b = json.loads(result_b)
 
 	assert data_b["conversation_id"] == conv_id
-	assert data_b["peers"] == ["A"]
+	assert [p["sender"] for p in data_b["peers"]] == ["A"]
 	assert "hello from A" in data_b["log"]
 	assert len(r.conversations) == 1
 	assert data_b.get("minted") is not True
@@ -200,10 +200,37 @@ async def test_ref_given_joins_that_conversation(cfg, logger):
 	data = json.loads(result)
 	assert data["status"] == "ok"
 	assert data["conversation_id"] == "conv-existing"
-	assert data["peers"] == ["Host"]
+	assert [p["sender"] for p in data["peers"]] == ["Host"]
 	assert "welcome" in data["log"]
 	assert "s-guest" in conv.members_active
 	assert r.session_to_conversation_id["s-guest"] == "conv-existing"
+
+
+@pytest.mark.asyncio
+async def test_ref_join_peers_are_full_objects(cfg, logger):
+	"""A ref join's peers entries are full objects, not bare sender strings."""
+	backend = RecordingBackend()
+	r = make_registry_with_loopback()
+	conv = Conversation(id="conv-existing2", title="existing2")
+	host = ConversationMember(
+		cli_session_id="s-host2", sender="Host2", cwd="C:/Work/H", surface="windows", joined_at=0.0,
+	)
+	conv.members_active["s-host2"] = host
+	r.conversations["conv-existing2"] = conv
+	r.bind_session("s-host2", "conv-existing2")
+	handlers = _handlers(cfg, r, backend, logger)
+
+	result = await handlers.join_conversation(
+		"Guest",
+		ref="conv-existing2",
+		cli_session_id="s-guest2",
+		cwd="C:/Work/G",
+	)
+
+	data = json.loads(result)
+	(peer,) = data["peers"]
+	assert set(peer) == {"sender", "state", "waiting", "last_spoke_at"}
+	assert peer["state"] == "alive"
 
 
 @pytest.mark.asyncio

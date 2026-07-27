@@ -25,12 +25,12 @@ server/
   config.py            Env-based Config loader (dotenv fallback)
   registry.py          PendingRequest + Registry (in-memory); conversations dict with members/pendings keyed by cli_session_id; session_to_conversation_id routing map; per-session asyncio.Lock for race-free first-call conv creation; global away-mode flag
   session_registry.py  SessionRecord + SessionRegistry (session roster; push-fed; sweeper rules)
-  messenger.py         Backend lifecycle base + 4 trait ABCs (MessageWriter, ResponsePoller, AwayModeMirror, ChannelLifecycle) + ConversationStore protocol + IncomingResponse
+  messenger.py         Backend lifecycle base + 3 trait ABCs (MessageWriter, ResponsePoller, AwayModeMirror) + ConversationStore protocol + IncomingResponse
   firebase.py          FirebaseBackend (implements every messenger surface); Firebase admin logic (FCM, Realtime DB)
   spawn.py             Agent session spawner (triggered from Android app)
   conversation_ops.py  Conversation lifecycle helpers (create, add/migrate member, queue-for-intro, wake, combine, session-fallback); sender-collision auto-disambiguation ('Claude Win' -> 'Claude Win 2' etc.)
   cli_session_end.py   handle_session_end: marks a member dormant on session end; invoked by the marker-file sweep (dispatch_session_end_markers)
-  rate_limiter.py      Per-conversation token-bucket rate limiter consumed by ask_human, notify_human, send_document_human, and message_and_await_agent (which degrades to FCM suppression instead of rejecting)
+  rate_limiter.py      Per-conversation token-bucket rate limiter consumed by ask_human, notify_human, send_document_human, and message_and_await_agent / post_agent_message (which degrade to FCM suppression instead of rejecting)
   canonicalization.py  Canonical-cwd normalization (display-only; cwd is a display tag)
   logging_jsonl.py     JSONL audit log
   hydration.py         Rebuilds Registry state from Firebase on startup (conversations survive restart)
@@ -41,7 +41,7 @@ server/
   claude_status.py     Claude service-status watch (poll loop + status parse published to widget/status)
   widget_snapshot.py   WidgetSnapshotStore for the /widget-snapshot POST payload (canonical de-dup)
   gateway/             Tool handlers + dispatch loops
-    handlers.py          ask_human, notify_human, send_document_human, message_and_await_agent, join_conversation, combine_conversations, lookup_conversation_ids, leave_conversation, set_away_mode tool closures; JSON status envelopes (_envelope/_terminal_envelope/_wrap_wait_result)
+    handlers.py          ask_human, notify_human, send_document_human, message_and_await_agent, post_agent_message, join_conversation, combine_conversations, lookup_conversation_ids, leave_conversation, set_away_mode tool closures; JSON status envelopes (_envelope/_terminal_envelope/_wrap_wait_result)
     dispatch.py          dispatch_responses, dispatch_combine_commands, dispatch_force_end_commands, dispatch_spawn_commands, dispatch_away_mode_commands, dispatch_status_request_commands, dispatch_session_end_markers, dispatch_session_sweep, dispatch_conversation_sweep, handle_force_end
     document.py          _validate_path + extension allowlist + secret-name denylist + sha256 helpers
     bulk_respond.py      _apply_bulk_respond_decision (used by exit_global to drain pending questions)
@@ -145,7 +145,7 @@ Requirements:
 
 ## MCP tool surface
 
-Active tools: `ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `join_conversation`, `combine_conversations`, `lookup_conversation_ids`, `leave_conversation`, `set_away_mode`. Conversation tools return one-line JSON status envelopes (`ok | timeout | conversation_ended`); `ask_human` returns bare reply text with JSON terminal sentinels.
+Active tools: `ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `post_agent_message`, `join_conversation`, `combine_conversations`, `lookup_conversation_ids`, `leave_conversation`, `set_away_mode`. Conversation tools return one-line JSON status envelopes (`ok | timeout | conversation_ended`); `ask_human` returns bare reply text with JSON terminal sentinels.
 
 Routing is by `cli_session_id`, injected by the `cli-session-injector-hook.py` PreToolUse hook. Agents pass `sender` and tool-specific args only. Non-Claude agents (Antigravity) have no injector; they pass cli_session_id (= their agy conversation UUID) and cwd explicitly on every call, taught and enforced by the agy hooks.
 

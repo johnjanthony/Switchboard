@@ -177,7 +177,7 @@ If source had the open marker, it clears. Target's open status, if any, is unaff
 
 ### `lookup_conversation_ids(cwd_filter?, sender_contains?, title_contains?)` — non-blocking
 
-Returns a JSON-encoded list of Active conversation IDs matching ALL provided filters. At least one filter required. Iterates `registry.conversations` (in-memory only — Ended convs are excluded by the `state == "active"` filter). Used by agents to resolve concrete conversation IDs before calling `combine_conversations`.
+Returns an `ok` status envelope carrying one metadata row per matching Active conversation: `{"status":"ok","conversations":[{conversation_id, title, last_activity_at, created_at, origin, members:[{sender, state}]}]}`, sorted by `last_activity_at` descending. At least one filter required; a match must satisfy ALL supplied filters. Iterates `registry.conversations` (in-memory only — Ended convs are excluded by the `state == "active"` filter). Used by agents to pick a concrete conversation before calling `join_conversation(ref=...)` or `combine_conversations`.
 
 ### `leave_conversation(sender, parting_message)` — non-blocking
 

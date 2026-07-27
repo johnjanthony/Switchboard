@@ -24,6 +24,14 @@ from server.gateway.pending_lifecycle import terminate_pending
 
 TIMEOUT_SENTINEL = "__TIMEOUT__"
 
+def _clamp_wait_timeout(requested: float | None, ceiling: float) -> float:
+	"""Clamp a caller-chosen wait to [10s, ceiling]; None means the full ceiling.
+	The server-wide window is authoritative - a ceiling below the floor wins."""
+	if requested is None:
+		return ceiling
+	return min(max(float(requested), 10.0), ceiling)
+
+
 def _envelope(status: str, **fields) -> str:
 	"""One-line JSON status envelope for conversation-tool returns. Internal
 	protocol keeps carrying plain strings and sentinels; this is the MCP-facing
@@ -55,16 +63,16 @@ def _terminal_envelope(text: str) -> str | None:
 	return None
 
 
-def _wrap_wait_result(conversation_id: str, text: str) -> str:
+def _wrap_wait_result(conversation_id: str, text: str, peers: list[dict] | None = None) -> str:
 	"""Envelope a message_and_await wake result. Internal wake payloads are plain
 	strings (delta logs, dormancy notices); sentinels map to their terminal
-	envelopes."""
+	envelopes. peers rides only on the ok envelope - terminal states carry none."""
 	if text.startswith('{"status":'):
 		return text  # already an envelope (convene wake resolves futures pre-built)
 	terminal = _terminal_envelope(text)
 	if terminal is not None:
 		return terminal
-	return _envelope("ok", conversation_id=conversation_id, log=text or None)
+	return _envelope("ok", conversation_id=conversation_id, log=text or None, peers=peers)
 
 _SESSION_START = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
@@ -168,6 +176,7 @@ class ToolHandlers:
 	notify_human: Callable[..., Coroutine[None, None, str]]
 	send_document_human: Callable[..., Coroutine[None, None, str]]
 	message_and_await_agent: Callable[..., Coroutine[None, None, str]]
+	post_agent_message: Callable[..., Coroutine[None, None, str]]
 	lookup_conversation_ids: Callable[..., Coroutine[None, None, str]]
 	leave_conversation: Callable[..., Coroutine[None, None, str]]
 	set_away_mode: Callable[..., Coroutine[None, None, str]]
@@ -536,6 +545,7 @@ def build_tool_handlers(
 		sender: str,
 		message: str | None = None,
 		title: str | None = None,
+		timeout_seconds: float | None = None,
 		*,
 		cli_session_id: str,
 		cwd: str,
@@ -568,8 +578,13 @@ def build_tool_handlers(
 			await logger.rate_limited(conversation_id, "message_and_await_agent")
 			suppress_push = True
 
-		from server.conversation_ops import _wake_one_from
+		from server.conversation_ops import _peers_payload, _wake_one_from
 		import time
+
+		# Computed before any side effect: float(requested) raises on garbage
+		# input, and a raise after the wait entry is queued would strand a live
+		# entry that a later peer wake resolves into the void (fix round, 2026-07-27).
+		effective_timeout = _clamp_wait_timeout(timeout_seconds, config.timeout_seconds)
 
 		wait_entry = None
 		async with conv.lock:
@@ -585,6 +600,7 @@ def build_tool_handlers(
 			}
 			conv.messages.append(speak_msg)
 			conv.last_activity_at = now_ts
+			caller_member.last_spoke_at = now_ts
 			if title is not None:
 				conv.title = title
 				_spawn_bg(
@@ -605,6 +621,20 @@ def build_tool_handlers(
 				label=f"fb_last_activity:{conversation_id}",
 			)
 
+			# Supersede any parked wait this session already holds (mirrors
+			# ask_human REV-106): resolve rather than cancel, so the superseded
+			# coroutine returns {"status":"superseded"} instead of surfacing a
+			# transport-level cancel its client would retry.
+			# ORDER IS LOAD-BEARING: this loop must run BEFORE _wake_one_from
+			# below. Reversed, the wake resolves the caller's own stale entry with
+			# the caller's own message, and nothing else catches the reorder.
+			superseded_any = False
+			for entry in list(conv.wait_queue):
+				if entry["member"].cli_session_id == cli_session_id and not entry["future"].done():
+					conv.wait_queue.remove(entry)
+					entry["future"].set_result(SUPERSEDED_SENTINEL)
+					superseded_any = True
+
 			# Wake FIFO-oldest waiter (if any); no-op on an empty queue, so a solo
 			# speaker simply parks here until a peer joins and replies.
 			_wake_one_from(conv)
@@ -617,12 +647,22 @@ def build_tool_handlers(
 				"block_position": time.monotonic(),
 			}
 			conv.wait_queue.append(wait_entry)
-			caller_member.last_seen_seq = len(conv.messages)
+			# SUPERSEDED_SENTINEL carries no log, so a superseded entry's owed delta
+			# transfers to this new wait; advancing here would burn it unrecoverably.
+			# Over-delivery is benign (repo precedent REV-111/F-70 likewise delivers
+			# before advancing).
+			if not superseded_any:
+				caller_member.last_seen_seq = len(conv.messages)
 
 		# Lock released; now wait
 		try:
-			result = await asyncio.wait_for(future, timeout=config.timeout_seconds)
-			return _wrap_wait_result(conversation_id, result)
+			result = await asyncio.wait_for(future, timeout=effective_timeout)
+			# Combine may have migrated this session while it was parked; the
+			# pre-park capture would report the ended source room and an empty
+			# peers list (which D7's last-agent rule tells the agent to act on).
+			current_id = registry.session_to_conversation_id.get(cli_session_id) or conversation_id
+			current_conv = registry.conversations.get(current_id) or conv
+			return _wrap_wait_result(current_id, result, peers=_peers_payload(current_conv, cli_session_id))
 		except asyncio.TimeoutError:
 			async with conv.lock:
 				if wait_entry in conv.wait_queue:
@@ -638,6 +678,98 @@ def build_tool_handlers(
 
 	@require_cli_session_id
 	@_touch_sessions
+	async def post_agent_message(
+		sender: str,
+		message: str,
+		title: str | None = None,
+		*,
+		cli_session_id: str,
+		cwd: str,
+	) -> str:
+		if err := _validate_sender(sender):
+			return err
+		if not message:
+			return "ERROR: message is required."
+		# Same entry resolution as message_and_await_agent: the resolver heals the
+		# fresh-spawn state (bound but memberless) by adding the member; the guards
+		# below are defensive residue, mirroring handlers.py:553-561.
+		from server.conversation_ops import _resolve_conversation_and_member
+		conversation_id = await _resolve_conversation_and_member(
+			registry, cli_session_id, cwd, sender, backend=backend, mint_if_unbound=False,
+		)
+		if conversation_id is None:
+			return "ERROR: not in any conversation. End your turn."
+		conv = registry.conversations.get(conversation_id)
+		if conv is None:
+			return "ERROR: bound conversation no longer exists."
+		caller_member = conv.members_active.get(cli_session_id)
+		if caller_member is None:
+			return "ERROR: session bound to conversation but not a member."
+
+		# Same bucket and degrade-to-suppression semantics as message_and_await_agent
+		# (REV-109); the at-desk FCM gate in the backend handles away-off silencing.
+		suppress_push = False
+		if limiter is not None and not limiter.consume(conversation_id):
+			await logger.rate_limited(conversation_id, "post_agent_message")
+			suppress_push = True
+
+		from server.conversation_ops import _compose_wake_payload, _peers_payload, _wake_one_from
+		import time
+
+		async with conv.lock:
+			now_ts = time.time()
+			# Captured under the lock: the Firebase write below is awaited after
+			# release, and a rename landing in that gap must not persist a sender
+			# that disagrees with conv.messages and the returned peers/log.
+			sender_name = caller_member.sender
+			speak_msg = {
+				"seq": len(conv.messages),
+				"sender": sender_name,
+				"type": "agent_msg",
+				"text": message,
+				"timestamp": datetime.now(timezone.utc).isoformat(),
+				"title": title,
+			}
+			conv.messages.append(speak_msg)
+			conv.last_activity_at = now_ts
+			caller_member.last_spoke_at = now_ts
+			if title is not None:
+				conv.title = title
+				_spawn_bg(
+					backend.write_conversation_title(conversation_id, title),
+					label=f"fb_write_title:{conversation_id}",
+				)
+			_spawn_bg(
+				backend.set_conversation_last_activity(conversation_id, now_ts),
+				label=f"fb_last_activity:{conversation_id}",
+			)
+			_wake_one_from(conv, exclude_cli_session_id=cli_session_id)
+			log = _compose_wake_payload(conv, caller_member, "msg_and_await")
+			caller_member.last_seen_seq = len(conv.messages)
+			peers = _peers_payload(conv, cli_session_id)
+
+		# Awaited, not backgrounded, so the envelope can carry the Firebase msg_id.
+		# A write failure is non-fatal (the in-memory append and peer wake already
+		# succeeded; a hard ERROR would invite a double-post) but honest: the ok
+		# envelope carries write_failed=true instead of silently dropping msg_id.
+		msg_id = None
+		write_failed = False
+		try:
+			_correlation, msg_id = await backend.write_conversation_message(
+				conversation_id, sender_name, "agent_msg", message,
+				format="markdown", title=title, suppress_push=suppress_push,
+			)
+		except Exception as exc:
+			write_failed = True
+			await logger.surface_error(f"post_agent_message_write_failed: {exc}")
+		await logger.info(f"post_agent_message: conv_id={conversation_id} sender={sender_name}")
+		return _envelope(
+			"ok", conversation_id=conversation_id, msg_id=msg_id, log=log or None,
+			peers=peers, write_failed=write_failed or None,
+		)
+
+	@require_cli_session_id
+	@_touch_sessions
 	async def lookup_conversation_ids(
 		cwd_filter: str | None = None,
 		sender_contains: str | None = None,
@@ -646,7 +778,7 @@ def build_tool_handlers(
 		cli_session_id: str,
 		cwd: str,
 	) -> str:
-		"""Returns an ok envelope carrying the matching active conversation_ids.
+		"""Returns an ok envelope carrying rows of matching active conversation metadata.
 		At least one of cwd_filter, sender_contains, title_contains must be supplied."""
 		if not any([cwd_filter, sender_contains, title_contains]):
 			return "ERROR: at least one of cwd_filter, sender_contains, title_contains is required"
@@ -662,9 +794,20 @@ def build_tool_handlers(
 			if cwd_filter:
 				if not any(cwd_filter.lower() == m.cwd.lower() for m in conv.members_active.values()):
 					continue
-			results.append(conv_id)
+			results.append({
+				"conversation_id": conv_id,
+				"title": conv.title,
+				"last_activity_at": conv.last_activity_at,
+				"created_at": conv.created_at,
+				"origin": conv.origin,
+				"members": [
+					{"sender": m.sender, "state": "alive" if m.alive else "dormant"}
+					for m in conv.members_active.values()
+				],
+			})
+		results.sort(key=lambda row: row["last_activity_at"], reverse=True)
 		await logger.info(f"lookup_conversation_ids: matched={len(results)}")
-		return _envelope("ok", conversation_ids=results)
+		return _envelope("ok", conversations=results)
 
 	@require_cli_session_id
 	@_touch_sessions
@@ -848,6 +991,7 @@ def build_tool_handlers(
 			_compose_wake_payload,
 			_create_active_conversation_for,
 			_migrate_member,
+			_peers_payload,
 		)
 
 		bound_id = registry.session_to_conversation_id.get(cli_session_id)
@@ -924,7 +1068,7 @@ def build_tool_handlers(
 		# delta for an existing one; cursor advances so the next wake is a delta.
 		log = _compose_wake_payload(conv, member, "enter")
 		member.last_seen_seq = len(conv.messages)
-		peers = [m.sender for sid, m in conv.members_active.items() if sid != cli_session_id]
+		peers = _peers_payload(conv, cli_session_id)
 		await logger.info(f"join_conversation: conv_id={target_id} sender={member.sender} already_member={already_member}")
 		return _envelope(
 			"ok", conversation_id=target_id, sender=member.sender, peers=peers,
@@ -967,6 +1111,7 @@ def build_tool_handlers(
 		notify_human=notify_human,
 		send_document_human=send_document_human,
 		message_and_await_agent=message_and_await_agent,
+		post_agent_message=post_agent_message,
 		lookup_conversation_ids=lookup_conversation_ids,
 		leave_conversation=leave_conversation,
 		set_away_mode=set_away_mode,

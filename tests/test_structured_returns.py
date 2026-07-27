@@ -202,7 +202,7 @@ async def test_combine_returns_ok_envelope(tmp_path):
 
 @pytest.mark.asyncio
 async def test_lookup_returns_ok_envelope(tmp_path):
-	"""lookup_conversation_ids's success return carries status and conversation_ids."""
+	"""lookup_conversation_ids's success return carries status and conversation rows."""
 	backend = RecordingBackend()
 	r = Registry()
 	m = ConversationMember(cli_session_id="s-look", sender="Claude-Look", cwd="C:/X", surface="windows", joined_at=0.0)
@@ -218,4 +218,14 @@ async def test_lookup_returns_ok_envelope(tmp_path):
 		title_contains="lookup", cli_session_id="s-look", cwd="C:/X",
 	)
 
-	assert json.loads(result) == {"status": "ok", "conversation_ids": ["conv-look"]}
+	assert json.loads(result) == {
+		"status": "ok",
+		"conversations": [{
+			"conversation_id": "conv-look",
+			"title": "lookup test",
+			"last_activity_at": 0.0,
+			"created_at": 0.0,
+			"origin": None,
+			"members": [{"sender": "Claude-Look", "state": "alive"}],
+		}],
+	}

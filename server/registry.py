@@ -61,6 +61,7 @@ class ConversationMember:
 	session_end_reason: str | None = None
 	left_at: float | None = None
 	last_seen_seq: int = 0
+	last_spoke_at: float | None = None
 
 
 @dataclass

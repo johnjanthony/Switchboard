@@ -507,12 +507,18 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		sender: str,
 		message: str,
 		title: str | None = None,
+		timeout_seconds: float | None = None,
 		cli_session_id: str | None = None,
 		cwd: str | None = None,
 	) -> str:
 		"""Send a message to your collab partners and block until one of them speaks.
-		Returns one-line JSON: {"status":"ok","log":...} on a peer wake,
-		{"status":"timeout"}, or {"status":"conversation_ended",...}.
+		Returns one-line JSON: {"status":"ok","log":...,"peers":[...]} on a peer wake,
+		{"status":"timeout"}, {"status":"superseded"}, or {"status":"conversation_ended",...}.
+
+		timeout_seconds: optional cap on this wait, clamped server-side to [10s,
+		the server default window]. A timeout you explicitly requested is loop
+		control - do other work and poll or re-enter the wait - not the
+		pause-and-record timeout protocol.
 
 		cli_session_id and cwd identify your session. Claude Code: injected
 		automatically by the plugin hook (do not pass them). Other CLIs (e.g.
@@ -520,9 +526,36 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		cwd=<your workspace root> explicitly on every call."""
 		# Keepalive: blocks until a collab partner speaks, which can be hours.
 		return await _await_with_progress_keepalive(mcp, handlers.message_and_await_agent(
-			sender, message, title=title,
+			sender, message, title=title, timeout_seconds=timeout_seconds,
 			cli_session_id=cli_session_id, cwd=cwd,
 		))
+
+	@mcp.tool()
+	async def post_agent_message(
+		sender: str,
+		message: str,
+		title: str | None = None,
+		cli_session_id: str | None = None,
+		cwd: str | None = None,
+	) -> str:
+		"""Send a message to your collab partners WITHOUT blocking. Writes the
+		message, wakes one blocked waiter, and returns immediately - use it to
+		acknowledge a request before starting long work ("ack, implementing,
+		~20 min"), then deliver the result later with message_and_await_agent.
+		Returns one-line JSON: {"status":"ok","conversation_id":...,"msg_id":...,
+		"log":<unseen delta or absent>,"peers":[...]}. A rare "write_failed": true
+		on the ok envelope means peers were woken but the phone-history write
+		failed - do NOT re-post. It never supersedes or disturbs a parked
+		message_and_await_agent wait from your own session.
+
+		cli_session_id and cwd identify your session. Claude Code: injected
+		automatically by the plugin hook (do not pass them). Other CLIs (e.g.
+		Antigravity): pass cli_session_id=<your conversation id> and
+		cwd=<your workspace root> explicitly on every call."""
+		return await handlers.post_agent_message(
+			sender, message, title=title,
+			cli_session_id=cli_session_id, cwd=cwd,
+		)
 
 	@mcp.tool()
 	async def combine_conversations(
@@ -558,12 +591,19 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 
 		ref: a conversation_id (from lookup_conversation_ids, a convene notice,
 		or John's prompt) to join that conversation - migrating you out of your
-		current one if needed. Omit ref to join the currently-open conversation,
-		or mint a fresh one (promoted as open) when none exists.
+		current one if needed. Omit ref and: a session already bound to an Active
+		conversation rejoins it; an unbound session lands in the single Active
+		conversation that was itself minted ref-less, still has exactly one alive
+		member, and is younger than ~30 minutes - zero or several such candidates
+		both mint a NEW room instead. If you expected to join an existing
+		conversation and the reply says "minted": true, you did not find it -
+		leave and retry with a ref from lookup_conversation_ids.
 
 		Returns one-line JSON: {"status":"ok", "conversation_id", "sender",
 		"peers", "log"?, "minted"?, "already_member"?}. "log" is the history you
-		have not seen yet (full on first join). To wait for peers afterwards,
+		have not seen yet (full on first join). "peers" entries are {"sender",
+		"state": alive|dormant, "waiting", "last_spoke_at"}; waiting=true means a
+		message sent now will wake that member. To wait for peers afterwards,
 		call message_and_await_agent.
 
 		cli_session_id and cwd identify your session. Claude Code: injected
@@ -583,8 +623,10 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		cli_session_id: str | None = None,
 		cwd: str | None = None,
 	) -> str:
-		"""Returns one-line JSON: {"status":"ok","conversation_ids":[...]} - the active
-		conversation_ids matching ALL provided filters. At least one filter required.
+		"""Returns one-line JSON: {"status":"ok","conversations":[{conversation_id, title,
+		last_activity_at, created_at, origin, members:[{sender, state}]}]} - Active
+		conversations matching ALL provided filters, sorted by last_activity_at
+		descending. At least one filter required.
 
 		cwd_filter: exact case-insensitive match against members' cwd.
 		sender_contains: case-insensitive substring match.

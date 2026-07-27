@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 
 import pytest
 
@@ -12,7 +13,7 @@ from server.config import Config
 from server.gateway import build_tool_handlers
 from server.logging_jsonl import JsonlLogger
 from server.rate_limiter import RateLimiter
-from server.registry import Conversation, ConversationMember, Registry
+from server.registry import SUPERSEDED_SENTINEL, Conversation, ConversationMember, Registry
 from tests.test_gateway_notify_human import RecordingBackend
 
 
@@ -558,6 +559,31 @@ async def test_rate_limited_agent_msg_still_delivers_but_suppresses_push(cfg, lo
 
 
 @pytest.mark.asyncio
+async def test_wake_envelope_carries_peer_objects(cfg, logger):
+	registry, _ = _make_registry_with_two_alive_members()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	task_a = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-A", "hello", cli_session_id="s-A", cwd="C:/X"))
+	await asyncio.sleep(0.05)
+	task_b = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-B", "hi back", cli_session_id="s-B", cwd="C:/Y"))
+	await asyncio.sleep(0.05)
+
+	result = json.loads(await asyncio.wait_for(task_a, timeout=2))
+	assert result["status"] == "ok"
+	(peer,) = result["peers"]
+	assert peer["sender"] == "Claude-B"
+	assert peer["state"] == "alive"
+	assert set(peer) == {"sender", "state", "waiting", "last_spoke_at"}
+
+	task_b.cancel()
+	with contextlib.suppress(asyncio.CancelledError):
+		await task_b
+
+
+@pytest.mark.asyncio
 async def test_agent_msgs_within_limit_push_normally(cfg, logger):
 	registry, _ = _make_registry_with_two_alive_members()
 	backend = RecordingBackend()
@@ -572,6 +598,165 @@ async def test_agent_msgs_within_limit_push_normally(cfg, logger):
 
 	assert json.loads(await task_a)["status"] == "ok"
 	assert backend.push_suppressed == [False, False]
+
+	task_b.cancel()
+	with contextlib.suppress(asyncio.CancelledError):
+		await task_b
+
+
+# ---------------------------------------------------------------------------
+# Tests: timeout_seconds clamp (D5)
+# ---------------------------------------------------------------------------
+
+def test_clamp_wait_timeout_matrix():
+	from server.gateway.handlers import _clamp_wait_timeout
+	assert _clamp_wait_timeout(None, 86400.0) == 86400.0
+	assert _clamp_wait_timeout(60.0, 86400.0) == 60.0
+	assert _clamp_wait_timeout(3.0, 86400.0) == 10.0       # floor
+	assert _clamp_wait_timeout(999999.0, 86400.0) == 86400.0  # ceiling
+	assert _clamp_wait_timeout(999999.0, 0.3) == 0.3       # ceiling below floor: ceiling wins
+
+
+@pytest.mark.asyncio
+async def test_caller_timeout_is_clamped_to_ceiling(short_timeout_cfg, logger):
+	registry, _ = _make_registry_with_two_alive_members()
+	handlers = build_tool_handlers(short_timeout_cfg, registry, RecordingBackend(), logger)
+
+	result = json.loads(await asyncio.wait_for(handlers.message_and_await_agent(
+		"Claude-A", "anyone there?", timeout_seconds=999999,
+		cli_session_id="s-A", cwd="C:/X"), timeout=5))
+	assert result["status"] == "timeout"  # 0.3s ceiling applied, not the huge request
+
+
+@pytest.mark.asyncio
+async def test_invalid_timeout_raises_before_any_side_effect(cfg, logger):
+	registry, _ = _make_registry_with_two_alive_members()
+	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), logger)
+	conv = registry.conversations["conv-1"]
+
+	with pytest.raises((TypeError, ValueError)):
+		await handlers.message_and_await_agent(
+			"Claude-A", "hello", timeout_seconds="bogus", cli_session_id="s-A", cwd="C:/X")
+	assert len(conv.wait_queue) == 0  # nothing stranded for a peer wake to resolve into the void
+	assert len(conv.messages) == 0  # and nothing was appended either
+
+
+# ---------------------------------------------------------------------------
+# Tests: wait supersession (D6)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_second_wait_supersedes_first_from_same_session(cfg, logger):
+	registry, _ = _make_registry_with_two_alive_members()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	task_1 = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-A", "first question", cli_session_id="s-A", cwd="C:/X"))
+	await asyncio.sleep(0.05)
+	task_2 = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-A", "newer question", cli_session_id="s-A", cwd="C:/X"))
+	await asyncio.sleep(0.05)
+
+	first = json.loads(await asyncio.wait_for(task_1, timeout=2))
+	assert first["status"] == "superseded"
+	conv = registry.conversations["conv-1"]
+	assert len(conv.wait_queue) == 1  # only the newer wait remains
+
+	task_b = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-B", "answering", cli_session_id="s-B", cwd="C:/Y"))
+	await asyncio.sleep(0.05)
+	second = json.loads(await asyncio.wait_for(task_2, timeout=2))
+	assert second["status"] == "ok"
+	assert "Claude-B: answering" in second["log"]
+
+	task_b.cancel()
+	with contextlib.suppress(asyncio.CancelledError):
+		await task_b
+
+
+# ---------------------------------------------------------------------------
+# Tests: post-wake conversation re-resolution (combine while parked)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_wake_after_combine_reports_target_conversation_and_peers(cfg, logger):
+	"""A wait parked in the source room and migrated by a combine must wake
+	reporting the TARGET conversation and its live peers. The pre-park capture
+	named the now-Ended source with peers=[], which the last-agent-standing rule
+	tells the agent to act on by reporting to John and stopping."""
+	backend = RecordingBackend()
+	registry = Registry()
+	source = Conversation(id="conv-src", title="source")
+	source.members_active["s-P"] = ConversationMember(
+		cli_session_id="s-P", sender="Claude-P", cwd="C:/P", surface="windows", joined_at=0.0,
+	)
+	registry.conversations["conv-src"] = source
+	registry.bind_session("s-P", "conv-src")
+	target = Conversation(id="conv-tgt", title="target")
+	target.members_active["s-T"] = ConversationMember(
+		cli_session_id="s-T", sender="Claude-T", cwd="C:/T", surface="windows", joined_at=0.0,
+	)
+	registry.conversations["conv-tgt"] = target
+	registry.bind_session("s-T", "conv-tgt")
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	parked = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-P", "parking in source", cli_session_id="s-P", cwd="C:/P"))
+	await asyncio.sleep(0.05)
+	assert len(source.wait_queue) == 1
+
+	combined = await handlers.combine_conversations(
+		"conv-src", "conv-tgt", cli_session_id="s-T", cwd="C:/T")
+	assert json.loads(combined)["status"] == "ok"
+
+	result = json.loads(await asyncio.wait_for(parked, timeout=2))
+	assert result["status"] == "ok"
+	assert result["conversation_id"] == "conv-tgt"
+	assert [p["sender"] for p in result["peers"]] == ["Claude-T"]
+
+
+@pytest.mark.asyncio
+async def test_supersede_preserves_cursor_for_undelivered_history(cfg, logger):
+	"""SUPERSEDED_SENTINEL carries no log, so superseding a parked wait must not
+	advance the cursor past history that wait never delivered. The reachable worst
+	case is the combine-migrated state: cursor 0 plus a tail queue position, where
+	burning the debt loses the whole target history including the combine intro."""
+	backend = RecordingBackend()
+	registry, conv_id = _make_registry_with_two_alive_members()
+	conv = registry.conversations[conv_id]
+	conv.messages.append({
+		"seq": 0, "sender": "<system>", "type": "system",
+		"text": "Claude-A joined via combine.", "timestamp": "t0",
+	})
+	conv.messages.append({
+		"seq": 1, "sender": "Claude-B", "type": "agent_msg",
+		"text": "target history from B", "timestamp": "t1",
+	})
+	member_a = conv.members_active["s-A"]
+	member_a.last_seen_seq = 0
+	migrated_future = asyncio.get_event_loop().create_future()
+	conv.wait_queue.append({
+		"member": member_a, "future": migrated_future,
+		"waiting_kind": "msg_and_await", "block_position": time.monotonic(),
+	})
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	reissued = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-A", "re-issuing my wait", cli_session_id="s-A", cwd="C:/X"))
+	await asyncio.sleep(0.05)
+
+	assert migrated_future.result() == SUPERSEDED_SENTINEL
+	assert member_a.last_seen_seq == 0  # debt transferred to the new wait, not burned
+
+	task_b = asyncio.create_task(handlers.message_and_await_agent(
+		"Claude-B", "answering", cli_session_id="s-B", cwd="C:/Y"))
+	await asyncio.sleep(0.05)
+	woken = json.loads(await asyncio.wait_for(reissued, timeout=2))
+	assert woken["status"] == "ok"
+	assert "joined via combine" in woken["log"]
+	assert "target history from B" in woken["log"]
+	assert "Claude-B: answering" in woken["log"]
 
 	task_b.cancel()
 	with contextlib.suppress(asyncio.CancelledError):

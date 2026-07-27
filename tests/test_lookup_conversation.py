@@ -79,7 +79,8 @@ async def test_lookup_by_title(cfg, logger):
 	)
 
 	data = json.loads(result)
-	assert data == {"status": "ok", "conversation_ids": ["conv-match"]}
+	assert data["status"] == "ok"
+	assert [r["conversation_id"] for r in data["conversations"]] == ["conv-match"]
 
 
 @pytest.mark.asyncio
@@ -106,7 +107,8 @@ async def test_lookup_by_sender(cfg, logger):
 	)
 
 	data = json.loads(result)
-	assert data == {"status": "ok", "conversation_ids": ["conv-alpha"]}
+	assert data["status"] == "ok"
+	assert [r["conversation_id"] for r in data["conversations"]] == ["conv-alpha"]
 
 
 @pytest.mark.asyncio
@@ -133,7 +135,8 @@ async def test_lookup_by_cwd(cfg, logger):
 	)
 
 	data = json.loads(result)
-	assert data == {"status": "ok", "conversation_ids": ["conv-x"]}
+	assert data["status"] == "ok"
+	assert [r["conversation_id"] for r in data["conversations"]] == ["conv-x"]
 
 
 @pytest.mark.asyncio
@@ -176,8 +179,9 @@ async def test_lookup_skips_ended_conversations(cfg, logger):
 
 	data = json.loads(result)
 	assert data["status"] == "ok"
-	assert "conv-active" in data["conversation_ids"]
-	assert "conv-ended" not in data["conversation_ids"]
+	ids = [r["conversation_id"] for r in data["conversations"]]
+	assert "conv-active" in ids
+	assert "conv-ended" not in ids
 
 
 @pytest.mark.asyncio
@@ -190,3 +194,32 @@ async def test_lookup_missing_cli_session_id_errors(cfg, logger):
 	result = await handlers.lookup_conversation_ids(title_contains="anything")
 
 	assert result.startswith("ERROR: cli_session_id required")
+
+
+@pytest.mark.asyncio
+async def test_lookup_returns_metadata_rows_sorted_desc(cfg, logger):
+	registry = Registry()
+	for i, (cid, title, act) in enumerate([
+		("conv-old", "Old room", 100.0), ("conv-new", "New room", 200.0),
+	]):
+		conv = Conversation(id=cid, title=title)
+		conv.created_at = 50.0
+		conv.last_activity_at = act
+		conv.origin = "join"
+		m = ConversationMember(
+			cli_session_id=f"s-{i}", sender="Claude Win", cwd="C:/X",
+			surface="windows", joined_at=0.0,
+		)
+		conv.members_active[m.cli_session_id] = m
+		registry.conversations[cid] = conv
+	handlers = build_tool_handlers(cfg, registry, RecordingBackend(), logger)
+
+	result = json.loads(await handlers.lookup_conversation_ids(
+		sender_contains="claude", cli_session_id="s-x", cwd="C:/X"))
+	assert result["status"] == "ok"
+	rows = result["conversations"]
+	assert [r["conversation_id"] for r in rows] == ["conv-new", "conv-old"]
+	assert rows[0]["title"] == "New room"
+	assert rows[0]["origin"] == "join"
+	assert rows[0]["members"] == [{"sender": "Claude Win", "state": "alive"}]
+	assert "conversation_ids" not in result

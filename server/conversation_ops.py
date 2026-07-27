@@ -250,6 +250,28 @@ def _compose_wake_payload(conversation: Conversation, member: ConversationMember
 	return "\n".join(lines)
 
 
+def _peers_payload(conversation: Conversation, exclude_cli_session_id: str) -> list[dict]:
+	"""Structured roster of every OTHER active member for tool envelopes.
+	waiting=True means the server holds an unresolved parked wait for that
+	member - a message sent now will wake them (it does NOT mean idle: a
+	backgrounded Claude Code wait is still 'waiting' while the agent works)."""
+	waiting_ids = {
+		entry["member"].cli_session_id
+		for entry in conversation.wait_queue
+		if not entry["future"].done()
+	}
+	return [
+		{
+			"sender": m.sender,
+			"state": "alive" if m.alive else "dormant",
+			"waiting": sid in waiting_ids,
+			"last_spoke_at": m.last_spoke_at,
+		}
+		for sid, m in conversation.members_active.items()
+		if sid != exclude_cli_session_id
+	]
+
+
 async def _add_member(
 	registry: Registry,
 	conversation_id: str,
@@ -630,18 +652,25 @@ async def _perform_combine(
 	return f"ok. combined {source_id} into {target_id} ({len(moved_names)} member(s))"
 
 
-def _wake_one_from(conversation: Conversation) -> bool:
+def _wake_one_from(conversation: Conversation, exclude_cli_session_id: str | None = None) -> bool:
 	"""Wake the FIFO-oldest LIVE waiter on conv.wait_queue: pop entries until one
 	holds an unresolved future, resolve it with the appropriate wake payload, and
 	advance that member's cursor. A popped entry whose future is already done is
 	dead - its waiter's wait_for timed out or was cancelled before the waiter
 	could reacquire conv.lock to dequeue itself (REV-101) - so it is discarded
 	and the next waiter is tried; the dead waiter's own cleanup arm tolerates the
-	entry being gone. Returns True if a wake occurred, False otherwise."""
+	entry being gone. Live entries belonging to exclude_cli_session_id are skipped
+	IN PLACE (kept, FIFO position preserved): a post_agent_message must never
+	consume its own session's armed wait. Returns True if a wake occurred."""
+	skipped = []
+	woke = False
 	while conversation.wait_queue:
 		entry = conversation.wait_queue.popleft()
 		future = entry["future"]
 		if future.done():
+			continue
+		if exclude_cli_session_id is not None and entry["member"].cli_session_id == exclude_cli_session_id:
+			skipped.append(entry)
 			continue
 		member = entry["member"]
 		kind = entry["waiting_kind"]
@@ -649,8 +678,11 @@ def _wake_one_from(conversation: Conversation) -> bool:
 		future.set_result(payload)
 		# Update last_seen_seq so the next wake doesn't re-deliver
 		member.last_seen_seq = len(conversation.messages)
-		return True
-	return False
+		woke = True
+		break
+	for e in reversed(skipped):
+		conversation.wait_queue.appendleft(e)
+	return woke
 
 
 def _convene_notice(conversation_id: str, member_sender: str, peers: list) -> str:
@@ -677,10 +709,16 @@ async def _wake_convened(registry, session_registry, conversation_id, woken_sess
 		member = target.members_active.get(sid)
 		if member is None:
 			continue
-		peers = [m.sender for k, m in target.members_active.items() if k != sid]
+		peer_names = [m.sender for k, m in target.members_active.items() if k != sid]
 		log = _compose_wake_payload(target, member, "enter")
-		envelope = _envelope("convened", conversation_id=conversation_id, peers=peers, log=log or None)
-		notice = _convene_notice(conversation_id, member.sender, peers)
+		# The envelope resolves a blocked message_and_await_agent future, so its
+		# peers must match that tool's object shape; the notice is prose and wants
+		# the bare names.
+		envelope = _envelope(
+			"convened", conversation_id=conversation_id,
+			peers=_peers_payload(target, sid), log=log or None,
+		)
+		notice = _convene_notice(conversation_id, member.sender, peer_names)
 
 		# (b) Blocked in message_and_await, queued in some conversation's wait_queue.
 		resolved = False
