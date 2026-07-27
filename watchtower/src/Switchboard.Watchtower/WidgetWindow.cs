@@ -25,8 +25,9 @@ internal sealed class WidgetWindow : Form
 	const int QBarW = 99;                                               // fixed width for both 5 and 7 segment bars
 	const int QPaceH = 2;                                               // pace (elapsed-time) bar height (skinny + calm on the widget)
 	const int QPaceGap = 2;                                             // gap between the usage bar and the pace bar
-	const int QSep = 7;                                                 // gap before the context rings
+	const int QSep = 14;                                                // gap between quota sets
 	const int QuotaBlockW = QBarW + QSep;
+	const int PadBeforeRings = 7;                                       // gap after the last quota set before the context rings
 	const int HeightWithQuota = 44;
 	const int HeightContextOnly = 34;
 
@@ -335,9 +336,11 @@ internal sealed class WidgetWindow : Form
 
 	void RecomputeSize()
 	{
-		int quotaW = VisibleSetCount * QuotaBlockW;
+		int originX = VisibleSetCount > 0
+			? GrabW + VisibleSetCount * QuotaBlockW - QSep + PadBeforeRings
+			: GrabW + PadAfterGrab;
 		int cluster = RingClusterW + OverflowTextRoom;   // fixed: no longer scales with session count
-		Width = Math.Max(72, GrabW + quotaW + PadAfterGrab + cluster + RightMargin);
+		Width = Math.Max(72, originX + cluster + RightMargin);
 		Height = VisibleSetCount > 0 ? HeightWithQuota : HeightContextOnly;
 	}
 
@@ -456,7 +459,9 @@ internal sealed class WidgetWindow : Form
 		// Context rings (busiest-first, nested fullest-outermost): each session is a crisp gradient-coloured
 		// arc. Capped at RingMaxCount so each ring has room at taskbar size. Sort/cap/
 		// overflow live in ContextRingLayout; this just draws the result.
-		int originX = GrabW + VisibleSetCount * QuotaBlockW + PadAfterGrab;
+		int originX = VisibleSetCount > 0
+			? GrabW + VisibleSetCount * QuotaBlockW - QSep + PadBeforeRings
+			: GrabW + PadAfterGrab;
 		var layout = ContextRingLayout.Build(_sessions, originX, Height, thickness: RingThickness, gap: RingGap, maxRings: RingMaxCount);
 
 		// Ever-present dark grey marker ring at the outermost context ring location
