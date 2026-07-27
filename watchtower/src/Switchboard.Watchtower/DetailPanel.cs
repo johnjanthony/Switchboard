@@ -134,11 +134,14 @@ internal sealed class DetailPanel : Form
 
 	ClaudeStatusView? _claudeStatus;
 	readonly PillButton _claudePillButton;
+	AntigravityStatusView? _antigravityStatus;
+	readonly PillButton _agyPillButton;
 	readonly PillButton _awayPillButton;
 	readonly ToolTip _toolTip;
 
 	public event Action? OpenDashboardRequested;
 	public event Action? ClaudeStatusButtonClicked;
+	public event Action? AntigravityStatusButtonClicked;
 	public event Action? SetAwayModeOnRequested;
 
 	public DetailPanel()
@@ -177,6 +180,19 @@ internal sealed class DetailPanel : Form
 		_switchboardPillButton.Click += (_, _) => OpenDashboardRequested?.Invoke();
 		Controls.Add(_switchboardPillButton);
 
+		_agyPillButton = new PillButton
+		{
+			Text = "ANTIGRAVITY",
+			Visible = true,
+			BackColor = Color.FromArgb(8, 9, 11),
+			BorderColor = Color.FromArgb(30, 41, 59),
+			SurfaceColor = Color.FromArgb(42, 42, 42),
+			ForeColor = Color.FromArgb(99, 109, 125),
+			DotColor = Color.FromArgb(154, 160, 166),
+		};
+		_agyPillButton.Click += (_, _) => OnAntigravityPillClicked();
+		Controls.Add(_agyPillButton);
+
 		_awayPillButton = new PillButton
 		{
 			Text = "AWAY",
@@ -186,6 +202,7 @@ internal sealed class DetailPanel : Form
 		_awayPillButton.Click += (_, _) => OnAwayPillClicked();
 		Controls.Add(_awayPillButton);
 	}
+
 
 	void OnAwayPillClicked()
 	{
@@ -213,6 +230,24 @@ internal sealed class DetailPanel : Form
 			try
 			{
 				System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://status.claude.com") { UseShellExecute = true });
+			}
+			catch { }
+		}
+	}
+
+	void OnAntigravityPillClicked()
+	{
+		var level = _antigravityStatus?.DotLevel ?? AntigravityStatusLevel.Unknown;
+		bool isGreen = _antigravityStatus is null || level == AntigravityStatusLevel.Operational || level == AntigravityStatusLevel.Unknown;
+		if (isGreen)
+		{
+			AntigravityStatusButtonClicked?.Invoke();
+		}
+		else
+		{
+			try
+			{
+				System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://status.cloud.google.com") { UseShellExecute = true });
 			}
 			catch { }
 		}
@@ -413,7 +448,51 @@ internal sealed class DetailPanel : Form
 		Invalidate();
 	}
 
+	// Latest Antigravity status view (published by the server, parsed via AntigravityServerStatus.ParseView).
+	public void UpdateAntigravityStatus(AntigravityStatusView view)
+	{
+		_antigravityStatus = view;
+		var level = view?.DotLevel ?? AntigravityStatusLevel.Unknown;
+		bool isGreen = view is null || level == AntigravityStatusLevel.Operational || level == AntigravityStatusLevel.Unknown;
+
+		Color dotColor = isGreen
+			? (view is { HasData: true } || view is { DotVisible: true } ? StatusColors.Green : _palette.Muted)
+			: Palette.ForAntigravityStatus(level);
+
+		Color textColor = !isGreen
+			? (level == AntigravityStatusLevel.Minor ? Color.FromArgb(205, 212, 221) : Color.White)
+			: Color.FromArgb(99, 109, 125);
+
+		_agyPillButton.DotColor = dotColor;
+		_agyPillButton.ForeColor = textColor;
+		_agyPillButton.SurfaceColor = _palette.Surface;
+		_agyPillButton.BackColor = Color.FromArgb(8, 9, 11);
+		_agyPillButton.BorderColor = _palette.Track;
+
+		string agyTitle = view is null || !view.HasData
+			? "Antigravity status"
+			: (!string.IsNullOrEmpty(view.Description) ? view.Description : "Antigravity status");
+
+		if (view is { IncidentNames.Count: > 0 })
+		{
+			string incidentsText = string.Join("; ", view.IncidentNames);
+			if (string.IsNullOrEmpty(agyTitle) || agyTitle.Contains("all systems operational", StringComparison.OrdinalIgnoreCase))
+			{
+				agyTitle = incidentsText;
+			}
+			else if (!agyTitle.Contains(incidentsText, StringComparison.OrdinalIgnoreCase))
+			{
+				agyTitle = agyTitle + " - " + incidentsText;
+			}
+		}
+		_toolTip.SetToolTip(_agyPillButton, agyTitle);
+
+		RecomputeHeight();
+		Invalidate();
+	}
+
 	void RecomputeHeight()
+
 	{
 		int quotaContentH = (_quota.HasValue ? 2 * QuotaWindowRowH : 0) + (_quotaAuthPaused ? QuotaPausedRowH : 0);
 		int quotaH = quotaContentH > 0 ? quotaContentH + 2 * GroupVPad + GroupGap : 0;
@@ -631,22 +710,25 @@ internal sealed class DetailPanel : Form
 			y += RowH;
 		}
 
-		// Group 3: Group panel containing Claude & Switchboard indicator pills.
+		// Group 3: Group panel containing Claude, Switchboard & Antigravity indicator pills.
 		int group3Top = ctxTop + ctxH + GroupGap;
 		int group3H = BottomPillRowH + 2 * GroupVPad;
 		DrawGroupPanel(g, group3Top, group3H);
 
 		int btn3Y = group3Top + GroupVPad;
 		int padX = 14;
-		int btnGap = 8;
-		int availableW = Width - 2 * padX - btnGap;
-		int btnW = availableW / 2;
+		int btnGap = 6;
+		int availableW = Width - 2 * padX - 2 * btnGap;
+		int btnW = availableW / 3;
 
 		_claudePillButton.Location = new Point(padX, btn3Y);
 		_claudePillButton.Size = new Size(btnW, BottomPillRowH);
 
 		_switchboardPillButton.Location = new Point(padX + btnW + btnGap, btn3Y);
 		_switchboardPillButton.Size = new Size(btnW, BottomPillRowH);
+
+		_agyPillButton.Location = new Point(padX + 2 * (btnW + btnGap), btn3Y);
+		_agyPillButton.Size = new Size(btnW, BottomPillRowH);
 
 		// Group 4: Single group panel containing the Away Mode pill button.
 		int group4Top = group3Top + group3H + GroupGap;

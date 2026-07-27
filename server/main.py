@@ -47,6 +47,7 @@ from server.firebase_supervisor import LoopSupervisor
 from server.rules_audit import audit_rtdb_rules
 from server.widget_snapshot import WidgetSnapshotStore
 from server.claude_status import ClaudeStatusService
+from server.antigravity_status import AntigravityStatusService
 
 
 def _build_away_mode_route(registry: Registry, session_registry, backend=None, logger=None):
@@ -304,11 +305,18 @@ def _build_widget_snapshot_route(store, backend, logger, session_registry=None):
 	return widget_snapshot
 
 
-def _build_widget_status_route(service):
+def _build_widget_status_route(claude_service, antigravity_service=None):
 	"""POST /widget-status {action: check|stop} - the same-origin control surface
-	Operator (and later Watchtower) use to drive the server-owned status watch.
+	Operator and Watchtower use to drive the server-owned status watch.
+	Supports target=claude (default) or target=antigravity.
 	Localhost trust, like /widget-snapshot. Returns the current view."""
 	async def widget_status(request: Request):
+		target = request.query_params.get("target", "claude")
+		service = (
+			antigravity_service
+			if target == "antigravity" and antigravity_service is not None
+			else claude_service
+		)
 		if request.method == "GET":
 			return JSONResponse(service.view())
 		try:
@@ -874,6 +882,7 @@ async def _run(config: Config) -> None:
 		})
 
 	claude_status_service = ClaudeStatusService(publish=backend.write_widget_status)
+	antigravity_status_service = AntigravityStatusService(publish=backend.write_widget_antigravity_status)
 	app.add_route("/healthz", healthz, methods=["GET"])
 	app.add_route(
 		"/widget-snapshot",
@@ -883,7 +892,7 @@ async def _run(config: Config) -> None:
 		),
 		methods=["POST"],
 	)
-	app.add_route("/widget-status", _build_widget_status_route(claude_status_service), methods=["GET", "POST"])
+	app.add_route("/widget-status", _build_widget_status_route(claude_status_service, antigravity_status_service), methods=["GET", "POST"])
 	app.add_route("/away-mode", _build_away_mode_route(registry, session_registry, backend, logger), methods=["GET", "POST"])
 	app.add_route(
 		"/stats",

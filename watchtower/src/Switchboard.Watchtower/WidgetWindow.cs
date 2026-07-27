@@ -43,6 +43,9 @@ internal sealed class WidgetWindow : Form
 	ClaudeStatusLevel _claudeLevel = ClaudeStatusLevel.Operational;
 	bool _claudePulse;        // animate the status dot (active incident) vs hold steady (resolved)
 	float _claudePhase;       // 0..1 pulse phase, advanced by the host's pulse timer
+	bool _agyDotVisible;
+	AntigravityStatusLevel _agyLevel = AntigravityStatusLevel.Operational;
+	bool _agyPulse;
 
 	bool QuotaVisible => _showQuota && _quota.HasValue;
 	public QuotaUsage? Quota => _quota;
@@ -302,13 +305,23 @@ internal sealed class WidgetWindow : Form
 		Render();
 	}
 
-	// True while the status dot should animate; the host runs a timer that calls TickClaudePulse.
-	public bool ClaudePulsing => _claudePulse;
+	public void SetAntigravityStatus(bool visible, AntigravityStatusLevel level)
+	{
+		bool pulse = visible && level is AntigravityStatusLevel.Minor or AntigravityStatusLevel.Major or AntigravityStatusLevel.Critical;
+		if (_agyDotVisible == visible && _agyLevel == level && _agyPulse == pulse) return;
+		_agyDotVisible = visible;
+		_agyLevel = level;
+		_agyPulse = pulse;
+		Render();
+	}
+
+	// True while any status dot should animate; the host runs a timer that calls TickClaudePulse.
+	public bool ClaudePulsing => _claudePulse || _agyPulse;
 
 	// Advance the pulse one frame and repaint. No-op when not pulsing.
 	public void TickClaudePulse()
 	{
-		if (!_claudePulse) return;
+		if (!_claudePulse && !_agyPulse) return;
 		_claudePhase = (_claudePhase + 0.048f) % 1f;
 		Render();
 	}
@@ -513,10 +526,8 @@ internal sealed class WidgetWindow : Form
 				g.FillEllipse(dot, originX - 3, (int)ky - 3, 8, 8);
 		}
 
-		// Claude service-status dot: centered in the context ring cluster. Pulses while an incident
-		// is active (Watching); steady once resolved (sticky until acknowledged). A thin dark outline
-		// separates it from a ring arc of a similar color.
-		if (_claudeDotVisible)
+		// Service-status dot (Claude / Antigravity): centered in the context ring cluster.
+		if (_claudeDotVisible || _agyDotVisible)
 		{
 			float dMax = Math.Min(Height - 8f, 34f);
 			float penInset = RingThickness / 2f + 1f;
@@ -525,16 +536,50 @@ internal sealed class WidgetWindow : Form
 			float ccx = originX + penInset + od / 2f;
 			float ccy = clusterTop + penInset + od / 2f;
 
+			bool pulsing = (_claudeDotVisible && _claudePulse) || (_agyDotVisible && _agyPulse);
 			float r = 3.3f;
-			if (_claudePulse)
+			if (pulsing)
 				r = 3.3f + 0.9f * (float)Math.Sin(_claudePhase * 2.0 * Math.PI);
 
-			using (var cdot = new SolidBrush(Palette.ForClaudeStatus(_claudeLevel)))
+			Color dotColor = GetCompositeStatusDotColor();
+
+			using (var cdot = new SolidBrush(dotColor))
 				g.FillEllipse(cdot, ccx - r, ccy - r, r * 2f, r * 2f);
 			using (var outline = new Pen(Color.FromArgb(200, 0, 0, 0), 1.25f))
 				g.DrawEllipse(outline, ccx - r, ccy - r, r * 2f, r * 2f);
 		}
 	}
+
+	Color GetCompositeStatusDotColor()
+	{
+		var claudeColor = _claudeDotVisible ? Palette.ForClaudeStatus(_claudeLevel) : Color.Empty;
+		var agyColor = _agyDotVisible ? Palette.ForAntigravityStatus(_agyLevel) : Color.Empty;
+
+		int RankClaude(ClaudeStatusLevel l) => l switch
+		{
+			ClaudeStatusLevel.Critical => 4,
+			ClaudeStatusLevel.Major => 3,
+			ClaudeStatusLevel.Minor => 2,
+			ClaudeStatusLevel.Operational => 1,
+			_ => 0,
+		};
+		int RankAgy(AntigravityStatusLevel l) => l switch
+		{
+			AntigravityStatusLevel.Critical => 4,
+			AntigravityStatusLevel.Major => 3,
+			AntigravityStatusLevel.Minor => 2,
+			AntigravityStatusLevel.Operational => 1,
+			_ => 0,
+		};
+
+		int cRank = _claudeDotVisible ? RankClaude(_claudeLevel) : -1;
+		int aRank = _agyDotVisible ? RankAgy(_agyLevel) : -1;
+
+		if (aRank > cRank) return agyColor;
+		if (cRank >= 0) return claudeColor;
+		return agyColor;
+	}
+
 
 	// Draw the Claude set (if shown) then each touched agy group, side by side. Each set = 2 rows.
 	void DrawAllQuotaSets(Graphics g)

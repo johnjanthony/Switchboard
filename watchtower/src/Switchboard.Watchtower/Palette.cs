@@ -50,4 +50,13 @@ internal sealed class Palette
 		ClaudeStatusLevel.Critical => StatusColors.Red,
 		_ => StatusColors.Grey,
 	};
+
+	public static Color ForAntigravityStatus(AntigravityStatusLevel level) => level switch
+	{
+		AntigravityStatusLevel.Operational => StatusColors.Green,
+		AntigravityStatusLevel.Minor => StatusColors.Yellow,
+		AntigravityStatusLevel.Major => Color.FromArgb(235, 140, 50),
+		AntigravityStatusLevel.Critical => StatusColors.Red,
+		_ => StatusColors.Grey,
+	};
 }

@@ -594,6 +594,10 @@ class FirebaseBackend(
 		fetched_at, watch_state, button) for all surfaces to render."""
 		await asyncio.to_thread(lambda: db.reference("widget/status").set(status))
 
+	async def write_widget_antigravity_status(self, status: dict) -> None:
+		"""Publish the Antigravity backend service-status view for all surfaces to render."""
+		await asyncio.to_thread(lambda: db.reference("widget/antigravity_status").set(status))
+
 	async def write_session_record(self, cli_session_id: str, payload: dict) -> None:
 		"""Publish one session record under /sessions/<cli_session_id>. Ids are
 		uuid-like and RTDB-safe as-is."""
