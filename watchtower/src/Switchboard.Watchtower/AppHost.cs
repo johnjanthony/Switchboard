@@ -148,6 +148,7 @@ internal sealed class AppHost : IDisposable
 		if (_isDemo)
 		{
 			ApplyDemoData();
+			if (_config.Switchboard.Enabled) { _switchboardTimer.Start(); PollSwitchboard(); }
 			return;
 		}
 
@@ -201,11 +202,13 @@ internal sealed class AppHost : IDisposable
 			["demo-1"] = new("AskUserQuestion pending", 45.0)
 		};
 
+		bool awayMode = _lastSwitchboardStats?.AwayMode ?? false;
+
 		var stats = new SwitchboardStats(
 			ActiveConversations: 2,
 			PendingCount: 1,
 			OldestPendingAgeSeconds: 45.0,
-			AwayMode: true,
+			AwayMode: awayMode,
 			Healthy: true
 		) { NeedsYou = needsYou };
 
@@ -223,11 +226,20 @@ internal sealed class AppHost : IDisposable
 		_panel.UpdateSessions(sessions, light, lastActivityUtc: null);
 
 		_panel.UpdateSwitchboard(enabled: true, stats);
-		_panel.UpdateClaudeStatus(ClaudeServerStatus.ParseView(""));
+		_panel.UpdateClaudeStatus(ClaudeServerStatus.ParseView("""
+		{
+			"dot_visible": true,
+			"has_data": true,
+			"level": "major",
+			"description": "Major Outage",
+			"incidents": ["Elevated API Errors"],
+			"button": "stop"
+		}
+		"""));
 		_panel.UpdateAntigravityStatus(AntigravityServerStatus.ParseView(""));
 		_tray.SetPending(showBadge: true, hasPending: true);
 		_widget.SetPending(showBadge: true, hasPending: true);
-		_widget.SetAwayMode(stats.AwayMode);
+		_widget.SetAwayMode(awayMode);
 
 		var gauge = TrayGauge.From(sessions);
 		_tray.SetGauge(gauge.Max, gauge.AnyError, gauge.MaxSeverity, light);
@@ -418,10 +430,18 @@ internal sealed class AppHost : IDisposable
 			if (t.IsFaulted) { LogError("switchboard-poll", t.Exception!); return; }
 			var stats = t.Result;
 			if (stats is not null) _lastSwitchboardStats = stats;
-			_panel.UpdateSwitchboard(enabled: true, stats);
-			_tray.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
-			_widget.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
-			_widget.SetAwayMode(stats is { AwayMode: true });
+
+			if (_isDemo)
+			{
+				ApplyDemoData();
+			}
+			else
+			{
+				_panel.UpdateSwitchboard(enabled: true, stats);
+				_tray.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
+				_widget.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
+				_widget.SetAwayMode(stats is { AwayMode: true });
+			}
 		}, TaskScheduler.FromCurrentSynchronizationContext());
 	}
 
@@ -509,7 +529,7 @@ internal sealed class AppHost : IDisposable
 	// Fire-and-forget GET of the server view; result marshaled back to the UI thread.
 	void PollClaudeStatus()
 	{
-		if (_claudeStatusScanning) return;
+		if (_isDemo || _claudeStatusScanning) return;
 		_claudeStatusScanning = true;
 		_claudeStatusReader.GetViewAsync(CancellationToken.None).ContinueWith(t =>
 		{
