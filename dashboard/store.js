@@ -107,6 +107,11 @@ export function createStore(deps) {
 		notify();
 	}
 
+	function setWidgetAntigravityStatus(status) {
+		state.widget = { ...state.widget, antigravityStatus: status || null };
+		notify();
+	}
+
 	function setWidgetPushedAt(ts) {
 		state.widget = { ...state.widget, pushedAt: ts || null };
 		notify();
@@ -241,7 +246,16 @@ export function createStore(deps) {
 
 	function requestClaudeStatus(action) {
 		return guardedWrite('global', async () => {
-			const resp = await requestStatus(action);
+			const resp = await requestStatus(action, 'claude');
+			if (!resp || !resp.ok) {
+				throw new Error(resp ? `HTTP ${resp.status}` : 'no response');
+			}
+		});
+	}
+
+	function requestAntigravityStatus(action) {
+		return guardedWrite('global', async () => {
+			const resp = await requestStatus(action, 'antigravity');
 			if (!resp || !resp.ok) {
 				throw new Error(resp ? `HTTP ${resp.status}` : 'no response');
 			}
@@ -334,6 +348,7 @@ export function createStore(deps) {
 		globalUnsubs.push(fb.onValue(paths.widgetRings(), (val) => setWidgetRings(val || {}), onReadError));
 		globalUnsubs.push(fb.onValue(paths.widgetQuota(), (val) => setWidgetQuota(val || null), onReadError));
 		globalUnsubs.push(fb.onValue(paths.widgetStatus(), (val) => setWidgetStatus(val || null), onReadError));
+		globalUnsubs.push(fb.onValue(paths.widgetAntigravityStatus(), (val) => setWidgetAntigravityStatus(val || null), onReadError));
 		globalUnsubs.push(fb.onValue(paths.widgetPushedAt(), (val) => setWidgetPushedAt(val || null), onReadError));
 		globalUnsubs.push(fb.onValue(paths.sessions(), (val) => setSessions(val || {}), onReadError));
 		globalUnsubs.push(fb.onValue(paths.sessionAcks(), (val) => setSessionAcks(val || {}), onReadError));
@@ -496,6 +511,7 @@ export function createStore(deps) {
 		setWidgetRings,
 		setWidgetQuota,
 		setWidgetStatus,
+		setWidgetAntigravityStatus,
 		setWidgetPushedAt,
 		setSessions,
 		setSessionAcks,
@@ -508,6 +524,7 @@ export function createStore(deps) {
 		awayOff,
 		setHidden,
 		requestClaudeStatus,
+		requestAntigravityStatus,
 		upsertConversationMeta,
 		removeConversation,
 		upsertAdminNotification,
@@ -563,7 +580,7 @@ function initialState(storage) {
 		sessions: {},
 		sessionAcks: {},
 		adminNotifications: {},
-		widget: { rings: {}, quota: null, status: null, pushedAt: null },
+		widget: { rings: {}, quota: null, status: null, antigravityStatus: null, pushedAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
 		health: { reachable: false, healthy: false, totalAnswered: null },

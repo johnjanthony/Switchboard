@@ -275,7 +275,7 @@ function ClaudeStatusControl({ status, store }) {
 			desc = desc + " - " + incidentsText;
 		}
 	}
-	const title = desc;
+	const title = "Claude: " + desc;
 	const onClick = () => {
 		if (!isGreen) {
 			window.open("https://status.claude.com", "_blank");
@@ -284,15 +284,53 @@ function ClaudeStatusControl({ status, store }) {
 		const action = (s.button === "check" || s.watch_state === "idle") ? "check" : "stop";
 		store.requestClaudeStatus(action);
 	};
-	const colorClass = isGreen ? (isWatching ? "status-green" : "status-cold") : claudeStatusPillClass(s.level);
+	const colorClass = isGreen ? "status-green" : claudeStatusPillClass(s.level);
 	return html`
 		<button
-			class=${"claude-pill " + (isWatching ? "watching " : "idle ") + colorClass}
+			class=${"claude-pill status-pill " + (isWatching ? "watching " : "idle ") + colorClass}
 			onClick=${onClick}
 			title=${title}
 		>
-			<span class=${statusDotClass(s.level)}></span>
-			<span>CLAUDE</span>
+			<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+				<polygon points="12,0 14.07,6.6 17.3,3.84 17.4,9.93 24,12 17.4,14.07 17.3,20.16 14.07,17.4 12,24 9.93,17.4 6.7,20.16 6.6,14.07 0,12 6.6,9.93 6.7,3.84 9.93,6.6" />
+			</svg>
+		</button>
+	`;
+}
+
+function AntigravityStatusControl({ status, store }) {
+	const s = status || { watch_state: "idle", button: "check", level: "operational", description: "", incidents: [] };
+	const isWatching = s.watch_state !== "idle" && s.button !== "check";
+	const isGreen = !s.level || s.level === "operational" || s.level === "none";
+
+	let desc = s.description || "Antigravity status";
+	if (s.incidents && s.incidents.length > 0) {
+		const incidentsText = s.incidents.join("; ");
+		if (!desc || desc.toLowerCase().includes("all systems operational")) {
+			desc = incidentsText;
+		} else if (!desc.includes(incidentsText)) {
+			desc = desc + " - " + incidentsText;
+		}
+	}
+	const title = "Antigravity: " + desc;
+	const onClick = () => {
+		if (!isGreen) {
+			window.open("https://status.cloud.google.com", "_blank");
+			return;
+		}
+		const action = (s.button === "check" || s.watch_state === "idle") ? "check" : "stop";
+		store.requestAntigravityStatus(action);
+	};
+	const colorClass = isGreen ? "status-green" : claudeStatusPillClass(s.level);
+	return html`
+		<button
+			class=${"antigravity-pill status-pill " + (isWatching ? "watching " : "idle ") + colorClass}
+			onClick=${onClick}
+			title=${title}
+		>
+			<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+				<path d="M 12 0 C 16.2 7.8 16.2 7.8 24 12 C 16.2 16.2 16.2 16.2 12 24 C 7.8 16.2 7.8 16.2 0 12 C 7.8 7.8 7.8 7.8 12 0 Z"/>
+			</svg>
 		</button>
 	`;
 }
@@ -306,9 +344,13 @@ function SwitchboardStatusControl({ health }) {
 			? "Switchboard server healthy"
 			: "Switchboard server degraded";
 	return html`
-		<span class=${"switchboard-pill " + healthStatusPillClass(health)} title=${title}>
-			<span class=${healthLampClass(health)}></span>
-			<span>SWITCHBOARD</span>
+		<span class=${"switchboard-pill status-pill " + healthStatusPillClass(health)} title=${title}>
+			<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+				<rect x="6.25" y="2" width="1.5" height="20" rx="0.75" />
+				<rect x="16.25" y="2" width="1.5" height="20" rx="0.75" />
+				<circle cx="7" cy="7" r="3.5" />
+				<circle cx="17" cy="17" r="3.5" />
+			</svg>
 		</span>
 	`;
 }
@@ -333,7 +375,21 @@ export function StatusBar({ store }) {
 	return html`
 		<div>
 			<div class="status-bar">
-				<button class="open-line-btn" onClick=${() => setSpawnOpen(true)} title="Open line">+</button>
+				<span class="status-pills-left">
+					<button class="open-line-btn" onClick=${() => setSpawnOpen(true)} title="Open line">+</button>
+					<button
+						class=${"away-pill status-pill " + (awayOn ? "away-on" : "away-off")}
+						onClick=${onAwayPill}
+						title="Toggle global away mode"
+					>
+						<svg class="away-moon-icon" viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
+							<path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-1.14 1.4-2.88 2.26-4.8 2.26-3.31 0-6-2.69-6-6 0-1.92.86-3.66 2.26-4.8C12.92 3.04 12.46 3 12 3z"/>
+						</svg>
+					</button>
+					<${AntigravityStatusControl} status=${state.widget.antigravityStatus} store=${store} />
+					<${ClaudeStatusControl} status=${state.widget.status} store=${store} />
+					<${SwitchboardStatusControl} health=${state.health} />
+				</span>
 				<span class="status-counts">
 					${pendingCount > 0 ? html`
 						<span class="count lit"><b>${pendingCount}</b> ${pendingCount === 1 ? 'question' : 'questions'}</span>
@@ -341,20 +397,6 @@ export function StatusBar({ store }) {
 					` : null}
 				</span>
 				<${QuotaReadout} quota=${state.widget.quota} />
-				<span class="status-pills">
-					<${ClaudeStatusControl} status=${state.widget.status} store=${store} />
-					<${SwitchboardStatusControl} health=${state.health} />
-					<button
-						class=${"away-pill " + (awayOn ? "away-on" : "away-off")}
-						onClick=${onAwayPill}
-						title="Toggle global away mode"
-					>
-						<svg class="away-moon-icon" viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
-							<path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-1.14 1.4-2.88 2.26-4.8 2.26-3.31 0-6-2.69-6-6 0-1.92.86-3.66 2.26-4.8C12.92 3.04 12.46 3 12 3z"/>
-						</svg>
-						AWAY
-					</button>
-				</span>
 			</div>
 			<div class="header-dialogs">
 				${spawnOpen ? html`<${SpawnDialog} store=${store} onClose=${() => setSpawnOpen(false)} />` : null}

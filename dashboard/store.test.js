@@ -63,7 +63,7 @@ test('initialState shape is exactly the contract', () => {
 		sessions: {},
 		sessionAcks: {},
 		adminNotifications: {},
-		widget: { rings: {}, quota: null, status: null, pushedAt: null },
+		widget: { rings: {}, quota: null, status: null, antigravityStatus: null, pushedAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
 		health: { reachable: false, healthy: false, totalAnswered: null },
@@ -475,9 +475,16 @@ test('a rejected global write surfaces to the global pane', async () => {
 
 test('requestClaudeStatus calls requestStatus and returns true on ok', async () => {
 	let called = null;
-	const { store } = makeStore({ requestStatus: (a) => { called = a; return Promise.resolve({ ok: true, status: 200 }); } });
+	const { store } = makeStore({ requestStatus: (a, target) => { called = { a, target }; return Promise.resolve({ ok: true, status: 200 }); } });
 	assert.equal(await store.requestClaudeStatus('check'), true);
-	assert.equal(called, 'check');
+	assert.deepEqual(called, { a: 'check', target: 'claude' });
+});
+
+test('requestAntigravityStatus calls requestStatus with antigravity target and returns true on ok', async () => {
+	let called = null;
+	const { store } = makeStore({ requestStatus: (a, target) => { called = { a, target }; return Promise.resolve({ ok: true, status: 200 }); } });
+	assert.equal(await store.requestAntigravityStatus('check'), true);
+	assert.deepEqual(called, { a: 'check', target: 'antigravity' });
 });
 
 test('requestClaudeStatus surfaces a non-ok response to the global pane', async () => {
@@ -531,7 +538,7 @@ test('startGlobalListeners is idempotent: a second call detaches the first set',
 	const detached = fb.calls.unsubs.slice(unsubsBefore).map((u) => u.path);
 	assert.ok(detached.includes('conversations'), 'prior conversations listener detached before re-attach');
 	assert.ok(detached.includes('global_settings/away_mode'), 'prior away-mode listener detached');
-	assert.equal(detached.length, 13, 'all 13 global listeners detached before re-attach - update this count when adding a listener');
+	assert.equal(detached.length, 14, 'all 14 global listeners detached before re-attach - update this count when adding a listener');
 });
 
 test('sendAnswer writes answerCmd and returns true on success', async () => {

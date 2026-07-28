@@ -2,11 +2,11 @@
 // requestStatus POSTs to the server's /widget-status route (the server fetches
 // status.claude.com and publishes widget/status, which the store listener picks up).
 
-export function requestStatus(action) {
-	return fetch('/widget-status', {
+export function requestStatus(action, target = 'claude') {
+	return fetch(`/widget-status?target=${encodeURIComponent(target)}`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ action }),
+		body: JSON.stringify({ action, target }),
 	});
 }
 
