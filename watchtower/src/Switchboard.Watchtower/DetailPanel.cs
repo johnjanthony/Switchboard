@@ -404,7 +404,7 @@ internal sealed class DetailPanel : Form
 
 		string awayTooltip = awayOn
 			? "Away mode active - open Operator dashboard"
-			: "Turn on global away mode";
+			: "Turn on away mode";
 		_toolTip.SetToolTip(_awayPillButton, awayTooltip);
 
 		RecomputeHeight();

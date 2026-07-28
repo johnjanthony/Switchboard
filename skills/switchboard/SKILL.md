@@ -54,7 +54,7 @@ Switchboard is a local MCP gateway that lets you reach John on his phone while h
 - **`combine_conversations(source_id, target_id)`** — move all members of `source_id` into `target_id`; source ends. Non-blocking. Returns one-line JSON: `{"status":"ok","source":...,"target":...,"detail":...}`; ERROR strings unchanged.
 - **`lookup_conversation_ids(cwd_filter?, sender_contains?, title_contains?)`** — find conversations matching filters. At least one filter required. Returns one-line JSON: `{"status":"ok","conversations":[{conversation_id, title, last_activity_at, created_at, origin, members:[{sender, state}]}]}`, sorted by `last_activity_at` descending, Active-only; ERROR strings unchanged.
 - **`leave_conversation(sender, parting_message)`** — leave your current conversation. `parting_message` is required. Session falls back to home conversation (away on) or unbound terminal output (away off). Returns one-line JSON: `{"status":"ok","conversation_id":...}`; ERROR strings unchanged.
-- **`set_away_mode(value)`** — flip the global away-mode flag to `true` or `false`. Persisted to Firebase. Flipping to `false` bulk-resolves any pending `ask_human` questions with the at-desk notice (their askers re-ask in their terminals) and reports the count in the return string.
+- **`set_away_mode(value)`** — flip the away-mode flag to `true` or `false`. Persisted to Firebase. Flipping to `false` bulk-resolves any pending `ask_human` questions with the at-desk notice (their askers re-ask in their terminals) and reports the count in the return string.
 
 **Retired tools (do not call):**
 
@@ -277,7 +277,7 @@ John spawns a new agent directly into an existing Active conversation via the ph
 
 ## Away-mode auto-enable on spawn
 
-When John spawns from the phone, global away mode is automatically enabled if it was off. A toast on the phone confirms the flip. Spawned agents start in away mode and should not call `set_away_mode(true)` themselves.
+When John spawns from the phone, away mode is automatically enabled if it was off. A toast on the phone confirms the flip. Spawned agents start in away mode and should not call `set_away_mode(true)` themselves.
 
 ---
 

@@ -562,7 +562,7 @@ class FirebaseBackend(
 		await asyncio.to_thread(lambda: db.reference("global_settings/open_conversation_id").delete())
 
 	async def set_global_away_mode(self, value: bool) -> None:
-		"""Write the global away-mode flag to /global_settings/away_mode."""
+		"""Write the away-mode flag to /global_settings/away_mode."""
 		ref = db.reference("global_settings/away_mode")
 		await asyncio.to_thread(ref.set, bool(value))
 

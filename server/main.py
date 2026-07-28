@@ -54,7 +54,7 @@ def _build_away_mode_route(registry: Registry, session_registry, backend=None, l
 	"""GET /away-mode - the turn-end hook's single check. With session_id, the
 	response also delivers (and pops) any queued wake notices for that session;
 	the hook blocks the turn with the notice text so the agent acts on it.
-	POST /away-mode - set global away mode ON."""
+	POST /away-mode - set away mode ON."""
 	async def away_mode(request: Request):
 		if request.method == "POST":
 			try:
@@ -679,7 +679,7 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		cli_session_id: str | None = None,
 		cwd: str | None = None,
 	) -> str:
-		"""Set the global away_mode flag. Persisted to Firebase.
+		"""Set the away_mode flag. Persisted to Firebase.
 
 		cli_session_id and cwd identify your session. Claude Code: injected
 		automatically by the plugin hook (do not pass them). Other CLIs (e.g.

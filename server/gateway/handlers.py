@@ -307,7 +307,7 @@ def build_tool_handlers(
 			await logger.rate_limited(conversation_id, "ask_human")
 			return _rate_limit_error()
 
-		# At-desk redirect: when global away mode is OFF, John is at his desk
+		# At-desk redirect: when away mode is OFF, John is at his desk
 		# watching the terminal. Don't block the agent for 24h — write the
 		# question to the phone as a one-way notify (so it's still surfaced)
 		# and return the documented sentinel so the agent can repeat the
@@ -906,7 +906,7 @@ def build_tool_handlers(
 		cli_session_id: str,
 		cwd: str,
 	) -> str:
-		"""Flip the global away_mode flag. Persisted to Firebase under /global_settings/away_mode."""
+		"""Flip the away_mode flag. Persisted to Firebase under /global_settings/away_mode."""
 		if not isinstance(value, bool):
 			return "ERROR: value must be a boolean"
 		# Flip the in-memory flag FIRST (synchronous, before any await). The

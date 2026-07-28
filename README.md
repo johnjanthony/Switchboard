@@ -22,7 +22,7 @@ Switchboard is a local MCP gateway with cloud-synchronized state (Firebase) that
 - **Conversations**: Messages, members, and state persist in Firebase as named conversations (Active / Ended). An agent joins a specific one by `ref`, or goes ref-less to land in the single still-solo conversation another agent minted ref-less in the last ~30 minutes — with no such candidate, a fresh room is minted.
 - **Asynchronous updates**: Send non-blocking notifications or deliver documents directly to your phone.
 - **In-line replies**: View your responses directly in the chat history for full context.
-- **Global away mode**: Single server-wide flag. Toggle from the phone's top-bar pill or via the `set_away_mode` MCP tool.
+- **Away mode**: Single server-wide flag. Toggle from the phone's top-bar pill or via the `set_away_mode` MCP tool.
 - **Activity indicators**: Prominent high-visibility indicators for unseen activity or pending questions.
 - **Session spawning**: Launch fresh agent sessions on your desktop directly from your phone — choose surface (Windows / WSL), project, optional prompt, and whether to create a new conversation or add to an existing one.
 - **Conversation composition**: Join a conversation (by `ref` or ref-less), resume dormant sessions, or combine two conversations into one — resume and combine are also on the phone's long-press menu.
@@ -198,7 +198,7 @@ Away mode activates when you tell your agent you're stepping away — any phrasi
 - **`ask_human(question, sender, title?, format?, suggestions?)`** — blocks until you reply.
 - **`notify_human(message, sender, title?, format?)`** — fire-and-forget status update.
 - **`send_document_human(path, sender, title?, caption?)`** — delivers a file to your phone.
-- **`set_away_mode(value)`** — toggle the global away-mode flag (agents use this; you can also toggle the phone pill).
+- **`set_away_mode(value)`** — toggle the away-mode flag (agents use this; you can also toggle the phone pill).
 
 **Multi-agent (conversation) tools:**
 
@@ -230,7 +230,7 @@ With a spawn root configured, you can launch a fresh agent session directly from
 - **Prompt:** Optional starting prompt for the agent.
 - **Conversation:** Create a new conversation, or add the spawned agent into an existing one.
 
-Spawn auto-enables global away mode if it is currently off; the phone shows a confirmation toast. Claude Code and Antigravity (`agy`) are both supported spawn targets.
+Spawn auto-enables away mode if it is currently off; the phone shows a confirmation toast. Claude Code and Antigravity (`agy`) are both supported spawn targets.
 
 **Prerequisites:**
 

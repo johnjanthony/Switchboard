@@ -33,7 +33,7 @@ internal sealed class SwitchboardStatsReader
 		catch (Exception ex) { _error?.Invoke("switchboard-stats", ex); return null; }
 	}
 
-	// Sends POST /away-mode {"active": true} to enable global away mode.
+	// Sends POST /away-mode {"active": true} to enable away mode.
 	public async Task<bool> SetAwayModeOnAsync(CancellationToken ct)
 	{
 		try

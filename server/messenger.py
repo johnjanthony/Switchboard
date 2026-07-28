@@ -166,7 +166,7 @@ class AwayModeMirror(ABC):
 		pass
 
 	async def start_away_mode_listeners(self, registry) -> None:
-		"""Subscribe to the backend's global away-mode value event; invoke
+		"""Subscribe to the backend's away-mode value event; invoke
 		registry.update_global_away_cache as changes arrive. Per-channel
 		overrides were retired in the conversations redesign — only the
 		single global flag remains. No-op default."""

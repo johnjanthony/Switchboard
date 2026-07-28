@@ -851,7 +851,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 	/**
 	 * T-027 conversation-aware spawn. Writes a structured spawn_commands record.
-	 * Also auto-enables global away mode if not already on (Task 38).
+	 * Also auto-enables away mode if not already on (Task 38).
 	 * Returns true if away mode was auto-enabled (caller can show a toast).
 	 */
 	fun spawnSession(

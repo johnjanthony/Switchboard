@@ -693,7 +693,7 @@ _AT_DESK_SENTINEL = "ERROR: John is at his desk. Ask this question via the termi
 
 @pytest.mark.asyncio
 async def test_ask_human_returns_at_desk_sentinel_when_away_mode_off(cfg, logger):
-	"""When global away mode is OFF, ask_human must NOT block. It writes the
+	"""When away mode is OFF, ask_human must NOT block. It writes the
 	question to Firebase as a one-way notify and returns the documented sentinel."""
 	backend = RecordingBackend()
 	registry = make_registry_with_loopback()
@@ -722,7 +722,7 @@ async def test_ask_human_returns_at_desk_sentinel_when_away_mode_off(cfg, logger
 
 @pytest.mark.asyncio
 async def test_ask_human_blocks_when_away_mode_on(cfg, logger):
-	"""When global away mode is ON, ask_human still blocks on the future
+	"""When away mode is ON, ask_human still blocks on the future
 	(the existing happy-path behaviour). This guards against accidentally
 	flipping the at-desk redirect from a gate into a hard short-circuit."""
 	backend = RecordingBackend()

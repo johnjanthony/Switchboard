@@ -23,7 +23,7 @@ server/
   main.py              Entry point — wires config, registry, backend, MCP, uvicorn
   http_auth.py         TokenAuthMiddleware - shared-secret Bearer gate (loopback peers and /healthz exempt; active when SWITCHBOARD_TOKEN is set)
   config.py            Env-based Config loader (dotenv fallback)
-  registry.py          PendingRequest + Registry (in-memory); conversations dict with members/pendings keyed by cli_session_id; session_to_conversation_id routing map; per-session asyncio.Lock for race-free first-call conv creation; global away-mode flag
+  registry.py          PendingRequest + Registry (in-memory); conversations dict with members/pendings keyed by cli_session_id; session_to_conversation_id routing map; per-session asyncio.Lock for race-free first-call conv creation; away-mode flag
   session_registry.py  SessionRecord + SessionRegistry (session roster; push-fed; sweeper rules)
   messenger.py         Backend lifecycle base + 3 trait ABCs (MessageWriter, ResponsePoller, AwayModeMirror) + ConversationStore protocol + IncomingResponse
   firebase.py          FirebaseBackend (implements every messenger surface); Firebase admin logic (FCM, Realtime DB)
@@ -123,7 +123,7 @@ Integration tests run in-process; no external services required. The backends (F
 
 ### Live smoke harness
 
-`.venv\Scripts\python.exe scripts\smoke\smoke.py` drives the DEPLOYED service end-to-end: away-mode round-trip, at-desk redirect, live ask->answer->resolve, fastest-answer round-trip, restart survival (parked-pending recovery), cleanup. Real Firebase, real service, real FCM — each run pings the phone 1-2 times and briefly toggles global away mode; the default run RESTARTS the service (severs every live MCP session). Use `--skip-restart` when other agents are working; `--preflight-only` is read-only and always safe. The run leaves one hidden Ended conversation for the 72h retention sweep. Exit 0 = all flows passed.
+`.venv\Scripts\python.exe scripts\smoke\smoke.py` drives the DEPLOYED service end-to-end: away-mode round-trip, at-desk redirect, live ask->answer->resolve, fastest-answer round-trip, restart survival (parked-pending recovery), cleanup. Real Firebase, real service, real FCM — each run pings the phone 1-2 times and briefly toggles away mode; the default run RESTARTS the service (severs every live MCP session). Use `--skip-restart` when other agents are working; `--preflight-only` is read-only and always safe. The run leaves one hidden Ended conversation for the 72h retention sweep. Exit 0 = all flows passed.
 
 ## Building the Android app
 
@@ -277,7 +277,7 @@ If the Switchboard MCP tools disconnect from your session while the away-mode fl
 
 ## Spawn flow
 
-When the user taps "+" on the phone, they choose surface (Windows / WSL), project, optional prompt, and whether to create a new conversation or add the spawned agent into an existing one. The server dispatches via structured Firebase `/spawn_commands/` entries; `SpawnHandler.handle_fresh` and `handle_resume` are the two entry points. Spawn auto-enables global away mode if currently off.
+When the user taps "+" on the phone, they choose surface (Windows / WSL), project, optional prompt, and whether to create a new conversation or add the spawned agent into an existing one. The server dispatches via structured Firebase `/spawn_commands/` entries; `SpawnHandler.handle_fresh` and `handle_resume` are the two entry points. Spawn auto-enables away mode if currently off.
 
 **Spawn-root env vars** (both consumed by `config.py`):
 
@@ -290,7 +290,7 @@ When the user taps "+" on the phone, they choose surface (Windows / WSL), projec
 
 The Android client uses a list-based two-page nav:
 
-- **Page A**: conversation list, ordered by last activity. Each row shows the title, relative timestamp, unseen-activity dot, AWAY badge (when global away mode is on), and the open-conversation accent border + "open" label. Swipe-right to end; swipe-left to hide. Long-press for a context menu: Resume, Combine into..., Hide/Unhide, End conversation. The Resume item is enabled when any of the conversation's member sessions has a terminal (ended/lost) registry record.
+- **Page A**: conversation list, ordered by last activity. Each row shows the title, relative timestamp, unseen-activity dot, AWAY badge (when away mode is on), and the open-conversation accent border + "open" label. Swipe-right to end; swipe-left to hide. Long-press for a context menu: Resume, Combine into..., Hide/Unhide, End conversation. The Resume item is enabled when any of the conversation's member sessions has a terminal (ended/lost) registry record.
 - **Page B**: per-conversation message view with the tab info popover and a reply input (visible only when there's a pending question).
 
 Hidden conversations are accessible via the overflow menu's "Show hidden" toggle. FCM notification taps deep-link directly to Page B.

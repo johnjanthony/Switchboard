@@ -139,7 +139,7 @@ internal sealed class QuotaService
 			psi.ArgumentList.Add(".");
 			// Load only the project settings layer, not the user layer: the switchboard
 			// plugin (its away-mode Stop hook) and MCP server live in user settings, and
-			// under global away mode the hook would drive this throwaway probe into an
+			// under away mode the hook would drive this throwaway probe into an
 			// ask_human() call that pings the phone. Excluding user keeps OAuth intact.
 			psi.ArgumentList.Add("--setting-sources");
 			psi.ArgumentList.Add("project");
