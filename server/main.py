@@ -961,7 +961,8 @@ async def _run(config: Config) -> None:
 
 	status_request_task = asyncio.create_task(
 		dispatch_status_request_commands(
-			claude_status_service, backend, logger, loop_sups["dispatch_status_request_commands"]
+			claude_status_service, backend, logger, loop_sups["dispatch_status_request_commands"],
+			antigravity_service=antigravity_status_service,
 		)
 	)
 

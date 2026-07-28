@@ -109,6 +109,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _widgetStatus = MutableStateFlow<WidgetStatus?>(null)
 	val widgetStatus: StateFlow<WidgetStatus?> = _widgetStatus.asStateFlow()
 
+	private val _widgetAntigravityStatus = MutableStateFlow<WidgetStatus?>(null)
+	val widgetAntigravityStatus: StateFlow<WidgetStatus?> = _widgetAntigravityStatus.asStateFlow()
+
 	private val _widgetPushedAt = MutableStateFlow<String?>(null)
 	val widgetPushedAt: StateFlow<String?> = _widgetPushedAt.asStateFlow()
 
@@ -418,6 +421,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		}
 		statusRef.addValueEventListener(statusListener)
 		subscriptions.add { statusRef.removeEventListener(statusListener) }
+
+		val antigravityStatusRef = database.getReference("widget/antigravity_status")
+		val antigravityStatusListener = object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				_widgetAntigravityStatus.value = try {
+					snapshot.getValue(WidgetStatus::class.java)
+				} catch (e: Exception) {
+					android.util.Log.w("MainViewModel", "widget/antigravity_status parse failed", e)
+					null
+				}
+			}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "widget/antigravity_status listener cancelled: $error")
+			}
+		}
+		antigravityStatusRef.addValueEventListener(antigravityStatusListener)
+		subscriptions.add { antigravityStatusRef.removeEventListener(antigravityStatusListener) }
 
 		val pushedAtRef = database.getReference("widget/pushed_at")
 		val pushedAtListener = object : ValueEventListener {
@@ -948,28 +968,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		), "combine")
 	}
 
-	// --- Claude-status request (phone -> server command queue) ---
+	// --- Status request (phone -> server command queue) ---
 
 	/**
-	 * Trigger a fresh Anthropic status check. Pushes a command the server's status_request
-	 * dispatcher (Plan 2a) routes into ClaudeStatusService.check(); the server publishes the
-	 * result to widget/status, which this view-model reads back. Mirrors the away_mode_commands
-	 * push pattern. This is the phone's trigger path - NOT an HTTP call.
+	 * Trigger a fresh status check for all services (Claude and Antigravity). Pushes a command 
+	 * the server's status_request dispatcher routes to both services. The server publishes the
+	 * results to widget/status and widget/antigravity_status, which this view-model reads back.
+	 * Mirrors the away_mode_commands push pattern. This is the phone's trigger path - NOT an HTTP call.
 	 */
-	fun requestClaudeStatusCheck() {
+	fun requestStatusCheckAll() {
 		writeReporting(
 			database.getReference("widget/status_request").push(),
-			mapOf("type" to "check", "issued_at" to nowIso()),
-			"status check",
+			mapOf("type" to "check_all", "issued_at" to nowIso()),
+			"status check all",
 		)
 	}
 
-	/** Stop the server's status watch loop (acknowledge), via the same command queue. */
-	fun stopClaudeStatusWatch() {
+	/** Stop the server's status watch loops for all services, via the same command queue. */
+	fun stopAllStatusWatches() {
 		writeReporting(
 			database.getReference("widget/status_request").push(),
-			mapOf("type" to "stop", "issued_at" to nowIso()),
-			"status watch stop",
+			mapOf("type" to "stop_all", "issued_at" to nowIso()),
+			"status watch stop all",
 		)
 	}
 

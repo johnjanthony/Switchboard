@@ -136,6 +136,7 @@ private fun SwitchboardNavHost(
 	val widgetRings by viewModel.widgetRings.collectAsState()
 	val widgetQuota by viewModel.widgetQuota.collectAsState()
 	val widgetStatus by viewModel.widgetStatus.collectAsState()
+	val widgetAntigravityStatus by viewModel.widgetAntigravityStatus.collectAsState()
 	val widgetPushedAt by viewModel.widgetPushedAt.collectAsState()
 	val registrySessions by viewModel.registrySessions.collectAsState()
 	val sessionAcks by viewModel.sessionAcks.collectAsState()
@@ -231,9 +232,10 @@ private fun SwitchboardNavHost(
 				rings = widgetRings,
 				quota = widgetQuota,
 				claudeStatus = widgetStatus,
+				antigravityStatus = widgetAntigravityStatus,
 				pushedAt = widgetPushedAt,
-				onCheckStatus = { viewModel.requestClaudeStatusCheck() },
-				onStopStatus = { viewModel.stopClaudeStatusWatch() },
+				onCheckStatus = { viewModel.requestStatusCheckAll() },
+				onStopStatus = { viewModel.stopAllStatusWatches() },
 				authState = authState,
 				onRetrySignIn = { retryTick++ },
 			)
@@ -461,6 +463,54 @@ fun OnlineOfflinePillChip(status: io.github.johnjanthony.switchboard.network.Wid
 			.padding(horizontal = 10.dp, vertical = 4.dp)
 	) {
 		Text(labelText, style = MaterialTheme.typography.labelSmall, color = color)
+	}
+}
+
+@Composable
+fun AntigravityStatusPillChip(status: io.github.johnjanthony.switchboard.network.WidgetStatus?) {
+	if (status == null || status.level == "operational" || status.level == "none") return
+
+	val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+	val levelLower = status.level.lowercase()
+	val isRed = levelLower.contains("major") || levelLower.contains("critical") || levelLower.contains("outage")
+	val color = if (isRed) Color(0xFFE05555) else Color(0xFFE0A800)
+	val labelText = if (status.level.isNotBlank()) status.level.uppercase().replace('_', ' ') else "AGY OFFLINE"
+
+	androidx.compose.foundation.layout.Box(
+		modifier = Modifier
+			.padding(horizontal = 4.dp)
+			.border(1.dp, color.copy(alpha = 0.34f), RoundedCornerShape(50))
+			.background(color.copy(alpha = 0.13f), RoundedCornerShape(50))
+			.clickable { uriHandler.openUri("https://status.cloud.google.com") }
+			.padding(horizontal = 10.dp, vertical = 4.dp)
+	) {
+		Row(verticalAlignment = Alignment.CenterVertically) {
+			Icon(
+				imageVector = Icons.Filled.DarkMode, // Placeholder for 4-point star; DarkMode is roughly star-shaped
+				contentDescription = "Antigravity Status",
+				tint = color,
+				modifier = Modifier.size(10.dp)
+			)
+			Spacer(modifier = Modifier.width(4.dp))
+			Text(labelText, style = MaterialTheme.typography.labelSmall, color = color)
+		}
+	}
+}
+
+@Composable
+fun SwitchboardStalePillChip(stale: Boolean) {
+	if (!stale) return
+
+	val color = Color(0xFFE0A800) // Amber for staleness
+
+	androidx.compose.foundation.layout.Box(
+		modifier = Modifier
+			.padding(horizontal = 4.dp)
+			.border(1.dp, color.copy(alpha = 0.34f), RoundedCornerShape(50))
+			.background(color.copy(alpha = 0.13f), RoundedCornerShape(50))
+			.padding(horizontal = 10.dp, vertical = 4.dp)
+	) {
+		Text("SWITCHBOARD", style = MaterialTheme.typography.labelSmall, color = color)
 	}
 }
 
