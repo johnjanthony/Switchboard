@@ -68,7 +68,7 @@ test('initialState shape is exactly the contract', () => {
 		pendingsFlat: [],
 		health: { reachable: false, healthy: false, totalAnswered: null },
 		ui: {
-			leftCollapsed: false, leftWidth: 280, awayOffDialogOpen: false,
+			leftCollapsed: false, leftWidth: 322, awayOffDialogOpen: false,
 			sessionsCollapsed: false, selectedSessionIds: [],
 			leftActiveTab: 'conversations', showEndedSessions: false,
 		},
@@ -101,9 +101,9 @@ test('widget status listener updates state.widget.status', () => {
 test('initialState reads and clamps leftWidth from storage', () => {
 	assert.equal(makeStore({ storageInit: { 'sb.leftWidth': '420' } }).store.getState().ui.leftWidth, 420);
 	// Out-of-range and non-numeric values clamp / fall back to defaults.
-	assert.equal(makeStore({ storageInit: { 'sb.leftWidth': '50' } }).store.getState().ui.leftWidth, 180);
+	assert.equal(makeStore({ storageInit: { 'sb.leftWidth': '50' } }).store.getState().ui.leftWidth, 322);
 	assert.equal(makeStore({ storageInit: { 'sb.leftWidth': '9999' } }).store.getState().ui.leftWidth, 560);
-	assert.equal(makeStore({ storageInit: { 'sb.leftWidth': 'nope' } }).store.getState().ui.leftWidth, 280);
+	assert.equal(makeStore({ storageInit: { 'sb.leftWidth': 'nope' } }).store.getState().ui.leftWidth, 322);
 });
 
 test('setLeftWidth clamps to range, persists, and notifies', () => {
@@ -117,7 +117,7 @@ test('setLeftWidth clamps to range, persists, and notifies', () => {
 	assert.equal(notified, 1);
 
 	store.setLeftWidth(40); // below min
-	assert.equal(store.getState().ui.leftWidth, 180);
+	assert.equal(store.getState().ui.leftWidth, 322);
 	store.setLeftWidth(5000); // above max
 	assert.equal(store.getState().ui.leftWidth, 560);
 	assert.equal(storage.getItem('sb.leftWidth'), '560');

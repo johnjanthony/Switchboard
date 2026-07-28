@@ -344,28 +344,23 @@ function SwitchboardStatusControl({ health }) {
 			? "Switchboard server healthy"
 			: "Switchboard server degraded";
 	return html`
-		<span class=${"switchboard-pill status-pill " + healthStatusPillClass(health)} title=${title}>
+		<button class=${"switchboard-pill status-pill " + healthStatusPillClass(health)} title=${title}>
 			<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
 				<rect x="6.25" y="2" width="1.5" height="20" rx="0.75" />
 				<rect x="16.25" y="2" width="1.5" height="20" rx="0.75" />
 				<circle cx="7" cy="7" r="3.5" />
 				<circle cx="17" cy="17" r="3.5" />
 			</svg>
-		</span>
+		</button>
 	`;
 }
 
-export function StatusBar({ store }) {
+export function HeaderControls({ store, collapsed }) {
 	const state = store.getState();
-	const convs = state.conversations;
 	const [spawnOpen, setSpawnOpen] = useState(false);
-	const pendingCount = globalPendingCount(convs);
-	const oldest = oldestPendingAgeSeconds(state.pendingsFlat, Date.now());
-
 	const awayOn = state.globalAway;
 	const onAwayPill = () => {
 		if (awayOn) {
-			// Turning away OFF opens the dialog (resolves the pendings decision).
 			store.setAwayOffDialogOpen(true);
 		} else {
 			store.awayOn();
@@ -373,37 +368,50 @@ export function StatusBar({ store }) {
 	};
 
 	return html`
-		<div>
-			<div class="status-bar">
-				<span class="status-pills-left">
-					<button class="open-line-btn" onClick=${() => setSpawnOpen(true)} title="Open line">+</button>
-					<button
-						class=${"away-pill status-pill " + (awayOn ? "away-on" : "away-off")}
-						onClick=${onAwayPill}
-						title="Toggle away mode"
-					>
-						<svg class="away-moon-icon" viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
-							<path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-1.14 1.4-2.88 2.26-4.8 2.26-3.31 0-6-2.69-6-6 0-1.92.86-3.66 2.26-4.8C12.92 3.04 12.46 3 12 3z"/>
-						</svg>
-					</button>
-					<${AntigravityStatusControl} status=${state.widget.antigravityStatus} store=${store} />
-					<${ClaudeStatusControl} status=${state.widget.status} store=${store} />
-					<${SwitchboardStatusControl} health=${state.health} />
-				</span>
+		<div class=${"rail-header-controls" + (collapsed ? " collapsed" : "")}>
+			${collapsed ? html`
+				<button class="rail-toggle-header status-pill expand-top" title="Expand rail" onClick=${() => store.toggleLeftCollapsed()}>»</button>
+			` : null}
+			<button class="open-line-btn status-pill" onClick=${() => setSpawnOpen(true)} title="Open line">+</button>
+			<button
+				class=${"away-pill status-pill " + (awayOn ? "away-on" : "away-off")}
+				onClick=${onAwayPill}
+				title="Toggle global away mode"
+			>
+				<svg class="away-moon-icon" viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
+					<path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-1.14 1.4-2.88 2.26-4.8 2.26-3.31 0-6-2.69-6-6 0-1.92.86-3.66 2.26-4.8C12.92 3.04 12.46 3 12 3z"/>
+				</svg>
+			</button>
+			<${AntigravityStatusControl} status=${state.widget.antigravityStatus} store=${store} />
+			<${ClaudeStatusControl} status=${state.widget.status} store=${store} />
+			<${SwitchboardStatusControl} health=${state.health} />
+			${!collapsed ? html`
+				<button class="rail-toggle-header status-pill" title="Collapse rail" onClick=${() => store.toggleLeftCollapsed()}>«</button>
+			` : null}
+
+			${spawnOpen ? html`<${SpawnDialog} store=${store} onClose=${() => setSpawnOpen(false)} />` : null}
+			${state.ui.awayOffDialogOpen
+				? html`<${AwayOffDialog} store=${store} onClose=${() => store.setAwayOffDialogOpen(false)} />`
+				: null}
+		</div>
+	`;
+}
+
+export function StatusBar({ store }) {
+	const state = store.getState();
+	const convs = state.conversations;
+	const pendingCount = globalPendingCount(convs);
+	const oldest = oldestPendingAgeSeconds(state.pendingsFlat, Date.now());
+
+	return html`
+		<div class="status-bar">
+			${pendingCount > 0 ? html`
 				<span class="status-counts">
-					${pendingCount > 0 ? html`
-						<span class="count lit"><b>${pendingCount}</b> ${pendingCount === 1 ? 'question' : 'questions'}</span>
-						<span class="count">age <b>${oldest == null ? "-" : formatAge(oldest)}</b></span>
-					` : null}
+					<span class="count lit"><b>${pendingCount}</b> ${pendingCount === 1 ? 'question' : 'questions'}</span>
+					<span class="count">age <b>${oldest == null ? "-" : formatAge(oldest)}</b></span>
 				</span>
-				<${QuotaReadout} quota=${state.widget.quota} />
-			</div>
-			<div class="header-dialogs">
-				${spawnOpen ? html`<${SpawnDialog} store=${store} onClose=${() => setSpawnOpen(false)} />` : null}
-				${state.ui.awayOffDialogOpen
-					? html`<${AwayOffDialog} store=${store} onClose=${() => store.setAwayOffDialogOpen(false)} />`
-					: null}
-			</div>
+			` : null}
+			<${QuotaReadout} quota=${state.widget.quota} />
 		</div>
 	`;
 }

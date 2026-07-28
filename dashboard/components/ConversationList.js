@@ -1,6 +1,7 @@
 import { html, useState } from "../vendor/htm-preact.js";
 import { pendingCountFor, isActive, isThinking, agentStatusLabel, pendingQuestionText, formatAge } from "../derive.js";
 import { SessionsRail } from "./SessionsRail.js";
+import { HeaderControls } from "./StatusBar.js";
 
 // Relative "last traffic" age from meta.last_activity_at (float epoch SECONDS,
 // verified in server write_conversation_meta). Empty when never active; "now"
@@ -86,18 +87,14 @@ export function ConversationList({ store }) {
 					<button class=${"rail-tab" + (activeTab === 'conversations' ? " active" : "")}
 						title="Conversations"
 						onClick=${() => store.setLeftActiveTab('conversations')}>
-						<span class="tab-icon">💬</span>
-						${collapsed ? null : html`<span class="tab-label">Conversations</span>`}
+						${collapsed ? html`<span class="tab-icon">💬</span>` : html`<span class="tab-label">Conversations</span>`}
 					</button>
 					<button class=${"rail-tab" + (activeTab === 'sessions' ? " active" : "")}
 						title="Sessions"
 						onClick=${() => store.setLeftActiveTab('sessions')}>
-						<span class="tab-icon">🔌</span>
-						${collapsed ? null : html`<span class="tab-label">Sessions</span>`}
+						${collapsed ? html`<span class="tab-icon">🔌</span>` : html`<span class="tab-label">Sessions</span>`}
 					</button>
 				</div>
-				<button class="rail-toggle rail-toggle-tab" title=${collapsed ? "Expand rail" : "Collapse rail"}
-					onClick=${() => store.toggleLeftCollapsed()}>${collapsed ? "»" : "«"}</button>
 			</div>
 		`;
 	};
@@ -105,6 +102,7 @@ export function ConversationList({ store }) {
 	if (collapsed) {
 		return html`
 			<aside class="rail rail-left rail-collapsed">
+				<${HeaderControls} store=${store} collapsed=${true} />
 				${renderTabStrip()}
 				${activeTab === 'conversations' ? html`
 					<div class="rail-icons">
@@ -134,6 +132,7 @@ export function ConversationList({ store }) {
 
 	return html`
 		<aside class="rail rail-left">
+			<${HeaderControls} store=${store} collapsed=${false} />
 			${renderTabStrip()}
 			${activeTab === 'conversations' ? html`
 				<ul class="conv-list">

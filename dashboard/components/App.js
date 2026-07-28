@@ -8,7 +8,7 @@ import { formatAge } from "../derive.js";
 
 // Dragging the left resizer narrower than this (well past the 180px min width)
 // collapses the rail entirely instead of sticking at the min.
-const LEFT_COLLAPSE_AT = 120;
+const LEFT_COLLAPSE_AT = 322;
 
 function AdminStrip({ notifications }) {
 	const rows = Object.entries(notifications || {})

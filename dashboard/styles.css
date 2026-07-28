@@ -661,22 +661,61 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .quota-pace-fill { height: 100%; background: var(--label-faint); border-radius: 99px; }
 .quota-pace-fill.over-pace { background: var(--lamp-amber); }
 
-.status-pills-left { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-.status-pills-right { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
+.rail-header-controls {
+	display: flex; align-items: center; justify-content: space-between;
+	padding: 8px 10px;
+	border-bottom: 1px solid var(--rule);
+	background: var(--panel);
+	gap: 6px;
+	width: 100%;
+}
+.rail-collapsed .rail-header-controls, .rail-header-controls.collapsed {
+	display: flex; flex-direction: column; align-items: center;
+	gap: 6px; padding: 8px 6px;
+	border-bottom: 1px solid var(--rule);
+	background: var(--panel);
+	width: 100%;
+}
 
-.claude-pill, .antigravity-pill, .switchboard-pill, .status-pill {
-	display: inline-flex; align-items: center; justify-content: center;
-	width: 48px; height: 26px; border-radius: 999px; padding: 0;
+.claude-pill, .antigravity-pill, .switchboard-pill, .status-pill, .open-line-btn, .away-pill, .rail-toggle-header {
+	flex: 1 1 0px;
+	min-width: 0;
+	width: auto;
+	height: 26px;
+	border-radius: 999px; padding: 0;
 	border: 1px solid var(--rule); background: #08090b; color: var(--label-dim);
-	cursor: pointer; flex-shrink: 0;
+	cursor: pointer;
 	transition: border-color 0.15s, color 0.15s;
 }
+.rail-collapsed .rail-header-controls .status-pill,
+.rail-collapsed .rail-header-controls .open-line-btn,
+.rail-collapsed .rail-header-controls .away-pill,
+.rail-collapsed .rail-header-controls .claude-pill,
+.rail-collapsed .rail-header-controls .antigravity-pill,
+.rail-collapsed .rail-header-controls .switchboard-pill,
+.rail-collapsed .rail-header-controls .rail-toggle-header,
+.rail-header-controls.collapsed .status-pill,
+.rail-header-controls.collapsed .open-line-btn,
+.rail-header-controls.collapsed .away-pill,
+.rail-header-controls.collapsed .claude-pill,
+.rail-header-controls.collapsed .antigravity-pill,
+.rail-header-controls.collapsed .switchboard-pill,
+.rail-header-controls.collapsed .rail-toggle-header {
+	flex: 0 0 24px;
+	width: 100%; height: 24px; border-radius: 999px; padding: 0; font-size: 14px;
+	display: inline-flex; align-items: center; justify-content: center;
+}
+.rail-collapsed .rail-header-controls svg,
+.rail-header-controls.collapsed svg {
+	width: 13px; height: 13px;
+}
+
 .claude-pill.status-green, .antigravity-pill.status-green, .switchboard-pill.status-green { color: var(--lamp-green); }
 .claude-pill.status-amber, .antigravity-pill.status-amber, .switchboard-pill.status-amber { color: var(--lamp-amber); }
 .claude-pill.status-red,   .antigravity-pill.status-red,   .switchboard-pill.status-red   { color: var(--lamp-red); }
 .claude-pill.status-cold,  .antigravity-pill.status-cold,  .switchboard-pill.status-cold  { color: #636d7d; }
 
-.claude-pill:hover, .antigravity-pill:hover, .switchboard-pill:hover, .away-pill:hover { border-color: var(--label-dim); }
+.claude-pill:hover, .antigravity-pill:hover, .switchboard-pill:hover, .away-pill:hover, .open-line-btn:hover { border-color: var(--label-dim); }
 .claude-status-label { font-family: var(--font-mono); font-size: 11px; color: var(--label-faint); }
 .claude-status-btn { font-family: var(--font-mono); font-size: 11px; padding: 1px 8px; }
 

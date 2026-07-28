@@ -550,8 +550,8 @@ export function createStore(deps) {
 	};
 }
 
-const LEFT_WIDTH_DEFAULT = 280;
-const LEFT_WIDTH_MIN = 180;
+const LEFT_WIDTH_DEFAULT = 322;
+const LEFT_WIDTH_MIN = 322;
 const LEFT_WIDTH_MAX = 560;
 
 function clampLeftWidth(px) {
