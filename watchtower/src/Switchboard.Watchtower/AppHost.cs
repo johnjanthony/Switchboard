@@ -227,6 +227,7 @@ internal sealed class AppHost : IDisposable
 		_panel.UpdateAntigravityStatus(AntigravityServerStatus.ParseView(""));
 		_tray.SetPending(showBadge: true, hasPending: true);
 		_widget.SetPending(showBadge: true, hasPending: true);
+		_widget.SetAwayMode(stats.AwayMode);
 
 		var gauge = TrayGauge.From(sessions);
 		_tray.SetGauge(gauge.Max, gauge.AnyError, gauge.MaxSeverity, light);
@@ -420,6 +421,7 @@ internal sealed class AppHost : IDisposable
 			_panel.UpdateSwitchboard(enabled: true, stats);
 			_tray.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
 			_widget.SetPending(_config.Switchboard.ShowBadge, stats is { PendingCount: > 0 });
+			_widget.SetAwayMode(stats is { AwayMode: true });
 		}, TaskScheduler.FromCurrentSynchronizationContext());
 	}
 
@@ -478,6 +480,7 @@ internal sealed class AppHost : IDisposable
 			bool hasPending = cachedStats is { PendingCount: > 0 };
 			_tray.SetPending(_config.Switchboard.ShowBadge, hasPending);
 			_widget.SetPending(_config.Switchboard.ShowBadge, hasPending);
+			_widget.SetAwayMode(cachedStats is { AwayMode: true });
 		}
 	}
 

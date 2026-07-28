@@ -46,9 +46,11 @@ public static class ContextRingLayout
 		int visible = Math.Min(Math.Min(sessions.Count, maxRings), fitCount);
 		int overflow = sessions.Count - visible;
 
+		static double SafePct(double p) => double.IsNaN(p) || double.IsInfinity(p) ? 0.0 : Math.Clamp(p, 0.0, 1.0);
+
 		// Stable sort: error sessions sort as "fullest" so an error always claims an outer ring.
 		var ordered = sessions
-			.OrderByDescending(s => s.IsError ? double.PositiveInfinity : Math.Clamp(s.Pct, 0, 1))
+			.OrderByDescending(s => s.IsError ? double.PositiveInfinity : SafePct(s.Pct))
 			.Take(visible)
 			.ToList();
 
@@ -60,8 +62,9 @@ public static class ContextRingLayout
 			float d = od - 2f * inset;
 			if (d <= 0f) break;
 			var bounds = new RectangleF(ox + inset, oy + inset, d, d);
-			float sweep = s.IsError ? 360f : (float)(360.0 * Math.Clamp(s.Pct, 0, 1));
-			rings.Add(new ContextRing(bounds, sweep, s.Pct, s.IsError));
+			double p = SafePct(s.Pct);
+			float sweep = s.IsError ? 360f : (float)(360.0 * p);
+			rings.Add(new ContextRing(bounds, sweep, p, s.IsError));
 		}
 
 		return new ContextRingLayoutResult(rings, overflow, outerBounds);

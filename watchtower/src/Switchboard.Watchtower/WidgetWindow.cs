@@ -40,6 +40,7 @@ internal sealed class WidgetWindow : Form
 	bool _showQuota = true;   // user preference; the block also requires _quota to have a value
 	bool _showBadge;          // Switchboard ShowBadge preference
 	bool _hasPending;         // Switchboard has unanswered questions -> draw the amber badge
+	bool _awayMode;           // Switchboard AwayMode active -> draw dark amber border highlight
 	bool _claudeDotVisible;
 	ClaudeStatusLevel _claudeLevel = ClaudeStatusLevel.Operational;
 	bool _claudePulse;        // animate the status dot (active incident) vs hold steady (resolved)
@@ -294,6 +295,13 @@ internal sealed class WidgetWindow : Form
 		Render();
 	}
 
+	public void SetAwayMode(bool awayMode)
+	{
+		if (_awayMode == awayMode) return;
+		_awayMode = awayMode;
+		Render();
+	}
+
 	// Show/hide the sticky Claude status dot (centered in the ring cluster). Visible whenever the watch
 	// is not Idle; color reflects the latest known status; pulses while an incident is active.
 	public void SetClaudeStatus(bool visible, ClaudeStatusLevel level)
@@ -437,6 +445,13 @@ internal sealed class WidgetWindow : Form
 
 	void DrawContent(Graphics g)
 	{
+		if (_awayMode)
+		{
+			using var awayBgPath = RoundedRectPath(new Rectangle(0, 0, Width - 1, Height - 1), 4);
+			using var awayBgBrush = new SolidBrush(Color.FromArgb(28, 255, 170, 0));
+			g.FillPath(awayBgBrush, awayBgPath);
+		}
+
 		// Grab handle: in transparent mode a near-invisible hit strip makes the whole strip grabbable;
 		// in ClearType mode the masked background already provides hit-testing, so skip it (an explicit
 		// dark strip would survive the alpha mask and show as a black bar).
@@ -465,12 +480,13 @@ internal sealed class WidgetWindow : Form
 		var layout = ContextRingLayout.Build(_sessions, originX, Height, thickness: RingThickness, gap: RingGap, maxRings: RingMaxCount);
 
 		// Ever-present dark grey marker ring at the outermost context ring location
-		using (var trackPen = new Pen(_palette.Track, RingThickness))
-			g.DrawEllipse(trackPen, layout.OutermostBounds);
+		if (layout.OutermostBounds.Width > 0f && layout.OutermostBounds.Height > 0f)
+			using (var trackPen = new Pen(_palette.Track, RingThickness))
+				g.DrawEllipse(trackPen, layout.OutermostBounds);
 
 		foreach (var ring in layout.Rings)
 		{
-			if (ring.Bounds.Width <= 0f || ring.Bounds.Height <= 0f || ring.SweepDegrees <= 0f) continue;
+			if (float.IsNaN(ring.SweepDegrees) || float.IsInfinity(ring.SweepDegrees) || ring.Bounds.Width <= 0f || ring.Bounds.Height <= 0f || ring.SweepDegrees <= 0f) continue;
 			// Transparent mode draws over an unknown taskbar background; a dark halo under the arc
 			// keeps it legible on a light taskbar. ClearType mode draws over the known dark bg.
 			if (!_clearType)
@@ -489,6 +505,7 @@ internal sealed class WidgetWindow : Form
 				for (float current = 0f; current < totalSweep; current += stepDeg)
 				{
 					float sweepStep = Math.Min(stepDeg, totalSweep - current);
+					if (sweepStep < 1f) continue;
 					float angleStart = -90f + current;
 					double frac = (current + sweepStep / 2.0) / 360.0;
 					Color segColor = SeverityGradient.For(frac);
@@ -552,6 +569,14 @@ internal sealed class WidgetWindow : Form
 				g.FillEllipse(cdot, ccx - r, ccy - r, r * 2f, r * 2f);
 			using (var outline = new Pen(Color.FromArgb(200, 0, 0, 0), 1.25f))
 				g.DrawEllipse(outline, ccx - r, ccy - r, r * 2f, r * 2f);
+		}
+
+		// Away mode border highlight (Option B: dark amber matching away mode pill button)
+		if (_awayMode)
+		{
+			using var borderPen = new Pen(Color.FromArgb(145, 96, 15), 1.5f);
+			using var borderPath = RoundedRectPath(new Rectangle(0, 0, Width - 1, Height - 1), 4);
+			g.DrawPath(borderPen, borderPath);
 		}
 	}
 

@@ -161,7 +161,8 @@ internal sealed class DetailPanel : Form
 
 		_claudePillButton = new PillButton
 		{
-			Text = "CLAUDE",
+			IconType = PillIconType.Claude,
+			Text = "",
 			Visible = true,
 			BackColor = Color.FromArgb(8, 9, 11),
 			BorderColor = Color.FromArgb(30, 41, 59),
@@ -171,18 +172,22 @@ internal sealed class DetailPanel : Form
 		};
 		_claudePillButton.Click += (_, _) => OnClaudePillClicked();
 		Controls.Add(_claudePillButton);
+		_toolTip.SetToolTip(_claudePillButton, "Claude: Status Unknown");
 
 		_switchboardPillButton = new PillButton
 		{
-			Text = "SWITCHBOARD",
+			IconType = PillIconType.Switchboard,
+			Text = "",
 			Visible = true,
 		};
 		_switchboardPillButton.Click += (_, _) => OpenDashboardRequested?.Invoke();
 		Controls.Add(_switchboardPillButton);
+		_toolTip.SetToolTip(_switchboardPillButton, "Switchboard Operator");
 
 		_agyPillButton = new PillButton
 		{
-			Text = "ANTIGRAVITY",
+			IconType = PillIconType.Antigravity,
+			Text = "",
 			Visible = true,
 			BackColor = Color.FromArgb(8, 9, 11),
 			BorderColor = Color.FromArgb(30, 41, 59),
@@ -192,15 +197,17 @@ internal sealed class DetailPanel : Form
 		};
 		_agyPillButton.Click += (_, _) => OnAntigravityPillClicked();
 		Controls.Add(_agyPillButton);
+		_toolTip.SetToolTip(_agyPillButton, "Antigravity: Status Unknown");
 
 		_awayPillButton = new PillButton
 		{
-			Text = "AWAY",
-			HasMoonIcon = true,
+			IconType = PillIconType.Moon,
+			Text = "",
 			Visible = true,
 		};
 		_awayPillButton.Click += (_, _) => OnAwayPillClicked();
 		Controls.Add(_awayPillButton);
+		_toolTip.SetToolTip(_awayPillButton, "Toggle Away Mode");
 	}
 
 
@@ -426,23 +433,23 @@ internal sealed class DetailPanel : Form
 		_claudePillButton.BackColor = Color.FromArgb(8, 9, 11);
 		_claudePillButton.BorderColor = _palette.Track;
 
-		string claudeTitle = view is null || !view.HasData
-			? "Claude status"
-			: (!string.IsNullOrEmpty(view.Description) ? view.Description : "Claude status");
+		string claudeDetail = view is null || !view.HasData
+			? "Status Unknown"
+			: (!string.IsNullOrEmpty(view.Description) ? view.Description : "Operational");
 
 		if (view is { IncidentNames.Count: > 0 })
 		{
 			string incidentsText = string.Join("; ", view.IncidentNames);
-			if (string.IsNullOrEmpty(claudeTitle) || claudeTitle.Contains("all systems operational", StringComparison.OrdinalIgnoreCase))
+			if (string.IsNullOrEmpty(claudeDetail) || claudeDetail.Contains("operational", StringComparison.OrdinalIgnoreCase))
 			{
-				claudeTitle = incidentsText;
+				claudeDetail = incidentsText;
 			}
-			else if (!claudeTitle.Contains(incidentsText, StringComparison.OrdinalIgnoreCase))
+			else if (!claudeDetail.Contains(incidentsText, StringComparison.OrdinalIgnoreCase))
 			{
-				claudeTitle = claudeTitle + " - " + incidentsText;
+				claudeDetail = claudeDetail + " - " + incidentsText;
 			}
 		}
-		_toolTip.SetToolTip(_claudePillButton, claudeTitle);
+		_toolTip.SetToolTip(_claudePillButton, "Claude: " + claudeDetail);
 
 		RecomputeHeight();
 		Invalidate();
@@ -469,38 +476,36 @@ internal sealed class DetailPanel : Form
 		_agyPillButton.BackColor = Color.FromArgb(8, 9, 11);
 		_agyPillButton.BorderColor = _palette.Track;
 
-		string agyTitle = view is null || !view.HasData
-			? "Antigravity status"
-			: (!string.IsNullOrEmpty(view.Description) ? view.Description : "Antigravity status");
+		string agyDetail = view is null || !view.HasData
+			? "Status Unknown"
+			: (!string.IsNullOrEmpty(view.Description) ? view.Description : "Operational");
 
 		if (view is { IncidentNames.Count: > 0 })
 		{
 			string incidentsText = string.Join("; ", view.IncidentNames);
-			if (string.IsNullOrEmpty(agyTitle) || agyTitle.Contains("all systems operational", StringComparison.OrdinalIgnoreCase))
+			if (string.IsNullOrEmpty(agyDetail) || agyDetail.Contains("operational", StringComparison.OrdinalIgnoreCase))
 			{
-				agyTitle = incidentsText;
+				agyDetail = incidentsText;
 			}
-			else if (!agyTitle.Contains(incidentsText, StringComparison.OrdinalIgnoreCase))
+			else if (!agyDetail.Contains(incidentsText, StringComparison.OrdinalIgnoreCase))
 			{
-				agyTitle = agyTitle + " - " + incidentsText;
+				agyDetail = agyDetail + " - " + incidentsText;
 			}
 		}
-		_toolTip.SetToolTip(_agyPillButton, agyTitle);
+		_toolTip.SetToolTip(_agyPillButton, "Antigravity: " + agyDetail);
 
 		RecomputeHeight();
 		Invalidate();
 	}
 
 	void RecomputeHeight()
-
 	{
 		int quotaContentH = (_quota.HasValue ? 2 * QuotaWindowRowH : 0) + (_quotaAuthPaused ? QuotaPausedRowH : 0);
 		int quotaH = quotaContentH > 0 ? quotaContentH + 2 * GroupVPad + GroupGap : 0;
 		int agyH = _agyGroups.Count * (2 * QuotaWindowRowH + 2 * GroupVPad + GroupGap);
 		int ctxH = Math.Max(1, _sessions.Count) * RowH + 2 * GroupVPad;
-		int group3H = BottomPillRowH + 2 * GroupVPad + GroupGap;
-		int group4H = BottomPillRowH + 2 * GroupVPad + GroupGap;
-		Height = Pad + quotaH + agyH + ctxH + group3H + group4H + Pad;
+		int group3H = BottomPillRowH + 2 * GroupVPad;
+		Height = Pad + quotaH + agyH + ctxH + GroupGap + group3H + Pad;
 	}
 
 	public void ShowAbove(Rectangle widgetScreenBounds)
@@ -526,6 +531,7 @@ internal sealed class DetailPanel : Form
 				stripH += stripY;
 				stripY = 0;
 			}
+			if (stripW <= 0 || stripH <= 0) return;
 
 			using var materialBmp = new Bitmap(stripW, stripH, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
 			using (var g = Graphics.FromImage(materialBmp))
@@ -710,7 +716,7 @@ internal sealed class DetailPanel : Form
 			y += RowH;
 		}
 
-		// Group 3: Group panel containing Claude, Switchboard & Antigravity indicator pills.
+		// Group 3: Group panel containing Away, Claude, Switchboard & Antigravity indicator pills.
 		int group3Top = ctxTop + ctxH + GroupGap;
 		int group3H = BottomPillRowH + 2 * GroupVPad;
 		DrawGroupPanel(g, group3Top, group3H);
@@ -718,28 +724,29 @@ internal sealed class DetailPanel : Form
 		int btn3Y = group3Top + GroupVPad;
 		int padX = 14;
 		int btnGap = 6;
-		int availableW = Width - 2 * padX - 2 * btnGap;
-		int btnW = availableW / 3;
+		int availableW = Width - 2 * padX - 3 * btnGap;
+		int btnW = availableW / 4;
 
-		_claudePillButton.Location = new Point(padX, btn3Y);
-		_claudePillButton.Size = new Size(btnW, BottomPillRowH);
-
-		_switchboardPillButton.Location = new Point(padX + btnW + btnGap, btn3Y);
-		_switchboardPillButton.Size = new Size(btnW, BottomPillRowH);
-
-		_agyPillButton.Location = new Point(padX + 2 * (btnW + btnGap), btn3Y);
+		_agyPillButton.Location = new Point(padX, btn3Y);
 		_agyPillButton.Size = new Size(btnW, BottomPillRowH);
 
-		// Group 4: Single group panel containing the Away Mode pill button.
-		int group4Top = group3Top + group3H + GroupGap;
-		int group4H = BottomPillRowH + 2 * GroupVPad;
-		DrawGroupPanel(g, group4Top, group4H);
+		_claudePillButton.Location = new Point(padX + btnW + btnGap, btn3Y);
+		_claudePillButton.Size = new Size(btnW, BottomPillRowH);
 
-		int btn4Y = group4Top + GroupVPad;
-		int fullW = Width - 2 * padX;
+		_switchboardPillButton.Location = new Point(padX + 2 * (btnW + btnGap), btn3Y);
+		_switchboardPillButton.Size = new Size(btnW, BottomPillRowH);
 
-		_awayPillButton.Location = new Point(padX, btn4Y);
-		_awayPillButton.Size = new Size(fullW, BottomPillRowH);
+		_awayPillButton.Location = new Point(padX + 3 * (btnW + btnGap), btn3Y);
+		_awayPillButton.Size = new Size(btnW, BottomPillRowH);
+	}
+
+	internal enum PillIconType
+	{
+		None,
+		Moon,
+		Claude,
+		Switchboard,
+		Antigravity
 	}
 
 	private sealed class PillButton : Button
@@ -754,7 +761,7 @@ internal sealed class DetailPanel : Form
 		public Color SurfaceColor { get; set; } = Color.FromArgb(42, 42, 42);
 
 		[System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
-		public bool HasMoonIcon { get; set; }
+		public PillIconType IconType { get; set; } = PillIconType.None;
 
 		[System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
 		public Color MoonIconColor { get; set; } = Color.Gray;
@@ -791,38 +798,123 @@ internal sealed class DetailPanel : Form
 				g.DrawPath(borderPen, borderPath);
 			}
 
-			float textW = g.MeasureString(Text, Font, PointF.Empty, StringFormat.GenericTypographic).Width;
-			float iconW = HasMoonIcon ? 13f : 6f;
-			float iconGap = 6f;
+			float textW = string.IsNullOrEmpty(Text) ? 0f : g.MeasureString(Text, Font, PointF.Empty, StringFormat.GenericTypographic).Width;
+			float iconW = IconType switch
+			{
+				PillIconType.Moon => 13f,
+				PillIconType.Claude => 12f,
+				PillIconType.Switchboard => 12f,
+				PillIconType.Antigravity => 12f,
+				_ => 0f,
+			};
+
+			float iconGap = (iconW > 0 && textW > 0) ? 6f : 0f;
 			float contentW = iconW + iconGap + textW;
 			float startX = (Width - contentW) / 2f;
 
-			if (HasMoonIcon)
+			float currentX = startX;
+
+			if (IconType == PillIconType.Moon)
 			{
 				float moonSize = 13f;
 				float moonY = (Height - moonSize) / 2f;
-				using var moonPath = CreateMoonPath(startX, moonY, moonSize);
+				using var moonPath = CreateMoonPath(currentX, moonY, moonSize);
 				using var moonBrush = new SolidBrush(MoonIconColor);
 				g.FillPath(moonBrush, moonPath);
+				currentX += moonSize + iconGap;
 			}
-			else
+			else if (IconType == PillIconType.Claude)
 			{
-				float dotDiameter = 6f;
-				float dotY = (Height - dotDiameter) / 2f;
-				using var dotBrush = new SolidBrush(DotColor);
-				g.FillEllipse(dotBrush, startX, dotY, dotDiameter, dotDiameter);
+				float iconSize = 12f;
+				float iconY = (Height - iconSize) / 2f;
+				using var claudePath = CreateClaudePath(currentX, iconY, iconSize);
+				using var iconBrush = new SolidBrush(DotColor);
+				g.FillPath(iconBrush, claudePath);
+				currentX += iconSize + iconGap;
+			}
+			else if (IconType == PillIconType.Antigravity)
+			{
+				float iconSize = 12f;
+				float iconY = (Height - iconSize) / 2f;
+				using var agyPath = CreateAntigravityPath(currentX, iconY, iconSize);
+				using var iconBrush = new SolidBrush(DotColor);
+				g.FillPath(iconBrush, agyPath);
+				currentX += iconSize + iconGap;
+			}
+			else if (IconType == PillIconType.Switchboard)
+			{
+				float iconSize = 12f;
+				float iconY = (Height - iconSize) / 2f;
+				using var iconBrush = new SolidBrush(DotColor);
+				DrawSwitchboardIcon(g, iconBrush, currentX, iconY, iconSize);
+				currentX += iconSize + iconGap;
 			}
 
-			float textX = startX + iconW + iconGap;
-			var textRect = new RectangleF(textX, 0, textW + 2f, Height);
-			using var sf = new StringFormat(StringFormat.GenericTypographic)
+			if (textW > 0)
 			{
-				LineAlignment = StringAlignment.Center
-			};
-			using (var textBrush = new SolidBrush(ForeColor))
-			{
+				var textRect = new RectangleF(currentX, 0, textW + 2f, Height);
+				using var sf = new StringFormat(StringFormat.GenericTypographic)
+				{
+					LineAlignment = StringAlignment.Center
+				};
+				using var textBrush = new SolidBrush(ForeColor);
 				g.DrawString(Text, Font, textBrush, textRect, sf);
 			}
+		}
+
+		static GraphicsPath CreateClaudePath(float x, float y, float size)
+		{
+			var path = new GraphicsPath();
+			float cx = x + size / 2f;
+			float cy = y + size / 2f;
+			float r1 = size / 2f;
+			float r2 = size * 0.22f;
+
+			PointF[] pts = new PointF[16];
+			for (int i = 0; i < 16; i++)
+			{
+				double angle = i * Math.PI / 8.0 - Math.PI / 2.0;
+				double r = (i % 2 == 0) ? r1 : ((i % 4 == 1 || i % 4 == 3) ? r1 * 0.45 : r2);
+				pts[i] = new PointF((float)(cx + r * Math.Cos(angle)), (float)(cy + r * Math.Sin(angle)));
+			}
+			path.AddPolygon(pts);
+			return path;
+		}
+
+		static GraphicsPath CreateAntigravityPath(float x, float y, float size)
+		{
+			var path = new GraphicsPath();
+			float cx = x + size / 2f;
+			float cy = y + size / 2f;
+			float r = size / 2f;
+
+			PointF top = new PointF(cx, cy - r);
+			PointF right = new PointF(cx + r, cy);
+			PointF bottom = new PointF(cx, cy + r);
+			PointF left = new PointF(cx - r, cy);
+
+			path.AddBezier(top, new PointF(cx + r * 0.35f, cy - r * 0.35f), new PointF(cx + r * 0.35f, cy - r * 0.35f), right);
+			path.AddBezier(right, new PointF(cx + r * 0.35f, cy + r * 0.35f), new PointF(cx + r * 0.35f, cy + r * 0.35f), bottom);
+			path.AddBezier(bottom, new PointF(cx - r * 0.35f, cy + r * 0.35f), new PointF(cx - r * 0.35f, cy + r * 0.35f), left);
+			path.AddBezier(left, new PointF(cx - r * 0.35f, cy - r * 0.35f), new PointF(cx - r * 0.35f, cy - r * 0.35f), top);
+
+			path.CloseFigure();
+			return path;
+		}
+
+		static void DrawSwitchboardIcon(Graphics g, Brush brush, float x, float y, float size)
+		{
+			float trackW = 1.75f;
+			float knobR = 2.25f;
+
+			float t1X = x + size * 0.3f;
+			float t2X = x + size * 0.7f;
+
+			g.FillRectangle(brush, t1X - trackW / 2f, y + 1f, trackW, size - 2f);
+			g.FillRectangle(brush, t2X - trackW / 2f, y + 1f, trackW, size - 2f);
+
+			g.FillEllipse(brush, t1X - knobR, y + size * 0.3f - knobR, knobR * 2f, knobR * 2f);
+			g.FillEllipse(brush, t2X - knobR, y + size * 0.7f - knobR, knobR * 2f, knobR * 2f);
 		}
 
 		static GraphicsPath CreateMoonPath(float x, float y, float size)
