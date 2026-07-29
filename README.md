@@ -24,7 +24,7 @@ Switchboard is a local MCP gateway with cloud-synchronized state (Firebase) that
 - **In-line replies**: View your responses directly in the chat history for full context.
 - **Away mode**: Single server-wide flag. Toggle from the phone's top-bar pill or via the `set_away_mode` MCP tool.
 - **Activity indicators**: Prominent high-visibility indicators for unseen activity or pending questions.
-- **Session spawning**: Launch fresh agent sessions on your desktop directly from your phone — choose surface (Windows / WSL), project, optional prompt, and whether to create a new conversation or add to an existing one.
+- **Session spawning**: Launch fresh agent sessions on your desktop directly from your phone — choose agent (Claude Code / Antigravity), surface (Windows / WSL), project, optional prompt, and whether to create a new conversation or add to an existing one.
 - **Conversation composition**: Join a conversation (by `ref` or ref-less), resume dormant sessions, or combine two conversations into one — resume and combine are also on the phone's long-press menu.
 - **Rich Markdown**: Full support for bold, italic, code blocks, checklists, and tables.
 
@@ -32,28 +32,7 @@ Switchboard is a local MCP gateway with cloud-synchronized state (Firebase) that
 
 Switchboard is one Python process fronting a single Firebase Realtime Database, with four surfaces reading and writing that shared hub. Agents speak MCP to the server; the server is the only writer of authoritative state; the human-facing clients render and command it.
 
-```text
-            AI agents (Claude Code, ...)
-                          |  MCP over HTTP
-                          v
-           +--------------------------------+
-           |   Switchboard MCP server       |   Python . asyncio
-           |   gateway + /dashboard +       |
-           |   /stats + /healthz            |
-           +---------------+----------------+
-                           |  Firebase Admin SDK
-                           v
-              +---------------------------+
-              |  Firebase Realtime DB     |   one shared hub:
-              |  + Cloud Messaging (FCM)  |   conversations, away mode, commands
-              +-------------+-------------+
-                            |  direct RTDB reads/writes + push
-          +-----------------+------------------+
-          v                 v                  v
-   Android + Wear OS     Operator           Watchtower
-   Kotlin / Compose      Preact web         .NET 9 / WinForms
-   (phone + watch)       cockpit            taskbar widget
-```
+![Switchboard system architecture: agents speak MCP to the local Python server; state syncs through Firebase RTDB, Storage, and FCM; Android + Wear, Operator, and Watchtower are the human surfaces](docs/media/switchboard-architecture.svg)
 
 The model is built around **away mode** (a single global flag: when set, agents route every prompt to the phone instead of the terminal) and **conversations** (the persistence + routing unit; multiple agents can share one conversation, and while pending in-flight questions do not survive a restart, conversation state itself rehydrates from Firebase).
 
@@ -61,7 +40,7 @@ The model is built around **away mode** (a single global flag: when set, agents 
 
 Switchboard was architected and built by John Anthony, directing a multi-agent workflow of off-the-shelf coding agents (Claude Code among them) coordinated, fittingly, through Switchboard itself.
 
-For an agent-oriented project tour, see [`CLAUDE.md`](CLAUDE.md). The end-to-end design is documented in [`docs/switchboard-design-spec-comprehensive.md`](docs/switchboard-design-spec-comprehensive.md) — covers architecture, session-id routing, hook plumbing, Firebase schema, spawn (fresh / resume / combine), away mode, hydration, and the Android UI surface. Its conversation-model and MCP-tool-surface sections carry a staleness warning; [`skills/switchboard/SKILL.md`](skills/switchboard/SKILL.md) is the current reference for the tool surface.
+For an agent-oriented project tour, see [`CLAUDE.md`](CLAUDE.md). The end-to-end design is documented in [`docs/switchboard-design-spec-comprehensive.md`](docs/switchboard-design-spec-comprehensive.md) — covers architecture, session-id routing, the conversation model (join candidate rule, convening), the full MCP tool surface, hook plumbing, Firebase schema, spawn (fresh / resume / combine), away mode, hydration, and the Android UI surface, all verified against the code as of 2026-07-29. [`skills/switchboard/SKILL.md`](skills/switchboard/SKILL.md) is the agent-facing reference for the tool surface.
 
 ## Install
 
@@ -82,8 +61,8 @@ Switchboard reads its configuration from OS env vars. A `.env` file is loaded as
 | Variable | Required | Default | Purpose |
 | :--- | :--- | :--- | :--- |
 | **Server Settings** | | | |
-| `SWITCHBOARD_HOST` | No | `127.0.0.1` | Local bind address for the SSE/HTTP server. |
-| `SWITCHBOARD_PORT` | No | `9876` | Local port for the SSE/HTTP server. |
+| `SWITCHBOARD_HOST` | No | `127.0.0.1` | Local bind address for the MCP/HTTP server. |
+| `SWITCHBOARD_PORT` | No | `9876` | Local port for the MCP/HTTP server. |
 | `SWITCHBOARD_TIMEOUT_SECONDS` | No | `86400` | Default blocking window for `ask_human` and `message_and_await_agent`, and the ceiling that `message_and_await_agent`'s optional `timeout_seconds` is clamped to. |
 | `SWITCHBOARD_LOG_PATH` | No | `./logs/switchboard.jsonl` | Path to the event audit log. |
 | `SWITCHBOARD_RATE_LIMIT` | No | `30` | Max messages per minute per conversation. Past the limit `ask_human` / `notify_human` / `send_document_human` are rejected, while `message_and_await_agent` / `post_agent_message` still write and still wake peers, suppressing only the phone push. |
@@ -113,7 +92,7 @@ Switchboard ships as a Claude Code plugin. From any Claude Code session:
 
 The plugin install wires the skill and six Claude Code hook events: away-mode turn-end enforcement, the agent-status activity indicator, the `cli_session_id` injector, an away-mode guard on the built-in `AskUserQuestion` tool, and session start / end tracking. The MCP server connection is bootstrapped per host by a parallel chezmoi dotfiles effort (Windows uses `localhost:9876`; WSL uses the Windows host IP, resolvable from `/etc/resolv.conf` or `ip route show default | awk '{print $3}'`). If you are not using chezmoi, run `claude mcp add switchboard --scope user --transport http <resolved-url>` per host.
 
-WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` AND `SWITCHBOARD_TOKEN` set - the server refuses to start non-loopback without a token (REV-003 fail-closed), and every non-loopback client must send `Authorization: Bearer <token>` on all routes except `/healthz` (loopback callers are exempt). The firewall inbound rule for TCP 9876 from the WSL subnet remains recommended as defense-in-depth; the token is the enforced control.
+WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` AND `SWITCHBOARD_TOKEN` set - the server refuses to start non-loopback without a token (fail-closed), and every non-loopback client must send `Authorization: Bearer <token>` on all routes except `/healthz` (loopback callers are exempt). The firewall inbound rule for TCP 9876 from the WSL subnet remains recommended as defense-in-depth; the token is the enforced control.
 
 ### Antigravity CLI (agy)
 
@@ -272,6 +251,6 @@ All unit tests are offline; no credentials required.
 
 ## Project layout
 
-See [`CLAUDE.md`](CLAUDE.md) for the agent-oriented project tour, or design spec §11 for the canonical tree.
+See [`CLAUDE.md`](CLAUDE.md) for the agent-oriented project tour and the canonical layout tree.
 
-The repo is a monorepo of components: `server/` (the Python MCP), `android/` (the Android + Wear client), and `watchtower/` (the Windows client — Switchboard Watchtower, a .NET 9 taskbar widget).
+The repo is a monorepo of components: `server/` (the Python MCP gateway), `android/` (the Android + Wear client), `dashboard/` (Switchboard Operator, the zero-build Preact web cockpit served at `/dashboard`), and `watchtower/` (the Windows client — Switchboard Watchtower, a .NET 9 taskbar widget).

@@ -1,0 +1,232 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 960" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+	<defs>
+		<marker id="arrBrass" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+			<path d="M0,0 L10,5 L0,10 z" fill="#c9a557"/>
+		</marker>
+		<marker id="arrJade" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+			<path d="M0,0 L10,5 L0,10 z" fill="#5fa87a"/>
+		</marker>
+		<marker id="arrCoral" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+			<path d="M0,0 L10,5 L0,10 z" fill="#e07856"/>
+		</marker>
+		<marker id="arrGray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+			<path d="M0,0 L10,5 L0,10 z" fill="#7d8fa3"/>
+		</marker>
+	</defs>
+
+	<rect x="0" y="0" width="1440" height="960" fill="#12181f"/>
+
+	<text x="24" y="42" font-size="24" font-weight="600" fill="#e8eef4">Switchboard — system architecture</text>
+	<text x="24" y="64" font-size="13" fill="#8fa1b3">one Python process · one Firebase hub · four human surfaces</text>
+
+	<!-- ================= WORKSTATION ZONE ================= -->
+	<rect x="24" y="78" width="836" height="854" rx="10" fill="#171f28" stroke="#2b3947" stroke-width="1.5"/>
+	<text x="44" y="106" font-size="15" font-weight="700" letter-spacing="1.5" fill="#7d8fa3">WINDOWS WORKSTATION (LOCAL)</text>
+
+	<!-- Agents row -->
+	<g>
+		<rect x="48" y="122" width="248" height="96" rx="7" fill="#1e2833" stroke="#c9a557" stroke-width="1.2"/>
+		<text x="60" y="146" font-size="15" font-weight="600" fill="#e8eef4">Claude Code (Windows)</text>
+		<text x="60" y="168" font-size="12" fill="#9fb0c0">switchboard plugin: skill +</text>
+		<text x="60" y="184" font-size="12" fill="#9fb0c0">6 hook events · loopback :9876</text>
+
+		<rect x="312" y="122" width="248" height="96" rx="7" fill="#1e2833" stroke="#c9a557" stroke-width="1.2"/>
+		<text x="324" y="146" font-size="15" font-weight="600" fill="#e8eef4">Claude Code (WSL)</text>
+		<text x="324" y="168" font-size="12" fill="#9fb0c0">same plugin · bridge network</text>
+		<text x="324" y="184" font-size="12" fill="#9fb0c0">Bearer SWITCHBOARD_TOKEN</text>
+
+		<rect x="576" y="122" width="248" height="96" rx="7" fill="#1e2833" stroke="#c9a557" stroke-width="1.2"/>
+		<text x="588" y="146" font-size="15" font-weight="600" fill="#e8eef4">Antigravity (agy)</text>
+		<text x="588" y="168" font-size="12" fill="#9fb0c0">agy plugin: 4 hook events</text>
+		<text x="588" y="184" font-size="12" fill="#9fb0c0">passes cli_session_id + cwd itself</text>
+	</g>
+
+	<!-- Agents -> server arrows -->
+	<line x1="172" y1="218" x2="172" y2="294" stroke="#c9a557" stroke-width="1.8" marker-end="url(#arrBrass)"/>
+	<line x1="436" y1="218" x2="436" y2="294" stroke="#c9a557" stroke-width="1.8" marker-end="url(#arrBrass)"/>
+	<line x1="700" y1="218" x2="700" y2="294" stroke="#c9a557" stroke-width="1.8" marker-end="url(#arrBrass)"/>
+	<text x="452" y="242" font-size="12" fill="#c9a557">MCP — streamable HTTP (stateful)</text>
+	<text x="452" y="258" font-size="11.5" fill="#8fa1b3">+ lifecycle hooks: HTTP callbacks · SessionEnd marker file (Claude)</text>
+
+	<!-- Server box -->
+	<rect x="48" y="296" width="776" height="272" rx="8" fill="#1e2833" stroke="#3b4c5e" stroke-width="1.5"/>
+	<text x="66" y="322" font-size="17" font-weight="700" fill="#e8eef4">Switchboard server</text>
+	<text x="808" y="322" font-size="12" fill="#8fa1b3" text-anchor="end">Python asyncio · FastMCP + Starlette · NSSM service (LocalSystem)</text>
+
+	<g font-size="11.5" fill="#9fb0c0">
+		<rect x="66" y="336" width="238" height="62" rx="5" fill="#243140" stroke="#33465a" stroke-width="1"/>
+		<text x="76" y="355" font-size="12.5" font-weight="600" fill="#d8e0e8">TokenAuthMiddleware</text>
+		<text x="76" y="372">Bearer gate off-loopback</text>
+		<text x="76" y="387">/healthz exempt</text>
+
+		<rect x="318" y="336" width="238" height="62" rx="5" fill="#243140" stroke="#33465a" stroke-width="1"/>
+		<text x="328" y="355" font-size="12.5" font-weight="600" fill="#d8e0e8">MCP gateway</text>
+		<text x="328" y="372">10 tools · JSON status envelopes</text>
+		<text x="328" y="387">rate limiter per conversation</text>
+
+		<rect x="570" y="336" width="238" height="62" rx="5" fill="#243140" stroke="#33465a" stroke-width="1"/>
+		<text x="580" y="355" font-size="12.5" font-weight="600" fill="#d8e0e8">Registry + SessionRegistry</text>
+		<text x="580" y="372">in-memory conversations,</text>
+		<text x="580" y="387">members, waits, session roster</text>
+
+		<rect x="66" y="412" width="238" height="62" rx="5" fill="#243140" stroke="#33465a" stroke-width="1"/>
+		<text x="76" y="431" font-size="12.5" font-weight="600" fill="#d8e0e8">Dispatch loops</text>
+		<text x="76" y="448">command queues · retention +</text>
+		<text x="76" y="463">session sweeps · marker sweep</text>
+
+		<rect x="318" y="412" width="238" height="62" rx="5" fill="#243140" stroke="#33465a" stroke-width="1"/>
+		<text x="328" y="431" font-size="12.5" font-weight="600" fill="#d8e0e8">SpawnHandler</text>
+		<text x="328" y="448">fresh · resume · resume_session</text>
+		<text x="328" y="463">· combine_resume</text>
+
+		<rect x="570" y="412" width="238" height="62" rx="5" fill="#243140" stroke="#33465a" stroke-width="1"/>
+		<text x="580" y="431" font-size="12.5" font-weight="600" fill="#d8e0e8">Hydration</text>
+		<text x="580" y="448">conversations + parked pendings</text>
+		<text x="580" y="463">survive restart</text>
+	</g>
+
+	<rect x="66" y="488" width="742" height="60" rx="5" fill="#1a232d" stroke="#33465a" stroke-width="1"/>
+	<text x="76" y="509" font-size="12" font-weight="600" fill="#d8e0e8">HTTP surface</text>
+	<text x="76" y="527" font-size="11.5" fill="#9fb0c0">/mcp · /dashboard · /stats · /healthz · /agent_status · /session_start · /away-mode</text>
+	<text x="76" y="542" font-size="11.5" fill="#9fb0c0">· /sessions · /widget-snapshot · /widget-status · /document</text>
+
+	<!-- Local control lane: Operator/Watchtower HTTP + spawn -->
+	<line x1="232" y1="640" x2="232" y2="570" stroke="#7d8fa3" stroke-width="1.5" marker-end="url(#arrGray)"/>
+	<text x="150" y="602" font-size="11.5" fill="#7d8fa3">/healthz poll ·</text>
+	<text x="150" y="617" font-size="11.5" fill="#7d8fa3">/widget-status</text>
+
+	<line x1="436" y1="640" x2="436" y2="570" stroke="#7d8fa3" stroke-width="1.5" marker-end="url(#arrGray)"/>
+	<text x="448" y="602" font-size="11.5" fill="#7d8fa3">GET /stats ·</text>
+	<text x="448" y="617" font-size="11.5" fill="#7d8fa3">POST /widget-snapshot</text>
+
+	<line x1="700" y1="570" x2="700" y2="638" stroke="#7d8fa3" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrGray)"/>
+	<text x="712" y="602" font-size="11.5" fill="#7d8fa3">schtasks /run</text>
+
+	<!-- Bottom row: Operator, Watchtower, Spawn chain -->
+	<g>
+		<rect x="48" y="642" width="248" height="150" rx="7" fill="#1e2833" stroke="#5fa87a" stroke-width="1.2"/>
+		<text x="60" y="666" font-size="15" font-weight="600" fill="#e8eef4">Operator — web cockpit</text>
+		<text x="60" y="688" font-size="12" fill="#9fb0c0">Preact + htm, zero-build</text>
+		<text x="60" y="704" font-size="12" fill="#9fb0c0">served by the server at /dashboard</text>
+		<text x="60" y="720" font-size="12" fill="#9fb0c0">talks to RTDB directly</text>
+		<text x="60" y="736" font-size="12" fill="#9fb0c0">(Firebase Web SDK · Google auth)</text>
+
+		<rect x="312" y="642" width="248" height="150" rx="7" fill="#1e2833" stroke="#3b4c5e" stroke-width="1.2"/>
+		<text x="324" y="666" font-size="15" font-weight="600" fill="#e8eef4">Watchtower — taskbar widget</text>
+		<text x="324" y="688" font-size="12" fill="#9fb0c0">.NET 9 WinForms</text>
+		<text x="324" y="704" font-size="12" fill="#9fb0c0">server HTTP only — no Firebase</text>
+		<text x="324" y="720" font-size="12" fill="#9fb0c0">scans local session transcripts;</text>
+		<text x="324" y="736" font-size="12" fill="#9fb0c0">polls agy quota (loopback RPC)</text>
+
+		<rect x="576" y="642" width="248" height="150" rx="7" fill="#1e2833" stroke="#3b4c5e" stroke-width="1.2" stroke-dasharray="7 4"/>
+		<text x="588" y="666" font-size="15" font-weight="600" fill="#e8eef4">SwitchboardSpawn task</text>
+		<text x="588" y="688" font-size="12" fill="#9fb0c0">scheduled task (interactive logon)</text>
+		<text x="588" y="704" font-size="12" fill="#9fb0c0">→ Windows Terminal tab</text>
+		<text x="588" y="720" font-size="12" fill="#9fb0c0">→ launches claude / agy</text>
+		<text x="588" y="736" font-size="12" fill="#9fb0c0">on Windows or WSL</text>
+		<text x="588" y="766" font-size="11.5" font-style="italic" fill="#7d8fa3">new session joins the agents row ↑</text>
+	</g>
+
+	<!-- Operator -> RTDB direct (dashed jade): top-left exit, upper lane, up the gutter -->
+	<path d="M100,642 V590 H868 V240 H886" fill="none" stroke="#5fa87a" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arrJade)"/>
+	<text x="250" y="584" font-size="11.5" fill="#5fa87a">Operator ↔ RTDB direct</text>
+
+	<!-- Footnote inside workstation -->
+	<text x="48" y="856" font-size="12" fill="#7d8fa3">All non-loopback HTTP requires Authorization: Bearer &lt;SWITCHBOARD_TOKEN&gt;; loopback peers and /healthz are exempt.</text>
+	<text x="48" y="876" font-size="12" fill="#7d8fa3">The server is the only writer of authoritative state; phone and Operator write commands + answers that the server's dispatch loops consume.</text>
+
+	<!-- ================= FIREBASE ZONE ================= -->
+	<rect x="884" y="78" width="266" height="558" rx="10" fill="#171f28" stroke="#2b3947" stroke-width="1.5"/>
+	<text x="900" y="106" font-size="15" font-weight="700" letter-spacing="1.5" fill="#7d8fa3">FIREBASE (CLOUD)</text>
+
+	<rect x="900" y="122" width="234" height="240" rx="7" fill="#1e2833" stroke="#5fa87a" stroke-width="1.2"/>
+	<text x="912" y="146" font-size="15" font-weight="600" fill="#e8eef4">Realtime Database</text>
+	<g font-size="11.5" fill="#9fb0c0">
+		<text x="912" y="168">conversations/ · messages/</text>
+		<text x="912" y="184">answers/ · sessions/</text>
+		<text x="912" y="200">session_acks/ · widget/*</text>
+		<text x="912" y="216">global_settings/ (away_mode)</text>
+		<text x="912" y="232">command queues: spawn ·</text>
+		<text x="912" y="248">convene · combine · force-end</text>
+		<text x="912" y="264">· away-mode</text>
+		<text x="912" y="280">admin_notifications/</text>
+		<text x="912" y="304" fill="#7d8fa3">single-owner UID rules;</text>
+		<text x="912" y="320" fill="#7d8fa3">72h retention sweep (ended)</text>
+	</g>
+
+	<rect x="900" y="386" width="234" height="88" rx="7" fill="#1e2833" stroke="#5fa87a" stroke-width="1.2"/>
+	<text x="912" y="410" font-size="15" font-weight="600" fill="#e8eef4">Storage</text>
+	<text x="912" y="432" font-size="11.5" fill="#9fb0c0">document blobs (send_document)</text>
+	<text x="912" y="448" font-size="11.5" fill="#9fb0c0">pruned with their conversation</text>
+
+	<rect x="900" y="498" width="234" height="88" rx="7" fill="#1e2833" stroke="#e07856" stroke-width="1.2"/>
+	<text x="912" y="522" font-size="15" font-weight="600" fill="#e8eef4">Cloud Messaging (FCM)</text>
+	<text x="912" y="544" font-size="11.5" fill="#9fb0c0">channels: Questions · Updates ·</text>
+	<text x="912" y="560" font-size="11.5" fill="#9fb0c0">Documents · at-desk gated</text>
+
+	<!-- Server <-> Firebase links -->
+	<line x1="826" y1="340" x2="898" y2="340" stroke="#5fa87a" stroke-width="1.8" marker-start="url(#arrJade)" marker-end="url(#arrJade)"/>
+	<text x="830" y="330" font-size="10.5" fill="#5fa87a" text-anchor="start">Admin SDK</text>
+
+	<path d="M826,430 H862 V430 H898" fill="none" stroke="#5fa87a" stroke-width="1.6" marker-end="url(#arrJade)"/>
+	<text x="830" y="422" font-size="10.5" fill="#5fa87a">upload</text>
+
+	<path d="M826,470 H872 V542 H898" fill="none" stroke="#e07856" stroke-width="1.6" marker-end="url(#arrCoral)"/>
+	<text x="830" y="462" font-size="10.5" fill="#e07856">push</text>
+
+	<!-- ================= DEVICES ZONE ================= -->
+	<rect x="1174" y="78" width="242" height="558" rx="10" fill="#171f28" stroke="#2b3947" stroke-width="1.5"/>
+	<text x="1190" y="106" font-size="15" font-weight="700" letter-spacing="1.5" fill="#7d8fa3">PHONE + WATCH</text>
+
+	<rect x="1190" y="122" width="210" height="330" rx="7" fill="#1e2833" stroke="#e07856" stroke-width="1.2"/>
+	<text x="1202" y="146" font-size="15" font-weight="600" fill="#e8eef4">Android app</text>
+	<g font-size="11.5" fill="#9fb0c0">
+		<text x="1202" y="168">Kotlin / Jetpack Compose</text>
+		<text x="1202" y="190">conversation board + chat</text>
+		<text x="1202" y="206">reply input + quick replies</text>
+		<text x="1202" y="222">sessions board + convene</text>
+		<text x="1202" y="238">spawn / resume / combine</text>
+		<text x="1202" y="254">away pill · status indicators</text>
+		<text x="1202" y="276" fill="#7d8fa3">writes commands + answers;</text>
+		<text x="1202" y="292" fill="#7d8fa3">server dispatches them</text>
+	</g>
+
+	<rect x="1190" y="482" width="210" height="120" rx="7" fill="#1e2833" stroke="#3b4c5e" stroke-width="1.2"/>
+	<text x="1202" y="506" font-size="15" font-weight="600" fill="#e8eef4">Wear OS companion</text>
+	<text x="1202" y="528" font-size="11.5" fill="#9fb0c0">own Compose UI; consumes the</text>
+	<text x="1202" y="544" font-size="11.5" fill="#9fb0c0">shared MainViewModel module</text>
+	<text x="1202" y="560" font-size="11.5" fill="#9fb0c0">(same RTDB listeners)</text>
+
+	<line x1="1295" y1="452" x2="1295" y2="480" stroke="#3b4c5e" stroke-width="1.6"/>
+
+	<!-- Firebase <-> devices links -->
+	<line x1="1136" y1="240" x2="1188" y2="240" stroke="#5fa87a" stroke-width="1.8" marker-start="url(#arrJade)" marker-end="url(#arrJade)"/>
+	<text x="1138" y="230" font-size="10.5" fill="#5fa87a">sync</text>
+
+	<path d="M1136,430 H1160 V360 H1188" fill="none" stroke="#5fa87a" stroke-width="1.6" marker-end="url(#arrJade)"/>
+	<text x="1138" y="422" font-size="10.5" fill="#5fa87a">fetch</text>
+
+	<path d="M1136,542 H1170 V400 H1188" fill="none" stroke="#e07856" stroke-width="1.6" marker-end="url(#arrCoral)"/>
+	<text x="1138" y="534" font-size="10.5" fill="#e07856">push</text>
+
+	<!-- ================= LEGEND ================= -->
+	<rect x="884" y="660" width="532" height="272" rx="10" fill="#171f28" stroke="#2b3947" stroke-width="1.5"/>
+	<text x="900" y="688" font-size="15" font-weight="700" letter-spacing="1.5" fill="#7d8fa3">LEGEND</text>
+	<g font-size="12.5" fill="#c6d2dd">
+		<line x1="904" y1="712" x2="948" y2="712" stroke="#c9a557" stroke-width="2"/>
+		<text x="960" y="716">agents ↔ server: MCP tools + lifecycle hooks</text>
+		<line x1="904" y1="740" x2="948" y2="740" stroke="#5fa87a" stroke-width="2"/>
+		<text x="960" y="744">state sync: Firebase RTDB / Storage</text>
+		<line x1="904" y1="768" x2="948" y2="768" stroke="#e07856" stroke-width="2"/>
+		<text x="960" y="772">push notifications: FCM</text>
+		<line x1="904" y1="796" x2="948" y2="796" stroke="#7d8fa3" stroke-width="2"/>
+		<text x="960" y="800">local HTTP: Operator + Watchtower feeds</text>
+		<line x1="904" y1="824" x2="948" y2="824" stroke="#7d8fa3" stroke-width="2" stroke-dasharray="6 4"/>
+		<text x="960" y="828">control: spawn chain (dashed = launches a process)</text>
+	</g>
+	<g font-size="11.5" fill="#7d8fa3">
+		<text x="900" y="864">Identity: cli_session_id routes everything; cwd is display-only.</text>
+		<text x="900" y="882">Conversations persist in RTDB and rehydrate on restart;</text>
+		<text x="900" y="900">in-flight waits die with the process, parked questions survive.</text>
+	</g>
+</svg>

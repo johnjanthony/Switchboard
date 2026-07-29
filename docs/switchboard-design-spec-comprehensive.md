@@ -8,32 +8,7 @@ This doc is the single design reference for the running system. Implementation f
 
 ## 1. Architecture
 
-```text
-Local host (Windows)                              │ Cloud / Mobile
-                                                  │
-[Claude Code (Win)] ──┐                           │
-[Claude Code (WSL)] ──┤                           │
-[Antigravity (agy)] ──┤                           │
-                      ▼                           │
-            ┌───────────────────────┐             │   ┌─────────────────┐
-            │  Switchboard server   │ ◄───────────┼──►│  Firebase RTDB  │
-            │  (Python, FastMCP,    │             │   └────────┬────────┘
-            │   Starlette HTTP)     │             │            │
-            └─────┬───────────┬─────┘             │            ▼
-                  │           │                   │   ┌─────────────────┐
-                  │           ▼                   │   │  Android app    │
-                  │   ┌──────────────┐            │   │  + Wear app     │
-                  │   │ NSSM service │            │   │  (Kotlin/Compose│
-                  │   │ wrapper      │            │   │   + FCM)        │
-                  │   └──────────────┘            │   └─────────────────┘
-                  ▼
-            ┌──────────────────────┐
-            │ SwitchboardSpawn     │
-            │ scheduled task →     │
-            │ Windows Terminal     │
-            │ → claude/agy Win/WSL │
-            └──────────────────────┘
-```
+![Switchboard system architecture: agents speak MCP to the local Python server; state syncs through Firebase RTDB, Storage, and FCM; Android + Wear, Operator, and Watchtower are the human surfaces](media/switchboard-architecture.svg)
 
 **Components.**
 
@@ -277,7 +252,7 @@ Six Python hook scripts, wired across six hook events as nine handler entries in
 
 `scripts/_hook_common.py` centralizes `read_stdin_json()`, `SWITCHBOARD_BASE_URL` (default `http://127.0.0.1:9876`), and `SWITCHBOARD_TOKEN` (sent as `Authorization: Bearer <token>`) for five of the six hooks.
 
-**Antigravity (agy) hooks.** Wired outside this plugin — via the chezmoi-managed `~/.gemini/config/hooks.json`, not `hooks/hooks.json` — with no repo-side installer. Four hook events across two scripts: `PreInvocation`, `PreToolUse`, and `PostToolUse` (`scripts/agy-identity-hook.py`), plus `Stop` (`scripts/turn-end-hook-away-mode.py --cli antigravity`, which posts its own idle status directly because agy's merge semantics for multiple `Stop` handlers are unverified). There is no agy equivalent of `SessionStart`/`SessionEnd`: birth self-heals from the first hook POST or MCP call, and death is caught only by the silence sweep (§14, §15.1), with no marker-file path. Because agy hooks cannot rewrite tool arguments (no `updatedInput` equivalent), identity is *taught* (`PreInvocation` ephemeral message) and *enforced* (`PreToolUse` denies a call whose `cli_session_id` doesn't match the caller's own) rather than injected — see §3 for the routing mechanics this replaces. Every agy status POST carries `cli: "antigravity"`, which is what lets spawn (§9) later pick the `agy` launch branch. The `AskUserQuestion` guard has no agy analog — that hole, and its fix, are Claude-specific.
+**Antigravity (agy) hooks.** Wired outside the Claude plugin: the repo doubles as a native Antigravity plugin, and `agy plugin install <repo>` consumes the repo-root `hooks.json` manifest (alongside the root `mcp_config.json` and `skills/`) — distinct from the Claude plugin's `hooks/hooks.json`. Machines wired before the plugin restructure may still carry the equivalent chezmoi-managed `~/.gemini/config/hooks.json`; the hook set is identical either way. Four hook events across two scripts: `PreInvocation`, `PreToolUse`, and `PostToolUse` (`scripts/agy-identity-hook.py`), plus `Stop` (`scripts/turn-end-hook-away-mode.py --cli antigravity`, which posts its own idle status directly because agy's merge semantics for multiple `Stop` handlers are unverified). There is no agy equivalent of `SessionStart`/`SessionEnd`: birth self-heals from the first hook POST or MCP call, and death is caught only by the silence sweep (§14, §15.1), with no marker-file path. Because agy hooks cannot rewrite tool arguments (no `updatedInput` equivalent), identity is *taught* (`PreInvocation` ephemeral message) and *enforced* (`PreToolUse` denies a call whose `cli_session_id` doesn't match the caller's own) rather than injected — see §3 for the routing mechanics this replaces. Every agy status POST carries `cli: "antigravity"`, which is what lets spawn (§9) later pick the `agy` launch branch. The `AskUserQuestion` guard has no agy analog — that hole, and its fix, are Claude-specific.
 
 ---
 
