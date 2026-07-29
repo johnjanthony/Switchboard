@@ -458,7 +458,7 @@ class FirebaseBackend(
 
 	async def _upload_file(self, local_path: Path) -> tuple[str, str]:
 		if not self._storage_bucket:
-			raise ValueError("Firebase Storage not configured (missing SWITCHBOARD_FIREBASE_STORAGE_BUCKET)")
+			raise ValueError("Firebase Storage not configured (missing FIREBASE_STORAGE_BUCKET)")
 
 		def _do_upload():
 			bucket = storage.bucket(self._storage_bucket)
