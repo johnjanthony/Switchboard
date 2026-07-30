@@ -22,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = REPO_ROOT / os.environ.get("GRAPHIFY_OUT", "graphify-out")
 SRC_GRAPH = OUT_DIR / "graph.json"
 DST_GRAPH = OUT_DIR / "graph-src.json"
+VERDICTS_FILE = REPO_ROOT / ".graphify-verdicts.json"
 
 
 def is_test_path(source_file):
@@ -56,6 +57,11 @@ def main():
 
 	kept_nodes, kept_links, kept_hyper, junked = vpl.drop_junk_nodes(kept_nodes, kept_links, kept_hyper)
 	kept_nodes, kept_links, kept_hyper, merged = vpl.merge_bare_duplicates(kept_nodes, kept_links, kept_hyper)
+	verdicts = vpl.load_verdicts(VERDICTS_FILE)
+	kept_links, vstats = vpl.apply_verdicts(kept_links, verdicts)
+	for rec in vstats["stale"]:
+		print(f"graph-src-view: STALE verdict (no matching edge): "
+			f"{rec['source']} -{rec['relation']}-> {rec['target']} ({rec['note']})")
 	membership = vpl.recompute_communities(kept_nodes, kept_links)
 	names = vpl.name_communities(kept_nodes, kept_links, membership)
 	for n in kept_nodes:
@@ -81,7 +87,9 @@ def main():
 	DST_GRAPH.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
 	print(f"graph-src-view: {len(nodes)} -> {len(kept_nodes)} nodes ({len(nodes) - len(kept_nodes)} stripped: "
 		f"tests + {junked} junk + {merged} merged duplicates), {len(links)} -> {len(kept_links)} edges, "
-		f"{isolated} now-isolated production nodes kept, {len(names)} communities named")
+		f"{isolated} now-isolated production nodes kept, {len(names)} communities named"
+		f", verdicts: {vstats['confirmed']} confirmed, {vstats['rejected']} rejected, "
+		f"{len(vstats['stale'])} stale, {vstats['unverdicted']} unverdicted-shaky")
 	return 0
 
 

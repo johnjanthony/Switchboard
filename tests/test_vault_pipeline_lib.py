@@ -1,6 +1,7 @@
 """Tests for scripts/vault_pipeline_lib.py (imported via sys.path: the entry
 scripts are hyphen-named, the lib is the importable home for pipeline logic)."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -370,3 +371,236 @@ def test_enrich_vault_suppresses_bodyless_excerpt(tmp_path):
 		'## Excerpt\n\nSource: `docs/spec.md`\n\n## Connections\n- [[X]]\n', encoding="utf-8")
 	vpl.enrich_vault(vault, repo)
 	assert "## Excerpt" not in note.read_text(encoding="utf-8")
+
+
+def test_enrich_vault_resolves_section_location(tmp_path):
+	repo = tmp_path / "repo"
+	vault = tmp_path / "vault"
+	(repo / "docs").mkdir(parents=True)
+	vault.mkdir()
+	(repo / "docs" / "spec.md").write_text(
+		"# Spec\n\n## 3. MCP tools exposed\n\nask_human blocks until reply.\n\n## 4. Routes\n\nbody\n",
+		encoding="utf-8")
+	(vault / "ask_human Tool.md").write_text(
+		'---\nsource_file: "docs/spec.md"\ntype: "concept"\nlocation: "SS3"\ncommunity: "1"\n---\n'
+		"# ask_human Tool\n\n## Connections\n\n- [[other]]\n",
+		encoding="utf-8")
+	enriched, skipped = vpl.enrich_vault(vault, repo)
+	assert enriched == 1
+	note = (vault / "ask_human Tool.md").read_text(encoding="utf-8")
+	assert "## Excerpt" in note
+	assert "Source: `docs/spec.md:3`" in note
+	assert "> ask_human blocks until reply." in note
+
+
+def test_enrich_vault_absent_location_stays_suppressed(tmp_path):
+	repo = tmp_path / "repo"
+	vault = tmp_path / "vault"
+	(repo / "docs").mkdir(parents=True)
+	vault.mkdir()
+	(repo / "docs" / "spec.md").write_text("# Spec\n\nbody\n", encoding="utf-8")
+	(vault / "Concept.md").write_text(
+		'---\nsource_file: "docs/spec.md"\ntype: "concept"\ncommunity: "1"\n---\n'
+		"# Concept\n\n## Connections\n",
+		encoding="utf-8")
+	enriched, skipped = vpl.enrich_vault(vault, repo)
+	assert enriched == 0 and skipped == 1
+	assert "## Excerpt" not in (vault / "Concept.md").read_text(encoding="utf-8")
+
+
+def _shaky(source, target, relation, confidence="INFERRED"):
+	return {"source": source, "target": target, "relation": relation,
+		"confidence": confidence, "confidence_score": 0.5}
+
+
+def _verdict(source, target, relation, verdict, note="checked against source"):
+	return {"source": source, "target": target, "relation": relation,
+		"verdict": verdict, "date": "2026-07-29", "note": note}
+
+
+def test_apply_verdicts_rejected_drops_edge():
+	links = [_shaky("a", "b", "calls"), _shaky("c", "d", "uses")]
+	kept, stats = vpl.apply_verdicts(links, [_verdict("a", "b", "calls", "rejected")])
+	assert [(e["source"], e["target"]) for e in kept] == [("c", "d")]
+	assert stats["rejected"] == 1 and stats["confirmed"] == 0
+	assert stats["stale"] == [] and stats["unverdicted"] == 1
+
+
+def test_apply_verdicts_confirmed_flips_confidence_with_provenance():
+	links = [_shaky("a", "b", "calls", confidence="AMBIGUOUS")]
+	kept, stats = vpl.apply_verdicts(links, [_verdict("a", "b", "calls", "confirmed")])
+	e = kept[0]
+	assert e["confidence"] == "EXTRACTED"
+	assert e["confidence_score"] == 1.0
+	assert e["original_confidence"] == "AMBIGUOUS"
+	assert e["verified"] == "2026-07-29"
+	assert stats["confirmed"] == 1 and stats["unverdicted"] == 0
+
+
+def test_apply_verdicts_stale_verdict_reported_and_edges_untouched():
+	links = [_shaky("a", "b", "calls")]
+	v = _verdict("x", "y", "calls", "rejected")
+	kept, stats = vpl.apply_verdicts(links, [v])
+	assert len(kept) == 1 and kept[0]["confidence"] == "INFERRED"
+	assert stats["stale"] == [v]
+
+
+def test_apply_verdicts_matches_full_triple_only():
+	links = [_shaky("a", "b", "calls"), _shaky("a", "b", "references")]
+	kept, stats = vpl.apply_verdicts(links, [_verdict("a", "b", "calls", "rejected")])
+	assert [(e["relation"]) for e in kept] == ["references"]
+
+
+def test_apply_verdicts_multi_match_applies_to_all():
+	links = [_shaky("a", "b", "calls"), _shaky("a", "b", "calls")]
+	kept, stats = vpl.apply_verdicts(links, [_verdict("a", "b", "calls", "confirmed")])
+	assert all(e["confidence"] == "EXTRACTED" for e in kept)
+	assert stats["confirmed"] == 1
+
+
+def test_apply_verdicts_ignores_solid_edges_in_unverdicted_count():
+	links = [_shaky("a", "b", "calls", confidence="EXTRACTED"), _shaky("c", "d", "uses")]
+	kept, stats = vpl.apply_verdicts(links, [])
+	assert stats["unverdicted"] == 1
+
+
+def test_load_verdicts_missing_file_is_noop(tmp_path):
+	assert vpl.load_verdicts(tmp_path / "absent.json") == []
+
+
+def test_load_verdicts_valid_file_roundtrips(tmp_path):
+	p = tmp_path / "v.json"
+	rec = _verdict("a", "b", "calls", "confirmed")
+	p.write_text(json.dumps([rec]), encoding="utf-8")
+	assert vpl.load_verdicts(p) == [rec]
+
+
+def test_load_verdicts_malformed_fails_loudly(tmp_path):
+	p = tmp_path / "v.json"
+	p.write_text("{not json", encoding="utf-8")
+	with pytest.raises(ValueError):
+		vpl.load_verdicts(p)
+
+
+def test_load_verdicts_rejects_bad_records(tmp_path):
+	p = tmp_path / "v.json"
+	for bad in (
+		[{"source": "a", "target": "b", "relation": "calls", "verdict": "maybe", "date": "d", "note": "n"}],
+		[{"source": "a", "target": "b", "relation": "calls", "verdict": "confirmed", "date": "d", "note": ""}],
+		[{"target": "b", "relation": "calls", "verdict": "confirmed", "date": "d", "note": "n"}],
+		{"source": "a"},
+	):
+		p.write_text(json.dumps(bad), encoding="utf-8")
+		with pytest.raises(ValueError):
+			vpl.load_verdicts(p)
+
+
+def test_load_verdicts_rejects_duplicate_triples(tmp_path):
+	p = tmp_path / "v.json"
+	recs = [_verdict("a", "b", "calls", "confirmed"), _verdict("a", "b", "calls", "rejected")]
+	p.write_text(json.dumps(recs), encoding="utf-8")
+	with pytest.raises(ValueError, match="duplicate"):
+		vpl.load_verdicts(p)
+
+
+def test_apply_verdicts_before_communities_changes_membership():
+	# Two 3-cliques joined by all nine cross pairs form a near-complete 6-node
+	# graph that Louvain merges into ONE community. Rejecting all nine cross
+	# edges must split it back into two, so the test asserts both directions:
+	# a single leftover bridge does not discriminate (Louvain still splits two
+	# dense triangles joined by one edge), but nine do.
+	nodes = [{"id": x} for x in "abcdef"]
+	intra = [_shaky(a, b, "calls", confidence="EXTRACTED") for a, b in
+		[("a", "b"), ("b", "c"), ("a", "c"), ("d", "e"), ("e", "f"), ("d", "f")]]
+	cross_pairs = [(x, y) for x in "abc" for y in "def"]
+	cross = [_shaky(s, t, "calls", confidence="EXTRACTED") for s, t in cross_pairs]
+	links = intra + cross
+
+	membership_with_bridges = vpl.recompute_communities(nodes, links)
+	assert membership_with_bridges["a"] == membership_with_bridges["d"]
+
+	verdicts = [_verdict(s, t, "calls", "rejected") for s, t in cross_pairs]
+	kept, stats = vpl.apply_verdicts(links, verdicts)
+	assert len(kept) == 6
+	assert stats["rejected"] == 9
+
+	membership_after_reject = vpl.recompute_communities(nodes, kept)
+	assert membership_after_reject["a"] != membership_after_reject["d"]
+
+
+FENCED_DOC = "\n".join([
+	"# Title", "",
+	"## 1. Scope", "body", "",
+	"```" + "text", "## 2. not a heading", "```", "",
+	"## 2. High-level architecture", "arch body", "",
+	"### 6.1 Web UI", "web body", "",
+	"### 6.2 ntfy", "ntfy body", "",
+	"## Architecture", "plain heading body",
+])
+
+
+def test_markdown_headings_skips_fenced_blocks():
+	heads = vpl.markdown_headings(FENCED_DOC)
+	texts = [t for _, _, t in heads]
+	assert "2. not a heading" not in texts
+	assert ("1. Scope" in texts) and ("6.2 ntfy" in texts)
+
+
+def test_resolve_ss_id_matches_numbered_heading():
+	heads = vpl.markdown_headings(FENCED_DOC)
+	line = vpl.resolve_section_location("SS6.2", heads)
+	assert FENCED_DOC.splitlines()[line - 1] == "### 6.2 ntfy"
+
+
+def test_resolve_ss_id_does_not_match_deeper_number():
+	heads = vpl.markdown_headings(FENCED_DOC)
+	# SS6 must not land on 6.1/6.2 when no plain "6" heading exists.
+	assert vpl.resolve_section_location("SS6", heads) is None
+
+
+def test_resolve_section_n_matches_dot_form():
+	heads = vpl.markdown_headings(FENCED_DOC)
+	line = vpl.resolve_section_location("section 2", heads)
+	assert FENCED_DOC.splitlines()[line - 1] == "## 2. High-level architecture"
+
+
+def test_resolve_heading_text_unique_case_insensitive():
+	heads = vpl.markdown_headings(FENCED_DOC)
+	line = vpl.resolve_section_location("architecture", heads)
+	assert FENCED_DOC.splitlines()[line - 1] == "## Architecture"
+
+
+def test_resolve_heading_text_ambiguous_returns_none():
+	doc = "## Setup\n\n## Setup\n"
+	heads = vpl.markdown_headings(doc)
+	assert vpl.resolve_section_location("Setup", heads) is None
+
+
+def test_resolve_junk_locations_return_none():
+	heads = vpl.markdown_headings(FENCED_DOC)
+	for junk in ("docs/foo.md", "a.md, b.md", "", None, "L12x"):
+		assert vpl.resolve_section_location(junk, heads) is None
+
+
+FENCE_LENGTH_DOC = "\n".join([
+	"````text", "## inside", "```", "````", "", "## after",
+])
+
+
+FENCE_TYPE_DOC = "\n".join([
+	"```text", "## inside", "~~~", "```", "", "## after",
+])
+
+
+def test_markdown_headings_fence_length_rule():
+	heads = vpl.markdown_headings(FENCE_LENGTH_DOC)
+	texts = [t for _, _, t in heads]
+	assert "inside" not in texts
+	assert "after" in texts
+
+
+def test_markdown_headings_fence_type_mismatch():
+	heads = vpl.markdown_headings(FENCE_TYPE_DOC)
+	texts = [t for _, _, t in heads]
+	assert "inside" not in texts
+	assert "after" in texts

@@ -1,0 +1,1666 @@
+[
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_mainactivity_switchboardnavhost",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_conversationlistscreen_conversationlistscreen",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "MainActivity.kt: SwitchboardNavHost starts L122, its NavHost composable(\"list\") block calls ConversationListScreen(...) at L210."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_combinedialog_combinedialog",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_relativetime_formatrelativetime",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "CombineDialog.kt L90: val t = formatRelativeTime(conv.lastActivityAt) building the subtitle string; no import needed, same ui package as RelativeTime.kt."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_combinedialog_combinedialog",
+		"target": "button",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "CombineDialog.kt L48: Button(onClick = { onCombine(selectedTargetId!!) }) { Text(\"Combine\") } inside the confirm-step AlertDialog."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_convenetargetsheet_convenetargetsheet",
+		"target": "button",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "ConveneTargetSheet.kt L83: Button(onClick = {...onConvene(target, trimmed)}) { Text(\"Convene\") }."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_conversationlistscreen_conversationlistscreen",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_mainactivity_awaymodepillchip",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "ConversationListScreen.kt L116: AwayModePillChip(active = globalAway, onLongPress = ...) in TopAppBar actions; imported from io.github.johnjanthony.switchboard at L36 (MainActivity.kt's package)."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_conversationviewscreen_conversationviewscreen",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_mainactivity_awaymodepillchip",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "ConversationViewScreen.kt L142: AwayModePillChip(active = awayActive, onLongPress = onLongPressPill) in TopAppBar actions; imported L50."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_conversationviewscreen_conversationviewscreen",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_agentstatusrow_agentstatusrow",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "ConversationViewScreen.kt L261: AgentStatusRow(status = agentStatus) inside the agent_status_row LazyColumn item, guarded by agentStatus?.isFresh()."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_conversationviewscreen_conversationviewscreen",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_fontscalesnap_snapfontscale",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "ConversationViewScreen.kt L210: val snapped = snapFontScale(feedFontScale) inside the pinch-zoom pointerInput handler."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_conversationviewscreen_conversationviewscreen",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_messagebubble_messagebubble",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "ConversationViewScreen.kt L242: MessageBubble(message = msg, isAnswered = ..., ...) inside the LazyColumn items block."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_conversationviewscreen_conversationviewscreen",
+		"target": "icon",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "ConversationViewScreen.kt L135: Icon(Icons.Default.ArrowBack, contentDescription = \"Back\") inside the TopAppBar navigationIcon IconButton."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_conversationviewscreen_predecessorbanner",
+		"target": "icon",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "ConversationViewScreen.kt L280: Icon(Icons.Default.ArrowBack, contentDescription = null, ...) inside PredecessorBanner's Row."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_conversationviewscreen_replyinputbar",
+		"target": "icon",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "ConversationViewScreen.kt L331: Icon(Icons.Default.Send, contentDescription = \"Send\") inside ReplyInputBar's send IconButton."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_markdownviewerscreen_markdownviewerscreen",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_mainactivity_markdowntext",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "MarkdownViewerScreen.kt L105: MarkdownText(content = content, format = \"markdown\", ...) call; imported L33 from MainActivity.kt's package."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_markdownviewerscreen_markdownviewerscreen",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_fontscalesnap_snapfontscale",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "MarkdownViewerScreen.kt L92: val snapped = snapFontScale(viewerFontScale) inside its own pinch-zoom pointerInput handler."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_markdownviewerscreen_markdownviewerscreen",
+		"target": "icon",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "MarkdownViewerScreen.kt L63: Icon(Icons.Default.ArrowBack, contentDescription = \"Back\") inside the navigationIcon IconButton."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_messagebubble_messagebubble",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_mainactivity_markdowntext",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "MessageBubble.kt L128: MarkdownText(content = message.text, format = message.format, ...) call; imported L38."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_quotadetaildialog_quotadetaildialog",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_widgetformat_formatagygroupname",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "QuotaDetailDialog.kt L48: title = formatAgyGroupName(group.displayName) in the visibleAgy for-loop inside QuotaDetailDialog; imported L18 from WidgetFormat.kt's package."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_quotadetaildialog_quotadetaildialog",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_widgetformat_groupsortkey",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "QuotaDetailDialog.kt L34: .sortedBy { groupSortKey(it.displayName) }; imported L20."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_quotadetaildialog_quotadetaildialog",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_widgetformat_isagygroupvisible",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "QuotaDetailDialog.kt L33: .filter { isAgyGroupVisible(it) }; imported L21."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_quotadetaildialog_quotawindowblock",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_widgetformat_formattimeelapsedpercentage",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "QuotaDetailDialog.kt L100: val elapsedPct = formatTimeElapsedPercentage(nowMs, window.resetsAt, durationMs) inside QuotaWindowBlock; imported L19."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_registrysessionrow_registrysessionrow",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_contextbadge_contextbadge",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "RegistrySessionRow.kt L156: ContextBadge(pct = contextPct, modifier = ...) when contextPct > 0.50."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_registrysessionrow_registrysessionrow",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_relativetime_formatrelativetime",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "RegistrySessionRow.kt L73: val relTime = formatRelativeTime(...) call (multi-line, closes L75)."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_registrysessionrow_registrysessionrow",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_sessionboardpolicy_cwdtail",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "RegistrySessionRow.kt L124: cwdTail(rec.cwd) used building the subtitle string; imported L32 from SessionBoardPolicy.kt's package."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_registrysessionrow_registrysessionrow",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_sessionboardpolicy_issessionselectable",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "RegistrySessionRow.kt L79: val selectable = isSessionSelectable(rec); imported L33."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_registrysessionrow_registrysessionrow",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_sessionboardpolicy_parseisoms",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "RegistrySessionRow.kt L74: parseIsoMs(rec.lastEventAt)?.let {...} nested inside the formatRelativeTime call started L73; imported L35."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_registrysessionrow_registrysessionrow",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_sessionboardpolicy_sessionapprovalhint",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "RegistrySessionRow.kt L121: val approvalSuffix = sessionApprovalHint(rec, System.currentTimeMillis())...; imported L36."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_registrysessionrow_registrysessionrow",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_sessionboardpolicy_sessionboardlabel",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "RegistrySessionRow.kt L111: text = sessionBoardLabel(rec) in the row's title Text; imported L37."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_registrysessionrow_registrysessionrow",
+		"target": "icon",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "RegistrySessionRow.kt L96: Icon(imageVector = if (selected) CheckCircle else RadioButtonUnchecked, ...) inside the selectionMode && selectable branch."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_resumesessionsheet_resumesessionsheet",
+		"target": "button",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "ResumeSessionSheet.kt L160: Button(onClick = {... onResume(targetId, ...) }, enabled = resumeEnabled) call."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_sessiondetailsheet_sessiondetailsheet",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_timestampformat_formatbubbletimestamp",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "SessionDetailSheet.kt L72: DetailRow(\"Started\", formatBubbleTimestamp(rec.startedAt))."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_sessiondetailsheet_sessiondetailsheet",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_sessionboardpolicy_sessionboardlabel",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "SessionDetailSheet.kt L48: Text(text = sessionBoardLabel(rec), ...); imported L20."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_sessiondetailsheet_sessiondetailsheet",
+		"target": "button",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "SessionDetailSheet.kt L88: Button(onClick = onResume) { Text(\"Resume…\") } inside the onResume != null branch."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_spawnresumedialog_spawnresumedialog",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_relativetime_formatrelativetime",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "SpawnResumeDialog.kt L41: val lastActivity = formatRelativeTime(sourceConversation.lastActivityAt)."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_spawnresumedialog_spawnresumedialog",
+		"target": "button",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "SpawnResumeDialog.kt L57: Button(onClick = { onResume(newPrompt.trim()) }) { Text(\"Resume\") }."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_tabinfopopover_tabinfopopover",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_contextbadge_contextbadge",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "TabInfoPopover.kt L60: ContextBadge(pct = ring.pct) inside the members.forEach loop, guarded by ring != null."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_tabinfopopover_tabinfopopover",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_conversationpolicy_ringformember",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "TabInfoPopover.kt L58: val ring = ringForMember(member, rings); imported L19 from ConversationPolicy.kt's package."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_widgetstatusheader_widgetstatusheader",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_widgetformat_groupsortkey",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "WidgetStatusHeader.kt L54: .sortedBy { groupSortKey(it.displayName) }; imported L28."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_widgetstatusheader_widgetstatusheader",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_widgetformat_isagygroupvisible",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "WidgetStatusHeader.kt L53: .filter { isAgyGroupVisible(it) }; imported L29."
+	},
+	{
+		"source": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_widgetstatusheader_widgetstatusheader",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_widgetformat_widgetstale",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "WidgetStatusHeader.kt L50: val stale = widgetStale(System.currentTimeMillis(), pushedAt); imported L32."
+	},
+	{
+		"source": "android_shared_src_main_java_io_github_johnjanthony_switchboard_fcm_baseswitchboardmessagingservice_baseswitchboardmessagingservice_shownotification",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_fcm_notificationids_notificationidfor",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "BaseSwitchboardMessagingService.kt L88: val tag = notificationIdFor(messageId, body) at the top of the private showNotification fun (L87-120)."
+	},
+	{
+		"source": "android_shared_src_main_java_io_github_johnjanthony_switchboard_mainviewmodel_mainviewmodel_openfile",
+		"target": "intent",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "MainViewModel.kt L1090: val intent = Intent(Intent.ACTION_VIEW).apply {...} inside openFile, direct Intent instantiation."
+	},
+	{
+		"source": "android_wear_src_main_java_io_github_johnjanthony_switchboard_mainactivity_markdowntext",
+		"target": "textview",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "wear/MainActivity.kt: MarkdownText fun starts L438; L464 TextView(ctx).apply {...} instantiated inside the AndroidView factory lambda within its body."
+	},
+	{
+		"source": "claude_stateful_http",
+		"target": "claude_live_smoke_harness",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "CLAUDE.md's MCP transport section notes a restart severs every active MCP session; the Live Smoke Harness section explicitly tests 'restart survival (parked-pending recovery)', directly exercising the consequence of the stateful-HTTP design."
+	},
+	{
+		"source": "dashboard_markdown",
+		"target": "dashboard_markdown_highlight",
+		"relation": "indirect_call",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "markdown.js L38-43 passes `highlight` (function defined L24) as the `highlight` option into mdFactory({...}); markdown-it invokes it internally as a callback for fenced code blocks, matching indirect_call via callback registration."
+	},
+	{
+		"source": "dashboard_markdown",
+		"target": "dashboard_markdown_tasklistrule",
+		"relation": "indirect_call",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "markdown.js L126 `md.core.ruler.after(\"inline\", \"task_list\", taskListRule)` registers taskListRule (defined L77) as a core-ruler callback, invoked indirectly by markdown-it's rule runner during md.render()."
+	},
+	{
+		"source": "docs_media_android_chat_away_badge",
+		"target": "docs_media_android_chat_away_mode_qa_flow",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The AWAY chip sits in the title bar directly above the ask/answer bubbles it enables; same screenshot, adjacent header element governing the flow below it."
+	},
+	{
+		"source": "docs_media_android_chat_away_mode_qa_flow",
+		"target": "server_gateway_handlers_ask_human",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "android-chat.png's top exchange (agent question bubble, then John 3:46 pm: Commit and open the PR) is the literal ask/answer round trip produced by ask_human, defined at server/gateway/handlers.py L265."
+	},
+	{
+		"source": "docs_media_android_chat_conversation_title_bar",
+		"target": "docs_media_android_chat_sender_timestamp_labels",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The title bar's (Claude Win) subtitle names the same identity that recurs as the Claude Win 3:52 pm sender labels in the message list below it."
+	},
+	{
+		"source": "docs_media_android_chat_document_pill",
+		"target": "server_gateway_handlers_send_document_human",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The PR description bubble with the away-mode-hook-fix.md pill and envelope icon is a document delivery, matching send_document_human at handlers.py L491."
+	},
+	{
+		"source": "docs_media_android_chat_inline_code_rendering",
+		"target": "docs_media_android_chat_document_pill",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Consecutive 3:52pm bubbles: one full of inline code spans (turn-end-hook-away-mode.py, /away-mode, etc.), the next holding the monospace away-mode-hook-fix.md document pill; adjacent, visually similar monospace treatment, same PR topic."
+	},
+	{
+		"source": "docs_media_android_chat_page_b_message_view",
+		"target": "docs_media_android_chat_dark_console_theme",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The message view region itself (bubbles, borders, name colors) is rendered in the same brass/gold and coral accent palette shown across the screenshot."
+	},
+	{
+		"source": "docs_media_android_chat_pending_question_bubble",
+		"target": "server_gateway_handlers_ask_human",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The coral-outlined unanswered bubble (Want me to add a dead-letter path...) is the pending ask_human question rendering; handler at handlers.py L265."
+	},
+	{
+		"source": "docs_media_android_chat_reply_input",
+		"target": "docs_media_android_chat_pending_question_bubble",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Reply to Claude Win... input sits immediately below the coral-bordered pending bubble, positioned in the image as its answer field."
+	},
+	{
+		"source": "docs_media_android_chat_reply_input_gated_on_pending",
+		"target": "docs_media_android_chat_pending_question_bubble",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The image shows the input row and chips appearing precisely because the coral pending bubble is present above them, illustrating the gating decision directly."
+	},
+	{
+		"source": "docs_media_android_chat_reply_input_gated_on_pending",
+		"target": "docs_media_android_chat_reply_input",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Same screenshot evidence as the previous edge; the gated UI element is the reply input field itself, visible only alongside the pending bubble."
+	},
+	{
+		"source": "docs_media_android_chat_screenshot",
+		"target": "docs_media_android_chat_away_mode_qa_flow",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The screenshot's top two bubbles (agent question, then John 3:46 pm: Commit and open the PR) are literally the ask/answer round trip node."
+	},
+	{
+		"source": "docs_media_android_chat_screenshot",
+		"target": "docs_media_android_chat_dark_console_theme",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Near-black background, brass/gold AWAY pill and John label, coral-bordered pending bubble together are the Brass/Jade/Coral dark console palette, visible across the whole screenshot."
+	},
+	{
+		"source": "docs_media_android_chat_sender_timestamp_labels",
+		"target": "docs_media_android_chat_page_b_message_view",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "John 3:46 pm and Claude Win 3:52 pm labels sit directly above each bubble, contained within the per-conversation message view."
+	},
+	{
+		"source": "docs_media_android_chat_status_notification_bubble",
+		"target": "server_gateway_handlers_notify_human",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The Pushed orchestration/away-mode-hook-fix bubble is a plain non-blocking status update with no reply gating, matching notify_human at handlers.py L229."
+	},
+	{
+		"source": "docs_media_android_chat_suggestion_chips",
+		"target": "server_gateway_handlers_ask_human",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Add it to this PR / File as a separate backlog item chips directly under the coral bubble are ask_human's suggestions rendered as quick-reply buttons; handler at handlers.py L265."
+	},
+	{
+		"source": "docs_media_android_conversations_away_badge",
+		"target": "docs_media_android_conversations_spawn_plus_button",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "AWAY pill and the + button sit side by side in the same top-bar row of the screenshot, both top-bar controls."
+	},
+	{
+		"source": "docs_media_android_conversations_claude_status_indicator",
+		"target": "server_claude_status_claudestatuswatch",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Android status strip All Systems Operational + check is the phone surface for the watch-until-resolved state machine at claude_status.py L87 (ClaudeStatusWatch), whose docstring describes exactly this dot/poll/ack behavior."
+	},
+	{
+		"source": "docs_media_android_conversations_context_ring_badge",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_conversationpolicy_conversationpolicy",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The image's top row shows a 64% ring and a 3 pending badge; ConversationPolicy.kt defines listRowContextRing() (L136) and pendingReplyCount() (L31) which compute exactly these two values."
+	},
+	{
+		"source": "docs_media_android_conversations_conversation_list_page_a",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_mainactivity_mainactivity",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "android-conversations.png shows the full Page A conversation list (title bar, quota strip, status row, rows ordered by recency); MainActivity.kt L73 declares MainActivity, the NavHost host that renders this destination."
+	},
+	{
+		"source": "docs_media_android_conversations_conversation_list_page_a",
+		"target": "android_app_src_main_java_io_github_johnjanthony_switchboard_ui_conversationlistscreen_conversationlistscreen",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The row layout in the image (accent border, open label, unseen dot, ring/badge, relative age) is exactly what ConversationListScreen() (ConversationListScreen.kt L46) composes; direct 1:1 UI-to-composable match."
+	},
+	{
+		"source": "docs_media_android_conversations_conversation_list_page_a",
+		"target": "docs_media_android_conversations_recency_ordering",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Rows in the image run 40m, 1d, 3d, 4d, 5d, Jun 16 top to bottom, i.e. descending last-activity recency, visible directly in the layout."
+	},
+	{
+		"source": "docs_media_android_conversations_open_conversation_accent",
+		"target": "docs_media_android_conversations_context_ring_badge",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Both appear on the identical top row: gold accent border/open label/coral dot on the left, ring 64% and pending badge 3 on the right, same conversation row."
+	},
+	{
+		"source": "docs_media_android_conversations_quota_strip",
+		"target": "docs_media_android_conversations_claude_status_indicator",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Both share the single status strip row below the header: quota percentages on the left, All Systems Operational + check on the right, in the same bar."
+	},
+	{
+		"source": "docs_media_android_conversations_quota_strip",
+		"target": "docs_media_android_conversations_dark_console_theme",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The quota strip's bold gold percentages (18%, 61%) on a near-black bar are a direct instance of the brass-accent-on-near-black theme described by the target node."
+	},
+	{
+		"source": "docs_media_operational_cockpit_away_mode_pill",
+		"target": "docs_media_operational_cockpit_agent_collab_messages",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "AWAY OFF pill is the header status directly above the visible Claude Win / Claude WSL collab thread, whose own text says We're in a collab conversation right now but away mode is independent of that, explicitly juxtaposing the two."
+	},
+	{
+		"source": "docs_media_operational_cockpit_board_rail",
+		"target": "dashboard_components_conversationlist_conversationlist",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Left BOARD rail in the image has the collapse control, show-hidden checkbox, active/ended dots, and relative ages (22m/1d/3d/4d/11d), matching ConversationList({store}) at ConversationList.js L26 exactly."
+	},
+	{
+		"source": "docs_media_operational_cockpit_conversation_detail",
+		"target": "dashboard_components_conversationdetail_conversationdetail",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Right pane in the image shows ENDED badge, RESTORE/PATCH INTO/DROP LINE buttons, and No members on the line banner, exactly matching ConversationDetail({store}) at ConversationDetail.js L216."
+	},
+	{
+		"source": "docs_media_operational_cockpit_markdown_rendering",
+		"target": "dashboard_markdown_rendermarkdown",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Agent message in the right pane shows bold section labels, italic terms, a numbered 1-5 list, and inline code spans (localhost:9876, ask_human, etc.), matching renderMarkdown() at markdown.js L135."
+	},
+	{
+		"source": "docs_media_operational_cockpit_operator_dashboard_ui",
+		"target": "dashboard_components_app_app",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "operational-cockpit.png shows the entire three-pane cockpit (status bar, BOARD rail, detail pane) which is exactly what App({store}) at App.js L36 assembles as the top-level component."
+	},
+	{
+		"source": "docs_media_operational_cockpit_status_bar",
+		"target": "dashboard_components_statusbar_statusbar",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Top bar in the image shows AWAY OFF pill, 8 active/0 lit/oldest, 3 answered, WSL quota %, Claude Check, +OPEN LINE - matches StatusBar({store}) at StatusBar.js L400."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_18_switchboard_design_ask_human",
+		"target": "docs_superpowers_specs_2026_04_19_switchboard_design_ask_human",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "2026-04-18-switchboard-design.md section 3 (MCP tools exposed table) and 2026-04-19-switchboard-design.md section 5.2 both define the same ask_human tool across two sequential specs (the later one canonical, superseding the former)."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_18_switchboard_design_notify_human",
+		"target": "docs_superpowers_specs_2026_04_19_switchboard_design_notify_human",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Same pairing as ask_human: both docs' tool tables define notify_human identically across the superseded/canonical spec pair."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_18_switchboard_design_telegram_surface",
+		"target": "docs_superpowers_specs_2026_04_19_switchboard_design_telegram_backend",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "2026-04-18-switchboard-design.md section 6.3 (Telegram) and 2026-04-19-switchboard-design.md section 6.1 (Telegram) both describe the same reply-to-message-correlation Telegram bot surface across two sequential canonical specs."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_19_switchboard_design_spawn_command",
+		"target": "docs_superpowers_specs_2026_04_20_spawn_design_spawn_command",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "2026-04-19-switchboard-design.md section 6.2 line 141 ('The + button...writes a /spawn command') and 2026-04-20-spawn-design.md section 2 ('/spawn [project-path] [prompt]') describe the same spawn trigger concept on two different surfaces (Android + button vs Telegram /spawn)."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_19_switchboard_design_sse_transport",
+		"target": "docs_superpowers_specs_2026_04_19_switchboard_design_ask_human",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Section 10 'SSE for MCP transport' (lines 196-198) justifies SSE specifically because it 'allows the server to remain up while agents come and go' - the property ask_human's up-to-24h blocking call in section 5.2 depends on."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_20_spawn_design",
+		"target": "docs_superpowers_specs_2026_04_19_switchboard_design_telegram_backend",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The entire spawn design (2026-04-20) is built on top of the Telegram bot backend from section 6.1 of the 2026-04-19 doc: its architecture diagram (lines 61-65) is a Telegram getUpdates loop branch, and chat.id authorization (line 43) reuses TELEGRAM_CHAT_ID from that backend."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_20_spawn_design_default_prompt",
+		"target": "docs_superpowers_specs_2026_04_19_switchboard_design_ask_human",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "2026-04-20-spawn-design.md lines 41 and 83 give the default spawn prompt text: \"Use ask_human to ask the developer what they'd like you to work on\" - a direct, explicit reference to the ask_human tool defined in the 2026-04-19 doc section 5.2."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_20_spawn_resume_design_restart_resume_flow",
+		"target": "docs_superpowers_specs_2026_04_19_switchboard_design_ask_human",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "SKILL.md section 5.3's guidance: 'After resuming, the first action must be an ask_human call confirming the restart succeeded' directly references the ask_human tool 2026-04-19 defines at SS5.2."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_20_spawn_resume_design_restart_resume_flow",
+		"target": "docs_superpowers_specs_2026_04_21_collab_sessions_design_sidecar_recovery",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Collab doc SS7's 'Switchboard restart' row contrasts single-agent restart survival against collab's sidecar-notify-only recovery ('collab sessions do not recover... Switchboard reads collab-sessions.json... fires notify_human'). It names the fast ~31s auto-reconnect path specifically rather than the deliberate 2026-04-20 restart-service.ps1 -Spawn flow, so the parallel is at the 'restart recovery for a session' level, not an exact mechanism match; both nodes are genuinely about the same question (does a session recover after a Switchboard restart) for the two session types."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_20_spawn_resume_design_spawn_pending_json",
+		"target": "docs_superpowers_specs_2026_04_20_spawn_design_spawn_command",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Section 6 'What Does NOT Change': 'The Telegram /spawn command -- this continues to write {\"prompt\": ..., \"project_path\": ...} (no resume key)' explicitly contrasts this doc's extended spawn-pending.json shape against the /spawn command's original shape defined in 2026-04-20-spawn-design.md SS2."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_21_collab_sessions_design_agent_to_session_index",
+		"target": "docs_superpowers_specs_2026_04_19_switchboard_design_ask_human",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Section 3 of the collab design: 'ask_human and notify_human only receive agent_id, so they use _agent_to_session to determine whether to write to a session Firebase node or the standard questions/{agent_id} node' -- directly referencing the ask_human tool 2026-04-19 defines at SS5.2."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_21_collab_sessions_design_collab_spawn",
+		"target": "docs_superpowers_specs_2026_04_20_spawn_design_spawn_command",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Section 4 defines '/spawn [project] [task] --agents=2 [--relay]', a direct textual extension of the base '/spawn [project-path] [prompt]' command 2026-04-20-spawn-design.md defines at SS2."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_21_collab_sessions_design_message_and_await_agent",
+		"target": "docs_superpowers_specs_2026_04_19_switchboard_design_ask_human",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Section 2 point 3 explicitly draws the parallel: 'await asyncio.wait_for(queue.get(), timeout=config.timeout_seconds) -- same 24-hour default as ask_human', the tool defined at 2026-04-19 SS5.2."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_21_collab_sessions_design_message_and_await_agent",
+		"target": "docs_superpowers_specs_2026_04_19_switchboard_design_timeout_sentinel",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Section 2 point 4: 'Return the received message text, or __TIMEOUT__ sentinel on timeout' matches 2026-04-19 SS7's 24h timeout + __TIMEOUT__ sentinel design exactly."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_22_unified_channel_routing_design",
+		"target": "docs_superpowers_specs_2026_04_19_switchboard_design",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "No explicit citation by date/title, but section 7 rewrites exactly the components 2026-04-19 defines (server/messenger.py ABC, server/gateway.py's ask_human/notify_human/send_document_human, server/firebase.py, server/registry.py) so the doc is a direct modification pass over that architecture."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_22_unified_channel_routing_design",
+		"target": "docs_superpowers_specs_2026_04_21_collab_sessions_design",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Unified doc's problem statement 1 ('Collab sessions produce 3 tabs') and section 10 rewrite of CollabSession's agent_ids -> agent_senders and --agents=2 --relay -> --collab build directly on the 2026-04-21 collab design."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_22_unified_channel_routing_design_channel_id",
+		"target": "docs_superpowers_specs_2026_04_21_collab_sessions_design_collabsession",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Unified doc section 7 'server/collab.py' rewrites CollabSession's agent_ids field (defined in 2026-04-21 SS3) as part of replacing agent_id-based routing with channel_id."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_22_unified_channel_routing_design_collab_mode_flag",
+		"target": "docs_superpowers_specs_2026_04_21_collab_sessions_design_collab_spawn",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Unified doc section 10: 'Spawn command flag: --agents=2 --relay is replaced by --collab' -- a direct, explicit replacement of the Collab Spawn syntax defined in 2026-04-21 SS4."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_22_unified_channel_routing_design_unified_message_path",
+		"target": "docs_superpowers_specs_2026_04_21_collab_sessions_design_inject_queue",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Unified doc's 'Unchanged paths' table (section 6) explicitly lists 'sessions/{channel_id}/inject_queue -- Collab human injection -- untouched', directly naming the Human Inject Queue defined in 2026-04-21 SS6."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_22_unified_channel_routing_design_write_channel_message",
+		"target": "docs_superpowers_specs_2026_04_19_switchboard_design_messengerbackend",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Unified doc section 7 'server/messenger.py': 'ABC updated to replace send_question, send_notification, send_document, write_session_message with write_channel_message' -- directly modifying the MessengerBackend ABC 2026-04-19 defines at SS5.3."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_23_bring_your_own_session_design_away_collab_independence",
+		"target": "docs_superpowers_specs_2026_04_23_away_mode_enforcement_design_global_away_mode_flag",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "BYO doc states 'BYO sessions do NOT imply away mode. Away mode and collab mode are independent concepts' and its SKILL.md rewrite explicitly discusses enter_away_mode/exit_away_mode, the global flag the away-mode-enforcement design defines (same date, direct dependency)."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_23_rate_limiting_design_per_channel_token_bucket",
+		"target": "docs_superpowers_specs_2026_04_24_channel_hide_and_away_mode_toggle_design_hidden_channel_fcm_suppression",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Both are per-channel gates on whether an FCM push fires: rate-limiting design 4/23 throttles notify_human/send_document_human pushes by token bucket; hidden-channel suppression 4/24 skips non-question FCM pushes for hidden channels. Same domain (per-channel FCM gating), different trigger conditions."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_24_cwd_as_channel_and_per_cwd_away_mode_design_away_mode_commands_queue",
+		"target": "docs_superpowers_specs_2026_04_24_channel_hide_and_away_mode_toggle_design_android_commands_queue",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The cwd-as-channel doc explicitly lists 2026-04-24-channel-hide-and-away-mode-toggle-design.md as its Predecessor (header line 8); its away_mode_commands queue (lines 179-189, structured type field) is the direct successor of that doc's section 6.3 generic commands/ queue carrying '/away-mode on|off' strings - same feature, same day, sequential specs."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_04_28_away_mode_firebase_schema_reorg_design_pending_mirror_callback",
+		"target": "docs_superpowers_specs_2026_04_24_channel_hide_and_away_mode_toggle_design_registry_mirror_callback",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The 2026-04-28 doc's pending_mirror callback (lines 177-197, Registry fires a callback synchronously after pending-count mutations, backend schedules the Firebase write) is the same pattern as the 2026-04-24 doc's line 251 ('set_away_mode(active) gains an optional post-set callback...main.py registers a callback...invokes backend.write_away_mode_mirror'); both keep Registry backend-agnostic via a post-mutation mirror callback."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_05_02_android_message_polish_design_attached_to_msg_id",
+		"target": "server_messenger_messagewriter",
+		"relation": "references",
+		"verdict": "rejected",
+		"date": "2026-07-29",
+		"note": "server/messenger.py:57 is 'class MessageWriter(ABC)' - but attached_to_msg_id is a parameter of write_conversation_message, defined at messenger.py:236-252 inside the separate 'class ConversationStore' (starting line 192), not MessageWriter. MessageWriter's own docstring (lines 58-64) explicitly states write_conversation_message is declared in ConversationStore and MessageWriter is retained only for send_timeout_followup and send_* helpers. Name/location collision: the field moved off MessageWriter during the 2026-05-19 conversations redesign."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_05_02_android_message_polish_design_splice_ordering",
+		"target": "android_shared_src_main_java_io_github_johnjanthony_switchboard_mainviewmodel_mainviewmodel",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "MainViewModel.kt:281 and :312 call applySpliceOrder(sortedRaw); MainViewModel.kt:48 is the class declaration (matching tgt_loc). The splice function itself now lives in the sibling file MessageOrdering.kt, but MainViewModel genuinely calls and depends on the Reply Splice Ordering Rule the 2026-05-02 design specified."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_05_19_conversations_collab_redesign_design_conversation_model",
+		"target": "server_registry_registry",
+		"relation": "rationale_for",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "server/registry.py:94 'class Registry:' and its dataclasses (_session_to_conversation_id, conversations dict, etc.) are exactly what the design doc's Conversation model section (lines 39-81) specifies; the design's dataclass sketch (lines 172-215) matches the shipped Registry/Conversation shape."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_05_19_conversations_collab_redesign_design_conversations_firebase_schema",
+		"target": "docs_superpowers_specs_2026_05_05_agent_status_indicator_design_agent_status_state_model",
+		"relation": "shares_data_with",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The Conversations Firebase Schema's agent_status/ node (design doc lines 364-368: sender/state/detail/updated_at) is the same field set the 2026-05-05 doc's State model table (lines 72-87, thinking/tool:<name>/waiting/clear) writes and reads."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_05_19_conversations_collab_redesign_design_global_away_mode",
+		"target": "docs_superpowers_specs_2026_05_05_agent_status_indicator_design_away_mode_write_gate",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The 'Away mode (simplified, global only)' section (lines 286-297) and the 2026-05-05 doc's Away-mode gating section (lines 99-120, 'handle_agent_status short-circuits...when cwd is not in away mode') both concern the same gate deciding whether agent-status writes happen; the 2026-05-19 doc retires the per-cwd override the 2026-05-05 gate originally checked, making them sequential designs of the same mechanism."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_05_19_conversations_collab_redesign_design_member_states",
+		"target": "docs_superpowers_specs_2026_05_01_listener_supervision_and_healthz_design_thread_liveness_detection",
+		"relation": "semantically_similar_to",
+		"verdict": "rejected",
+		"date": "2026-07-29",
+		"note": "Member States (alive/dormant/permanently lost) is a hook-driven CLI-session state machine (SessionEnd events); Thread-Aliveness Liveness Detection (2026-05-01 doc lines 130-137) is a specific technical choice, registration._thread.is_alive(), for detecting a dead Firebase SDK listener thread. Different subsystems and different mechanisms; the only overlap is the word 'alive/liveness', which the sweep instructions call out as a coincidental-wording rejection case."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_05_19_conversations_collab_redesign_design_session_fallback_rule",
+		"target": "server_session_fallback_apply_fallback",
+		"relation": "rationale_for",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "server/session_fallback.py:31 'def apply_fallback(...)' implements precisely the Session-fallback rule described at design-doc lines 60-65; the doc's own Implementation deltas section (line 619) confirms apply_fallback shipped per the design."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_05_20_spawn_conversation_aware_redesign_design_session_id_injection_hook",
+		"target": "scripts_cli_session_injector_hook",
+		"relation": "rationale_for",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Doc's 'Session-ID capture mechanism' section (lines 51-88) writes out the hook script nearly verbatim to what now lives at scripts/cli-session-injector-hook.py L1, including the exact tool_name self-filter and updatedInput-replaces-not-merges behavior."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_05_20_spawn_conversation_aware_redesign_design_spawn_dialog",
+		"target": "server_spawn_spawnhandler",
+		"relation": "rationale_for",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The literal string SpawnHandler doesn't appear in the doc, but its 'Server-side spawn flow (fresh)' section (surface validation, rate limit, project-path resolution, conversation target binding, pending-file write, launcher trigger) is exactly the design SpawnHandler (server/spawn.py L103) implements; CLAUDE.md confirms SpawnHandler.handle_fresh is the entry point for this flow."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_06_23_watchtower_claude_status_indicator_design",
+		"target": "docs_superpowers_specs_2026_06_15_switchboard_dashboard_design",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The status-indicator design's Out of scope section (line 105) explicitly scopes itself against Operator ('Surfacing Claude status on the phone or in Operator...this is a Watchtower-local, at-desk signal'), and line 9 references 'Switchboard pending' as an existing Watchtower surface - both draw directly on the widget/dashboard architecture the 2026-06-15 doc (Switchboard Operator and Watchtower Integration) defines."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_06_25_watchtower_data_into_server_design",
+		"target": "docs_superpowers_specs_2026_06_15_switchboard_dashboard_design",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "2026-06-25 doc's scope line and 'Operator first' decision directly extend the Operator/Watchtower integration the 2026-06-15 doc establishes; both are the same server+dashboard+widget integration lineage."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_06_25_watchtower_data_into_server_design_session_id_correlation",
+		"target": "server_conversation_ops_add_member",
+		"relation": "shares_data_with",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Doc's 'The correlation (verified)' section (lines 27-29) says conversation members store cli_session_id via server/conversation_ops.py; _add_member at L275-307 sets member.cli_session_id and calls registry.bind_session(cli_session_id, conversation_id), matching exactly."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_06_25_watchtower_data_into_server_design_widget_rtdb_schema",
+		"target": "docs_superpowers_specs_2026_06_15_switchboard_dashboard_design_verified_rtdb_schema",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Both are RTDB path/shape contract tables for the same system (2026-06-25 'RTDB schema' section vs 2026-06-15's Appendix 'verified RTDB schema'); same structural role, sibling subtrees (widget/* vs conversations/*)."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_07_01_convening_simplification_design_human_driven_convening",
+		"target": "docs_superpowers_specs_2026_07_01_fable_week_model_tiering_plan_model_tiering_strategy",
+		"relation": "semantically_similar_to",
+		"verdict": "rejected",
+		"date": "2026-07-29",
+		"note": "No genuine content overlap: Human-Driven Convening is about the human making coordination decisions instead of agents executing a rendezvous protocol; Model Tiering Strategy is about routing subagent work to cost/capability-appropriate Claude model tiers. Different systems, no cross-reference; the link appears to rest on both being 'assign responsibility to the right party' framing, which is too generic to count as a real parallel."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_07_06_convening_chunks_roadmap_in_tool_too_long_heuristic",
+		"target": "docs_superpowers_specs_2026_07_01_session_lifecycle_registry_design_staleness_sweeper",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Both are time-since-last-event heuristics inferring session state from silence: the in-tool-too-long hint fires on 'last_event_at older than ~5 min' with no title verdict; the staleness sweeper marks a session lost after no hook event for SESSION_LOST_AFTER_SECONDS (900s). Same structural pattern, different inferred conclusion."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_07_06_convening_chunks_roadmap_solo_wait_parking",
+		"target": "docs_superpowers_specs_2026_07_01_convening_simplification_design_structured_returns",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Chunk-5 section's Solo Wait Parking decision explicitly retires 'conversation_empty' 'from the envelope vocabulary', which is one of the status values the parent doc's Structured JSON Tool Returns scheme defines ('{\"status\":\"ok|timeout|conversation_ended|conversation_empty\"...}')."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_07_07_t001_parked_pendings_design",
+		"target": "docs_superpowers_specs_2026_07_06_convening_chunks_roadmap",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The roadmap doc explicitly schedules and names T-001 (lines 110, 130: 'T-001 parked pendings untouched'; 'T-001 slips one slot at no daily-friction cost' sequenced after chunk 5); the T-001 design doc's header (line 5) states it is 'sequenced after convening chunk 5' - the same sequencing decision recorded in the roadmap doc."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_07_10_wp6_android_client_design_pending_message_buffer",
+		"target": "docs_superpowers_specs_2026_07_09_wp3_binding_membership_invariants_design_spawn_window",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "PendingMessageBuffer (WP-6, REV-201) buffers messages arriving for a conversation whose client-side row doesn't exist yet, draining once the row appears. The Spawn Window (WP-3 design section 2, REV-103) is a session bound to a conversation with no member yet, until the first MCP call creates it. Both are the same structural pattern: a reference to an entity arrives before the entity is fully materialized, handled by deferred/lazy catch-up rather than eager creation - one on the Android client, one on the server."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_07_10_wp6_android_client_design_rejected_toast_tracker",
+		"target": "docs_superpowers_specs_2026_07_11_dead_code_dry_sweep_design_listener_unification",
+		"relation": "semantically_similar_to",
+		"verdict": "rejected",
+		"date": "2026-07-29",
+		"note": "RejectedToastTracker (WP-6 design, REV-202) is an Android unit preventing repeated toast display for already-seen rejected messages on listener reattach/cold start. Command Listener Unification (D4/T-225) is a server-side DRY refactor collapsing three near-identical ~40-line Firebase listener setups into one shared _start_command_listener helper. Different subsystems (Android UI vs Python server plumbing), different bugs (toast replay vs code duplication); no direct parallel beyond both loosely touching 'listeners'."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_07_10_wp6_android_client_design_subscriptions_unit",
+		"target": "docs_superpowers_specs_2026_07_11_wp7_operator_dashboard_design_idempotent_global_listeners",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Subscriptions (WP-6 design, REV-005: collect unsubscribe lambdas, dispose() invokes+clears all, idempotent) and REV-401's fix (WP-7 design lines 40-48: keep global unsubs in an array, detach-before-attach on every onAuth fire) are the same fix pattern for the same bug class (duplicate Firebase listener attachment on repeated lifecycle events) applied independently to the Android VM and the Operator dashboard JS."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_07_11_dead_code_dry_sweep_design_discovery_stage",
+		"target": "docs_superpowers_specs_2026_07_11_dead_code_dry_sweep_design_deletion_invariant_greps",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Both are in the same document: D3's Discovery stage (lines 99-101, pre-deletion candidate-verification greps) and the Verification gates' Deletion-Invariant Greps (line 115, post-deletion zero-hits greps) are the two bookends of the same grep-based verification methodology for this sweep."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_07_11_dead_code_dry_sweep_design_now_iso_hoist",
+		"target": "dashboard_derive_formatage",
+		"relation": "semantically_similar_to",
+		"verdict": "rejected",
+		"date": "2026-07-29",
+		"note": "The _now_iso() hoist (design doc D4, line 55) is a Python 'return current time as an ISO string' helper being deduplicated across conversation_ops.py/handlers.py/session_registry.py. dashboard/derive.js:202 formatAge(seconds) is a JS function that formats an elapsed-duration number into a short display string (e.g. '5m', '3h') - a different operation on different inputs for a different purpose. The only overlap is both touch 'time'; no genuine parallel."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_07_11_wp8_watchtower_remediation_design_scan_gate",
+		"target": "docs_superpowers_specs_2026_07_11_wp8_watchtower_remediation_design_pushsnapshot_latch",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Both are single-flight/in-flight guard patterns in the same doc: REV-007's ScanGate (2-min expiry, TryEnter/Exit) and REV-307's PushSnapshot latch (_snapshotPushing volatile bool) guard concurrent async work in the scan loop vs the snapshot push respectively; the PushSnapshot section explicitly calls it 'the guard the other polls use'."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_07_12_switchboard_roadmap_v2_chunk7_operator_polish",
+		"target": "docs_superpowers_specs_2026_07_11_wp7_operator_dashboard_design",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Roadmap v2 explicitly names the WP-1..WP-10 remediation wave (incl. WP-7) as its predecessor ('This roadmap is their successor'). Chunk 7's grounding assumes and builds on WP-7's landed paneErrors.detail/paneErrors.global + PaneBanner architecture (WP-7's 'Error-surfacing model' section), same dashboard/ surface."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_07_12_switchboard_roadmap_v2_t231_instrumented_spike",
+		"target": "docs_superpowers_specs_2026_07_11_wp8_watchtower_remediation_design_tryembed_rollback",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Same re-embed/TryEmbed code path as REV-304 (WidgetWindow.TryEmbed style rollback); T-231's H2/H4 hypotheses (z-order, re-embed racing explorer's construction) directly extend the area REV-304 already touched."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_07_12_switchboard_roadmap_v2_t231_instrumented_spike",
+		"target": "docs_superpowers_specs_2026_07_11_wp8_watchtower_remediation_design_winevent_hook_rereg",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Roadmap's T-231 grounding describes the exact same re-embed path WP-8 REV-303 fixes (AttachToTaskbar -> TryEmbed -> hook re-reg -> PositionOverTaskbar), noting 'NO ShowWindow, no WS_VISIBLE handling, no z-order assert' -- a direct continuation of that code path's investigation."
+	},
+	{
+		"source": "docs_superpowers_specs_2026_07_14_antigravity_cli_support_design_pretooluse_corrector",
+		"target": "docs_superpowers_specs_2026_07_12_switchboard_roadmap_v2_away_mode_guard_hook",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The agy PreToolUse Identity Corrector (2026-07-14 doc section 5, lines 71-75: emits {\"decision\":\"deny\",\"reason\":<corrective text>} when cli_session_id is missing/wrong) and T-230's AskUserQuestion guard hook (roadmap v2 Chunk 2, line 44, denies AskUserQuestion while away mode is on and redirects to ask_human) are the same PreToolUse deny-and-correct pattern applied to two different platforms (Antigravity identity enforcement vs Claude away-mode enforcement)."
+	},
+	{
+		"source": "docs_switchboard_design_spec_comprehensive_session_file_aging",
+		"target": "watchtower_docs_superpowers_specs_2026_06_12_claude_context_widget_design_active_live_classifier",
+		"relation": "semantically_similar_to",
+		"verdict": "rejected",
+		"date": "2026-07-29",
+		"note": "Comprehensive spec section 9.6 'Session-file aging (not implemented)' is specifically about Claude Code's own cleanupPeriodDays (30-day) transcript deletion affecting resume eligibility, and explicitly states Switchboard's own model has 'no time component' for this. Watchtower's Active/Live Classifier genuinely derives active/live/idle purely from transcript mtime, but on a minutes/seconds scale for a different purpose (is-it-running-now, not is-it-still-resumable). Genuinely torn: both are 'transcript-file age as an input to a session-state notion,' but the specific mechanisms, timescales, and the source doc's own disclaimer argue against a tight match. Adjudicated rejected: both use transcript-file age as an input but mechanism, purpose and timescale differ, and spec 9.6 explicitly states resume eligibility has no time component."
+	},
+	{
+		"source": "docs_switchboard_design_spec_comprehensive_spec",
+		"target": "watchtower_docs_superpowers_specs_2026_06_12_claude_context_widget_design_context_widget",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Comprehensive spec section 5 (HTTP endpoints), line 227, describes /stats as the 'Widget/Watchtower roll-up', directly pointing at the Claude Context Widget (Watchtower) consumer defined in the 2026-06-12 spec."
+	},
+	{
+		"source": "docs_switchboard_design_spec_comprehensive_stale_alive_members",
+		"target": "watchtower_docs_superpowers_specs_2026_06_12_claude_context_widget_design_active_live_classifier",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Comprehensive spec line 712 (SWITCHBOARD_SESSION_LOST_AFTER_SECONDS, a 900s silence threshold that marks a session lost with no direct process signal) is the same design pattern as the Watchtower spec's Risks section (line 135: 'Running is approximated by recent mtime; there is no direct process-liveness signal from the transcripts alone') - both infer liveness purely from time-since-last-activity in the absence of a real signal."
+	},
+	{
+		"source": "readme_away_mode",
+		"target": "claude_away_mode",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "README.md's 'Away mode' section (lines 171-191) and CLAUDE.md's Away Mode Protocol both describe the same single-flag mechanism and ask_human/notify_human routing."
+	},
+	{
+		"source": "readme_conversations",
+		"target": "claude_conversation_model",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "README.md's Conversations feature bullet and 'Conversation composition' section (lines 22, 197-201) match CLAUDE.md's Conversation model section (Active/Ended, candidate rule)."
+	},
+	{
+		"source": "readme_session_spawning",
+		"target": "claude_spawn_flow",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "README.md's Session spawning feature bullet and 'Spawning a new agent session' section (lines 27, 203-227) describe the same phone-driven spawn mechanism as CLAUDE.md's Spawn flow section."
+	},
+	{
+		"source": "readme_switchboard_gateway",
+		"target": "claude_switchboard",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "README.md's opening description of Switchboard as a local MCP gateway (lines 1-5) matches CLAUDE.md's 'Switchboard is the mission-control hub' framing - both describe the same top-level project."
+	},
+	{
+		"source": "scripts_agent_status_hook_main",
+		"target": "scripts_hook_common_base_url",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/agent-status-hook.py L113: `url = base_url() + AGENT_STATUS_PATH` inside main(), matching def at scripts/_hook_common.py L37."
+	},
+	{
+		"source": "scripts_agent_status_hook_main",
+		"target": "scripts_hook_common_read_stdin_json",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/agent-status-hook.py L83: `payload = read_stdin_json()` inside main(); imported from _hook_common at L19, matching def at scripts/_hook_common.py L22."
+	},
+	{
+		"source": "scripts_agent_status_hook_post",
+		"target": "scripts_hook_common_auth_headers",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/agent-status-hook.py L67: `headers = {\"Content-Type\": \"application/json\", **auth_headers()}` inside _post(), matching def at scripts/_hook_common.py L42."
+	},
+	{
+		"source": "scripts_agy_identity_hook_main",
+		"target": "scripts_hook_common_read_stdin_json",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/agy-identity-hook.py L150: `payload = read_stdin_json()` inside main(), matching def at scripts/_hook_common.py L22."
+	},
+	{
+		"source": "scripts_agy_identity_hook_post_status",
+		"target": "scripts_hook_common_auth_headers",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/agy-identity-hook.py L52: `headers = {\"Content-Type\": \"application/json\", **auth_headers()}` inside _post_status(), matching def at scripts/_hook_common.py L42."
+	},
+	{
+		"source": "scripts_agy_identity_hook_post_status",
+		"target": "scripts_hook_common_base_url",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/agy-identity-hook.py L53: `req = urllib.request.Request(base_url() + AGENT_STATUS_PATH, ...)` inside _post_status(), matching def at scripts/_hook_common.py L37."
+	},
+	{
+		"source": "scripts_away_mode_tool_guard_hook_away_mode_active",
+		"target": "scripts_hook_common_auth_headers",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/away-mode-tool-guard-hook.py L44: `req = urllib.request.Request(url, headers=auth_headers())` inside _away_mode_active(), matching def at scripts/_hook_common.py L42."
+	},
+	{
+		"source": "scripts_away_mode_tool_guard_hook_main",
+		"target": "scripts_hook_common_base_url",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/away-mode-tool-guard-hook.py L59: `if not _away_mode_active(base_url() + AWAY_MODE_PATH):` inside main(), matching def at scripts/_hook_common.py L37."
+	},
+	{
+		"source": "scripts_away_mode_tool_guard_hook_main",
+		"target": "scripts_hook_common_read_stdin_json",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/away-mode-tool-guard-hook.py L56: `payload = read_stdin_json()` inside main(); imported at L26, matching def at scripts/_hook_common.py L22."
+	},
+	{
+		"source": "scripts_cli_session_end_hook_main",
+		"target": "scripts_hook_common_read_stdin_json",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/cli-session-end-hook.py L51: `payload = read_stdin_json()` inside main(); imported at L27, matching def at scripts/_hook_common.py L22."
+	},
+	{
+		"source": "scripts_cli_session_start_hook_main",
+		"target": "scripts_hook_common_auth_headers",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/cli-session-start-hook.py L35: `headers = {\"Content-Type\": \"application/json\", **auth_headers()}` inside main(), matching def at scripts/_hook_common.py L42."
+	},
+	{
+		"source": "scripts_cli_session_start_hook_main",
+		"target": "scripts_hook_common_base_url",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/cli-session-start-hook.py L37: `req = urllib.request.Request(base_url() + SESSION_START_PATH, ...)` inside main(), matching def at scripts/_hook_common.py L37."
+	},
+	{
+		"source": "scripts_cli_session_start_hook_main",
+		"target": "scripts_hook_common_read_stdin_json",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/cli-session-start-hook.py L24: `payload = read_stdin_json()` inside main(); imported at L17, matching def at scripts/_hook_common.py L22."
+	},
+	{
+		"source": "scripts_smoke_smoke",
+		"target": "scripts_smoke_smoke_flow_atdesk_redirect",
+		"relation": "indirect_call",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/smoke/smoke.py L300: `(\"at-desk redirect + conversation discovery\", flow_atdesk_redirect)` in the FLOWS list, iterated and invoked via `await fn(ctx, rep, args)` in main()."
+	},
+	{
+		"source": "scripts_smoke_smoke",
+		"target": "scripts_smoke_smoke_flow_away_mode_roundtrip",
+		"relation": "indirect_call",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/smoke/smoke.py L299: `(\"away-mode round-trip\", flow_away_mode_roundtrip)` in the FLOWS list, invoked via `await fn(ctx, rep, args)` in main()'s dispatch loop."
+	},
+	{
+		"source": "scripts_smoke_smoke",
+		"target": "scripts_smoke_smoke_flow_fast_answer",
+		"relation": "indirect_call",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/smoke/smoke.py L302: `(\"fastest-answer round-trip\", flow_fast_answer)` in the FLOWS list, invoked via `await fn(ctx, rep, args)` in main()'s dispatch loop."
+	},
+	{
+		"source": "scripts_smoke_smoke",
+		"target": "scripts_smoke_smoke_flow_live_ask_answer",
+		"relation": "indirect_call",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/smoke/smoke.py L301: `(\"live ask/answer round-trip\", flow_live_ask_answer)` in the FLOWS list, invoked via `await fn(ctx, rep, args)` in main()'s dispatch loop."
+	},
+	{
+		"source": "scripts_smoke_smoke",
+		"target": "scripts_smoke_smoke_flow_preflight",
+		"relation": "indirect_call",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/smoke/smoke.py L298: `(\"preflight\", flow_preflight)` in the FLOWS list, invoked via `await fn(ctx, rep, args)` in main()'s dispatch loop."
+	},
+	{
+		"source": "scripts_smoke_smoke",
+		"target": "scripts_smoke_smoke_flow_restart_survival",
+		"relation": "indirect_call",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/smoke/smoke.py L303: `(\"restart survival\", flow_restart_survival)` in the FLOWS list, invoked via `await fn(ctx, rep, args)` in main()'s dispatch loop (also individually checked against `fn is flow_restart_survival`)."
+	},
+	{
+		"source": "scripts_smoke_smoke_lib_mcp_call",
+		"target": "server_main_run",
+		"relation": "calls",
+		"verdict": "rejected",
+		"date": "2026-07-29",
+		"note": "Name collision: scripts/smoke/_smoke_lib.py L65-74 defines a LOCAL nested `async def _run()` inside mcp_call() and calls that; the file's docstring states 'No server imports' and there is no import of server.main anywhere in the file, so this is not server_main_run at server/main.py L741."
+	},
+	{
+		"source": "scripts_smoke_smoke_main",
+		"target": "path",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/smoke/smoke.py L379: `repo_root = Path(__file__).resolve().parents[2]` inside main(); Path imported from pathlib at L8."
+	},
+	{
+		"source": "scripts_turn_end_hook_away_mode_fetch_state",
+		"target": "scripts_hook_common_auth_headers",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/turn-end-hook-away-mode.py L56: `req = urllib.request.Request(full_url, headers=auth_headers())` inside _fetch_state(), matching def at scripts/_hook_common.py L42."
+	},
+	{
+		"source": "scripts_turn_end_hook_away_mode_main",
+		"target": "scripts_hook_common_base_url",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/turn-end-hook-away-mode.py L113: `away_url = base_url() + AWAY_MODE_PATH` inside main(), matching def at scripts/_hook_common.py L37."
+	},
+	{
+		"source": "scripts_turn_end_hook_away_mode_main",
+		"target": "scripts_hook_common_read_stdin_json",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/turn-end-hook-away-mode.py L100: `payload = read_stdin_json()` inside main(), matching def at scripts/_hook_common.py L22."
+	},
+	{
+		"source": "scripts_turn_end_hook_away_mode_post_idle_status",
+		"target": "scripts_hook_common_auth_headers",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/turn-end-hook-away-mode.py L86: `headers = {\"Content-Type\": \"application/json\", **auth_headers()}` inside _post_idle_status(), matching def at scripts/_hook_common.py L42."
+	},
+	{
+		"source": "scripts_turn_end_hook_away_mode_post_idle_status",
+		"target": "scripts_hook_common_base_url",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "scripts/turn-end-hook-away-mode.py L87: `req = urllib.request.Request(base_url() + \"/agent_status\", ...)` inside _post_idle_status(), matching def at scripts/_hook_common.py L37."
+	},
+	{
+		"source": "server_antigravity_status_default_fetch",
+		"target": "server_antigravity_status_http_get",
+		"relation": "indirect_call",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "server/antigravity_status.py L220: `text = await asyncio.to_thread(_http_get, GCP_INCIDENTS_URL)` inside _default_fetch(); _http_get defined at L212, dispatched via to_thread."
+	},
+	{
+		"source": "server_claude_status_claudestatusservice",
+		"target": "docs_superpowers_specs_2026_06_25_watchtower_data_into_server_design_server_status_watch_loop",
+		"relation": "implements",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Design component 4 (lines 64-68) specifies a port of T-179's ClaudeStatusWatch state machine plus a background poll task; server/claude_status.py has both ClaudeStatusWatch (idle/watching/resolved_unacked/capped_unacked) and ClaudeStatusService orchestrating fetch/poll_loop/publish exactly as described."
+	},
+	{
+		"source": "server_claude_status_default_fetch",
+		"target": "server_claude_status_http_get",
+		"relation": "indirect_call",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "server/claude_status.py L157: `text = await asyncio.to_thread(_http_get, SUMMARY_URL)` inside _default_fetch(); _http_get defined at L147, dispatched via to_thread."
+	},
+	{
+		"source": "server_gateway_bg_tasks_spawn_bg",
+		"target": "server_gateway_bg_tasks_on_task_done",
+		"relation": "indirect_call",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "server/gateway/bg_tasks.py L81: `task.add_done_callback(_on_task_done)` inside _spawn_bg(); _on_task_done defined at L53, registered as a callback rather than called directly."
+	},
+	{
+		"source": "server_gateway_bulk_respond_apply_bulk_respond_decision",
+		"target": "docs_superpowers_specs_2026_04_28_away_mode_firebase_schema_reorg_design_client_side_bulk_respond",
+		"relation": "implements",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "server/gateway/bulk_respond.py:9 _apply_bulk_respond_decision(...) with send_default/skip/cancel branches (lines 39-82) is exactly the collapsed helper the design doc names at line 275 and describes in Section 5's 'Server-side decision application'; the function has since dropped its cwd scoping (matching the later 2026-05-19 doc's note that scope_cwd became dead code)."
+	},
+	{
+		"source": "server_gateway_document_validate_path",
+		"target": "valueerror",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "server/gateway/document.py L49: `raise ValueError(f\"Path escapes project directory: {path_str}\")` inside _validate_path() (builtin exception, also raised again at L52/L54/L58)."
+	},
+	{
+		"source": "server_gateway_handlers_append_session_log",
+		"target": "path",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "server/gateway/handlers.py L101: `path = Path(log_path).parent / \"sessions\" / ...` inside _append_session_log(); Path imported at L12."
+	},
+	{
+		"source": "server_gateway_handlers_toolhandlers",
+		"target": "server_messenger_conversationstore",
+		"relation": "uses",
+		"verdict": "rejected",
+		"date": "2026-07-29",
+		"note": "server/gateway/handlers.py L173-185: the `ToolHandlers` dataclass body is all `Callable[..., Coroutine[...]]` fields; it never references ConversationStore. L18 is just the module-level import shared by the whole file; the actual user is the separate `_ToolHandlersBackend` class at L187."
+	},
+	{
+		"source": "server_gateway_handlers_toolhandlers",
+		"target": "server_messenger_messagewriter",
+		"relation": "uses",
+		"verdict": "rejected",
+		"date": "2026-07-29",
+		"note": "Same misattribution as the ConversationStore edge: ToolHandlers (L173-185) never references MessageWriter; only `_ToolHandlersBackend(MessageWriter, ConversationStore)` at L187 does."
+	},
+	{
+		"source": "server_gateway_handlers_toolhandlersbackend",
+		"target": "server_messenger_conversationstore",
+		"relation": "uses",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "server/gateway/handlers.py L187: `class _ToolHandlersBackend(MessageWriter, ConversationStore):` directly extends ConversationStore, defined at server/messenger.py L192."
+	},
+	{
+		"source": "server_gateway_handlers_toolhandlersbackend",
+		"target": "server_messenger_messagewriter",
+		"relation": "uses",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "server/gateway/handlers.py L187: `class _ToolHandlersBackend(MessageWriter, ConversationStore):` directly extends MessageWriter, defined at server/messenger.py L57."
+	},
+	{
+		"source": "server_main_run",
+		"target": "server_firebase_supervisor_loopsupervisor",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "server/main.py L831ff: `loop_sups = {...: LoopSupervisor(...), ...}` dict literal inside _run(); LoopSupervisor imported from server.firebase_supervisor at L46."
+	},
+	{
+		"source": "server_main_run",
+		"target": "server_logging_jsonl_jsonllogger",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "server/main.py L742: `logger = JsonlLogger(config.log_path)` inside _run(); JsonlLogger imported from server.logging_jsonl at L41."
+	},
+	{
+		"source": "server_rate_limiter_ratelimiter",
+		"target": "docs_superpowers_specs_2026_04_23_rate_limiting_design_per_channel_token_bucket",
+		"relation": "implements",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Doc specifies server/rate_limiter.py's RateLimiter class: token-bucket keyed by channel_id, constructor(rate_per_minute), consume(channel_id) -> bool, continuous refill -- the design this class implements."
+	},
+	{
+		"source": "server_session_fallback_apply_fallback",
+		"target": "server_registry_conversation",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "server/session_fallback.py L97: `new_conv = Conversation(id=new_id, title=\"(home)\", origin=\"fallback\")` inside apply_fallback(); Conversation imported from server.registry at L43, matching the dataclass at server/registry.py L68."
+	},
+	{
+		"source": "server_spawn_spawnhandler_handle_fresh",
+		"target": "server_registry_conversation",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "server/spawn.py L338: `conv = Conversation(id=conv_id, title=f\"{project} ({surface})\", origin=\"spawn\")` inside handle_fresh(); Conversation imported from server.registry at L270."
+	},
+	{
+		"source": "server_spawn_spawnhandler_handle_resume",
+		"target": "server_registry_conversation",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "server/spawn.py L489: `new_conv = Conversation(id=new_id, title=source.title, continued_from=source_id, origin=\"resume\")` inside handle_resume(); Conversation imported from server.registry at L485."
+	},
+	{
+		"source": "server_widget_snapshot_widgetsnapshotstore",
+		"target": "docs_superpowers_specs_2026_06_25_watchtower_data_into_server_design_widget_snapshot_ingest",
+		"relation": "implements",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Doc component 1/2 (lines 58-60) describe an in-memory snapshot store diffing pushes for on-change writes; server/widget_snapshot.py WidgetSnapshotStore.apply() (L26) does exactly this: updates rings/quota/pushed_at and returns changed flags."
+	},
+	{
+		"source": "skills_switchboard_skill_away_mode_protocol",
+		"target": "claude_away_mode",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "SKILL.md lines 6-38 (CRITICAL: Away Mode Protocol) is the agent-facing restatement of CLAUDE.md's Away Mode Protocol / global-flag description; both describe set_away_mode(bool), user-managed toggling, and the at-desk redirect."
+	},
+	{
+		"source": "skills_switchboard_skill_candidate_rule",
+		"target": "claude_conversation_model",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "SKILL.md:53 and 234-241 describe the ref-less join candidate rule (single-solo-recent-room match); CLAUDE.md's Conversation model section states the same rule almost verbatim (zero or several candidates mint a new room)."
+	},
+	{
+		"source": "skills_switchboard_skill_conversation_lifecycle",
+		"target": "claude_conversation_model",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "SKILL.md:190-195 'Lifecycle states' (Active/Ended) directly parallels CLAUDE.md's Conversation model Active/Ended description."
+	},
+	{
+		"source": "skills_switchboard_skill_rate_limit",
+		"target": "claude_rate_limiter",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "SKILL.md:305-309 describes the per-conversation rate limit and message_and_await_agent/post_agent_message's separate bucket; CLAUDE.md's rate_limiter.py Layout entry describes the identical mechanism and consumers."
+	},
+	{
+		"source": "skills_switchboard_skill_sender_convention",
+		"target": "claude_session_registry",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "SKILL.md:64-70 defines sender as a display name distinct from identity; CLAUDE.md's Session Registry note (D4) says 'Identity is cli_session_id everywhere; sender is a display attribute' - same distinction stated from two angles."
+	},
+	{
+		"source": "skills_switchboard_skill_title_convention",
+		"target": "skills_switchboard_skill_sender_convention",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "SKILL.md 'Your title' (72-82) sits immediately after 'Your sender' (64-70) in the same file; both are naming/display conventions for a session's identity on the phone."
+	},
+	{
+		"source": "watchtower_docs_superpowers_specs_2026_06_12_claude_context_widget_design_active_live_classifier",
+		"target": "watchtower_docs_superpowers_specs_2026_06_12_claude_context_widget_design_sessionmodel",
+		"relation": "shares_data_with",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "'Architecture' section lists SessionModel's fields as 'label, distro, pct, tokens, window, model, status, lastActive' and names 'the active/live classifier' among the pure-logic units producing those values (status/lastActive)."
+	},
+	{
+		"source": "watchtower_docs_superpowers_specs_2026_06_12_claude_context_widget_design_cwdlabeler",
+		"target": "watchtower_docs_superpowers_specs_2026_06_12_claude_context_widget_design_sessionmodel",
+		"relation": "shares_data_with",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "'Architecture' section: CwdLabeler maps 'cwd string -> friendly label', directly producing SessionModel's 'label' field."
+	},
+	{
+		"source": "watchtower_docs_superpowers_specs_2026_06_12_claude_context_widget_design_usagereader",
+		"target": "watchtower_docs_superpowers_specs_2026_06_12_claude_context_widget_design_context_computation_rules",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Doc's 'Data flow' section: 'UsageReader opens it read-only... reads the tail... and parses the last assistant line into a SessionModel (computing tokens, window, pct, severity...)' -- UsageReader is the executor of the 'Computation rules' section's formulas."
+	},
+	{
+		"source": "watchtower_docs_superpowers_specs_2026_06_13_popup_quota_pacing_design_spec",
+		"target": "watchtower_docs_superpowers_specs_2026_06_12_claude_context_widget_design_detailpanel",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "2026-06-13-popup-quota-pacing-design.md Goal section (line 5) explicitly says the feature surfaces inside 'the hover popup' and extends it, directly referencing the 2026-06-12 spec's Detail panel rendering popup."
+	},
+	{
+		"source": "watchtower_docs_superpowers_specs_2026_06_18_context_rings_design_equalizer",
+		"target": "watchtower_docs_superpowers_specs_2026_06_12_claude_context_widget_design_widgetwindow",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "2026-06-18 doc's 'Final rendering decisions' section literally labels this 'the mini equalizer designed 2026-06-12' (source_location), a direct citation of the widget defined in the 2026-06-12 spec's 'Widget rendering' section."
+	},
+	{
+		"source": "watchtower_docs_superpowers_specs_2026_06_18_context_rings_design_ring_color_palette",
+		"target": "watchtower_docs_superpowers_specs_2026_06_12_claude_context_widget_design_context_computation_rules",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "2026-06-18's 'Rings-only green -> yellow -> red palette' and 2026-06-12's 'Severity color: green < 50%, amber 50-80%, red > 80%' both map context fullness percent to a severity color scale, per the source_location annotation."
+	},
+	{
+		"source": "watchtower_docs_superpowers_specs_2026_06_18_context_rings_design_spec",
+		"target": "watchtower_docs_superpowers_specs_2026_06_12_claude_context_widget_design_spec",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "2026-06-18 doc is a direct redesign of the widget the 2026-06-12 spec introduced; it cites the June-12 spec's exact line numbers (WidgetWindow.cs:355-395) and rendering rules (RenderGauge) throughout."
+	},
+	{
+		"source": "watchtower_readme_context_monitoring",
+		"target": "watchtower_readme_codezeno_monitor",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "README L3 explicitly compares the two: 'It complements quota monitors like CodeZeno's Claude-Code-Usage-Monitor... by answering a different question'; same domain (Claude Code session monitoring), directly juxtaposed in the source text."
+	},
+	{
+		"source": "watchtower_readme_core_isolation",
+		"target": "watchtower_readme_transcript_scan",
+		"relation": "rationale_for",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "README L137: 'The Core library has no UI or Win32 dependencies; its WSL access is behind the IDistroLister interface and injected glob/mtime functions, so the logic is unit-tested in isolation' -- Core purity is stated as the reason the scan/tail pipeline is structured this way."
+	},
+	{
+		"source": "watchtower_readme_switchboard_integration",
+		"target": "claude_registry",
+		"relation": "conceptually_related_to",
+		"verdict": "rejected",
+		"date": "2026-07-29",
+		"note": "watchtower/README.md's Switchboard config block (Enabled/StatsUrl/DashboardUrl/ShowBadge) only configures HTTP endpoints; it never discusses or depends on the in-memory Registry's internals. Link is too indirect to count as conceptually related."
+	},
+	{
+		"source": "watchtower_readme_transcript_scan",
+		"target": "claude_localsystem_constraint",
+		"relation": "conceptually_related_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "README's scan pipeline exists precisely because of D6 (LocalSystem can't read ~/.claude/projects or reach WSL); the 2026-06-25 design doc explicitly ties Watchtower's role as sole sensor to this constraint, and CLAUDE.md's D6 states the same rule."
+	},
+	{
+		"source": "watchtower_readme_watchtower_widget",
+		"target": "claude_watchtower",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Same entity described in both docs: README L1 'A small Windows taskbar widget' vs CLAUDE.md project-shape row 'watchtower/ Windows client (.NET 9 / WinForms taskbar widget) -- Switchboard Watchtower'."
+	},
+	{
+		"source": "watchtower_src_switchboard_watchtower_apphost_apphost",
+		"target": "watchtower_docs_superpowers_specs_2026_06_12_claude_context_widget_design_apphost",
+		"relation": "implements",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "watchtower/src/Switchboard.Watchtower/AppHost.cs:8-40 is exactly the polling-timer/background-scan/config/single-instance/wiring class the 2026-06-12 spec's Architecture section (AppHost line) describes, under its pre-rename ClaudeContextWidget naming."
+	},
+	{
+		"source": "watchtower_src_switchboard_watchtower_apphost_apphost",
+		"target": "watchtower_src_switchboard_watchtower_detailpanel_detailpanel",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "AppHost.cs:369-370 calls _widget.UpdateQuota(u) then _panel.UpdateQuota(u) inside the PollQuota QuotaStatus.Ok branch, matching the spec's Data flow exactly."
+	},
+	{
+		"source": "watchtower_src_switchboard_watchtower_apphost_apphost",
+		"target": "watchtower_src_switchboard_watchtower_widgetwindow_widgetwindow",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "AppHost.cs:369 calls _widget.UpdateQuota(u); _widget is a WidgetWindow field (AppHost.cs:11), matching the spec's Data flow line."
+	},
+	{
+		"source": "watchtower_src_switchboard_watchtower_claudestatusreader_claudestatusreader",
+		"target": "watchtower_src_switchboard_watchtower_core_claudestatusview_claudestatusview",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "ClaudeStatusReader.cs:32-54 GetViewAsync/GetViewOnceAsync return Task<ClaudeStatusView> and call ClaudeServerStatus.ParseView(json), which constructs and returns ClaudeStatusView instances (Core/ClaudeStatusView.cs:10-49). The architecture moved server-side since the design doc (comment: 'the watch state machine lives on the server now'), but the calls relationship is genuinely current."
+	},
+	{
+		"source": "watchtower_src_switchboard_watchtower_core_quota_quotapacing",
+		"target": "watchtower_docs_superpowers_specs_2026_06_13_popup_quota_pacing_design_quotapacing",
+		"relation": "implements",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "watchtower/src/Switchboard.Watchtower.Core/Quota.cs:22 declares 'public static class QuotaPacing', matching the spec's Components/Core description verbatim."
+	},
+	{
+		"source": "watchtower_src_switchboard_watchtower_core_widgetsnapshot_widgetsnapshot",
+		"target": "server_widget_snapshot_widgetsnapshotstore",
+		"relation": "shares_data_with",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "watchtower/src/Switchboard.Watchtower.Core/WidgetSnapshot.cs defines WidgetSnapshotPayload{rings,quota,pushed_at} posted to /widget-snapshot; server/widget_snapshot.py WidgetSnapshotStore.apply(rings, quota, pushed_at) (L12, L26) ingests that exact shape."
+	},
+	{
+		"source": "watchtower_src_switchboard_watchtower_detailpanel_detailpanel",
+		"target": "watchtower_docs_superpowers_specs_2026_06_12_claude_context_widget_design_detailpanel",
+		"relation": "implements",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "DetailPanel.cs:8 (class DetailPanel : Form) implements the popup described in the 2026-06-12 spec's Detail panel rendering section (status dot, label, severity bar, sorted busiest-first)."
+	},
+	{
+		"source": "watchtower_src_switchboard_watchtower_detailpanel_detailpanel",
+		"target": "watchtower_docs_superpowers_specs_2026_06_13_popup_quota_pacing_design_plan_usage_section",
+		"relation": "implements",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "DetailPanel.cs:339 UpdateQuota(QuotaUsage usage) and the quota-window drawing at lines 503-647 implement the 2026-06-13 spec's Components/UI section describing the new quota section in DetailPanel; heading wording ('Plan usage') has since evolved to per-group titles but the section itself is live."
+	},
+	{
+		"source": "watchtower_src_switchboard_watchtower_detailpanel_switchboard_watchtower_detailpanel_showabove",
+		"target": "watchtower_src_switchboard_watchtower_detailpanel_switchboard_watchtower_backgroundform_pushframe",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "DetailPanel.cs L581 _bgForm.PushFrame(targetBmp) sits inside ShowAbove(Rectangle) (starts L511); _bgForm is BackgroundForm (field decl L111), whose PushFrame is defined at L71, matching tgt_defined_in/tgt_loc."
+	},
+	{
+		"source": "watchtower_src_switchboard_watchtower_program_switchboard_watchtower_program_main",
+		"target": "watchtower_src_switchboard_watchtower_apphost_switchboard_watchtower_apphost_start",
+		"relation": "calls",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Program.cs L37-38: `using var host = new AppHost(config, isDemo: isDemo); host.Start();` inside Main(); AppHost.Start() is defined at AppHost.cs L139, matching target."
+	},
+	{
+		"source": "watchtower_src_switchboard_watchtower_switchboardstatsreader_switchboardstatsreader",
+		"target": "watchtower_src_switchboard_watchtower_widgetsnapshotpusher_widgetsnapshotpusher",
+		"relation": "semantically_similar_to",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "Both classes in watchtower/src/Switchboard.Watchtower/ are near-identical thin HTTP glue over a Core-built payload, same localhost trust model, each documented as manually-verified since Core tests can't reference the UI assembly (SwitchboardStatsReader.cs L6-8, WidgetSnapshotPusher.cs L8-11)."
+	},
+	{
+		"source": "watchtower_src_switchboard_watchtower_widgetsnapshotpusher_widgetsnapshotpusher",
+		"target": "docs_superpowers_specs_2026_06_25_watchtower_data_into_server_design_widget_snapshot_ingest",
+		"relation": "references",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "WidgetSnapshotPusher.cs header comment (L8-9) says it 'POSTs the widget snapshot (rings + quota) to the Switchboard server's /widget-snapshot ingest'; PushAsync (L25) does the POST, matching the doc's ingest design directly."
+	},
+	{
+		"source": "watchtower_src_switchboard_watchtower_widgetwindow_widgetwindow",
+		"target": "watchtower_docs_superpowers_specs_2026_06_12_claude_context_widget_design_widgetwindow",
+		"relation": "implements",
+		"verdict": "confirmed",
+		"date": "2026-07-29",
+		"note": "The 2026-06-18 design doc cites WidgetWindow.cs by exact line numbers (355-374, 376-395, 243-249) for the equalizer/label rendering the 2026-06-12 spec's 'Widget rendering' section describes (borderless layered tool window, GDI+ painted, taskbar-embedded), confirming WidgetWindow.cs as that section's implementation."
+	}
+]

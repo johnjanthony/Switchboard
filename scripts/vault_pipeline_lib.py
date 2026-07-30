@@ -5,6 +5,7 @@ refresh-obsidian-vault.py) are hyphen-named and cannot be imported by tests,
 so everything testable lives here. No third-party imports at module level:
 networkx exists in the hook environment but not necessarily in the venv."""
 
+import json
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -117,6 +118,77 @@ def name_communities(nodes, links, membership):
 		used.add(name)
 		names[cid] = name
 	return names
+
+
+SHAKY_CONFIDENCES = ("INFERRED", "AMBIGUOUS")
+_VERDICT_KEYS = ("source", "target", "relation", "verdict", "date", "note")
+
+
+def load_verdicts(path):
+	"""Read .graphify-verdicts.json. Missing file -> [] (overlay is optional).
+	Malformed JSON or invalid records raise ValueError: a broken verdicts file
+	must not silently ship a wrong view."""
+	path = Path(path)
+	if not path.exists():
+		return []
+	try:
+		data = json.loads(path.read_text(encoding="utf-8"))
+	except json.JSONDecodeError as exc:
+		raise ValueError(f"{path}: not valid JSON: {exc}") from exc
+	if not isinstance(data, list):
+		raise ValueError(f"{path}: expected a JSON array of verdict records")
+	seen = set()
+	for i, rec in enumerate(data):
+		if not isinstance(rec, dict) or any(not rec.get(k) for k in _VERDICT_KEYS):
+			raise ValueError(f"{path}: record {i} missing one of {_VERDICT_KEYS}")
+		if rec["verdict"] not in ("confirmed", "rejected"):
+			raise ValueError(f"{path}: record {i} has verdict {rec['verdict']!r}")
+		key = (rec["source"], rec["target"], rec["relation"])
+		if key in seen:
+			raise ValueError(f"{path}: duplicate verdict for {key}; keep exactly one record per edge")
+		seen.add(key)
+	return data
+
+
+def apply_verdicts(links, verdicts):
+	"""Apply confirm/reject verdicts to the edge list by exact
+	(source, target, relation) identity. Rejected edges are dropped; confirmed
+	edges flip to EXTRACTED with provenance (original_confidence, verified) and
+	confidence_score 1.0. Returns (kept_links, stats) where stats carries
+	confirmed/rejected counts, the stale verdict records (matched no edge), and
+	the count of still-unverdicted shaky edges."""
+	by_key = {}
+	for rec in verdicts:
+		by_key.setdefault((rec["source"], rec["target"], rec["relation"]), rec)
+	matched = set()
+	kept = []
+	unverdicted = 0
+	for e in links:
+		key = (e.get("source"), e.get("target"), e.get("relation"))
+		rec = by_key.get(key)
+		if rec is None:
+			if e.get("confidence") in SHAKY_CONFIDENCES:
+				unverdicted += 1
+			kept.append(e)
+			continue
+		matched.add(key)
+		if rec["verdict"] == "rejected":
+			continue
+		e = dict(e)
+		e["original_confidence"] = e.get("confidence")
+		e["confidence"] = "EXTRACTED"
+		e["confidence_score"] = 1.0
+		e["verified"] = rec["date"]
+		kept.append(e)
+	# Stats count VERDICTS, not edges: a verdict matching several parallel
+	# edges (defensive; the graph is not a multigraph) counts once.
+	stats = {
+		"confirmed": sum(1 for k in matched if by_key[k]["verdict"] == "confirmed"),
+		"rejected": sum(1 for k in matched if by_key[k]["verdict"] == "rejected"),
+		"stale": [rec for key, rec in by_key.items() if key not in matched],
+		"unverdicted": unverdicted,
+	}
+	return kept, stats
 
 
 _LOC_RE = re.compile(r"^L(\d+)$")
@@ -236,6 +308,58 @@ def markdown_section(text, line, cap=40):
 	return "\n".join("> " + l if l.strip() else ">" for l in out)
 
 
+_FENCE_RE = re.compile(r"^\s{0,3}(\x60{3,}|~{3,})")
+_HEADING_TEXT_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
+_SS_LOC_RE = re.compile(r"^SS(\d+(?:\.\d+)*)$")
+_SECTION_LOC_RE = re.compile(r"^section\s+(\d+(?:\.\d+)*)$", re.IGNORECASE)
+
+
+def markdown_headings(text):
+	"""(line, level, text) for every ATX heading outside code fences."""
+	out = []
+	in_fence = False
+	fence_char = None
+	fence_len = None
+	for i, raw in enumerate(text.splitlines(), start=1):
+		fm = _FENCE_RE.match(raw)
+		if fm:
+			if not in_fence:
+				in_fence = True
+				fence_char = fm.group(1)[0]
+				fence_len = len(fm.group(1))
+			elif fm.group(1)[0] == fence_char and len(fm.group(1)) >= fence_len:
+				in_fence = False
+			continue
+		if in_fence:
+			continue
+		m = _HEADING_TEXT_RE.match(raw)
+		if m:
+			out.append((i, len(m.group(1)), m.group(2)))
+	return out
+
+
+def _match_numbered_heading(num, headings):
+	"""The unique heading whose text starts with `num` as a complete dotted
+	section number ("3" matches "3. Routing" and "3 Routing", never "3.1 x")."""
+	pat = re.compile(rf"^{re.escape(num)}\.?(?:\s|$)")
+	hits = [line for line, _, text in headings if pat.match(text)]
+	return hits[0] if len(hits) == 1 else None
+
+
+def resolve_section_location(loc, headings):
+	"""Map a non-L<n> graphify location (SS-id, 'section N', heading text) to a
+	heading line for markdown_section. None when nothing resolves uniquely:
+	no guessing, the note stays excerpt-suppressed."""
+	loc = (loc or "").strip()
+	if not loc or "/" in loc or "\\" in loc or "," in loc:
+		return None
+	m = _SS_LOC_RE.match(loc) or _SECTION_LOC_RE.match(loc)
+	if m:
+		return _match_numbered_heading(m.group(1), headings)
+	hits = [line for line, _, text in headings if text.casefold() == loc.casefold()]
+	return hits[0] if len(hits) == 1 else None
+
+
 _FM_KEYS = ("source_file", "type", "location", "community")
 _FM_LINE = re.compile(r'^(\w+):\s*"?(.*?)"?\s*$')
 _H1_RE = re.compile(r"^# (.+)$", re.MULTILINE)
@@ -307,6 +431,7 @@ def enrich_vault(vault_dir, repo_root):
 	vault_dir, repo_root = Path(vault_dir), Path(repo_root)
 	sources = {}
 	trees = {}
+	headings = {}
 	enriched = skipped = 0
 	for p in sorted(vault_dir.glob("*.md")):
 		try:
@@ -324,6 +449,10 @@ def enrich_vault(vault_dir, repo_root):
 			stext = sources[src]
 			line = parse_location(fm.get("location"))
 			ext = sf.suffix.lower()
+			if line is None and ext == ".md":
+				if src not in headings:
+					headings[src] = markdown_headings(stext)
+				line = resolve_section_location(fm.get("location"), headings[src])
 			body, lang = None, FENCE_LANG.get(ext, "")
 			if line is not None:
 				if ext == ".md":
