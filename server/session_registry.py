@@ -71,6 +71,10 @@ class SessionRecord:
 	conversation_id: str | None = None
 	sender: str | None = None
 	model: str | None = None
+	# Commanded at spawn time (phone/Operator pick). Distinct from `model`,
+	# which is the ring-OBSERVED value Watchtower sightings overwrite.
+	spawn_model: str | None = None
+	spawn_effort: str | None = None
 	context_pct: float | None = None
 	end_reason: str | None = None
 	source: str = "hook"
@@ -231,6 +235,25 @@ class SessionRegistry:
 		self._fire_mirror(rec)
 		return rec
 
+	def record_spawn_choice(
+		self, cli_session_id: str, *, model: str | None, effort: str | None, cwd: str | None = None,
+	) -> SessionRecord:
+		"""Commanded model/effort from a phone/Operator spawn. Resume paths read
+		these back so the choice survives --resume (which resets effort)."""
+		rec = self._ensure(cli_session_id, source="spawn")
+		if cwd and not rec.cwd:
+			# Seed the stub so the roster row names the project instead of
+			# showing an empty cwd while the launched agent's SessionStart is
+			# still in flight. An established record's own cwd wins.
+			from server.conversation_ops import _infer_surface
+			rec.cwd = cwd
+			rec.surface = _infer_surface(cwd)
+		rec.spawn_model = model
+		rec.spawn_effort = effort
+		rec.last_event_at = self._now()
+		self._fire_mirror(rec)
+		return rec
+
 	def apply_rings(self, rings: dict) -> None:
 		"""Enrich known sessions from a Watchtower snapshot; discover unknown ones.
 		A ring sighting bumps last_event_at (a second, hook-independent liveness
@@ -356,6 +379,8 @@ class SessionRegistry:
 			conversation_id=data.get("conversation_id"),
 			sender=data.get("sender"),
 			model=data.get("model"),
+			spawn_model=data.get("spawn_model"),
+			spawn_effort=data.get("spawn_effort"),
 			context_pct=data.get("context_pct"),
 			end_reason=data.get("end_reason"),
 			source="hydration",

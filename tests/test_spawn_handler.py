@@ -1010,3 +1010,216 @@ async def test_resume_session_launch_failure_reverts_added_member(tmp_path):
 	assert member is not None and member.alive is False  # added member reverted to dormant, kept for visibility
 	assert member.session_end_reason == "launch-failed"
 	assert registry.session_to_conversation_id.get("sess-r1") is None
+
+
+# ===========================================================================
+# Model/effort selection
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_handle_fresh_invalid_model_rejected_loudly_no_side_effects(tmp_path):
+	"""An invalid model must notify the phone and stop BEFORE any side effect:
+	no pending file, no away-mode flip, no conversation minted."""
+	from server.spawn import SpawnHandler
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	registry = Registry()
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+	await handler.handle_fresh({
+		"type": "fresh",
+		"surface": "windows",
+		"project": "myproject",
+		"model": "bogus",
+		"issued_at": "2026-07-30T00:00:00Z",
+	})
+	backend.send_text.assert_awaited()
+	assert "bogus" in backend.send_text.await_args.args[0]
+	assert _find_pending_files(cfg) == []
+	assert registry.global_away_mode is False
+	assert registry.conversations == {}
+
+
+@pytest.mark.asyncio
+async def test_handle_fresh_effort_on_antigravity_rejected(tmp_path):
+	from server.spawn import SpawnHandler
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	registry = Registry()
+	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+	await handler.handle_fresh({
+		"type": "fresh",
+		"agent": "antigravity",
+		"surface": "windows",
+		"project": "myproject",
+		"effort": "high",
+		"issued_at": "2026-07-30T00:00:00Z",
+	})
+	backend.send_text.assert_awaited()
+	assert "effort" in backend.send_text.await_args.args[0].lower()
+	assert _find_pending_files(cfg) == []
+
+
+@pytest.mark.asyncio
+async def test_handle_fresh_threads_model_effort_and_records(tmp_path):
+	"""A valid pick lands in the pending file AND on the session registry."""
+	from server.spawn import SpawnHandler
+	from server.session_registry import SessionRegistry
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	registry = Registry()
+	registry.sessions = SessionRegistry()
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle_fresh({
+			"type": "fresh",
+			"surface": "windows",
+			"project": "myproject",
+			"model": "sonnet",
+			"effort": "low",
+			"issued_at": "2026-07-30T00:00:00Z",
+		})
+	pending = _read_pending(cfg)
+	entry = pending["agents"][0]
+	assert entry["model"] == "sonnet"
+	assert entry["effort"] == "low"
+	rec = registry.sessions.get(entry["cli_session_id"])
+	assert rec is not None
+	assert rec.spawn_model == "sonnet"
+	assert rec.spawn_effort == "low"
+	assert rec.cwd == entry["project_path"]
+	assert rec.surface == "windows"
+
+
+@pytest.mark.asyncio
+async def test_handle_fresh_default_spawn_has_no_model_effort_keys(tmp_path):
+	"""No pick means absent keys (not null) and nothing recorded."""
+	from server.spawn import SpawnHandler
+	from server.session_registry import SessionRegistry
+	spawn_root = tmp_path / "projects"
+	spawn_root.mkdir()
+	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
+	backend = make_backend()
+	registry = Registry()
+	registry.sessions = SessionRegistry()
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle_fresh({
+			"type": "fresh",
+			"surface": "windows",
+			"project": "myproject",
+			"issued_at": "2026-07-30T00:00:00Z",
+		})
+	pending = _read_pending(cfg)
+	entry = pending["agents"][0]
+	assert "model" not in entry
+	assert "effort" not in entry
+	rec = registry.sessions.get(entry["cli_session_id"])
+	assert rec is None or (rec.spawn_model is None and rec.spawn_effort is None)
+
+
+@pytest.mark.asyncio
+async def test_launch_resume_agent_repasses_recorded_choice(tmp_path):
+	"""Resume must re-pass the recorded pair: claude --resume preserves model
+	natively but RESETS effort to the settings default (probe 2026-07-30)."""
+	from server.spawn import SpawnHandler
+	from server.session_registry import SessionRegistry
+	cfg = make_config_with_wsl(tmp_path)
+	backend = make_backend()
+	registry = Registry()
+	registry.sessions = SessionRegistry()
+	registry.sessions.record_spawn_choice("sid-res", model="sonnet", effort="low")
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		ok = await handler.launch_resume_agent(
+			session_id="sid-res", surface="windows", cwd="C:/Work/X", prompt="p", prior_sender=None,
+		)
+	assert ok
+	pending = _read_pending(cfg)
+	entry = pending["agents"][0]
+	assert entry["model"] == "sonnet"
+	assert entry["effort"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_launch_resume_agent_failsoft_drops_invalid_recorded_choice(tmp_path):
+	"""A retired recorded model must not block resume: flags dropped, phone told."""
+	from server.spawn import SpawnHandler
+	from server.session_registry import SessionRegistry
+	cfg = make_config_with_wsl(tmp_path)
+	backend = make_backend()
+	registry = Registry()
+	registry.sessions = SessionRegistry()
+	registry.sessions.record_spawn_choice("sid-res", model="retired-model", effort="low")
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		ok = await handler.launch_resume_agent(
+			session_id="sid-res", surface="windows", cwd="C:/Work/X", prompt="p", prior_sender=None,
+		)
+	assert ok
+	pending = _read_pending(cfg)
+	entry = pending["agents"][0]
+	assert "model" not in entry
+	assert "effort" not in entry
+	backend.send_text.assert_awaited()
+	assert "retired-model" in backend.send_text.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_launch_resume_agent_failsoft_survives_notice_send_failure(tmp_path):
+	"""A Firebase send_text failure while reporting the dropped choice must not
+	defeat the fail-soft guarantee: the resume still launches with defaults."""
+	from server.spawn import SpawnHandler
+	from server.session_registry import SessionRegistry
+	cfg = make_config_with_wsl(tmp_path)
+	backend = make_backend()
+	backend.send_text = AsyncMock(side_effect=RuntimeError("firebase down"))
+	registry = Registry()
+	registry.sessions = SessionRegistry()
+	registry.sessions.record_spawn_choice("sid-res", model="retired-model", effort="low")
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		ok = await handler.launch_resume_agent(
+			session_id="sid-res", surface="windows", cwd="C:/Work/X", prompt="p", prior_sender=None,
+		)
+	assert ok
+	pending = _read_pending(cfg)
+	entry = pending["agents"][0]
+	assert "model" not in entry
+	assert "effort" not in entry
+
+
+@pytest.mark.asyncio
+async def test_handle_resume_repasses_recorded_choice(tmp_path):
+	"""Conversation resume threads each member's recorded pair into its entry."""
+	from server.registry import Conversation, ConversationMember
+	from server.spawn import SpawnHandler
+	from server.session_registry import SessionRegistry
+	import time as _time
+	cfg = make_config_with_wsl(tmp_path)
+	backend = make_backend()
+	registry = Registry()
+	registry.sessions = SessionRegistry()
+	registry.sessions.record_spawn_choice("sess-1", model="haiku", effort=None)
+	source = Conversation(id="conv-old", title="Old")
+	source.members_active["sess-1"] = ConversationMember(
+		cli_session_id="sess-1", sender="Claude Win", cwd="C:/Work/X",
+		surface="windows", joined_at=_time.time(), alive=False,
+	)
+	registry.conversations["conv-old"] = source
+	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()):
+		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
+		await handler.handle_resume({
+			"type": "resume",
+			"source_conversation_id": "conv-old",
+			"issued_at": "2026-07-30T00:00:00Z",
+		})
+	pending = _read_pending(cfg)
+	entry = pending["agents"][0]
+	assert entry["model"] == "haiku"
+	assert "effort" not in entry

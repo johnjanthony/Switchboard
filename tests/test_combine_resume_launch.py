@@ -246,3 +246,29 @@ async def test_combine_launches_antigravity_member(tmp_path):
 	payload = json.loads(files[0].read_text(encoding="utf-8"))
 	assert payload["type"] == "combine_resume"
 	assert payload["agents"][0]["agent"] == "antigravity"
+
+
+@pytest.mark.asyncio
+async def test_combine_resume_repasses_recorded_choice(tmp_path):
+	"""A dormant member relaunched by combine keeps its recorded model/effort."""
+	from server.conversation_ops import _perform_combine
+	from server.session_registry import SessionRegistry
+	registry = _registry_with_source_and_target()
+	registry.sessions = SessionRegistry()
+	registry.sessions.record_spawn_choice("sess-dormant", model="sonnet", effort="low")
+	backend = RecordingBackend()
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+
+	with patch("server.spawn.user_has_interactive_session", AsyncMock(return_value=True)), \
+			patch("server.spawn.invoke_spawn_launcher", AsyncMock()):
+		result = await _perform_combine(
+			registry, "conv-src", "conv-tgt", logger, pending_dir=tmp_path, backend=backend,
+		)
+
+	assert result.startswith("ok"), f"combine failed: {result}"
+	files = list(tmp_path.glob("spawn-pending-*.json"))
+	assert len(files) == 1
+	pending = json.loads(files[0].read_text())
+	entry = pending["agents"][0]
+	assert entry["model"] == "sonnet"
+	assert entry["effort"] == "low"

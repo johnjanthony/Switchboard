@@ -194,3 +194,25 @@ data class RegistrySession(
 	@get:PropertyName("in_tool") @set:PropertyName("in_tool") var inTool: Boolean = false,
 	@get:PropertyName("blocked_on_approval") @set:PropertyName("blocked_on_approval") var blockedOnApproval: Boolean = false,
 )
+
+// --- Spawn model/effort catalog: mirrors the server-published spawn_options/ node.
+// Absent or unparseable is a normal state (server down, node not yet published), not an
+// error - callers degrade to a Default (CLI)-only picker rather than block spawn on it.
+
+@IgnoreExtraProperties
+data class SpawnModelOption(
+	@get:PropertyName("id") @set:PropertyName("id") var id: String = "",
+	@get:PropertyName("efforts") @set:PropertyName("efforts") var efforts: List<String>? = null,
+)
+
+@IgnoreExtraProperties
+data class SpawnCliOptions(
+	@get:PropertyName("models") @set:PropertyName("models") var models: List<SpawnModelOption>? = null,
+)
+
+@IgnoreExtraProperties
+data class SpawnOptions(
+	@get:PropertyName("published_at") @set:PropertyName("published_at") var publishedAt: String = "",
+	@get:PropertyName("claude") @set:PropertyName("claude") var claude: SpawnCliOptions? = null,
+	@get:PropertyName("antigravity") @set:PropertyName("antigravity") var antigravity: SpawnCliOptions? = null,
+)

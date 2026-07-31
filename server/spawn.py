@@ -11,6 +11,7 @@ from server.config import Config
 from server.logging_jsonl import JsonlLogger
 from server.messenger import MessageWriter, ConversationStore
 from server.registry import Registry
+from server.spawn_catalog import build_catalog, recorded_choice_for_resume, validate_spawn_choice
 
 _TASK_NAME = "SwitchboardSpawn"
 
@@ -287,6 +288,18 @@ class SpawnHandler:
 			)
 			return
 
+		# Validate model/effort before ANY side effect (no quser call, no
+		# away-mode flip, no conversation mint). The CLI cannot be trusted to
+		# reject these: Claude Code silently ignores a bad --effort, and launch
+		# errors die inside the wt tab where the phone never sees them.
+		model = cmd.get("model")
+		effort = cmd.get("effort")
+		err = validate_spawn_choice(self._registry.spawn_catalog or build_catalog(), agent, model, effort)
+		if err is not None:
+			await self._logger.surface_error(f"spawn_fresh_invalid_choice: {err}")
+			await self._backend.send_text(err)
+			return
+
 		if not await self._user_has_interactive_session():
 			await self._backend.send_text(
 				"Cannot spawn: no one is logged in to the desktop. Sign in (locally or via RDP) and try again."
@@ -391,21 +404,29 @@ class SpawnHandler:
 				label=f"fb_set_session_home:{new_session_id}:{conv_id}",
 			)
 
+		if (model or effort) and self._registry.sessions is not None:
+			self._registry.sessions.record_spawn_choice(new_session_id, model=model, effort=effort, cwd=project_path)
+
 		# Build prompt
 		prompt = self._format_fresh_prompt(cmd, conv, join_existing=join_existing)
 
 		# Write spawn-pending file
+		agent_entry = {
+			"agent": agent,
+			"surface": surface,
+			"cli_session_id": new_session_id,
+			"prompt": prompt,
+			"project_path": project_path,
+			"join_existing": join_existing,
+		}
+		if model:
+			agent_entry["model"] = model
+		if effort:
+			agent_entry["effort"] = effort
 		pending = {
 			"type": "fresh",
 			"conversation_id": conv_id,
-			"agents": [{
-				"agent": agent,
-				"surface": surface,
-				"cli_session_id": new_session_id,
-				"prompt": prompt,
-				"project_path": project_path,
-				"join_existing": join_existing,
-			}],
+			"agents": [agent_entry],
 		}
 		self._write_pending_file(pending)
 
@@ -544,14 +565,30 @@ class SpawnHandler:
 			self._registry.bind_session(m.cli_session_id, new_id)
 			new_conv.members_active[m.cli_session_id] = m
 			del source.members_active[m.cli_session_id]
-			agents.append({
-				"agent": "antigravity" if self._is_antigravity_session(m.cli_session_id) else "claude",
+			agent_kind = "antigravity" if self._is_antigravity_session(m.cli_session_id) else "claude"
+			r_model, r_effort, dropped = recorded_choice_for_resume(
+				self._registry.spawn_catalog or build_catalog(),
+				self._registry.sessions, m.cli_session_id, agent_kind,
+			)
+			if dropped:
+				await self._logger.surface_error(f"spawn_resume_choice_dropped: {dropped}")
+				try:
+					await self._backend.send_text(dropped)
+				except Exception as exc:
+					await self._logger.surface_error(f"spawn_resume_notice_send_failed: {exc}")
+			entry = {
+				"agent": agent_kind,
 				"surface": m.surface,
 				"cli_session_id": m.cli_session_id,
 				"prompt": self._format_resume_prompt(cmd, m, new_id, solo_resume),
 				"project_path": m.cwd,
 				"prior_sender": m.sender,
-			})
+			}
+			if r_model:
+				entry["model"] = r_model
+			if r_effort:
+				entry["effort"] = r_effort
+			agents.append(entry)
 			# Firebase: move member from source to new conv
 			_sbg(
 				self._backend.move_conversation_member(source_id, new_id, m, m.sender, end_source=False),
@@ -613,16 +650,32 @@ class SpawnHandler:
 		owns that policy (resume paths enable it; convene never does)."""
 		if not await self._user_has_interactive_session():
 			return False
+		agent_kind = "antigravity" if self._is_antigravity_session(session_id) else "claude"
+		r_model, r_effort, dropped = recorded_choice_for_resume(
+			self._registry.spawn_catalog or build_catalog(),
+			self._registry.sessions, session_id, agent_kind,
+		)
+		if dropped:
+			await self._logger.surface_error(f"resume_session_choice_dropped: {dropped}")
+			try:
+				await self._backend.send_text(dropped)
+			except Exception as exc:
+				await self._logger.surface_error(f"resume_session_notice_send_failed: {exc}")
+		agent_entry = {
+			"agent": agent_kind,
+			"surface": surface,
+			"cli_session_id": session_id,
+			"prompt": prompt,
+			"project_path": cwd,
+			"prior_sender": prior_sender,
+		}
+		if r_model:
+			agent_entry["model"] = r_model
+		if r_effort:
+			agent_entry["effort"] = r_effort
 		pending = {
 			"type": "resume_session",
-			"agents": [{
-				"agent": "antigravity" if self._is_antigravity_session(session_id) else "claude",
-				"surface": surface,
-				"cli_session_id": session_id,
-				"prompt": prompt,
-				"project_path": cwd,
-				"prior_sender": prior_sender,
-			}],
+			"agents": [agent_entry],
 		}
 		try:
 			self._write_pending_file(pending)

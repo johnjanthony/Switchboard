@@ -96,6 +96,7 @@ class Registry:
 		self._pending: dict[tuple[str, str], PendingRequest] = {}
 		self.total_answered: int = 0
 		self.sessions = None  # SessionRegistry, attached by main.py; optional for tests
+		self.spawn_catalog = None  # dict from spawn_catalog.build_catalog, attached by main.py; optional for tests
 		self._global_away = False
 		self._pending_mirror = None
 		self._session_to_conversation_id: dict[str, str] = {}

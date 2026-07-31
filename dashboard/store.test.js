@@ -59,6 +59,7 @@ test('initialState shape is exactly the contract', () => {
 		authError: null,
 		globalAway: false,
 		wslAvailable: false,
+		spawnOptions: null,
 		conversations: {},
 		sessions: {},
 		sessionAcks: {},
@@ -538,7 +539,7 @@ test('startGlobalListeners is idempotent: a second call detaches the first set',
 	const detached = fb.calls.unsubs.slice(unsubsBefore).map((u) => u.path);
 	assert.ok(detached.includes('conversations'), 'prior conversations listener detached before re-attach');
 	assert.ok(detached.includes('global_settings/away_mode'), 'prior away-mode listener detached');
-	assert.equal(detached.length, 14, 'all 14 global listeners detached before re-attach - update this count when adding a listener');
+	assert.equal(detached.length, 15, 'all 15 global listeners detached before re-attach - update this count when adding a listener');
 });
 
 test('sendAnswer writes answerCmd and returns true on success', async () => {
@@ -575,4 +576,20 @@ test('a rejected detail write surfaces to the detail pane', async () => {
 	const { store } = makeStore({ fb });
 	assert.equal(await store.dropLine('c1'), false);
 	assert.ok(store.getState().paneErrors.detail);
+});
+
+test('spawn_options listener updates state.spawnOptions', () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const entry = fb.calls.onValue.find((e) => e.path === paths.spawnOptions());
+	assert.ok(entry, 'spawn_options listener attached');
+	const SPAWN_OPTIONS = {
+		published_at: 'T',
+		claude: { models: [{ id: 'sonnet', efforts: ['low', 'medium'] }] },
+		antigravity: { models: [{ id: 'gemini-3.6-flash-high', efforts: [] }] },
+	};
+	entry.cb(SPAWN_OPTIONS);
+	assert.deepEqual(store.getState().spawnOptions, SPAWN_OPTIONS);
+	entry.cb(null);
+	assert.equal(store.getState().spawnOptions, null);
 });

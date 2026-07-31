@@ -54,8 +54,10 @@ foreach ($f in $pendingFiles) {
 			$sessionId = $agent.cli_session_id
 			$rawPath   = $agent.project_path
 			$rawPrompt = $agent.prompt
+			$rawModel  = if ($agent.PSObject.Properties.Name -contains 'model'  -and $agent.model)  { [string]$agent.model }  else { "" }
+			$rawEffort = if ($agent.PSObject.Properties.Name -contains 'effort' -and $agent.effort) { [string]$agent.effort } else { "" }
 
-			Write-LauncherLog "agent[$([Array]::IndexOf($params.agents, $agent))] agent=$agentType surface=$surface session=$sessionId path='$rawPath' prompt-bytes=$($rawPrompt.Length)"
+			Write-LauncherLog "agent[$([Array]::IndexOf($params.agents, $agent))] agent=$agentType surface=$surface session=$sessionId path='$rawPath' prompt-bytes=$($rawPrompt.Length) model='$rawModel' effort='$rawEffort'"
 			if ($surface -eq "wsl") {
 				# Versioned static script + per-spawn prompt file. The launcher
 				# writes only the prompt (short text, no quoting required) to
@@ -92,9 +94,12 @@ foreach ($f in $pendingFiles) {
 					$staticScriptWsl = "/mnt/c/Work/Switchboard/scripts/spawn-agy-wsl.sh"
 				}
 
-				Write-LauncherLog "wsl spawn (static-script): wt new-tab -- wsl.exe -e bash -l $staticScriptWsl '$rawPath' $sessionFlag $sessionId $promptWslPath (prompt-bytes=$($promptForFile.Length))"
+				$modelArg  = if ($rawModel)  { $rawModel }  else { "-" }
+				$effortArg = if ($rawEffort) { $rawEffort } else { "-" }
+
+				Write-LauncherLog "wsl spawn (static-script): wt new-tab -- wsl.exe -e bash -l $staticScriptWsl '$rawPath' $sessionFlag $sessionId $promptWslPath $modelArg $effortArg (prompt-bytes=$($promptForFile.Length))"
 				try {
-					$proc = Start-Process -FilePath "wt" -ArgumentList "new-tab", "--", "wsl.exe", "-e", "bash", "-l", $staticScriptWsl, $rawPath, $sessionFlag, $sessionId, $promptWslPath -PassThru -ErrorAction Stop
+					$proc = Start-Process -FilePath "wt" -ArgumentList "new-tab", "--", "wsl.exe", "-e", "bash", "-l", $staticScriptWsl, $rawPath, $sessionFlag, $sessionId, $promptWslPath, $modelArg, $effortArg -PassThru -ErrorAction Stop
 					Write-LauncherLog "wsl Start-Process OK pid=$($proc.Id) prompt=$promptWslPath"
 				} catch {
 					Write-LauncherLog "wsl Start-Process FAILED: $_"
@@ -103,15 +108,19 @@ foreach ($f in $pendingFiles) {
 				# PowerShell single-quote escape: ' → ''
 				$psSafePath   = $rawPath   -replace "'", "''"
 				$psSafePrompt = $rawPrompt -replace "'", "''"
-				
+
+				$flagSuffix = ""
+				if ($rawModel)  { $safeModel  = $rawModel  -replace "'", "''"; $flagSuffix += " --model '$safeModel'" }
+				if ($rawEffort) { $safeEffort = $rawEffort -replace "'", "''"; $flagSuffix += " --effort '$safeEffort'" }
+
 				if ($agentType -eq "antigravity") {
 					if ($psSafePrompt) {
-						$cli = "agy -i '$psSafePrompt' --add-dir '$psSafePath' --conversation '$sessionId' --dangerously-skip-permissions"
+						$cli = "agy -i '$psSafePrompt' --add-dir '$psSafePath' --conversation '$sessionId' --dangerously-skip-permissions$flagSuffix"
 					} else {
-						$cli = "agy --add-dir '$psSafePath' --conversation '$sessionId' --dangerously-skip-permissions"
+						$cli = "agy --add-dir '$psSafePath' --conversation '$sessionId' --dangerously-skip-permissions$flagSuffix"
 					}
 				} else {
-					$cli = "claude '$psSafePrompt' $sessionFlag '$sessionId' --dangerously-skip-permissions"
+					$cli = "claude '$psSafePrompt' $sessionFlag '$sessionId' --dangerously-skip-permissions$flagSuffix"
 				}
 				$command = "Set-Location '$psSafePath'; $cli"
 				$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))

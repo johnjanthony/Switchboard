@@ -396,6 +396,8 @@ async def _spawn_pending_for_combine_resume(
 	target_id: str,
 	source_id: str,
 	agent: str = "claude",
+	model: str | None = None,
+	effort: str | None = None,
 ) -> None:
 	"""Write a spawn-pending JSON file the launcher script will pick up to fire
 	`claude --resume <session_id>` for a dormant member during combine.
@@ -423,6 +425,10 @@ async def _spawn_pending_for_combine_resume(
 			"prior_sender": member.sender,
 		}],
 	}
+	if model:
+		pending["agents"][0]["model"] = model
+	if effort:
+		pending["agents"][0]["effort"] = effort
 	pending_path = _Path(pending_dir) / f"spawn-pending-{spawn_id}.json"
 	pending_path.write_text(json.dumps(pending, indent=2), encoding="utf-8")
 
@@ -516,7 +522,23 @@ async def _perform_combine(
 				# count honest while the relaunch is in flight. With
 				# pending_dir=None (test mode) no relaunch happens, so the
 				# member moves as-is and stays unbound.
-				await _spawn_pending_for_combine_resume(pending_dir, member, target_id, source_id, agent=agent)
+				from server.spawn_catalog import build_catalog, recorded_choice_for_resume
+				r_model, r_effort, dropped = recorded_choice_for_resume(
+					registry.spawn_catalog or build_catalog(),
+					registry.sessions, member.cli_session_id, agent,
+				)
+				if dropped:
+					if logger is not None:
+						await logger.surface_error(f"combine_resume_choice_dropped: {dropped}")
+					if backend is not None and hasattr(backend, "send_text"):
+						try:
+							await backend.send_text(dropped)
+						except Exception as exc:
+							if logger is not None:
+								await logger.surface_error(f"combine_resume_notice_send_failed: {exc}")
+				await _spawn_pending_for_combine_resume(
+					pending_dir, member, target_id, source_id, agent=agent, model=r_model, effort=r_effort,
+				)
 				if pending_dir is not None:
 					flipped.append((member, (member.session_ended_at, member.session_end_reason, member.left_at)))
 					member.alive = True

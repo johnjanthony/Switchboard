@@ -320,3 +320,28 @@ export function isConvenable(record) {
 	}
 	return RESUMABLE_STATES.has(record.state) && !!record.cwd;
 }
+
+// Spawn-dialog pick lists from the server-published spawn_options catalog.
+// Absent catalog -> empty lists -> the dialog offers only "Default (CLI)".
+export function modelOptionsFor(spawnOptions, agent) {
+	const cli = spawnOptions ? spawnOptions[agent === 'antigravity' ? 'antigravity' : 'claude'] : null;
+	const models = cli && Array.isArray(cli.models) ? cli.models : [];
+	return models.map((m) => m && m.id).filter(Boolean);
+}
+
+export function effortOptionsFor(spawnOptions, agent, modelId) {
+	if (agent === 'antigravity') return [];
+	const cli = spawnOptions ? spawnOptions.claude : null;
+	const models = cli && Array.isArray(cli.models) ? cli.models : [];
+	if (!modelId) {
+		const seen = [];
+		for (const m of models) {
+			for (const e of (m && m.efforts) || []) {
+				if (!seen.includes(e)) seen.push(e);
+			}
+		}
+		return seen;
+	}
+	const entry = models.find((m) => m && m.id === modelId);
+	return (entry && Array.isArray(entry.efforts) && entry.efforts) || [];
+}

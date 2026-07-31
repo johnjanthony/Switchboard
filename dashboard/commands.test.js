@@ -75,6 +75,18 @@ test('spawnFreshCmd includes optional agent when given', () => {
 	});
 });
 
+test('spawnFreshCmd includes model/effort only when provided', () => {
+	const withPicks = spawnFreshCmd(
+		{ agent: 'claude', surface: 'windows', project: 'x', model: 'sonnet', effort: 'low' },
+		() => 'T',
+	);
+	assert.equal(withPicks.value.model, 'sonnet');
+	assert.equal(withPicks.value.effort, 'low');
+	const without = spawnFreshCmd({ agent: 'claude', surface: 'windows', project: 'x' }, () => 'T');
+	assert.ok(!('model' in without.value));
+	assert.ok(!('effort' in without.value));
+});
+
 test('resumeCmd has source_conversation_id and NO surface/project/target', () => {
 	const cmd = resumeCmd({ sourceConversationId: 'c3' }, nowIso);
 	assert.equal(cmd.path, 'spawn_commands');

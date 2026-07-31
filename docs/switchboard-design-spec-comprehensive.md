@@ -344,7 +344,7 @@ Spawn launches a fresh `claude` or Antigravity (`agy`) process on either the Win
 
 ### 9.1 Spawn types
 
-- **`fresh`** — phone writes `spawn_commands/<id>/{type:"fresh", surface, project, agent?, prompt?, target_conversation_id?}` (`agent` is `"claude"`, the default, or `"antigravity"`). Server (`server/spawn.py:SpawnHandler.handle_fresh`) validates the project path, checks WSL availability when targeted, requires an interactive desktop session (`quser`; rejects with `"Cannot spawn: no one is logged in to the desktop. Sign in (locally or via RDP) and try again."`, degrading open if `quser` itself fails to launch), mints (or resolves) the conversation, pre-binds the new `cli_session_id`, writes a spawn-pending JSON file for the launcher, and triggers `schtasks /run /tn SwitchboardSpawn`.
+- **`fresh`** — phone writes `spawn_commands/<id>/{type:"fresh", surface, project, agent?, prompt?, target_conversation_id?, model?, effort?}` (`agent` is `"claude"`, the default, or `"antigravity"`; `model` / `effort` are the optional picker values, §9.7). Server (`server/spawn.py:SpawnHandler.handle_fresh`) validates the project path, checks WSL availability when targeted, validates `model` / `effort` against the catalog **before any side effect** (§9.7), requires an interactive desktop session (`quser`; rejects with `"Cannot spawn: no one is logged in to the desktop. Sign in (locally or via RDP) and try again."`, degrading open if `quser` itself fails to launch), mints (or resolves) the conversation, pre-binds the new `cli_session_id`, writes a spawn-pending JSON file for the launcher, and triggers `schtasks /run /tn SwitchboardSpawn`.
 - **`resume`** — phone writes `spawn_commands/<id>/{type:"resume", source_conversation_id, prompt?}`. Eligibility is per member, not all-or-nothing: any member that is dormant (not alive) and not `session_lost_permanently` qualifies, and the resume proceeds if at least one member qualifies (there is no `cli_session_id`-null test). Server mints a new conversation with `continued_from = source.id`, pre-binds each resumable member's `cli_session_id` to the new conv (clearing dormancy fields and resetting `last_seen_seq` to 0), ends the source only if it becomes empty of active members — not merely "all-dormant"; a `session_lost_permanently` member left behind keeps the source Active — and writes a multi-agent spawn-pending file. A launcher failure rolls the moved members back to dormant-and-unbound.
 - **`resume_session`** — the session-board resume flow (long-press a session row, not a conversation row; §12.8). Handled by `handle_resume_session` (`server/spawn.py`), which optimistically adds the member before launch and reverts it (`session_end_reason = "launch-failed"`) if the launcher fails to start.
 - **`combine_resume`** — server-internal type, never sent by the phone. Issued per dormant member as part of `combine_conversations`; the dormant member is auto-resumed into the target conversation, and the launcher fires once for the whole batch.
@@ -353,7 +353,7 @@ Three of the four types — `fresh`, `resume`, and `resume_session` — set `glo
 
 ### 9.2 Surfaces
 
-- **Windows**: `project_path = config.windows_spawn_root / project` (e.g., `C:\Work\Switchboard`), with a containment check that the resolved path stays under the configured root. Launcher opens `wt new-tab -- powershell.exe -EncodedCommand <b64>` running, for Claude, `Set-Location <path>; claude '<prompt>' --session-id <uuid> --dangerously-skip-permissions` (or `--resume <uuid>` for resume); for Antigravity, `agy -i '<prompt>' --add-dir '<path>' --conversation '<uuid>' --dangerously-skip-permissions` — the agy form always uses `--conversation`, never `--resume`, even when resuming.
+- **Windows**: `project_path = config.windows_spawn_root / project` (e.g., `C:\Work\Switchboard`), with a containment check that the resolved path stays under the configured root. Launcher opens `wt new-tab -- powershell.exe -EncodedCommand <b64>` running, for Claude, `Set-Location <path>; claude '<prompt>' --session-id <uuid> --dangerously-skip-permissions` (or `--resume <uuid>` for resume); for Antigravity, `agy -i '<prompt>' --add-dir '<path>' --conversation '<uuid>' --dangerously-skip-permissions` — the agy form always uses `--conversation`, never `--resume`, even when resuming. Both forms gain a trailing `--model '<m>'` and, for Claude, `--effort '<e>'` when the pending entry carries them (§9.7).
 - **WSL**: `project_path = <wsl_home>/<wsl_spawn_root_segment>/<project>` (e.g., `/home/john/work/Switchboard`). The launcher writes the prompt to a one-shot file (`logs/spawn-prompt-<uuid>.txt`, deleted after read) and opens `wt new-tab -- wsl.exe -e bash -l <static-script> '<path>' <session-flag> <session-id> <prompt-file>`, where the static script is `scripts/spawn-claude-wsl.sh` or `scripts/spawn-agy-wsl.sh` depending on `agent` — a versioned static script, not an inline `bash -lc` command, because `wt` does not preserve outer double-quoting when forwarding long quoted args. The WSL home is resolved once at server startup — `SWITCHBOARD_WSL_HOME` short-circuits the probe if set (the Session-0/NSSM case), otherwise `wsl.exe -e bash -lc 'echo $HOME'` — and cached on the frozen `Config` (`config.wsl_home_resolved`), not on the Registry. If WSL is unavailable, a WSL-targeted spawn is rejected with a log-only admin notice ("WSL spawn requested but WSL is not available on this host."); nothing is sent to the phone on this path.
 
 The two surfaces use **independent working trees**. A "Switchboard" project on Windows lives at `C:\Work\Switchboard`; the WSL clone (if any) lives at `/home/john/work/Switchboard` — a separate filesystem, not the drvfs view of the Windows path.
@@ -373,6 +373,17 @@ A spawned agent's `cli_session_id` is pre-bound in `_session_to_conversation_id`
 ### 9.6 Session-file aging (not implemented)
 
 Claude Code prunes its own session transcript files — `~/.claude/projects/<dir-hash>/<session_id>.jsonl` — after `cleanupPeriodDays` (default 30 days). That pruning is external to this repo and is not modeled anywhere in Switchboard: there is no `cleanupPeriodDays` arithmetic, no per-member "nearing expiry" warning, and no age-based resume-disablement in `android/`, `server/`, `dashboard/`, or `watchtower/`. Resume eligibility is registry-terminal-state based only (§2.2), with no time component. The server does run its own, unrelated time-based sweeps — `session_lost_after_seconds`, `session_retention_hours`, `conversation_retention_hours`, `admin_notification_retention_hours` (§14) — but a resumable member can still become non-resumable once the underlying Claude Code session file is pruned this way, and Switchboard has no visibility into or warning for it.
+
+### 9.7 Model and effort selection
+
+`server/spawn_catalog.py` is the single source of truth for both the pick lists the dialogs render and the allowlist the server validates against, so display and validation cannot drift apart.
+
+- **Catalog construction.** Claude Code's list is a curated constant (`fable`, `opus`, `sonnet`, `haiku` in display order; the first three carry the effort tiers `low, medium, high, xhigh, max`, `haiku` carries none because the flag is inapplicable to it). Antigravity's list is probed at startup with `agy models` and taken verbatim, one id per line, each with no effort tiers — agy bakes effort into the id (`gemini-3.6-flash-low`), so offering the suffixed ids sidesteps base-name plus `--effort` composition entirely. Any probe failure (missing binary, nonzero exit, timeout, empty output) logs loudly via `surface_error` and falls back to a curated snapshot. The result is published to `spawn_options/` (§10) and kept on `Registry.spawn_catalog`.
+- **As-built limitation, verified live 2026-07-30.** Under the NSSM service the server runs as `LocalSystem` (§1's D6 constraint: the server cannot see the user's profile world), and `agy` is not on that account's `PATH`. The probe therefore fails at **every** startup with `spawn_catalog_agy_probe_failed: [WinError 2] The system cannot find the file specified`, and the published Antigravity list is **permanently the fallback snapshot** on this deployment. Spawning is unaffected and the failure is loud in `logs/switchboard.jsonl`, but the list will go **silently stale** whenever Antigravity changes its line-up, which is the exact drift the probe was meant to prevent. Fixing it means either resolving `agy`'s absolute path from config or pushing the list from a user session the way Watchtower pushes telemetry; that architecture choice is open.
+- **Dispatch validation.** `handle_fresh` validates the pair before **any** side effect — before the `quser` gate, the away-mode flip, the conversation mint, and the pending-file write. Rejection is a `send_text` to the phone naming the bad value and the valid options, plus an audit entry, and no tab opens. This is mandatory rather than defensive: Claude Code silently warn-ignores an invalid `--effort` and runs at its default, and both CLIs' invalid-model errors die inside the spawned `wt` tab where the phone never sees them.
+- **Recording and resume re-pass.** A pick is recorded via `SessionRegistry.record_spawn_choice` onto `SessionRecord.spawn_model` / `spawn_effort` (§10) only when at least one of the two was chosen; a default-everything spawn records nothing and resumes exactly as before. All three resume builders re-pass the recorded pair: `handle_resume` per member, `launch_resume_agent` (which `handle_resume_session` delegates to, so the board-resume path is covered by the same code), and `_spawn_pending_for_combine_resume` in `server/conversation_ops.py`. Re-passing is required because `claude --resume` preserves the model but resets effort to the settings default. Re-validation at resume is **fail-soft**: a recorded value that no longer validates is dropped, a notice is logged and sent to the phone, and the launch proceeds with CLI defaults, because a retired model must never make a session unresumable. Those phone notices are themselves wrapped so a failing `send_text` cannot defeat the fail-soft guarantee it exists to report.
+- **Launcher threading.** Pending-file agent entries carry optional `model` / `effort` (absent when unset). The Windows branch appends `--model '<m>'` / `--effort '<e>'` to the command string; the WSL branch passes them as positional args 5 and 6 using the literal sentinel `-` for unset, never an empty string, because empty tokens do not survive `wt`'s tokenization. Mixed versions degrade both ways: an old pending file yields the sentinel and no flags, and a new pending file hit by an old launcher has its extra fields ignored.
+- **Clients.** Both fresh-spawn dialogs render Model and Effort from the published node, defaulting to `Default (CLI)` (no flag). Switching agent resets both. Antigravity shows no Effort control at all; a Claude model with no tiers disables it. A missing catalog degrades to `Default (CLI)` only, so spawn never blocks on the catalog. Derivation lives in pure, unit-tested helpers on both clients: `SpawnOptionsPolicy` (Android, shared module) and `modelOptionsFor` / `effortOptionsFor` in `dashboard/derive.js`.
 
 ---
 
@@ -479,11 +490,22 @@ spawn_commands/<push_id>/       # phone → server
   agent                         "claude" | "antigravity"       (default "claude")
   surface                       "windows" | "wsl"          (fresh only)
   project                       (str)                      (fresh only)
+  model                         (str)                      (fresh only, optional; ABSENT when not picked, never null)
+  effort                        (str)                      (fresh only, optional; claude only; ABSENT when not picked)
   prompt                        (str | null)
   target_conversation_id        (conversation_id | null)   (fresh: optional join-existing; resume_session: the conversation to resume into)
   source_conversation_id        (conversation_id)          (resume only)
   session_id                    (cli_session_id)           (resume_session only)
   issued_at
+
+spawn_options/                  # server → clients; full-node overwrite at every startup (§9.7)
+  published_at                  (iso-8601)
+  claude/models[]               [{id, efforts[]}]          # curated, display order
+  antigravity/models[]          [{id, efforts[]}]          # from `agy models`, or the fallback snapshot
+  # NOTE: RTDB does not store empty arrays, so an effort-less model publishes with NO
+  # `efforts` key at all (every antigravity entry, and claude's `haiku`). All three
+  # consumers coalesce a missing key to an empty list; the server never reads this node
+  # back, validating against its in-memory catalog instead.
 
 admin_notifications/<push_id>/
   sender                        "system"
@@ -521,7 +543,9 @@ sessions/<cli_session_id>/      # the SessionRegistry roster; source for Android
   state_detail
   conversation_id
   sender
-  model
+  model                        # ring-OBSERVED, overwritten by Watchtower sightings
+  spawn_model                  # COMMANDED at spawn time; deliberately distinct from `model` so a sighting cannot clobber the pick
+  spawn_effort                 # COMMANDED at spawn time; re-passed on resume because `claude --resume` resets effort
   context_pct
   end_reason
   source
@@ -616,6 +640,8 @@ Reply input is visible only when a pending `ask_human` is selected; with more th
 - **Agent** radio: Claude / Antigravity.
 - **Surface** radio: Windows / WSL (WSL disabled, dimmed, when `wsl_available == False`; no tooltip).
 - **Project** MRU dropdown with per-item delete.
+- **Model** dropdown, default `Default (CLI)` (= no flag). Options come from `spawn_options/` keyed to the selected agent; switching agent resets it (§9.7).
+- **Effort** dropdown, default `Default (CLI)`. Not rendered at all for Antigravity; disabled when the selected model has no tiers (`haiku`), and an effort already chosen is cleared if the newly picked model does not offer it.
 - **Initial prompt** free-form text, optional.
 - **Conversation**: "Create new" (default) or "Add to existing" with a single-select picker of Active conversations (disabled when there are none).
 

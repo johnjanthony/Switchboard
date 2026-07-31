@@ -30,6 +30,7 @@ import io.github.johnjanthony.switchboard.network.Pending
 import io.github.johnjanthony.switchboard.network.PendingExitToggle
 import io.github.johnjanthony.switchboard.network.AgentStatus
 import io.github.johnjanthony.switchboard.network.RegistrySession
+import io.github.johnjanthony.switchboard.network.SpawnOptions
 import io.github.johnjanthony.switchboard.network.WidgetQuota
 import io.github.johnjanthony.switchboard.network.WidgetRing
 import io.github.johnjanthony.switchboard.network.WidgetStatus
@@ -100,6 +101,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _wslAvailable = MutableStateFlow(true)
 	val wslAvailable: StateFlow<Boolean> = _wslAvailable.asStateFlow()
 
+	private val _spawnOptions = MutableStateFlow<SpawnOptions?>(null)
+	val spawnOptions: StateFlow<SpawnOptions?> = _spawnOptions.asStateFlow()
+
 	private val _widgetRings = MutableStateFlow<Map<String, WidgetRing>>(emptyMap())
 	val widgetRings: StateFlow<Map<String, WidgetRing>> = _widgetRings.asStateFlow()
 
@@ -169,6 +173,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 				firebaseListenersAttached = true
 				setupAwayModeListener()
 				startWslAvailableListener()
+				startSpawnOptionsListener()
 				startConversationListener()
 				startConversationMessageSubscriptions()
 				setupAdminNotificationsListener()
@@ -354,6 +359,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			}
 			override fun onCancelled(error: DatabaseError) {
 				android.util.Log.w("MainViewModel", "wsl_available listener cancelled: $error")
+			}
+		}
+		ref.addValueEventListener(listener)
+		subscriptions.add { ref.removeEventListener(listener) }
+	}
+
+	private fun startSpawnOptionsListener() {
+		val ref = database.getReference("spawn_options")
+		val listener = object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				_spawnOptions.value = try {
+					snapshot.getValue(SpawnOptions::class.java)
+				} catch (e: Exception) {
+					android.util.Log.w("MainViewModel", "spawn_options parse failed: $e")
+					null
+				}
+			}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "spawn_options listener cancelled: $error")
 			}
 		}
 		ref.addValueEventListener(listener)
@@ -880,6 +904,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		project: String,
 		prompt: String,
 		targetConversationId: String?,
+		model: String?,
+		effort: String?,
 	): Boolean {
 		updateProjectMru(project)
 		val wasAwayOff = !_globalAway.value
@@ -895,6 +921,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		)
 		if (prompt.isNotBlank()) record["prompt"] = prompt
 		if (targetConversationId != null) record["target_conversation_id"] = targetConversationId
+		if (!model.isNullOrBlank()) record["model"] = model
+		if (!effort.isNullOrBlank()) record["effort"] = effort
 		writeReporting(database.getReference("spawn_commands").push(), record, "spawn")
 		return wasAwayOff
 	}

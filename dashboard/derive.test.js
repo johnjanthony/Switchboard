@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { memberState, isActive, isThinking, agentStatusLabel, pendingQuestionText, pendingCountFor, globalPendingCount, oldestPendingAgeSeconds, predecessorTitle, ringForMember, ringSeverity } from './derive.js';
+import { memberState, isActive, isThinking, agentStatusLabel, pendingQuestionText, pendingCountFor, globalPendingCount, oldestPendingAgeSeconds, predecessorTitle, ringForMember, ringSeverity, modelOptionsFor, effortOptionsFor } from './derive.js';
 import * as derive from './derive.js';
 
 test('memberState: alive member is alive', () => {
@@ -339,4 +339,35 @@ test('isConvenable: false for ended and lost without a cwd, true with one', () =
 	assert.equal(derive.isConvenable({ state: 'lost' }), false);
 	assert.equal(derive.isConvenable({ state: 'ended', cwd: 'C:/Work/X' }), true);
 	assert.equal(derive.isConvenable({ state: 'lost', cwd: 'C:/Work/X' }), true);
+});
+
+const SPAWN_OPTIONS = {
+	published_at: 'T',
+	claude: { models: [
+		{ id: 'fable', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+		{ id: 'sonnet', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+		{ id: 'haiku', efforts: [] },
+	] },
+	antigravity: { models: [
+		{ id: 'gemini-3.6-flash-high', efforts: [] },
+	] },
+};
+
+test('modelOptionsFor keys to agent and tolerates absence', () => {
+	assert.deepEqual(modelOptionsFor(SPAWN_OPTIONS, 'claude'), ['fable', 'sonnet', 'haiku']);
+	assert.deepEqual(modelOptionsFor(SPAWN_OPTIONS, 'antigravity'), ['gemini-3.6-flash-high']);
+	assert.deepEqual(modelOptionsFor(null, 'claude'), []);
+});
+
+test('effortOptionsFor rules', () => {
+	assert.deepEqual(effortOptionsFor(SPAWN_OPTIONS, 'antigravity', 'gemini-3.6-flash-high'), []);
+	// An agy id absent from claude's list returns [] even with the antigravity guard
+	// removed, so these two pin the guard itself: a claude model id under antigravity,
+	// and the no-model union branch. Both fail if the guard is dropped.
+	assert.deepEqual(effortOptionsFor(SPAWN_OPTIONS, 'antigravity', 'sonnet'), []);
+	assert.deepEqual(effortOptionsFor(SPAWN_OPTIONS, 'antigravity', null), []);
+	assert.deepEqual(effortOptionsFor(SPAWN_OPTIONS, 'claude', 'haiku'), []);
+	assert.deepEqual(effortOptionsFor(SPAWN_OPTIONS, 'claude', 'sonnet'), ['low', 'medium', 'high', 'xhigh', 'max']);
+	assert.deepEqual(effortOptionsFor(SPAWN_OPTIONS, 'claude', null), ['low', 'medium', 'high', 'xhigh', 'max']);
+	assert.deepEqual(effortOptionsFor(null, 'claude', 'sonnet'), []);
 });

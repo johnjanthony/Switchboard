@@ -92,6 +92,11 @@ export function createStore(deps) {
 		notify();
 	}
 
+	function setSpawnOptions(value) {
+		state.spawnOptions = value;
+		notify();
+	}
+
 	function setWidgetRings(map) {
 		state.widget = { ...state.widget, rings: map || {} };
 		notify();
@@ -345,6 +350,7 @@ export function createStore(deps) {
 		}, onReadError));
 		globalUnsubs.push(fb.onValue(paths.globalAway(), (val) => setGlobalAway(!!val), onReadError));
 		globalUnsubs.push(fb.onValue(paths.wslAvailable(), (val) => setWslAvailable(!!val), onReadError));
+		globalUnsubs.push(fb.onValue(paths.spawnOptions(), (val) => setSpawnOptions(val || null), onReadError));
 		globalUnsubs.push(fb.onValue(paths.widgetRings(), (val) => setWidgetRings(val || {}), onReadError));
 		globalUnsubs.push(fb.onValue(paths.widgetQuota(), (val) => setWidgetQuota(val || null), onReadError));
 		globalUnsubs.push(fb.onValue(paths.widgetStatus(), (val) => setWidgetStatus(val || null), onReadError));
@@ -508,6 +514,7 @@ export function createStore(deps) {
 		retrySignIn,
 		setGlobalAway,
 		setWslAvailable,
+		setSpawnOptions,
 		setWidgetRings,
 		setWidgetQuota,
 		setWidgetStatus,
@@ -576,6 +583,7 @@ function initialState(storage) {
 		authError: null,
 		globalAway: false,
 		wslAvailable: false,
+		spawnOptions: null,
 		conversations: {},
 		sessions: {},
 		sessionAcks: {},

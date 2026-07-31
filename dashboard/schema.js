@@ -66,3 +66,7 @@ export function sessions() {
 export function sessionAcks() {
 	return 'session_acks';
 }
+
+export function spawnOptions() {
+	return 'spawn_options';
+}

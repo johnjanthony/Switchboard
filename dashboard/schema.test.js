@@ -61,3 +61,7 @@ test('sessions() is the sessions root', () => {
 test('sessionAcks() is the session_acks root', () => {
 	assert.equal(schema.sessionAcks(), 'session_acks');
 });
+
+test('spawnOptions() targets spawn_options', () => {
+	assert.equal(schema.spawnOptions(), 'spawn_options');
+});

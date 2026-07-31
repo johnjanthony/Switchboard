@@ -364,3 +364,33 @@ async def test_write_widget_status_sets_widget_status(backend):
 	calls = [str(c) for c in mock_db.reference.call_args_list]
 	assert any("widget/status" in c for c in calls)
 	mock_db.reference.return_value.set.assert_called_with(payload)
+
+
+# ---------------------------------------------------------------------------
+# publish_spawn_options: full-node overwrite of /spawn_options
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_publish_spawn_options_writes_full_node(backend):
+	"""publish_spawn_options writes to spawn_options with published_at plus the
+	catalog spread flat at the top level - not nested under a "catalog" key."""
+	be, mock_db = backend
+	captured = []
+	mock_db.reference.return_value.set.side_effect = lambda p: captured.append(p)
+
+	catalog = {
+		"claude": {"models": [{"id": "sonnet", "efforts": ["low"]}]},
+		"antigravity": {"models": [{"id": "gemini-3.6-flash-low", "efforts": []}]},
+	}
+	await be.publish_spawn_options(catalog)
+
+	calls = [str(c) for c in mock_db.reference.call_args_list]
+	assert any("spawn_options" in c for c in calls)
+
+	assert len(captured) == 1
+	payload = captured[0]
+	assert "published_at" in payload
+	assert payload["claude"] == catalog["claude"]
+	assert payload["antigravity"] == catalog["antigravity"]
+	# The spread must merge at the top level, not nest under a "catalog" key.
+	assert "catalog" not in payload

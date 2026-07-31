@@ -426,3 +426,57 @@ def test_upsert_from_hook_cli_none_preserves_existing():
 	reg.upsert_from_hook("s1", state="active", cli="antigravity")
 	rec = reg.upsert_from_hook("s1", state="idle")
 	assert rec.cli == "antigravity"
+
+
+def test_record_spawn_choice_sets_fields_and_mirrors():
+	reg = SessionRegistry(now=lambda: "2026-07-30T00:00:00Z")
+	fired = []
+	reg.set_mirror(lambda sid, payload: fired.append((sid, payload)))
+	rec = reg.record_spawn_choice("sid-choice", model="haiku", effort=None)
+	assert rec.spawn_model == "haiku"
+	assert rec.spawn_effort is None
+	assert fired and fired[-1][0] == "sid-choice"
+	assert fired[-1][1]["spawn_model"] == "haiku"
+
+
+def test_session_start_preserves_spawn_choice():
+	reg = SessionRegistry(now=lambda: "2026-07-30T00:00:00Z")
+	reg.record_spawn_choice("sid-choice", model="sonnet", effort="low")
+	reg.record_session_start("sid-choice", cwd="C:/Work/X")
+	rec = reg.get("sid-choice")
+	assert rec.spawn_model == "sonnet"
+	assert rec.spawn_effort == "low"
+
+
+def test_hydrate_record_restores_spawn_choice():
+	reg = SessionRegistry()
+	reg.hydrate_record({
+		"cli_session_id": "sid-hyd",
+		"cwd": "C:/Work/X",
+		"state": "idle",
+		"spawn_model": "haiku",
+		"spawn_effort": None,
+	})
+	rec = reg.get("sid-hyd")
+	assert rec.spawn_model == "haiku"
+	assert rec.spawn_effort is None
+
+
+def test_record_spawn_choice_seeds_cwd_on_new_record():
+	# A spawn choice arrives for a brand new session id, so _ensure creates a
+	# stub with an empty cwd. Seeding it here is what keeps the board row from
+	# reading "(unknown)" until SessionStart fills the record in for real.
+	reg = SessionRegistry(now=lambda: "2026-07-30T00:00:00Z")
+	rec = reg.record_spawn_choice("sid-new", model="opus", effort="high", cwd="C:/Work/X")
+	assert rec.cwd == "C:/Work/X"
+	assert rec.surface == "windows"
+
+
+def test_record_spawn_choice_does_not_clobber_existing_cwd():
+	# An established record's own cwd wins - a later spawn choice for the same
+	# id must not overwrite it with a different value.
+	reg = SessionRegistry(now=lambda: "2026-07-30T00:00:00Z")
+	reg.record_session_start("sid-existing", cwd="C:/Work/Established")
+	rec = reg.record_spawn_choice("sid-existing", model="opus", effort="high", cwd="C:/Work/Other")
+	assert rec.cwd == "C:/Work/Established"
+	assert rec.surface == "windows"

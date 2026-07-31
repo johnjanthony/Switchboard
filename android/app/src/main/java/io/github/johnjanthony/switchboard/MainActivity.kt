@@ -133,6 +133,7 @@ private fun SwitchboardNavHost(
 	val projectMru by viewModel.projectMru.collectAsState()
 	val activeConversations by viewModel.activeConversations.collectAsState()
 	val wslAvailable by viewModel.wslAvailable.collectAsState()
+	val spawnOptions by viewModel.spawnOptions.collectAsState()
 	val widgetRings by viewModel.widgetRings.collectAsState()
 	val widgetQuota by viewModel.widgetQuota.collectAsState()
 	val widgetStatus by viewModel.widgetStatus.collectAsState()
@@ -364,9 +365,11 @@ private fun SwitchboardNavHost(
 			mruList = projectMru,
 			activeConversations = pickerTargets(activeConversations),
 			wslAvailable = wslAvailable,
+			spawnOptions = spawnOptions,
 			onDismiss = { showSpawnDialog = false },
-			onSpawn = { agent, surface, project, prompt, targetConversationId ->
-				val wasAwayOff = viewModel.spawnSession(agent, surface, project, prompt, targetConversationId)
+			onSpawn = { agent, surface, project, prompt, targetConversationId, model, effort ->
+				val wasAwayOff =
+					viewModel.spawnSession(agent, surface, project, prompt, targetConversationId, model, effort)
 				if (wasAwayOff) {
 					Toast.makeText(context, "Away mode enabled", Toast.LENGTH_SHORT).show()
 				}

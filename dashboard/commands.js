@@ -27,7 +27,7 @@ export function awayOffCmd({ decision, defaultText } = {}, nowIsoFn) {
 	return { path: 'away_mode_commands', value };
 }
 
-export function spawnFreshCmd({ agent, surface, project, prompt, targetConversationId } = {}, nowIsoFn) {
+export function spawnFreshCmd({ agent, surface, project, prompt, targetConversationId, model, effort } = {}, nowIsoFn) {
 	const value = { type: 'fresh', surface, project, issued_at: nowIsoFn() };
 	if (agent !== undefined && agent !== null) {
 		value.agent = agent;
@@ -37,6 +37,12 @@ export function spawnFreshCmd({ agent, surface, project, prompt, targetConversat
 	}
 	if (targetConversationId !== undefined && targetConversationId !== null) {
 		value.target_conversation_id = targetConversationId;
+	}
+	if (model !== undefined && model !== null) {
+		value.model = model;
+	}
+	if (effort !== undefined && effort !== null) {
+		value.effort = effort;
 	}
 	return { path: 'spawn_commands', value };
 }

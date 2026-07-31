@@ -1,5 +1,5 @@
 import { html, useState } from "../vendor/htm-preact.js";
-import { isActive, globalPendingCount, oldestPendingAgeSeconds, formatAge } from "../derive.js";
+import { isActive, globalPendingCount, oldestPendingAgeSeconds, formatAge, modelOptionsFor, effortOptionsFor } from "../derive.js";
 import { statusDotClass } from "../statusControl.js";
 
 function healthLampClass(health) {
@@ -15,6 +15,11 @@ function SpawnDialog({ store, onClose }) {
 	const [project, setProject] = useState("");
 	const [prompt, setPrompt] = useState("");
 	const [target, setTarget] = useState("");
+	const [model, setModel] = useState("");
+	const [effort, setEffort] = useState("");
+	const spawnOpts = store.getState().spawnOptions;
+	const modelOptions = modelOptionsFor(spawnOpts, agent);
+	const effortOptions = effortOptionsFor(spawnOpts, agent, model || null);
 	const canSubmit = project.trim().length > 0;
 	const submit = () => {
 		if (!canSubmit) return;
@@ -24,6 +29,8 @@ function SpawnDialog({ store, onClose }) {
 			project,
 			prompt: prompt || undefined,
 			targetConversationId: target || undefined,
+			model: model || undefined,
+			effort: effort || undefined,
 		});
 		onClose();
 	};
@@ -31,7 +38,7 @@ function SpawnDialog({ store, onClose }) {
 		<div class="dialog" role="dialog">
 			<h3>Open a line</h3>
 			<label>Agent
-				<select value=${agent} onChange=${(e) => setAgent(e.target.value)}>
+				<select value=${agent} onChange=${(e) => { setAgent(e.target.value); setModel(""); setEffort(""); }}>
 					<option value="claude">Claude</option>
 					<option value="antigravity">Antigravity</option>
 				</select>
@@ -42,6 +49,24 @@ function SpawnDialog({ store, onClose }) {
 					<option value="wsl">wsl</option>
 				</select>
 			</label>
+			<label>Model
+				<select value=${model} onChange=${(e) => {
+					const v = e.target.value;
+					setModel(v);
+					if (effort && !effortOptionsFor(spawnOpts, agent, v || null).includes(effort)) setEffort("");
+				}}>
+					<option value="">Default (CLI)</option>
+					${modelOptions.map((id) => html`<option value=${id}>${id}</option>`)}
+				</select>
+			</label>
+			${agent !== "antigravity" ? html`
+				<label>Effort
+					<select value=${effort} disabled=${effortOptions.length === 0} onChange=${(e) => setEffort(e.target.value)}>
+						<option value="">Default (CLI)</option>
+						${effortOptions.map((t) => html`<option value=${t}>${t}</option>`)}
+					</select>
+				</label>
+			` : null}
 			<label>Project path
 				<input value=${project} onInput=${(e) => setProject(e.target.value)} /></label>
 			<label>Opening prompt (optional)

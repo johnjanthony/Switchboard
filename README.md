@@ -207,9 +207,15 @@ With a spawn root configured, you can launch a fresh agent session directly from
 - **Surface:** Windows or WSL.
 - **Project:** Pick from projects under your configured spawn root for that surface.
 - **Prompt:** Optional starting prompt for the agent.
+- **Model:** Leave on `Default (CLI)` to pass no flag and let the CLI choose, or pick from the list for the selected agent.
+- **Effort:** Claude Code only, and only for models that have effort tiers. Antigravity has no Effort picker because its effort is part of the model id (`gemini-3.6-flash-low`).
 - **Conversation:** Create a new conversation, or add the spawned agent into an existing one.
 
 Spawn auto-enables away mode if it is currently off; the phone shows a confirmation toast. Claude Code and Antigravity (`agy`) are both supported spawn targets.
+
+The Model and Effort lists come from the server, not the app: `server/spawn_catalog.py` builds a catalog at startup and publishes it to Realtime Database `spawn_options/`, which both the phone and Operator render. The same catalog is the allowlist the server validates against at dispatch, so the lists you see and the values the server accepts cannot drift apart, and updating a model list needs no app release. If the catalog is missing (server down, node not yet published) both pickers fall back to `Default (CLI)` only and spawn behaves exactly as it did before. Your choice is recorded on the session and re-passed automatically when you resume it, because `claude --resume` preserves the model but resets effort to your settings default.
+
+The Claude Code model list is curated (the CLI has no enumeration command). The Antigravity list is probed with `agy models` at startup, falling back to a snapshot baked into `spawn_catalog.py`. **Note:** when Switchboard runs as a Windows service under `LocalSystem`, `agy` is typically not on that account's `PATH`, so the probe fails and the fallback snapshot is what gets published; the failure is logged loudly to `logs/switchboard.jsonl` as `spawn_catalog_agy_probe_failed` at every startup. Spawning is unaffected, but the Antigravity list will not track upstream model changes until the snapshot is updated.
 
 **Prerequisites:**
 

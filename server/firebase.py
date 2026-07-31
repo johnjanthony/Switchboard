@@ -571,6 +571,14 @@ class FirebaseBackend(
 		ref = db.reference("global_settings/wsl_available")
 		await asyncio.to_thread(ref.set, bool(available))
 
+	async def publish_spawn_options(self, catalog: dict) -> None:
+		"""Full-node overwrite of /spawn_options with the per-CLI pick lists the
+		spawn dialogs render and the server validates against."""
+		from server.clock import now_iso
+		payload = {"published_at": now_iso(), **catalog}
+		ref = db.reference("spawn_options")
+		await asyncio.to_thread(ref.set, payload)
+
 	async def write_widget_rings(self, rings: dict) -> None:
 		"""Publish the per-session context rings map (keyed by Claude Code session_id).
 		Always fanned out; an empty map clears the node."""

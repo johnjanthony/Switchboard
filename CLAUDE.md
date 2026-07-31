@@ -28,6 +28,7 @@ server/
   messenger.py         Backend lifecycle base + 3 trait ABCs (MessageWriter, ResponsePoller, AwayModeMirror) + ConversationStore protocol + IncomingResponse
   firebase.py          FirebaseBackend (implements every messenger surface); Firebase admin logic (FCM, Realtime DB)
   spawn.py             Agent session spawner (triggered from Android app)
+  spawn_catalog.py     Per-CLI model/effort catalog (curated CC list + agy models probe; published to spawn_options/, dispatch validation allowlist)
   conversation_ops.py  Conversation lifecycle helpers (create, add/migrate member, queue-for-intro, wake, combine, session-fallback); sender-collision auto-disambiguation ('Claude Win' -> 'Claude Win 2' etc.)
   cli_session_end.py   handle_session_end: marks a member dormant on session end; invoked by the marker-file sweep (dispatch_session_end_markers)
   rate_limiter.py      Per-conversation token-bucket rate limiter consumed by ask_human, notify_human, send_document_human, and message_and_await_agent / post_agent_message (which degrade to FCM suppression instead of rejecting)
@@ -278,6 +279,8 @@ If the Switchboard MCP tools disconnect from your session while the away-mode fl
 ## Spawn flow
 
 When the user taps "+" on the phone, they choose surface (Windows / WSL), project, optional prompt, and whether to create a new conversation or add the spawned agent into an existing one. The server dispatches via structured Firebase `/spawn_commands/` entries; `SpawnHandler.handle_fresh` and `handle_resume` are the two entry points. Spawn auto-enables away mode if currently off.
+
+The fresh-spawn dialogs (phone and Operator) also offer **Model** and **Effort** pickers, populated from the server-published `spawn_options/` catalog that `server/spawn_catalog.py` builds; blank means no flag and the CLI's own default. Invalid picks are rejected loudly at dispatch (`send_text` to the phone plus an audit entry, no tab opened) because the CLIs cannot be trusted to reject them: Claude Code silently ignores a bad `--effort`, and real launch errors die inside the spawned `wt` tab where the phone never sees them. A pick is recorded on the session (`SessionRecord.spawn_model` / `spawn_effort`, distinct from the ring-observed `model`) and re-passed by every resume path, since `claude --resume` preserves the model but resets effort; a recorded value that no longer validates is dropped fail-soft with a phone notice rather than blocking the resume.
 
 **Spawn-root env vars** (both consumed by `config.py`):
 

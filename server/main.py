@@ -815,6 +815,15 @@ async def _run(config: Config) -> None:
 	except Exception as exc:
 		await logger.surface_error(f"set_global_wsl_available_failed: {exc}")
 
+	# Per-CLI model/effort catalog - probed once at startup, published for the
+	# spawn dialogs, kept on the registry as the dispatch validation allowlist.
+	from server.spawn_catalog import build_catalog, probe_agy_models
+	registry.spawn_catalog = build_catalog(await probe_agy_models(logger))
+	try:
+		await backend.publish_spawn_options(registry.spawn_catalog)
+	except Exception as exc:
+		await logger.surface_error(f"publish_spawn_options_failed: {exc}")
+
 	# REV-004: verify the DEPLOYED RTDB rules are real (not placeholder or
 	# test-mode) - the whole phone command channel rests on them. Loud but
 	# non-fatal by design (see server/rules_audit.py).

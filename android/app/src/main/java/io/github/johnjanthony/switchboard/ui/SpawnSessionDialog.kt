@@ -31,7 +31,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import io.github.johnjanthony.switchboard.SpawnOptionsPolicy
 import io.github.johnjanthony.switchboard.network.ConversationSummary
+import io.github.johnjanthony.switchboard.network.SpawnOptions
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,8 +41,17 @@ fun SpawnSessionDialog(
 	mruList: List<String>,
 	activeConversations: List<ConversationSummary>,
 	wslAvailable: Boolean,
+	spawnOptions: SpawnOptions?,
 	onDismiss: () -> Unit,
-	onSpawn: (agent: String, surface: String, project: String, prompt: String, targetConversationId: String?) -> Unit,
+	onSpawn: (
+		agent: String,
+		surface: String,
+		project: String,
+		prompt: String,
+		targetConversationId: String?,
+		model: String?,
+		effort: String?,
+	) -> Unit,
 	onRemoveFromMru: (String) -> Unit,
 ) {
 	var agent by remember { mutableStateOf("claude") }
@@ -48,6 +59,13 @@ fun SpawnSessionDialog(
 	var project by remember { mutableStateOf("") }
 	var prompt by remember { mutableStateOf("") }
 	var projectExpanded by remember { mutableStateOf(false) }
+	var model by remember { mutableStateOf<String?>(null) }
+	var effort by remember { mutableStateOf<String?>(null) }
+	var modelExpanded by remember { mutableStateOf(false) }
+	var effortExpanded by remember { mutableStateOf(false) }
+
+	val modelOptions = SpawnOptionsPolicy.modelOptions(spawnOptions, agent)
+	val effortOptions = SpawnOptionsPolicy.effortOptions(spawnOptions, agent, model)
 
 	// Conversation choice: null = "create new"; non-null = id of selected existing conversation
 	var addToExisting by remember { mutableStateOf(false) }
@@ -89,15 +107,86 @@ fun SpawnSessionDialog(
 				Row(verticalAlignment = Alignment.CenterVertically) {
 					RadioButton(
 						selected = agent == "claude",
-						onClick = { agent = "claude" },
+						onClick = { agent = "claude"; model = null; effort = null },
 					)
 					Text("Claude")
 					Spacer(Modifier.width(16.dp))
 					RadioButton(
 						selected = agent == "antigravity",
-						onClick = { agent = "antigravity" },
+						onClick = { agent = "antigravity"; model = null; effort = null },
 					)
 					Text("Antigravity")
+				}
+
+				// Model picker (server-published catalog; Default = no flag)
+				ExposedDropdownMenuBox(
+					expanded = modelExpanded,
+					onExpandedChange = { modelExpanded = !modelExpanded },
+				) {
+					OutlinedTextField(
+						value = model ?: "Default (CLI)",
+						onValueChange = {},
+						readOnly = true,
+						label = { Text("Model") },
+						modifier = Modifier.fillMaxWidth().menuAnchor(),
+						trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelExpanded) },
+						colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
+					)
+					ExposedDropdownMenu(
+						expanded = modelExpanded,
+						onDismissRequest = { modelExpanded = false },
+					) {
+						DropdownMenuItem(
+							text = { Text("Default (CLI)") },
+							onClick = { model = null; effort = null; modelExpanded = false },
+						)
+						modelOptions.forEach { item ->
+							DropdownMenuItem(
+								text = { Text(item) },
+								onClick = {
+									model = item
+									if (effort != null && effort !in SpawnOptionsPolicy.effortOptions(spawnOptions, agent, item)) {
+										effort = null
+									}
+									modelExpanded = false
+								},
+							)
+						}
+					}
+				}
+
+				// Effort picker (hidden for Antigravity; disabled when the model has no tiers)
+				if (SpawnOptionsPolicy.showEffortPicker(agent)) {
+					ExposedDropdownMenuBox(
+						expanded = effortExpanded,
+						onExpandedChange = { if (effortOptions.isNotEmpty()) effortExpanded = !effortExpanded },
+					) {
+						OutlinedTextField(
+							value = effort ?: "Default (CLI)",
+							onValueChange = {},
+							readOnly = true,
+							enabled = effortOptions.isNotEmpty(),
+							label = { Text("Effort") },
+							modifier = Modifier.fillMaxWidth().menuAnchor(),
+							trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = effortExpanded) },
+							colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
+						)
+						ExposedDropdownMenu(
+							expanded = effortExpanded,
+							onDismissRequest = { effortExpanded = false },
+						) {
+							DropdownMenuItem(
+								text = { Text("Default (CLI)") },
+								onClick = { effort = null; effortExpanded = false },
+							)
+							effortOptions.forEach { item ->
+								DropdownMenuItem(
+									text = { Text(item) },
+									onClick = { effort = item; effortExpanded = false },
+								)
+							}
+						}
+					}
 				}
 
 				// Project picker (MRU dropdown)
@@ -243,6 +332,8 @@ fun SpawnSessionDialog(
 						project.trim(),
 						prompt.trim(),
 						if (addToExisting) selectedConversationId else null,
+						model,
+						effort,
 					)
 				},
 				enabled = spawnEnabled,
