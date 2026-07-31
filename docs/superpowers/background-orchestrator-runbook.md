@@ -1,5 +1,7 @@
 # Background-Orchestrator Delegation Runbook
 
+> **Codified 2026-07-30 — the canonical homes are now elsewhere.** The generic pattern (tiers, kickoff, supervision, trust rules, generation handoff) lives in John's personal `background-orchestrator` skill (`~/.claude/skills/background-orchestrator/SKILL.md`), available in every project. The Switchboard-specific away-mode supervision mechanics (TaskOutput turn-holding, the parking attendant) live in the plugin skill (`skills/switchboard/SKILL.md`, "Supervising background work in away mode"). This file remains as the Switchboard-history record; prefer the skills for reuse.
+
 How the design-tier session spawns and supervises a background Opus orchestrator that executes an implementation plan via subagent-driven development (SDD). First used 2026-07-28 (comprehensive-spec truth rewrite, 15 sub-dispatches); refined 2026-07-30 (T-250 spawn model/effort). This replaces the older "generate a kickoff prompt for John to paste into a fresh Opus session" handoff — the design agent spawns the orchestrator itself.
 
 ## The three tiers

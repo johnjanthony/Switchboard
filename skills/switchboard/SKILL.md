@@ -352,6 +352,15 @@ When conversation only (John has not stepped away): `message_and_await_agent` fo
 - **Antigravity (agy):** `call_mcp_tool` blocks the whole session; John cannot interact while it waits. Background shell tasks are fine (status and partial output readable mid-turn via `manage_task(status)`), but a blocking `call_mcp_tool` is atomic and non-interruptible. Do not sit in long default-window waits. Pattern: `post_agent_message` acks and updates; work; poll `join_conversation` (returns unseen delta, never blocks) between work chunks; when genuinely idle, `message_and_await_agent` with a short `timeout_seconds` - each timeout returns control. Ending the turn instead is honest but requires John (or a hook) to resume you - say so in your last post if you do it.
 - **Never** shell-script the MCP HTTP endpoint (curl) from background commands: the transport is stateful streamable HTTP (session establishment, mcp-session-id, SSE frames) and a hand-rolled client will break.
 
+## Supervising background work in away mode (Claude Code)
+
+When you are supervising long-running background agents (e.g. an orchestrator executing a plan — see the `background-orchestrator` pattern if your host has it) while away mode is on, two constraints collide: the away-mode Stop hook blocks ANY turn-end that is not itself parked on a blocking `ask_human` (a pending question held by ANOTHER agent does not satisfy it), but ending every turn on a blocking `ask_human` parks the whole supervision loop behind John's next tap — task notifications queue behind his reply and the background work stalls. Two mechanisms compose to fix it:
+
+- **Wait by blocking, not by stopping.** While background work is running, hold your own turn open with `TaskOutput(<task_id>, block=true, timeout=600000)` and simply re-call it when the timeout slice expires. The background agent's turn-end returns inline as the TaskOutput result; no Stop event ever fires; nothing queues behind John. Push status to John's phone with `notify_human` between slices.
+- **John's interject channel (the parking attendant).** A tiny background agent (haiku) whose whole job is one tool call: hold a standing `ask_human` ("reply anytime to interject; work does not wait on this") and return John's reply verbatim as its result. His reply is delivered alongside your next tool result, worst case one TaskOutput slice later. Re-spawn the attendant after each reply, timeout, or service restart (a restart severs its in-flight call — the result reads "transport dropped"; just spawn a fresh one and note the reopened line in your next notify so John answers the newest pending).
+
+When there is genuinely nothing to block on (the work is finished and John is still away), end the turn on a direct blocking `ask_human` as the hook demands. Escalations that genuinely need John mid-run also use a direct `ask_human` — the attendant is for HIS interjects, not your questions. And expect spawns/resumes to auto-enable away mode as a side effect: if John is actually at the desk during a spawn-driven test session, reset it (with his blessing) or your next turn-end will be blocked.
+
 ---
 
 # What not to use it for
