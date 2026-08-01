@@ -26,6 +26,7 @@ from server.gateway import (
 )
 from server.gateway.dispatch import (
 	dispatch_combine_commands,
+	dispatch_message_commands,
 	dispatch_convene_commands,
 	dispatch_force_end_commands,
 	dispatch_spawn_commands,
@@ -124,10 +125,15 @@ def _build_sessions_route(session_registry: SessionRegistry):
 def _build_agent_status_route(handlers, session_registry: SessionRegistry):
 	"""POST /agent_status - hook-driven status writes. Returns 200 with an empty
 	body on malformed input, or on success returns {"notices": [...]} - popped
-	only for the UserPromptSubmit event, the only hook with a channel to deliver
-	them to the agent. The Firebase write is awaited directly: it's a ~100ms
-	operation, well inside the hook's 1-second timeout, and direct await avoids
-	the test-loop complications of background-spawned tasks.
+	for UserPromptSubmit (always) and PostToolUse (except when cli ==
+	"antigravity"). The Antigravity PostToolUse hook (agy-identity-hook.py's
+	handle_post_tool_use) posts fire-and-forget and discards the response body,
+	so popping there would destroy the notice with nothing to deliver it; its
+	own UserPromptSubmit hook is the one that actually surfaces notices to the
+	agent, so excluding it here just defers the pop to that call. The Firebase
+	write is awaited directly: it's a ~100ms operation, well inside the hook's
+	1-second timeout, and direct await avoids the test-loop complications of
+	background-spawned tasks.
 
 	The session-registry upsert happens BEFORE the away-mode gate inside
 	handlers.handle_agent_status, so an unknown session is discovered in the
@@ -162,7 +168,7 @@ def _build_agent_status_route(handlers, session_registry: SessionRegistry):
 			session_registry.touch_mcp(session_id, cwd=cwd or "")
 		await handlers.handle_agent_status(session_id, state, detail)
 		notices: list = []
-		if event == "UserPromptSubmit":
+		if event == "UserPromptSubmit" or (event == "PostToolUse" and cli != "antigravity"):
 			notices = session_registry.pop_notices(session_id)
 		return JSONResponse({"notices": notices}, status_code=200)
 	return agent_status
@@ -447,6 +453,7 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		title: str | None = None,
 		format: str = "plain",
 		suggestions: list[str] | None = None,
+		background: bool = False,
 		cli_session_id: str | None = None,
 		cwd: str | None = None,
 	) -> str:
@@ -459,6 +466,9 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		format: 'plain' (default) or 'markdown'.
 		suggestions: optional quick-reply options. MUST be a JSON array of
 		strings, e.g. ["Yes", "No", "Ship it"]; any other shape is rejected.
+		background: if true, returns {"status":"pending","request_id":...}
+		immediately; John's answer is delivered at your next hook boundary,
+		blocked ask, or wait.
 
 		cli_session_id and cwd identify your session. Claude Code: injected
 		automatically by the plugin hook (do not pass them). Other CLIs (e.g.
@@ -467,7 +477,7 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		# Keepalive: this call legitimately blocks for hours awaiting John.
 		return await _await_with_progress_keepalive(mcp, handlers.ask_human(
 			question, sender, title=title, format=format, suggestions=suggestions,
-			cli_session_id=cli_session_id, cwd=cwd,
+			background=background, cli_session_id=cli_session_id, cwd=cwd,
 		))
 
 	@mcp.tool()
@@ -839,6 +849,7 @@ async def _run(config: Config) -> None:
 	loop_sups = {
 		"dispatch_responses": LoopSupervisor("dispatch_responses", backend, logger.surface_error),
 		"dispatch_combine_commands": LoopSupervisor("dispatch_combine_commands", backend, logger.surface_error),
+		"dispatch_message_commands": LoopSupervisor("dispatch_message_commands", backend, logger.surface_error),
 		"dispatch_convene_commands": LoopSupervisor("dispatch_convene_commands", backend, logger.surface_error),
 		"dispatch_force_end_commands": LoopSupervisor("dispatch_force_end_commands", backend, logger.surface_error),
 		"dispatch_spawn_commands": LoopSupervisor("dispatch_spawn_commands", backend, logger.surface_error),
@@ -950,6 +961,12 @@ async def _run(config: Config) -> None:
 		)
 	)
 
+	message_task = asyncio.create_task(
+		dispatch_message_commands(
+			registry, backend, logger, loop_sups["dispatch_message_commands"], session_registry=session_registry,
+		)
+	)
+
 	convene_task = asyncio.create_task(
 		dispatch_convene_commands(
 			registry, session_registry, backend, logger, loop_sups["dispatch_convene_commands"], spawn_handler,
@@ -1018,6 +1035,7 @@ async def _run(config: Config) -> None:
 	finally:
 		dispatch_task.cancel()
 		combine_task.cancel()
+		message_task.cancel()
 		convene_task.cancel()
 		force_end_task.cancel()
 		spawn_task.cancel()
@@ -1030,6 +1048,8 @@ async def _run(config: Config) -> None:
 			await dispatch_task
 		with contextlib.suppress(asyncio.CancelledError):
 			await combine_task
+		with contextlib.suppress(asyncio.CancelledError):
+			await message_task
 		with contextlib.suppress(asyncio.CancelledError):
 			await convene_task
 		with contextlib.suppress(asyncio.CancelledError):

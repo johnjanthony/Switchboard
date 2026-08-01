@@ -204,3 +204,82 @@ def test_post_agent_status_without_cli_keeps_default(cfg, logger):
 			"session_id": "c-1", "state": "thinking", "event": "UserPromptSubmit", "cwd": "C:/Work/X",
 		})
 	assert sessions.get("c-1").cli == "claude"
+
+
+def test_post_tool_use_pops_notices_and_is_at_most_once(cfg, logger):
+	"""PostToolUse (Claude Code, no cli field) pops queued notices; a second
+	identical POST returns empty because pop_notices clears on read."""
+	registry = Registry()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	sessions = SessionRegistry()
+	sessions.record_session_start("c-1", cwd="C:/Work/X")
+	assert sessions.queue_notice("c-1", "hello") is True
+	app = _build_app_with_sessions(handlers, sessions)
+	with TestClient(app) as client:
+		resp = client.post("/agent_status", json={
+			"session_id": "c-1", "state": "thinking", "event": "PostToolUse", "cwd": "C:/Work/X",
+		})
+		assert resp.json() == {"notices": ["hello"]}
+		resp2 = client.post("/agent_status", json={
+			"session_id": "c-1", "state": "thinking", "event": "PostToolUse", "cwd": "C:/Work/X",
+		})
+		assert resp2.json() == {"notices": []}
+
+
+def test_pre_tool_use_does_not_pop_notices(cfg, logger):
+	"""PreToolUse must not pop - over-widening the predicate would silently eat
+	notices before the agent ever gets a chance to see them."""
+	registry = Registry()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	sessions = SessionRegistry()
+	sessions.record_session_start("c-1", cwd="C:/Work/X")
+	assert sessions.queue_notice("c-1", "hello") is True
+	app = _build_app_with_sessions(handlers, sessions)
+	with TestClient(app) as client:
+		resp = client.post("/agent_status", json={
+			"session_id": "c-1", "state": "tool:Bash", "event": "PreToolUse", "cwd": "C:/Work/X",
+		})
+		assert resp.json() == {"notices": []}
+	assert sessions.pop_notices("c-1") == ["hello"]
+
+
+def test_post_tool_use_from_antigravity_does_not_pop_notices(cfg, logger):
+	"""The agy PostToolUse hook discards the response body, so popping there
+	would destroy the notice with nothing to deliver it. Excluding cli ==
+	'antigravity' leaves the notice for the next UserPromptSubmit POST."""
+	registry = Registry()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	sessions = SessionRegistry()
+	sessions.record_session_start("agy-1", cwd="C:/Work/X", cli="antigravity")
+	assert sessions.queue_notice("agy-1", "hello") is True
+	app = _build_app_with_sessions(handlers, sessions)
+	with TestClient(app) as client:
+		resp = client.post("/agent_status", json={
+			"session_id": "agy-1", "state": "thinking", "event": "PostToolUse",
+			"cwd": "C:/Work/X", "cli": "antigravity",
+		})
+		assert resp.json() == {"notices": []}
+		resp2 = client.post("/agent_status", json={
+			"session_id": "agy-1", "state": "thinking", "event": "UserPromptSubmit",
+			"cwd": "C:/Work/X", "cli": "antigravity",
+		})
+		assert resp2.json() == {"notices": ["hello"]}
+
+
+def test_user_prompt_submit_still_pops_notices(cfg, logger):
+	"""UserPromptSubmit keeps its existing pop-on-read behavior, unchanged."""
+	registry = Registry()
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	sessions = SessionRegistry()
+	sessions.record_session_start("c-1", cwd="C:/Work/X")
+	assert sessions.queue_notice("c-1", "hello") is True
+	app = _build_app_with_sessions(handlers, sessions)
+	with TestClient(app) as client:
+		resp = client.post("/agent_status", json={
+			"session_id": "c-1", "state": "thinking", "event": "UserPromptSubmit", "cwd": "C:/Work/X",
+		})
+		assert resp.json() == {"notices": ["hello"]}

@@ -11,7 +11,7 @@
 import {
 	answerCmd, resumeCmd, combineCmd, forceEndCmd,
 	spawnFreshCmd, awayOnCmd, awayOffCmd, setHiddenCmd,
-	conveneCmd, ackSessionCmd,
+	conveneCmd, ackSessionCmd, messageCmd,
 } from './commands.js';
 
 export function createStore(deps) {
@@ -504,6 +504,11 @@ export function createStore(deps) {
 		return guardedWrite('detail', () => fb.pushValue(c.path, c.value));
 	}
 
+	function sendMessage(convId, text) {
+		const c = messageCmd(convId, text, fb.nowIso);
+		return guardedWrite('detail', () => fb.pushValue(c.path, c.value));
+	}
+
 	return {
 		getState,
 		subscribe,
@@ -554,6 +559,7 @@ export function createStore(deps) {
 		restoreLine,
 		patchLine,
 		dropLine,
+		sendMessage,
 	};
 }
 

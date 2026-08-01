@@ -3,7 +3,7 @@ plus a firebase_admin RTDB witness, standing in for an agent and John -
 exercises the running service end to end over its public surfaces (HTTP,
 MCP, RTDB). No server imports; run from the repo root."""
 from __future__ import annotations
-import argparse, asyncio, sys, time
+import argparse, asyncio, json, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -182,6 +182,103 @@ async def flow_fast_answer(ctx, rep, args):
 		raise SmokeFailure("a 'withdrawn' system message appeared - the fast answer was discarded as unknown correlation")
 
 
+async def flow_message_inject(ctx, rep, args):
+	"""Free-form phone message pushed to /message_commands while a blocking
+	ask is live: it interjects rather than answering, so the ask resolves
+	with the interjection prefix, the raw text lands as its own human-type
+	message, and the interjected question's own message is marked cancelled
+	with its pending_questions record removed (cancellation is a resolution,
+	not a plain flag flip - see mark_question_cancelled). Inherits away mode
+	ON and reuses the harness's one conversation."""
+	question = f"smoke message-inject probe {ctx.run_id}"
+	task = start_blocking_ask(ctx, question)
+
+	def _find_pending():
+		# Match the question text, not just the sender: every flow shares one
+		# sender, and the preceding flow's record is deleted fire-and-forget, so
+		# a sender-only match can capture its still-lingering record instead.
+		pendings = rtdb(ctx, f"conversations/{ctx.conversation_id}/pending_questions").get() or {}
+		for rid, node in pendings.items():
+			if isinstance(node, dict) and node.get("sender") == ctx.sender and node.get("questionText") == question:
+				return rid
+		return None
+	ctx.request_id = await poll_until("pending question recorded for message-inject probe", _find_pending, 15)
+
+	inject_text = f"smoke interjection {ctx.run_id}"
+	rtdb(ctx, "message_commands").push({
+		"conversation_id": ctx.conversation_id, "text": inject_text,
+		"issued_at": datetime.now(timezone.utc).isoformat(),
+	})
+
+	reply = await asyncio.wait_for(task, 20)
+	if not reply.startswith("[John interjected"):
+		raise SmokeFailure(f"interjected ask did not carry the interject prefix: {reply!r}")
+
+	def _find_human_message():
+		msgs = rtdb(ctx, f"messages/{ctx.conversation_id}").get() or {}
+		for mid, node in msgs.items():
+			if isinstance(node, dict) and node.get("type") == "human" and node.get("text") == inject_text:
+				return mid
+		return None
+	await poll_until("interjection landed as a human-type message", _find_human_message, 15)
+
+	def _question_cancelled():
+		msgs = rtdb(ctx, f"messages/{ctx.conversation_id}").get() or {}
+		for node in msgs.values():
+			if isinstance(node, dict) and node.get("request_id") == ctx.request_id:
+				return True if node.get("cancelled") is True else None
+		return None
+	await poll_until("interjected question message flagged cancelled", _question_cancelled, 15)
+
+	def _pending_gone():
+		gone = rtdb(ctx, f"conversations/{ctx.conversation_id}/pending_questions/{ctx.request_id}").get() is None
+		return True if gone else None
+	await poll_until("pending_questions record removed after interjection", _pending_gone, 15)
+
+
+async def flow_background_ask(ctx, rep, args):
+	"""Non-blocking ask_human(background=True): the tool call returns a
+	pending envelope immediately instead of blocking on a future, and the
+	later answer splices into history via attached_to_msg_id rather than
+	resolving a live future. Notice delivery to the session's hook queue is
+	not assertable here - the MCP connection that placed the ask is already
+	closed by the time the answer lands, so this only proves the two halves
+	smoke can observe (the spliced reply, the cleared pending record); the
+	notice rung itself is covered by unit tests."""
+	question = f"smoke background ask {ctx.run_id}"
+	envelope = await mcp_call(ctx, "ask_human", {"question": question, "sender": ctx.sender, "background": True})
+	payload = json.loads(envelope)
+	if payload.get("status") != "pending" or not payload.get("request_id"):
+		raise SmokeFailure(f"background ask_human envelope unexpected: {envelope!r}")
+	request_id = payload["request_id"]
+
+	record = rtdb(ctx, f"conversations/{ctx.conversation_id}/pending_questions/{request_id}").get() or {}
+	expected_msg_id = record.get("msgId")
+	if not expected_msg_id:
+		raise SmokeFailure(f"background pending_questions record missing msgId: {record!r}")
+
+	expected_reply = f"smoke-background-answer-{ctx.run_id}"
+	rtdb(ctx, f"answers/{ctx.conversation_id}/{request_id}").set({
+		"text": expected_reply, "sender": "John",
+		"request_id": request_id, "written_at": datetime.now(timezone.utc).isoformat(),
+	})
+
+	def _find_spliced_reply():
+		msgs = rtdb(ctx, f"messages/{ctx.conversation_id}").get() or {}
+		for node in msgs.values():
+			if isinstance(node, dict) and node.get("type") == "human" and node.get("text") == expected_reply:
+				return node.get("attached_to_msg_id")
+		return None
+	attached = await poll_until("background answer landed spliced under its question", _find_spliced_reply, 15)
+	if attached != expected_msg_id:
+		raise SmokeFailure(f"spliced reply attached_to_msg_id mismatch: expected {expected_msg_id!r}, got {attached!r}")
+
+	def _pending_gone():
+		gone = rtdb(ctx, f"conversations/{ctx.conversation_id}/pending_questions/{request_id}").get() is None
+		return True if gone else None
+	await poll_until("pending_questions record removed after background answer", _pending_gone, 15)
+
+
 async def flow_restart_survival(ctx, rep, args):
 	question = f"smoke restart-survival probe {ctx.run_id}"
 	task = start_blocking_ask(ctx, question, suggestions=["yes", "no"])
@@ -300,6 +397,8 @@ FLOWS: list[tuple[str, callable]] = [
 	("at-desk redirect + conversation discovery", flow_atdesk_redirect),
 	("live ask/answer round-trip", flow_live_ask_answer),
 	("fastest-answer round-trip", flow_fast_answer),
+	("message interjection round-trip", flow_message_inject),
+	("background ask round-trip", flow_background_ask),
 	("restart survival", flow_restart_survival),
 ]
 

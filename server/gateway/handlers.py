@@ -268,6 +268,7 @@ def build_tool_handlers(
 		title: str | None = None,
 		format: str = "plain",
 		suggestions: list[str] | None = None,
+		background: bool = False,
 		*,
 		cli_session_id: str,
 		cwd: str,
@@ -306,6 +307,74 @@ def build_tool_handlers(
 		if limiter is not None and not limiter.consume(conversation_id):
 			await logger.rate_limited(conversation_id, "ask_human")
 			return _rate_limit_error()
+
+		if background:
+			if not registry.global_away_mode:
+				# At-desk: a background asker must not fall back to blocking -
+				# it states the question and keeps working, unlike the blocking
+				# sentinel below which tells the agent to ask via the terminal.
+				try:
+					await backend.write_conversation_message(
+						conversation_id, sender, "notify", question, format=format, title=title,
+					)
+					await logger.notify_sent(conversation_id, question)
+					await _append_session_log(config.log_path, conversation_id, "→", question, logger)
+				except Exception as exc:
+					await logger.tool_error(None, conversation_id, str(exc))
+				return "ERROR: John is at his desk. State your question in the terminal and continue working."
+			# Capture the slot's pre-append question text before add_background
+			# mutates it in memory, so a later Firebase failure can roll the
+			# growth back (see the except arm below).
+			existing_background = next(
+				(p for p in registry.pending_for_conversation(conversation_id)
+				 if p.background and p.cli_session_id == cli_session_id),
+				None,
+			)
+			prior_question = existing_background.question if existing_background is not None else None
+			request_id = _new_request_id()
+			slot_request_id, appended = registry.add_background(
+				conversation_id, cli_session_id, sender, request_id, question=question,
+			)
+			try:
+				# Awaited (not _spawn_bg'd) unlike the blocking path below: there
+				# is no live future racing the answer here, so a Firebase failure
+				# should surface through the except arm as an ERROR return rather
+				# than leave a phantom card on John's phone.
+				_correlation, msg_id = await backend.write_conversation_message(
+					conversation_id, sender, "question", question,
+					request_id=slot_request_id, format=format, suggestions=suggestions, title=title,
+				)
+				record = registry.find_by_request_id(conversation_id, slot_request_id)
+				if record is None:
+					# Answered or drained mid-write; delivery already handled it.
+					await logger.info(f"background_ask_resolved_mid_write: request_id={slot_request_id}")
+					return _envelope("pending", request_id=slot_request_id)
+				if not appended:
+					record.msg_id = msg_id
+					await backend.add_pending_question_record(
+						conversation_id, slot_request_id,
+						sender=sender, msg_id=msg_id,
+						question_text=question, suggestions=suggestions,
+						cli_session_id=cli_session_id,
+						asked_at=datetime.now(timezone.utc).isoformat(),
+						background=True,
+					)
+				else:
+					await backend.update_pending_question_text(conversation_id, slot_request_id, record.question)
+				await logger.request_created(slot_request_id, conversation_id, question)
+				await _append_session_log(config.log_path, conversation_id, "→", question, logger)
+			except Exception as exc:
+				await logger.tool_error(slot_request_id, conversation_id, str(exc))
+				fail_record = registry.find_by_request_id(conversation_id, slot_request_id)
+				if fail_record is not None and not appended:
+					await terminate_pending(registry, backend, logger, fail_record)
+				# Roll back the synchronous in-memory append: memory and the
+				# persisted record must not diverge, and a retry must not
+				# double-append on top of a growth that never reached Firebase.
+				if fail_record is not None and appended and prior_question is not None:
+					fail_record.question = prior_question
+				return f"ERROR: {exc}"
+			return _envelope("pending", request_id=slot_request_id)
 
 		# At-desk redirect: when away mode is OFF, John is at his desk
 		# watching the terminal. Don't block the agent for 24h — write the

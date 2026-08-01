@@ -165,7 +165,11 @@ async def dispatch_responses(
 									await logger.surface_error(f"history_write_failed: {exc}")
 							_spawn_bg(_write_history(), label=f"history_write:{conversation_id}")
 							if record.future is None:
-								await finish_parked_resolve(backend, session_registry, logger, record, response.text)
+								if record.background:
+									from server.inbound import deliver_background_answer
+									await deliver_background_answer(registry, backend, session_registry, logger, record, response.text)
+								else:
+									await finish_parked_resolve(backend, session_registry, logger, record, response.text)
 					else:
 						await logger.surface_error(f"legacy_correlation_dropped: {response.correlation}")
 				except asyncio.CancelledError:
@@ -331,6 +335,46 @@ async def dispatch_combine_commands(registry, backend, logger, supervisor, pendi
 		await backend.start_combine_command_listener(_handle)
 	else:
 		await logger.info("combine_command_listener not wired (backend missing method)")
+
+
+async def dispatch_message_commands(registry, backend, logger, supervisor, session_registry=None):
+	"""Watch /message_commands for free-form phone/Operator messages.
+
+	command shape: {"conversation_id": "<conv-id>", "text": "...", "issued_at": "<ISO-8601>"}
+	Freshness gating, delete-after-handler, and at-least-once redelivery dedup
+	all come from the shared _start_command_listener."""
+	from server.inbound import deliver_human_message
+
+	async def _handle(cmd: dict, ack=None):
+		try:
+			conversation_id = cmd.get("conversation_id")
+			text = cmd.get("text")
+			if not conversation_id or not isinstance(text, str) or not text.strip():
+				await logger.surface_error(f"message_command_invalid: {cmd}")
+				supervisor.record_success()
+				return
+			result = await deliver_human_message(
+				registry, backend, session_registry, logger, conversation_id, text.strip(),
+			)
+			if not result.get("delivered") and hasattr(backend, "send_text"):
+				await backend.send_text("Message not delivered: that conversation is no longer active.")
+			await logger.info(f"message_command_handled: conversation_id={conversation_id} result={result}")
+		except asyncio.CancelledError:
+			raise
+		except Exception as exc:
+			await _report_command_failure(
+				backend, logger, supervisor, exc,
+				kind="message",
+				notice=f"Message delivery failed: {exc}. The command stays queued and replays on the next service restart; check logs.",
+			)
+			raise
+		else:
+			supervisor.record_success()
+
+	if hasattr(backend, "start_message_command_listener"):
+		await backend.start_message_command_listener(_handle)
+	else:
+		await logger.info("message_command_listener not wired (backend missing method)")
 
 
 async def dispatch_convene_commands(registry, session_registry, backend, logger, supervisor, spawn_handler=None):

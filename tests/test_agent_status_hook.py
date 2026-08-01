@@ -269,8 +269,9 @@ def test_user_prompt_submit_prints_notices_to_stdout():
 
 
 def test_pre_tool_use_does_not_print_notices():
-	"""Every event other than UserPromptSubmit keeps the no-stdout contract,
-	even when the server returns notices."""
+	"""PreToolUse keeps the no-stdout contract, even when the server returns
+	notices - only UserPromptSubmit and PostToolUse have a channel to deliver
+	them to the agent."""
 	srv, port = _start_server()
 	_Capture.response_payload = {"notices": ["N"]}
 	try:
@@ -279,6 +280,61 @@ def test_pre_tool_use_does_not_print_notices():
 			"session_id": "s-1",
 			"tool_name": "Bash",
 			"tool_input": {"command": "ls"},
+		}, port)
+	finally:
+		_Capture.response_payload = None
+		srv.shutdown()
+	assert result.returncode == 0
+	assert result.stdout == b""
+
+
+def test_post_tool_use_prints_json_context_for_notices():
+	"""PostToolUse emits a hookSpecificOutput JSON envelope (not raw text like
+	UserPromptSubmit), joining multiple notices with a blank line."""
+	srv, port = _start_server()
+	_Capture.response_payload = {"notices": ["n1", "n2"]}
+	try:
+		result = _run_hook({
+			"hook_event_name": "PostToolUse",
+			"session_id": "s-1",
+			"tool_name": "Bash",
+			"tool_input": {"command": "ls"},
+			"tool_response": {},
+		}, port)
+	finally:
+		_Capture.response_payload = None
+		srv.shutdown()
+	assert result.returncode == 0
+	parsed = json.loads(result.stdout.decode("utf-8"))
+	assert parsed["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
+	assert parsed["hookSpecificOutput"]["additionalContext"] == "n1\n\nn2"
+
+
+def test_post_tool_use_with_empty_notices_prints_nothing():
+	srv, port = _start_server()
+	_Capture.response_payload = {"notices": []}
+	try:
+		result = _run_hook({
+			"hook_event_name": "PostToolUse",
+			"session_id": "s-1",
+			"tool_name": "Bash",
+			"tool_input": {"command": "ls"},
+			"tool_response": {},
+		}, port)
+	finally:
+		_Capture.response_payload = None
+		srv.shutdown()
+	assert result.returncode == 0
+	assert result.stdout == b""
+
+
+def test_stop_does_not_print_notices():
+	srv, port = _start_server()
+	_Capture.response_payload = {"notices": ["N"]}
+	try:
+		result = _run_hook({
+			"hook_event_name": "Stop",
+			"session_id": "s-1",
 		}, port)
 	finally:
 		_Capture.response_payload = None

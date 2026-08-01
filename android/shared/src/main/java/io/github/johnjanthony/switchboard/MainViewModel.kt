@@ -950,6 +950,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	/**
+	 * Push free-form phone-typed text into a conversation's message queue. Like
+	 * conveneSessions, this is a routing operation, not a spawn, and deliberately does
+	 * NOT touch away mode.
+	 */
+	fun sendMessageToConversation(convId: String, text: String) {
+		writeReporting(
+			database.getReference("message_commands").push(),
+			mapOf(
+				"conversation_id" to convId,
+				"text" to text,
+				"issued_at" to nowIso(),
+			),
+			"send message",
+		)
+	}
+
+	/**
 	 * Resume a dormant session from the board. Mirrors spawnSession's away-mode auto-enable:
 	 * returns true if away mode was off and this call turned it on, so the caller can toast.
 	 */

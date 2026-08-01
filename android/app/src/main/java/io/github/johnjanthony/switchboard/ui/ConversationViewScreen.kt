@@ -63,6 +63,7 @@ fun ConversationViewScreen(
 	onBack: () -> Unit,
 	onLongPressPill: () -> Unit,
 	onSubmitReply: (sender: String, text: String, requestId: String?) -> Unit,
+	onSendMessage: (String) -> Unit,
 	onDownloadFile: (url: String, filename: String) -> Unit,
 	onLongPressDownloadFile: (url: String, filename: String) -> Unit,
 	onMarkMessageOpened: (msgId: String) -> Unit,
@@ -164,20 +165,25 @@ fun ConversationViewScreen(
 					},
 				)
 			} else if (activePending.isNotEmpty()) {
-				Surface(tonalElevation = 2.dp) {
-					Box(
-						modifier = Modifier
-							.fillMaxWidth()
-							.padding(16.dp),
-						contentAlignment = Alignment.Center
-					) {
-						Text(
-							text = "Select a question to reply...",
-							style = MaterialTheme.typography.bodyMedium,
-							color = MaterialTheme.colorScheme.onSurfaceVariant
-						)
+				Column {
+					Surface(tonalElevation = 2.dp) {
+						Box(
+							modifier = Modifier
+								.fillMaxWidth()
+								.padding(16.dp),
+							contentAlignment = Alignment.Center
+						) {
+							Text(
+								text = "Select a question to reply...",
+								style = MaterialTheme.typography.bodyMedium,
+								color = MaterialTheme.colorScheme.onSurfaceVariant
+							)
+						}
 					}
+					MessageInputBar(onSubmit = onSendMessage)
 				}
+			} else if (row.state == "active") {
+				MessageInputBar(onSubmit = onSendMessage)
 			}
 		},
 	) { padding ->
@@ -323,6 +329,30 @@ private fun ReplyInputBar(
 					onValueChange = { text = it },
 					modifier = Modifier.weight(1f),
 					placeholder = { Text("Reply to ${pending.sender}…") },
+					maxLines = 4,
+					shape = RoundedCornerShape(24.dp),
+				)
+				Spacer(Modifier.width(8.dp))
+				IconButton(onClick = { if (text.isNotBlank()) { onSubmit(text); text = "" } }) {
+					Icon(Icons.Default.Send, contentDescription = "Send")
+				}
+			}
+		}
+	}
+}
+
+@Composable
+private fun MessageInputBar(onSubmit: (String) -> Unit) {
+	var text by remember { mutableStateOf("") }
+
+	Surface(tonalElevation = 2.dp) {
+		Column(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+			Row(verticalAlignment = Alignment.CenterVertically) {
+				OutlinedTextField(
+					value = text,
+					onValueChange = { text = it },
+					modifier = Modifier.weight(1f),
+					placeholder = { Text("Message the agents...") },
 					maxLines = 4,
 					shape = RoundedCornerShape(24.dp),
 				)

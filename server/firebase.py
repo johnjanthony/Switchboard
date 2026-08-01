@@ -194,11 +194,12 @@ class FirebaseBackend(
 		suggestions: list[str] | None = None,
 		cli_session_id: str | None = None,
 		asked_at: str | None = None,
+		background: bool = False,
 	) -> None:
 		"""Persist an in-flight ask_human at
 		/conversations/<id>/pending_questions/<request_id> per the 2026-05-19 spec."""
 		ref = db.reference(f"conversations/{conversation_id}/pending_questions/{request_id}")
-		await asyncio.to_thread(ref.set, {
+		record = {
 			"sender": sender,
 			"questionText": question_text,
 			"cancelled": False,
@@ -206,7 +207,18 @@ class FirebaseBackend(
 			"suggestions": suggestions,
 			"cliSessionId": cli_session_id,
 			"askedAt": asked_at,
-		})
+		}
+		# Absence means blocking; only write the field when True so hydration's
+		# absence-as-blocking rule stays intact.
+		if background:
+			record["background"] = True
+		await asyncio.to_thread(ref.set, record)
+
+	async def update_pending_question_text(self, conversation_id: str, request_id: str, question_text: str) -> None:
+		"""Refresh the record's questionText after Registry.add_background grew it
+		with an appended follow-up question."""
+		ref = db.reference(f"conversations/{conversation_id}/pending_questions/{request_id}")
+		await asyncio.to_thread(lambda: ref.update({"questionText": question_text}))
 
 	async def remove_pending_question_record(
 		self,
@@ -1023,6 +1035,11 @@ class FirebaseBackend(
 		"""Listen for entries under /combine_commands; dispatch handler(cmd_dict)
 		for each queued or new entry (initial snapshot included; TTL-gated)."""
 		self._start_command_listener("combine_commands", handler)
+
+	async def start_message_command_listener(self, handler) -> None:
+		"""Listen for entries under /message_commands; dispatch handler(cmd_dict)
+		for each queued or new entry (initial snapshot included; TTL-gated)."""
+		self._start_command_listener("message_commands", handler)
 
 	async def start_force_end_command_listener(self, handler) -> None:
 		"""Listen for entries under /force_end_commands; dispatch handler(cmd_dict)

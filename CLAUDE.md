@@ -12,7 +12,7 @@ Single Python process, one asyncio event loop, MCP HTTP server on `localhost:987
 
 Away mode is the founding feature, not the whole product: ask/notify blocking semantics are away-mode-scoped (at-desk interaction uses the terminal), while session tracking, telemetry fan-out, Operator, and Watchtower are always-on ambient surfaces.
 
-The Registry is in-memory. The pending-request index is keyed by `(conversation_id, cli_session_id)` tuples where `conversation_id` is a `conv-<uuid>` string from `Registry.conversations` — not a filesystem path; answers resolve by `(conversation_id, request_id)`. Pending ask_human futures die on restart, but the questions survive: hydration rebuilds pending_questions records as parked (future-less) pendings, an arriving answer resolves them with a history write plus a session notice, and unanswered ones expire at the 72h retention horizon (chunk 7). Conversations (the persistence unit) survive restart via Firebase hydration — see `server/hydration.py`.
+The Registry is in-memory. The pending-request index is keyed by `(conversation_id, cli_session_id)` tuples where `conversation_id` is a `conv-<uuid>` string from `Registry.conversations` — not a filesystem path; answers resolve by `(conversation_id, request_id)`. A second index under the same key shape holds each session's one non-blocking `ask_human(background=true)`; the two never supersede each other, and every count/lifecycle accessor reads their union. Pending ask_human futures die on restart, but the questions survive: hydration rebuilds pending_questions records as parked (future-less) pendings, an arriving answer resolves them with a history write plus a session notice, and unanswered ones expire at the 72h retention horizon (chunk 7). Conversations (the persistence unit) survive restart via Firebase hydration — see `server/hydration.py`.
 
 ## Layout
 
@@ -34,6 +34,7 @@ server/
   rate_limiter.py      Per-conversation token-bucket rate limiter consumed by ask_human, notify_human, send_document_human, and message_and_await_agent / post_agent_message (which degrade to FCM suppression instead of rejecting)
   canonicalization.py  Canonical-cwd normalization (display-only; cwd is a display tag)
   logging_jsonl.py     JSONL audit log
+  inbound.py           Shared inbound human-to-agent delivery ladder (deliver_human_message for free-form phone messages, deliver_background_answer for background-ask answers); per member: resolve a live blocking ask -> wake a wait -> queue a session notice
   hydration.py         Rebuilds Registry state from Firebase on startup (conversations survive restart)
   rules_audit.py       Startup audit of the deployed RTDB rules (placeholder/test-mode detection; loud, non-fatal)
   firebase_supervisor.py  SupervisedListener + LoopSupervisor (Firebase-listener / dispatch-loop supervision for /healthz)
@@ -43,7 +44,7 @@ server/
   widget_snapshot.py   WidgetSnapshotStore for the /widget-snapshot POST payload (canonical de-dup)
   gateway/             Tool handlers + dispatch loops
     handlers.py          ask_human, notify_human, send_document_human, message_and_await_agent, post_agent_message, join_conversation, combine_conversations, lookup_conversation_ids, leave_conversation, set_away_mode tool closures; JSON status envelopes (_envelope/_terminal_envelope/_wrap_wait_result)
-    dispatch.py          dispatch_responses, dispatch_combine_commands, dispatch_force_end_commands, dispatch_spawn_commands, dispatch_away_mode_commands, dispatch_status_request_commands, dispatch_session_end_markers, dispatch_session_sweep, dispatch_conversation_sweep, handle_force_end
+    dispatch.py          dispatch_responses, dispatch_combine_commands, dispatch_force_end_commands, dispatch_spawn_commands, dispatch_away_mode_commands, dispatch_message_commands, dispatch_status_request_commands, dispatch_session_end_markers, dispatch_session_sweep, dispatch_conversation_sweep, handle_force_end
     document.py          _validate_path + extension allowlist + secret-name denylist + sha256 helpers
     bulk_respond.py      _apply_bulk_respond_decision (used by exit_global to drain pending questions)
     parked.py            finish_parked_resolve - bookkeeping for resolving a future-less parked pending (record cleanup + session notices)
@@ -146,7 +147,7 @@ Requirements:
 
 ## MCP tool surface
 
-Active tools: `ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `post_agent_message`, `join_conversation`, `combine_conversations`, `lookup_conversation_ids`, `leave_conversation`, `set_away_mode`. Conversation tools return one-line JSON status envelopes (`ok | timeout | conversation_ended`); `ask_human` returns bare reply text with JSON terminal sentinels.
+Active tools: `ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `post_agent_message`, `join_conversation`, `combine_conversations`, `lookup_conversation_ids`, `leave_conversation`, `set_away_mode`. Conversation tools return one-line JSON status envelopes (`ok | timeout | conversation_ended`); `ask_human` returns bare reply text with JSON terminal sentinels. `ask_human` also takes `background=true`, which returns `{"status":"pending","request_id":...}` immediately instead of blocking: the question becomes a future-less pending in a second registry slot (so it never supersedes, and is never superseded by, the session's blocking ask), a second background ask appends to the same card, and John's answer is delivered later through `server/inbound.py`'s ladder. A pending background ask does NOT satisfy the away-mode turn-end hook.
 
 Routing is by `cli_session_id`, injected by the `cli-session-injector-hook.py` PreToolUse hook. Agents pass `sender` and tool-specific args only. Non-Claude agents (Antigravity) have no injector; they pass cli_session_id (= their agy conversation UUID) and cwd explicitly on every call, taught and enforced by the agy hooks.
 

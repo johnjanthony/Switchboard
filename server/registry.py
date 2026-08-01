@@ -12,6 +12,17 @@ completes normally instead of surfacing a transport-level cancel). Answers resol
 (conversation_id, request_id), not by sender. Routing from a CLI session
 to its current conversation uses session_to_conversation_id (hook-injected
 cli_session_id → conv-<uuid>); cwd is informational only.
+
+There are TWO pending maps under that same key shape, and they are deliberately
+independent. _pending holds blocking asks (and hydrated parked ones) with the
+supersede semantics above; _background_pending holds each session's single
+non-blocking ask_human(background=true), which is future-less by construction.
+Neither map ever supersedes the other, so a turn-ending blocking ask cannot
+destroy an outstanding background question. A second background ask appends to
+the existing record's question text and keeps its request_id, rather than
+superseding it: one phone card, one reply resolving the whole slot. Every
+lookup, count, and lifecycle accessor reads the union of both maps, so
+background pendings are found, counted, drained and TTL-swept like any other.
 """
 
 from __future__ import annotations
@@ -46,6 +57,7 @@ class PendingRequest:
 	msg_id: str | None = None
 	notices: list = field(default_factory=list)
 	question: str | None = None
+	background: bool = False
 
 
 @dataclass
@@ -94,6 +106,7 @@ class Conversation:
 class Registry:
 	def __init__(self) -> None:
 		self._pending: dict[tuple[str, str], PendingRequest] = {}
+		self._background_pending: dict[tuple[str, str], PendingRequest] = {}
 		self.total_answered: int = 0
 		self.sessions = None  # SessionRegistry, attached by main.py; optional for tests
 		self.spawn_catalog = None  # dict from spawn_catalog.build_catalog, attached by main.py; optional for tests
@@ -153,14 +166,15 @@ class Registry:
 
 	@property
 	def pending_count(self) -> int:
-		return len(self._pending)
+		return len(self._pending) + len(self._background_pending)
 
 	@property
 	def oldest_pending_age_seconds(self) -> float | None:
-		if not self._pending:
+		records = list(self._pending.values()) + list(self._background_pending.values())
+		if not records:
 			return None
 		now = datetime.now(timezone.utc)
-		oldest = min(r.started_at for r in self._pending.values())
+		oldest = min(r.started_at for r in records)
 		return (now - oldest).total_seconds()
 
 	@property
@@ -208,10 +222,13 @@ class Registry:
 		return future
 
 	def find_by_request_id(self, conversation_id: str, request_id: str) -> "PendingRequest | None":
-		for record in self._pending.values():
+		for record in list(self._pending.values()) + list(self._background_pending.values()):
 			if record.conversation_id == conversation_id and record.request_id == request_id:
 				return record
 		return None
+
+	def _owning_map(self, record: "PendingRequest") -> dict:
+		return self._background_pending if record.background else self._pending
 
 	def resolve(self, conversation_id: str, request_id: str, text: str) -> str | None:
 		"""Resolve the pending whose request_id matches within conversation_id.
@@ -226,7 +243,7 @@ class Registry:
 			# terminal arm to pop; report unresolvable so the caller takes the
 			# stale-reply path instead of splicing the answer as delivered (REV-108).
 			return None
-		self._pending.pop((record.conversation_id, record.cli_session_id), None)
+		self._owning_map(record).pop((record.conversation_id, record.cli_session_id), None)
 		if record.future is not None and not record.future.done():
 			if record.notices:
 				text = "\n\n".join([*record.notices, text])
@@ -262,15 +279,16 @@ class Registry:
 		guard, by construction). Fires the mirror decrement. Never settles the
 		future - terminate_pending (gateway/pending_lifecycle.py) owns settlement."""
 		key = (record.conversation_id, record.cli_session_id)
-		if self._pending.get(key) is not record:
+		owning_map = self._owning_map(record)
+		if owning_map.get(key) is not record:
 			return False
-		self._pending.pop(key)
+		owning_map.pop(key)
 		self._fire_pending_mirror(record.conversation_id, -1)
 		return True
 
 	def all_pending(self) -> list["PendingRequest"]:
 		"""Snapshot for bulk-respond on global exit (Slice I)."""
-		return list(self._pending.values())
+		return list(self._pending.values()) + list(self._background_pending.values())
 
 	def add_parked(
 		self,
@@ -308,18 +326,59 @@ class Registry:
 
 	@property
 	def parked_count(self) -> int:
-		return sum(1 for r in self._pending.values() if r.future is None)
+		records = list(self._pending.values()) + list(self._background_pending.values())
+		return sum(1 for r in records if r.future is None)
 
 	def expired_parked(self, now: datetime, max_age_seconds: float) -> list["PendingRequest"]:
 		"""Parked records whose ask is older than the horizon (the TTL sweep's input)."""
+		records = list(self._pending.values()) + list(self._background_pending.values())
 		return [
-			r for r in self._pending.values()
+			r for r in records
 			if r.future is None and (now - r.started_at).total_seconds() > max_age_seconds
 		]
 
 	def pending_for_conversation(self, conversation_id: str) -> list["PendingRequest"]:
 		"""Snapshot of pending requests for a specific conversation."""
-		return [p for p in self._pending.values() if p.conversation_id == conversation_id]
+		records = list(self._pending.values()) + list(self._background_pending.values())
+		return [p for p in records if p.conversation_id == conversation_id]
+
+	def add_background(
+		self,
+		conversation_id: str,
+		cli_session_id: str,
+		sender: str,
+		request_id: str,
+		msg_id: str | None = None,
+		question: str | None = None,
+		started_at: datetime | None = None,
+	) -> tuple[str, bool]:
+		"""Create or append the session's single background ask.
+		Appending grows the existing record's question text and keeps its
+		request_id (one phone card, one reply resolves the slot). Never touches
+		the blocking map, so blocking supersede semantics are unaffected."""
+		key = (conversation_id, cli_session_id)
+		existing = self._background_pending.get(key)
+		if existing is not None:
+			existing.question = f"{existing.question}\n\nAlso: {question}" if existing.question else question
+			return existing.request_id, True
+		record = PendingRequest(
+			conversation_id=conversation_id, sender=sender, request_id=request_id,
+			future=None, cli_session_id=cli_session_id, msg_id=msg_id,
+			question=question, background=True,
+		)
+		if started_at is not None:
+			record.started_at = started_at
+		self._background_pending[key] = record
+		self._fire_pending_mirror(conversation_id, +1)
+		return request_id, False
+
+	def live_blocking_pending(self, conversation_id: str, cli_session_id: str) -> "PendingRequest | None":
+		"""The session's blocking pending, only if a coroutine is actually
+		awaiting it (live future). Parked and background records return None."""
+		record = self._pending.get((conversation_id, cli_session_id))
+		if record is not None and record.future is not None and not record.future.done():
+			return record
+		return None
 
 	def update_global_away_cache(self, active: bool) -> None:
 		"""Listener entry point: update the in-memory cache to reflect a Firebase change."""

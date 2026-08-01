@@ -84,3 +84,10 @@ export function conveneCmd({ sessionIds, target, title } = {}, nowIsoFn) {
 export function ackSessionCmd(sessionId, nowIsoFn) {
 	return { path: `session_acks/${sessionId}`, value: nowIsoFn() };
 }
+
+export function messageCmd(convId, text, nowIsoFn) {
+	return {
+		path: 'message_commands',
+		value: { conversation_id: convId, text, issued_at: nowIsoFn() },
+	};
+}

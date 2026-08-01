@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
 	answerCmd, awayOnCmd, awayOffCmd, spawnFreshCmd, resumeCmd, combineCmd, forceEndCmd, setHiddenCmd,
-	conveneCmd, ackSessionCmd,
+	conveneCmd, ackSessionCmd, messageCmd,
 } from './commands.js';
 
 const FIXED_ISO = '2026-06-15T12:00:00.000Z';
@@ -145,4 +145,12 @@ test('conveneCmd omits title from value when absent', () => {
 test('ackSessionCmd builds the ack write at session_acks/<sessionId>', () => {
 	const cmd = ackSessionCmd('s1', () => 'T');
 	assert.deepEqual(cmd, { path: 'session_acks/s1', value: 'T' });
+});
+
+test('messageCmd builds the free-form message push into message_commands', () => {
+	const cmd = messageCmd('c1', 'hello', () => 'T');
+	assert.deepEqual(cmd, {
+		path: 'message_commands',
+		value: { conversation_id: 'c1', text: 'hello', issued_at: 'T' },
+	});
 });

@@ -318,6 +318,7 @@ private fun SwitchboardNavHost(
 						viewModel.submitReplyForConversation(convId, sender, text, requestId)
 					}
 				},
+				onSendMessage = { viewModel.sendMessageToConversation(convId, it) },
 				onDownloadFile = { url, filename -> viewModel.downloadAndOpenFile(context, url, filename) },
 				onLongPressDownloadFile = { url, filename -> viewModel.saveFileToDownloads(context, url, filename) },
 				onMarkMessageOpened = { msgId -> viewModel.markMessageOpened(convId, msgId) },

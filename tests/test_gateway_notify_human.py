@@ -32,6 +32,8 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, Conversati
 		self.push_suppressed: list = []
 		self.sent_texts: list = []
 		self.member_writes: list = []
+		self.pending_question_records: list[dict] = []
+		self.pending_question_text_updates: list[tuple] = []
 		self._next_correlation = 1000
 
 	async def send_text(self, text, **kwargs):
@@ -111,6 +113,34 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, Conversati
 
 	async def send_timeout_followup(self, request_id, channel_id, timeout_seconds, correlation):
 		self.sent_timeouts.append((request_id, channel_id, timeout_seconds, correlation))
+
+	async def add_pending_question_record(
+		self,
+		conversation_id,
+		request_id,
+		*,
+		sender,
+		msg_id,
+		question_text,
+		suggestions=None,
+		cli_session_id=None,
+		asked_at=None,
+		background=False,
+	):
+		self.pending_question_records.append({
+			"conversation_id": conversation_id,
+			"request_id": request_id,
+			"sender": sender,
+			"msg_id": msg_id,
+			"question_text": question_text,
+			"suggestions": suggestions,
+			"cli_session_id": cli_session_id,
+			"asked_at": asked_at,
+			"background": background,
+		})
+
+	async def update_pending_question_text(self, conversation_id, request_id, question_text):
+		self.pending_question_text_updates.append((conversation_id, request_id, question_text))
 
 	async def poll_responses(self) -> AsyncIterator[IncomingResponse]:
 		if False:

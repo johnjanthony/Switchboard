@@ -3,10 +3,13 @@
 Registered against UserPromptSubmit, PreToolUse, PostToolUse, and Stop. POSTs
 the inferred state to switchboard's /agent_status endpoint. Fire-and-forget:
 any failure (server unreachable, timeout, malformed stdin) results in silent
-exit 0. The script never emits stdout except to deliver UserPromptSubmit
-notices - it otherwise cannot influence Claude Code's decision flow, and
-UserPromptSubmit is a different event from the Stop-hook away-mode flow, so
-it cannot conflict with it.
+exit 0. The script emits stdout only to deliver queued notices, on
+UserPromptSubmit and PostToolUse - it otherwise cannot influence Claude
+Code's decision flow, and neither event is the Stop-hook away-mode flow, so
+it cannot conflict with it. UserPromptSubmit writes the raw joined notice
+text (it becomes context for the agent's turn); PostToolUse writes a
+hookSpecificOutput JSON envelope instead, that being the documented
+PostToolUse channel for reaching the model mid-turn.
 """
 
 from __future__ import annotations
@@ -126,6 +129,18 @@ def main() -> int:
 		if isinstance(notices, list) and notices:
 			# UserPromptSubmit stdout becomes context for the agent's turn.
 			sys.stdout.write("\n\n".join(str(n) for n in notices))
+	elif event == "PostToolUse":
+		notices = response.get("notices") if isinstance(response, dict) else None
+		if isinstance(notices, list) and notices:
+			json.dump(
+				{
+					"hookSpecificOutput": {
+						"hookEventName": "PostToolUse",
+						"additionalContext": "\n\n".join(str(n) for n in notices),
+					}
+				},
+				sys.stdout,
+			)
 	return 0
 
 

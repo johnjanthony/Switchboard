@@ -149,6 +149,63 @@ async def test_wake_queues_notice_for_idle_session(logger):
 	assert f"ref='{result['conversation_id']}'" in rec.pending_notices[0]
 
 
+@pytest.mark.asyncio
+async def test_wake_queues_notice_when_only_pending_is_background(logger):
+	"""A woken session whose only pending is a non-blocking background ask
+	(future-less, not blocked) must still get the notice hook-queued at step
+	(e), not attached to the background record: a background ask isn't
+	blocking anything, and its answer path doesn't fold notices the way a
+	live or parked blocking pending's does."""
+	registry = make_registry_with_loopback()
+	session_registry = SessionRegistry()
+	registry.sessions = session_registry
+
+	session_registry.record_session_start("s-bg", cwd="C:/BG")
+	session_registry.set_sender("s-bg", "Backgrounder")
+
+	registry.add_background("some-other-conv", "s-bg", "Backgrounder", "req-bg", question="Q")
+
+	cmd = {"session_ids": ["s-bg"], "target": "new", "title": None, "issued_at": "x"}
+	result = await _perform_convene(registry, session_registry, cmd, logger)
+
+	rec = session_registry.get("s-bg")
+	assert len(rec.pending_notices) == 1
+	assert "join_conversation(sender=" in rec.pending_notices[0]
+	assert f"ref='{result['conversation_id']}'" in rec.pending_notices[0]
+
+	background = registry.find_by_request_id("some-other-conv", "req-bg")
+	assert background is not None
+	assert background.notices == []
+
+
+@pytest.mark.asyncio
+async def test_wake_attaches_notice_to_parked_blocking_pending(logger):
+	"""A parked (future-less) blocking pending - rebuilt from a persisted
+	record after a restart - still counts as 'blocked in ask_human' at step
+	(d): its eventual answer folds record.notices the same way a live
+	pending's does, so the notice must attach there rather than falling
+	through to the hook-queued path."""
+	registry = make_registry_with_loopback()
+	session_registry = SessionRegistry()
+	registry.sessions = session_registry
+
+	session_registry.record_session_start("s-parked", cwd="C:/P")
+	session_registry.set_sender("s-parked", "Parker")
+
+	registry.add_parked("some-other-conv", "s-parked", "Parker", "req-parked", question="Q")
+
+	cmd = {"session_ids": ["s-parked"], "target": "new", "title": None, "issued_at": "x"}
+	result = await _perform_convene(registry, session_registry, cmd, logger)
+
+	pending = registry.find_by_request_id("some-other-conv", "req-parked")
+	assert pending is not None
+	assert len(pending.notices) == 1
+	assert f"ref='{result['conversation_id']}'" in pending.notices[0]
+
+	rec = session_registry.get("s-parked")
+	assert len(rec.pending_notices) == 0
+
+
 def test_wrap_wait_result_passes_envelopes_through():
 	"""_wrap_wait_result must not re-wrap a convene-wake result that is already
 	a status envelope (built directly by _wake_convened, not the normal

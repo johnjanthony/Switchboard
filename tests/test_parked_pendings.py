@@ -182,6 +182,31 @@ async def test_bulk_respond_send_default_resolves_parked_records(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_bulk_respond_send_default_resolves_background_records(tmp_path):
+	from server.gateway.bulk_respond import _apply_bulk_respond_decision
+
+	registry = Registry()
+	session_registry = SessionRegistry()
+	session_registry.record_session_start("sess-A", cwd="C:/Work/X")
+	registry.add_background(_CONV, "sess-A", "Claude", "req-1", msg_id="m-q", question="Cache warmed")
+
+	backend = _AnswerBackend([])
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+
+	commit = await _apply_bulk_respond_decision(
+		registry, backend, logger, decision="send_default", default_text="handled at desk",
+		session_registry=session_registry,
+	)
+	assert commit is True
+	assert registry.pending_count == 0
+	assert (_CONV, "req-1") in backend.pending_removed
+	assert (_CONV, "John", "human", "handled at desk", "m-q") in backend.history
+	assert session_registry.pop_notices("sess-A") == [
+		"John answered your earlier question 'Cache warmed': handled at desk",
+	]
+
+
+@pytest.mark.asyncio
 async def test_parked_ttl_sweep_cancels_only_expired_parked(tmp_path):
 	from server.gateway.dispatch import _parked_sweep_once
 
@@ -201,6 +226,31 @@ async def test_parked_ttl_sweep_cancels_only_expired_parked(tmp_path):
 	assert count == 1
 	backend.mark_question_cancelled.assert_awaited_once_with("conv-1", "req-old")
 	assert registry.find_by_request_id("conv-1", "req-old") is None
+	assert registry.find_by_request_id("conv-2", "req-fresh") is not None
+	assert not live_fut.cancelled()
+	assert registry.pending_count == 2
+
+
+@pytest.mark.asyncio
+async def test_parked_ttl_sweep_cancels_expired_background_record(tmp_path):
+	from server.gateway.dispatch import _parked_sweep_once
+
+	registry = Registry()
+	registry.add_background("conv-1", "sess-A", "Claude", "req-old-bg", question="Old background note")
+	registry.find_by_request_id("conv-1", "req-old-bg").started_at = (
+		datetime.now(timezone.utc) - timedelta(hours=73)
+	)
+	registry.add_parked("conv-2", "sess-B", "Claude", "req-fresh", question="Fresh?")
+	live_fut = registry.add("conv-3", "sess-C", "Claude", "req-live")
+
+	backend = MagicMock()
+	backend.mark_question_cancelled = AsyncMock()
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+
+	count = await _parked_sweep_once(registry, backend, logger, max_age_hours=72)
+	assert count == 1
+	backend.mark_question_cancelled.assert_awaited_once_with("conv-1", "req-old-bg")
+	assert registry.find_by_request_id("conv-1", "req-old-bg") is None
 	assert registry.find_by_request_id("conv-2", "req-fresh") is not None
 	assert not live_fut.cancelled()
 	assert registry.pending_count == 2

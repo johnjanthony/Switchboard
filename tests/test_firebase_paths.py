@@ -394,3 +394,62 @@ async def test_publish_spawn_options_writes_full_node(backend):
 	assert payload["antigravity"] == catalog["antigravity"]
 	# The spread must merge at the top level, not nest under a "catalog" key.
 	assert "catalog" not in payload
+
+
+# ---------------------------------------------------------------------------
+# add_pending_question_record / update_pending_question_text: the background
+# flag write and the append-text update path
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_add_pending_question_record_writes_background_true_when_set(backend):
+	"""background=True lands on the written record as a literal True."""
+	be, mock_db = backend
+	captured = []
+	mock_db.reference.return_value.set.side_effect = lambda payload: captured.append(payload)
+
+	await be.add_pending_question_record(
+		"conv-bg-fb", "req-bg-1", sender="Claude", msg_id="m-1",
+		question_text="Deploy?", cli_session_id="sess-A",
+		asked_at="2026-07-07T12:00:00+00:00", background=True,
+	)
+
+	assert len(captured) == 1
+	assert captured[0]["background"] is True
+
+
+@pytest.mark.asyncio
+async def test_add_pending_question_record_omits_background_key_when_not_set(backend):
+	"""Hydration treats absence of the key as blocking; background=False (or
+	omitted) must never write the literal False, only leave the key out."""
+	be, mock_db = backend
+	captured = []
+	mock_db.reference.return_value.set.side_effect = lambda payload: captured.append(payload)
+
+	await be.add_pending_question_record(
+		"conv-block-fb", "req-block-1", sender="Claude", msg_id="m-2",
+		question_text="Deploy?", cli_session_id="sess-B",
+		asked_at="2026-07-07T12:00:00+00:00",
+	)
+	await be.add_pending_question_record(
+		"conv-block-fb", "req-block-2", sender="Claude", msg_id="m-3",
+		question_text="Deploy?", cli_session_id="sess-B",
+		asked_at="2026-07-07T12:00:00+00:00", background=False,
+	)
+
+	assert len(captured) == 2
+	assert "background" not in captured[0], "omitted background must not appear in the written dict"
+	assert "background" not in captured[1], "background=False must not appear in the written dict"
+
+
+@pytest.mark.asyncio
+async def test_update_pending_question_text_targets_pending_questions_path(backend):
+	"""update_pending_question_text targets the same per-record path as
+	add_pending_question_record and updates only questionText."""
+	be, mock_db = backend
+
+	await be.update_pending_question_text("conv-upd", "req-upd", "grown question text")
+
+	calls = [str(c) for c in mock_db.reference.call_args_list]
+	assert any("conversations/conv-upd/pending_questions/req-upd" in c for c in calls)
+	mock_db.reference.return_value.update.assert_called_once_with({"questionText": "grown question text"})

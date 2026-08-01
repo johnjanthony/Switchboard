@@ -127,14 +127,24 @@ async def hydrate_from_firebase(registry: Registry, backend, logger, session_reg
 					and not rec.get("cancelled")
 				)
 				if parkable:
-					registry.add_parked(
-						conv_id, cli_session_id,
-						sender=rec.get("sender") or "Agent",
-						request_id=request_id,
-						msg_id=rec.get("msgId"),
-						question=rec.get("questionText"),
-						started_at=asked_at,
-					)
+					if rec.get("background"):
+						registry.add_background(
+							conv_id, cli_session_id,
+							sender=rec.get("sender") or "Agent",
+							request_id=request_id,
+							msg_id=rec.get("msgId"),
+							question=rec.get("questionText"),
+							started_at=asked_at,
+						)
+					else:
+						registry.add_parked(
+							conv_id, cli_session_id,
+							sender=rec.get("sender") or "Agent",
+							request_id=request_id,
+							msg_id=rec.get("msgId"),
+							question=rec.get("questionText"),
+							started_at=asked_at,
+						)
 					parked += 1
 				else:
 					if backend is not None:

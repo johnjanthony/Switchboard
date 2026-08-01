@@ -121,6 +121,25 @@ function AnswerBox({ store, convId, pending }) {
 	`;
 }
 
+function MessageComposer({ store, convId }) {
+	const [text, setText] = useState("");
+	const send = async () => {
+		const v = String(text == null ? "" : text).trim();
+		if (!v) return;
+		const ok = await store.sendMessage(convId, v);
+		if (ok) setText("");
+	};
+	return html`<div class="message-composer">
+		<textarea
+			class="answer-input"
+			placeholder="Message the agents..."
+			value=${text}
+			onInput=${(e) => setText(e.target.value)}
+		></textarea>
+		<button class="answer-send" onClick=${send}>Send</button>
+	</div>`;
+}
+
 // --- Line lifecycle dialogs (act on the SELECTED line, in place) -------------
 
 function RestoreDialog({ store, conv, convId, onClose }) {
@@ -273,6 +292,7 @@ export function ConversationDetail({ store }) {
 				<div class="pending-stack">
 					${pendings.map((p) => html`<${AnswerBox} key=${p.requestId} store=${store} convId=${id} pending=${p} />`)}
 				</div>
+				${active ? html`<${MessageComposer} store=${store} convId=${id} />` : ""}
 			</div>
 		</section>
 	`;

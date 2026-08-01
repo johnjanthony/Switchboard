@@ -98,9 +98,21 @@ class MessageWriter(ABC):
 		suggestions: list[str] | None = None,
 		cli_session_id: str | None = None,
 		asked_at: str | None = None,
+		background: bool = False,
 	) -> None:
 		"""Write a tracking record at /conversations/<id>/pending_questions/<request_id>.
 		Used by phone-side UI to render an indicator that an ask_human is in flight.
+		No-op default; FirebaseBackend overrides."""
+		pass
+
+	async def update_pending_question_text(
+		self,
+		conversation_id: str,
+		request_id: str,
+		question_text: str,
+	) -> None:
+		"""Refresh the questionText of an existing pending_questions record, used
+		when a background ask_human append grows the record's question text.
 		No-op default; FirebaseBackend overrides."""
 		pass
 

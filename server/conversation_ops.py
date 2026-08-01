@@ -707,6 +707,29 @@ def _wake_one_from(conversation: Conversation, exclude_cli_session_id: str | Non
 	return woke
 
 
+def _wake_all_from(conversation: Conversation, exclude_session_ids: set | None = None) -> set:
+	"""Wake EVERY live waiter on conv.wait_queue (a human message addresses the
+	room, unlike agent messages which wake only the FIFO-oldest). Dead entries
+	(future already done) are discarded as in _wake_one_from. Returns the set of
+	woken cli_session_ids."""
+	exclude = exclude_session_ids or set()
+	woken = set()
+	for entry in list(conversation.wait_queue):
+		future = entry["future"]
+		if future.done():
+			conversation.wait_queue.remove(entry)
+			continue
+		member = entry["member"]
+		if member.cli_session_id in exclude:
+			continue
+		payload = _compose_wake_payload(conversation, member, entry.get("waiting_kind", "msg_and_await"))
+		conversation.wait_queue.remove(entry)
+		future.set_result(payload)
+		member.last_seen_seq = len(conversation.messages)
+		woken.add(member.cli_session_id)
+	return woken
+
+
 def _convene_notice(conversation_id: str, member_sender: str, peers: list) -> str:
 	peer_str = ", ".join(peers) if peers else "(no peers yet)"
 	return (
@@ -766,9 +789,12 @@ async def _wake_convened(registry, session_registry, conversation_id, woken_sess
 			continue
 
 		# (d) Blocked in ask_human: prepend the notice to the eventual human reply.
+		# A background pending is future-less and isn't blocking anything, and its
+		# answer path doesn't fold notices the way a live or parked blocking
+		# pending's does, so it must not claim the notice here.
 		pending_attached = False
 		for pending in registry.all_pending():
-			if pending.cli_session_id == sid:
+			if pending.cli_session_id == sid and not pending.background:
 				pending.notices.append(notice)
 				pending_attached = True
 				break

@@ -5,7 +5,7 @@ import * as paths from './schema.js';
 import { pendingCountFor } from './derive.js';
 import {
 	answerCmd, resumeCmd, combineCmd, forceEndCmd, conveneCmd, ackSessionCmd,
-	spawnFreshCmd, awayOnCmd, awayOffCmd, setHiddenCmd,
+	spawnFreshCmd, awayOnCmd, awayOffCmd, setHiddenCmd, messageCmd,
 } from './commands.js';
 
 function makeFakeStorage(initial = {}) {
@@ -575,6 +575,22 @@ test('a rejected detail write surfaces to the detail pane', async () => {
 	fb.pushValue = () => Promise.reject(new Error('DENIED'));
 	const { store } = makeStore({ fb });
 	assert.equal(await store.dropLine('c1'), false);
+	assert.ok(store.getState().paneErrors.detail);
+});
+
+test('sendMessage pushes messageCmd and returns true on success', async () => {
+	const { store, fb } = makeStore();
+	const ok = await store.sendMessage('c1', 'hello');
+	assert.equal(ok, true);
+	assert.deepEqual(fb.calls.pushed, [messageCmd('c1', 'hello', fb.nowIso)]);
+});
+
+test('sendMessage surfaces a rejected push to the detail pane and returns false', async () => {
+	const fb = makeFakeFb();
+	fb.pushValue = () => Promise.reject(new Error('DENIED'));
+	const { store } = makeStore({ fb });
+	const ok = await store.sendMessage('c1', 'hello');
+	assert.equal(ok, false);
 	assert.ok(store.getState().paneErrors.detail);
 });
 

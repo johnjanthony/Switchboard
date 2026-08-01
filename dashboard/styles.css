@@ -508,6 +508,7 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 
 /* ---- Calling line: the pending-question answer panel ---- */
 .pending-stack { margin-top: 20px; display: flex; flex-direction: column; gap: 14px; }
+.message-composer { margin-top: 8px; }
 .answer-box {
 	background: color-mix(in srgb, #ff7a66 7%, var(--panel));
 	border: 1px solid color-mix(in srgb, #ff7a66 45%, var(--rule));
