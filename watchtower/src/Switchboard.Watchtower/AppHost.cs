@@ -245,19 +245,33 @@ internal sealed class AppHost : IDisposable
 		_tray.SetGauge(gauge.Max, gauge.AnyError, gauge.MaxSeverity, light);
 	}
 
+	DateTime? _hoverStartTime;
+
 	// Tooltip-style: show the panel while the cursor is over the widget (or the panel itself), hide otherwise.
 	void UpdateHover()
 	{
 		var p = Cursor.Position;
-		// Use the widget's true screen rect: Form.Bounds is parent-relative once embedded in the taskbar.
-		bool over = _widget.ScreenBounds.Contains(p) || (_panel.Visible && _panel.Bounds.Contains(p));
+		bool overWidget = _widget.ScreenBounds.Contains(p);
+		bool over = overWidget || (_panel.Visible && _panel.Bounds.Contains(p));
+		_widget.SetHovered(over);
 		if (over)
 		{
-			if (!_panel.Visible) _panel.ShowAbove(_widget.ScreenBounds);
+			if (!_panel.Visible)
+			{
+				_hoverStartTime ??= DateTime.UtcNow;
+				if (DateTime.UtcNow - _hoverStartTime.Value >= TimeSpan.FromMilliseconds(750))
+				{
+					_panel.ShowAbove(_widget.ScreenBounds);
+				}
+			}
 		}
-		else if (_panel.Visible)
+		else
 		{
-			_panel.Hide();
+			_hoverStartTime = null;
+			if (_panel.Visible)
+			{
+				_panel.Hide();
+			}
 		}
 	}
 

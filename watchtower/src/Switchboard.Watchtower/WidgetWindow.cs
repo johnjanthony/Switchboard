@@ -41,6 +41,7 @@ internal sealed class WidgetWindow : Form
 	bool _showBadge;          // Switchboard ShowBadge preference
 	bool _hasPending;         // Switchboard has unanswered questions -> draw the amber badge
 	bool _awayMode;           // Switchboard AwayMode active -> draw dark amber border highlight
+	bool _isHovered;          // Widget cursor hover state -> draw frosted highlight
 	bool _claudeDotVisible;
 	ClaudeStatusLevel _claudeLevel = ClaudeStatusLevel.Operational;
 	bool _claudePulse;        // animate the status dot (active incident) vs hold steady (resolved)
@@ -48,6 +49,13 @@ internal sealed class WidgetWindow : Form
 	bool _agyDotVisible;
 	AntigravityStatusLevel _agyLevel = AntigravityStatusLevel.Operational;
 	bool _agyPulse;
+
+	public void SetHovered(bool hovered)
+	{
+		if (_isHovered == hovered) return;
+		_isHovered = hovered;
+		Render();
+	}
 
 	bool QuotaVisible => _showQuota && _quota.HasValue;
 	public QuotaUsage? Quota => _quota;
@@ -435,7 +443,7 @@ internal sealed class WidgetWindow : Form
 		// ClearType mode fakes transparency: background pixels -> alpha 1 (near-invisible but still
 		// hit-testable), everything else -> opaque. After Premultiply, alpha-1 pixels collapse to ~0.
 		if (_clearType)
-			ApplyOpaqueAlphaMask(bmp, bg);
+			ApplyOpaqueAlphaMask(bmp, bg, _isHovered, _light);
 
 		Premultiply(bmp);
 		SetBitmap(bmp);
@@ -567,7 +575,11 @@ internal sealed class WidgetWindow : Form
 
 			using (var cdot = new SolidBrush(dotColor))
 				g.FillEllipse(cdot, ccx - r, ccy - r, r * 2f, r * 2f);
-			using (var outline = new Pen(Color.FromArgb(200, 0, 0, 0), 1.25f))
+
+			Color dotOutlineColor = _isHovered
+				? (_light ? Color.FromArgb(140, 80, 80, 80) : Color.FromArgb(140, 130, 135, 140))
+				: Color.FromArgb(200, 0, 0, 0);
+			using (var outline = new Pen(dotOutlineColor, 1.25f))
 				g.DrawEllipse(outline, ccx - r, ccy - r, r * 2f, r * 2f);
 		}
 
@@ -702,19 +714,64 @@ internal sealed class WidgetWindow : Form
 		return path;
 	}
 
-	// Force background-colored pixels to alpha 1 and everything else to alpha 255 (the monitor's trick:
-	// a near-invisible but hit-testable background, with fully opaque content that keeps ClearType edges).
-	static void ApplyOpaqueAlphaMask(Bitmap bmp, Color bg)
+	static bool IsInsideRoundedRect(int x, int y, int width, int height, int r)
 	{
-		var rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
+		if (x < 0 || x >= width || y < 0 || y >= height) return false;
+		int rX = -1, rY = -1;
+		if (x < r && y < r) { rX = r - 1 - x; rY = r - 1 - y; }
+		else if (x >= width - r && y < r) { rX = x - (width - r); rY = r - 1 - y; }
+		else if (x < r && y >= height - r) { rX = r - 1 - x; rY = y - (height - r); }
+		else if (x >= width - r && y >= height - r) { rX = x - (width - r); rY = y - (height - r); }
+
+		if (rX >= 0 && rY >= 0)
+		{
+			return (rX + 1) * (rX + 1) + (rY + 1) * (rY + 1) <= r * r;
+		}
+		return true;
+	}
+
+	// Force background-colored pixels to alpha 1 (or translucent hover pill when hovered) and everything else to alpha 255
+	static void ApplyOpaqueAlphaMask(Bitmap bmp, Color bg, bool isHovered, bool light)
+	{
+		int width = bmp.Width;
+		int height = bmp.Height;
+		var rect = new Rectangle(0, 0, width, height);
 		var data = bmp.LockBits(rect, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
 		try
 		{
 			int bytes = Math.Abs(data.Stride) * data.Height;
 			var buf = new byte[bytes];
 			Marshal.Copy(data.Scan0, buf, 0, bytes);
-			for (int i = 0; i + 3 < bytes; i += 4)   // 32bppArgb is laid out B,G,R,A in memory
-				buf[i + 3] = (buf[i] == bg.B && buf[i + 1] == bg.G && buf[i + 2] == bg.R) ? (byte)1 : (byte)255;
+			byte hoverA = (byte)(light ? 40 : 105);  // ~16% black alpha for light theme, ~41% white alpha for dark theme
+			byte hoverColorVal = (byte)(light ? 0 : 255);
+
+			for (int y = 0; y < height; y++)
+			{
+				int rowOffset = y * data.Stride;
+				for (int x = 0; x < width; x++)
+				{
+					int i = rowOffset + x * 4;
+					bool isBg = buf[i] == bg.B && buf[i + 1] == bg.G && buf[i + 2] == bg.R;
+					if (isBg)
+					{
+						if (isHovered && IsInsideRoundedRect(x, y, width, height, 4))
+						{
+							buf[i] = hoverColorVal;     // B
+							buf[i + 1] = hoverColorVal; // G
+							buf[i + 2] = hoverColorVal; // R
+							buf[i + 3] = hoverA;        // A
+						}
+						else
+						{
+							buf[i + 3] = 1;             // near-invisible hit-testable alpha
+						}
+					}
+					else
+					{
+						buf[i + 3] = 255;               // fully opaque content
+					}
+				}
+			}
 			Marshal.Copy(buf, 0, data.Scan0, bytes);
 		}
 		finally { bmp.UnlockBits(data); }

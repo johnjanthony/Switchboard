@@ -139,6 +139,11 @@ internal sealed class DetailPanel : Form
 	readonly PillButton _awayPillButton;
 	readonly ToolTip _toolTip;
 
+	readonly System.Windows.Forms.Timer _animTimer = new() { Interval = 15 };
+	DateTime _animStart;
+	const float AnimDurationMs = 750;
+	float _animOffsetY = 0f;
+
 	public event Action? OpenDashboardRequested;
 	public event Action? ClaudeStatusButtonClicked;
 	public event Action? AntigravityStatusButtonClicked;
@@ -156,6 +161,8 @@ internal sealed class DetailPanel : Form
 		TransparencyKey = BackdropKey;
 		Width = MinWidth;
 		Visible = false;
+
+		_animTimer.Tick += (_, _) => OnAnimTick();
 
 		_toolTip = new ToolTip();
 
@@ -293,12 +300,31 @@ internal sealed class DetailPanel : Form
 		g.FillPath(brush, path);
 	}
 
+	void OnAnimTick()
+	{
+		float elapsed = (float)(DateTime.UtcNow - _animStart).TotalMilliseconds;
+		float t = Math.Clamp(elapsed / AnimDurationMs, 0f, 1f);
+		float ease = 1f - (1f - t) * (1f - t) * (1f - t);
+		_animOffsetY = Height * (1f - ease);
+		if (t >= 1f)
+		{
+			_animTimer.Stop();
+			_animOffsetY = 0f;
+		}
+		Invalidate();
+	}
+
 	protected override bool ShowWithoutActivation => true;
 
 	protected override void OnVisibleChanged(EventArgs e)
 	{
 		base.OnVisibleChanged(e);
-		if (!Visible) _bgForm.Hide();
+		if (!Visible)
+		{
+			_animTimer.Stop();
+			_animOffsetY = 0f;
+			_bgForm.Hide();
+		}
 	}
 
 	[System.Runtime.InteropServices.DllImport("dwmapi.dll")]
@@ -583,7 +609,13 @@ internal sealed class DetailPanel : Form
 		}
 
 		_bgForm.BringToFront();
-		if (!Visible) Show();
+		if (!Visible)
+		{
+			_animOffsetY = Height;
+			_animStart = DateTime.UtcNow;
+			_animTimer.Start();
+			Show();
+		}
 		BringToFront();
 	}
 
@@ -609,6 +641,12 @@ internal sealed class DetailPanel : Form
 		// so ClearType sub-pixel text still renders crisply against a solid surface.
 		g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 		g.Clear(BackdropKey);
+
+		int animY = (int)Math.Round(_animOffsetY);
+		if (animY != 0)
+		{
+			g.TranslateTransform(0, animY);
+		}
 
 		using var label = new Font("Segoe UI", 9f, FontStyle.Bold);
 		using var small = new Font("Segoe UI", 7.5f);
@@ -721,7 +759,7 @@ internal sealed class DetailPanel : Form
 		int group3H = BottomPillRowH + 2 * GroupVPad;
 		DrawGroupPanel(g, group3Top, group3H);
 
-		int btn3Y = group3Top + GroupVPad;
+		int btn3Y = group3Top + GroupVPad + animY;
 		int padX = 14;
 		int btnGap = 6;
 		int availableW = Width - 2 * padX - 3 * btnGap;
@@ -738,6 +776,11 @@ internal sealed class DetailPanel : Form
 
 		_awayPillButton.Location = new Point(padX + 3 * (btnW + btnGap), btn3Y);
 		_awayPillButton.Size = new Size(btnW, BottomPillRowH);
+
+		if (animY != 0)
+		{
+			g.ResetTransform();
+		}
 	}
 
 	internal enum PillIconType
