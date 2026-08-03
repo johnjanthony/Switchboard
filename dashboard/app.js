@@ -5,6 +5,7 @@ import { createStore } from "./store.js";
 import { FIREBASE_CONFIG } from "./dashboard-config.js";
 import { App } from "./components/App.js";
 import * as statusControl from "./statusControl.js";
+import { isDemoMode, createDemoFb, applyDemoData, demoRequestStatus } from "./demo.js";
 
 function consumeDeepLink(store) {
 	const m = /(?:^|#)conv=([^&]+)/.exec(window.location.hash || "");
@@ -29,6 +30,22 @@ async function pollHealth(store) {
 }
 
 function main() {
+	if (isDemoMode()) {
+		const demoFb = createDemoFb();
+		const store = createStore({
+			fb: demoFb, paths, storage: window.localStorage,
+			nowMs: () => Date.now(), requestStatus: demoRequestStatus,
+		});
+
+		const mount = document.getElementById("app");
+		const draw = () => render(html`<${App} store=${store} />`, mount);
+		store.subscribe(draw);
+
+		applyDemoData(store);
+		draw();
+		return;
+	}
+
 	fb.initFirebase(FIREBASE_CONFIG);
 	const store = createStore({
 		fb, paths, storage: window.localStorage,
@@ -57,3 +74,4 @@ function main() {
 }
 
 main();
+
