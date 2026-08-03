@@ -77,7 +77,7 @@ function buildConversationMetas() {
 		[CONV_IDS[3]]: {
 			meta: {
 				title: 'Watchtower ring rendering',
-				state: 'ended',
+				state: 'active',
 				last_activity_at: epochSecsAgo(6 * 3600),
 				preview: 'Context-% ring overlay on the widget',
 			},
@@ -85,7 +85,7 @@ function buildConversationMetas() {
 		[CONV_IDS[4]]: {
 			meta: {
 				title: 'Dashboard quota readout',
-				state: 'ended',
+				state: 'active',
 				last_activity_at: epochSecsAgo(24 * 3600),
 				preview: 'Session and weekly quota bar graphs',
 			},
@@ -328,6 +328,55 @@ function buildEndedConvMessages(sender, summary, timestamp) {
 	};
 }
 
+// Conversation #4: Watchtower ring rendering
+function buildConversation4Members() {
+	return {
+		'Claude': { sender: 'Claude', alive: true, surface: 'windows', cli_session_id: 'demo-4' },
+		'Antigravity': { sender: 'Antigravity', alive: false, surface: 'windows' },
+	};
+}
+
+function buildConversation4AgentStatus() {
+	return {
+		'Claude': { state: 'idle', detail: null, updated_at: Date.now() },
+	};
+}
+
+function buildConversation4Messages() {
+	return {
+		'msg-401': {
+			sender: 'Claude',
+			text: 'Completed the context-% ring overlay rendering on the Watchtower widget face.',
+			timestamp: hoursAgo(6),
+			format: 'markdown',
+		},
+	};
+}
+
+// Conversation #5: Dashboard quota readout
+function buildConversation5Members() {
+	return {
+		'Claude': { sender: 'Claude', alive: true, surface: 'windows', cli_session_id: 'demo-5' },
+	};
+}
+
+function buildConversation5AgentStatus() {
+	return {
+		'Claude': { state: 'idle', detail: null, updated_at: Date.now() },
+	};
+}
+
+function buildConversation5Messages() {
+	return {
+		'msg-501': {
+			sender: 'Claude',
+			text: 'Finished the dual-bar quota readout with session and weekly breakdown.',
+			timestamp: daysAgo(1),
+			format: 'markdown',
+		},
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Session data (mirrors Watchtower demo)
 // ---------------------------------------------------------------------------
@@ -370,7 +419,7 @@ function buildSessions() {
 			cwd: 'C:\\Work\\Switchboard',
 			state: 'active',
 			last_event_at: hoursAgo(2),
-			conversation_id: null,
+			conversation_id: CONV_IDS[3],
 			context_pct: 0.22,
 			model: 'claude-3-opus',
 		},
@@ -380,7 +429,7 @@ function buildSessions() {
 			cwd: 'C:\\Work\\Switchboard',
 			state: 'idle',
 			last_event_at: hoursAgo(3),
-			conversation_id: null,
+			conversation_id: CONV_IDS[4],
 			context_pct: 0.12,
 			model: 'claude-3-5-haiku',
 		},
@@ -415,13 +464,13 @@ function buildWidgetQuota() {
 		antigravity: [
 			{
 				display_name: 'Gemini 2.5 Pro',
-				session: { pct: 0.55, resets_at: new Date(now + 1.9 * 3600_000).toISOString() },
-				weekly: { pct: 0.28, resets_at: new Date(now + 35.3 * 3600_000).toISOString() },
+				session: { pct: 0.45, resets_at: new Date(now + 1.9 * 3600_000).toISOString() },
+				weekly: { pct: 0.72, resets_at: new Date(now + 35.3 * 3600_000).toISOString() },
 			},
 			{
 				display_name: 'Claude 3.7 Sonnet',
-				session: { pct: 0.24, resets_at: new Date(now + 2.1 * 3600_000).toISOString() },
-				weekly: { pct: 0.12, resets_at: new Date(now + 10.1 * 3600_000).toISOString() },
+				session: { pct: 0.76, resets_at: new Date(now + 2.1 * 3600_000).toISOString() },
+				weekly: { pct: 0.88, resets_at: new Date(now + 10.1 * 3600_000).toISOString() },
 			},
 		],
 	};
@@ -461,10 +510,18 @@ export function applyDemoData(store) {
 	store.mergeConversationMessages(CONV_IDS[2], buildConversation3Messages());
 	store.mergeConversationAgentStatus(CONV_IDS[2], buildConversation3AgentStatus());
 
+	// Active conversation #4: singleton, agent idle
+	store.mergeConversationMembers(CONV_IDS[3], buildConversation4Members());
+	store.mergeConversationMessages(CONV_IDS[3], buildConversation4Messages());
+	store.mergeConversationAgentStatus(CONV_IDS[3], buildConversation4AgentStatus());
+
+	// Active conversation #5: singleton, agent idle
+	store.mergeConversationMembers(CONV_IDS[4], buildConversation5Members());
+	store.mergeConversationMessages(CONV_IDS[4], buildConversation5Messages());
+	store.mergeConversationAgentStatus(CONV_IDS[4], buildConversation5AgentStatus());
+
 	// Ended conversations with minimal data
 	const endedData = [
-		{ idx: 3, senders: ['Claude', 'Antigravity'], msg: 'Completed the context-% ring overlay rendering on the Watchtower widget face.', ts: hoursAgo(6) },
-		{ idx: 4, senders: ['Claude'], msg: 'Finished the dual-bar quota readout with session and weekly breakdown.', ts: daysAgo(1) },
 		{ idx: 5, senders: ['Claude'], msg: 'Set up three FCM notification channels: questions, status, and admin.', ts: hoursAgo(28) },
 		{ idx: 6, senders: ['Antigravity'], msg: 'Added WSL surface detection to the session spawner with launcher integration.', ts: daysAgo(2) },
 		{ idx: 7, senders: ['Claude'], msg: 'Implemented conversation hydration so state survives service restarts.', ts: hoursAgo(56) },
