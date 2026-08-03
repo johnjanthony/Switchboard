@@ -11,7 +11,7 @@
 import {
 	answerCmd, resumeCmd, combineCmd, forceEndCmd,
 	spawnFreshCmd, awayOnCmd, awayOffCmd, setHiddenCmd,
-	conveneCmd, ackSessionCmd, messageCmd,
+	conveneCmd, ackSessionCmd, messageCmd, dismissAdminNotificationCmd,
 } from './commands.js';
 
 export function createStore(deps) {
@@ -148,6 +148,11 @@ export function createStore(deps) {
 
 	function upsertAdminNotification(key, n) {
 		state.adminNotifications[key] = n;
+		notify();
+	}
+
+	function removeAdminNotification(key) {
+		delete state.adminNotifications[key];
 		notify();
 	}
 
@@ -360,6 +365,7 @@ export function createStore(deps) {
 		globalUnsubs.push(fb.onValue(paths.sessionAcks(), (val) => setSessionAcks(val || {}), onReadError));
 		globalUnsubs.push(fb.onChildAdded(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError));
 		globalUnsubs.push(fb.onChildChanged(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError));
+		globalUnsubs.push(fb.onChildRemoved(paths.adminNotifications(), (_val, key) => removeAdminNotification(key), onReadError));
 	}
 
 	// --- private helpers -------------------------------------------------
@@ -509,6 +515,11 @@ export function createStore(deps) {
 		return guardedWrite('detail', () => fb.pushValue(c.path, c.value));
 	}
 
+	function dismissAdminNotification(key) {
+		const c = dismissAdminNotificationCmd(key);
+		return guardedWrite('global', () => fb.setValue(c.path, c.value));
+	}
+
 	return {
 		getState,
 		subscribe,
@@ -540,6 +551,8 @@ export function createStore(deps) {
 		upsertConversationMeta,
 		removeConversation,
 		upsertAdminNotification,
+		removeAdminNotification,
+
 		setHealth,
 		setPaneError,
 		setAwayOffDialogOpen,
@@ -560,6 +573,7 @@ export function createStore(deps) {
 		patchLine,
 		dropLine,
 		sendMessage,
+		dismissAdminNotification,
 	};
 }
 

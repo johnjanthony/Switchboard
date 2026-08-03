@@ -91,3 +91,11 @@ export function messageCmd(convId, text, nowIsoFn) {
 		value: { conversation_id: convId, text, issued_at: nowIsoFn() },
 	};
 }
+
+export function dismissAdminNotificationCmd(key) {
+	return {
+		path: `admin_notifications/${key}`,
+		value: null,
+	};
+}
+

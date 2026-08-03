@@ -231,6 +231,38 @@ test('upsertAdminNotification stores by key', () => {
 	assert.deepEqual(store.getState().adminNotifications.k1, { text: 'hi', type: 'notify' });
 });
 
+test('removeAdminNotification deletes the notification by key', () => {
+	const { store } = makeStore();
+	store.upsertAdminNotification('k1', { text: 'hi', type: 'notify' });
+	store.removeAdminNotification('k1');
+	assert.equal('k1' in store.getState().adminNotifications, false);
+});
+
+test('dismissAdminNotification writes null to Firebase', async () => {
+	const { store, fb } = makeStore();
+	const ok = await store.dismissAdminNotification('k1');
+	assert.equal(ok, true);
+	assert.deepEqual(fb.calls.set, [
+		{ path: 'admin_notifications/k1', value: null },
+	]);
+});
+
+test('startGlobalListeners attaches child removed listener for adminNotifications', () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const added = fb.calls.onChildAdded.find((e) => e.path === 'admin_notifications');
+	const changed = fb.calls.onChildChanged.find((e) => e.path === 'admin_notifications');
+	const removed = fb.calls.onChildRemoved.find((e) => e.path === 'admin_notifications');
+	assert.ok(added, 'added listener attached');
+	assert.ok(changed, 'changed listener attached');
+	assert.ok(removed, 'removed listener attached');
+
+	store.upsertAdminNotification('k1', { text: 'hi' });
+	removed.cb(null, 'k1');
+	assert.equal('k1' in store.getState().adminNotifications, false);
+});
+
+
 test('selectConversation attaches three onValue listeners and detaches prior ones on switch', () => {
 	const { store, fb } = makeStore();
 	store.upsertConversationMeta('c1', { state: 'active' });
@@ -539,7 +571,7 @@ test('startGlobalListeners is idempotent: a second call detaches the first set',
 	const detached = fb.calls.unsubs.slice(unsubsBefore).map((u) => u.path);
 	assert.ok(detached.includes('conversations'), 'prior conversations listener detached before re-attach');
 	assert.ok(detached.includes('global_settings/away_mode'), 'prior away-mode listener detached');
-	assert.equal(detached.length, 15, 'all 15 global listeners detached before re-attach - update this count when adding a listener');
+	assert.equal(detached.length, 16, 'all 16 global listeners detached before re-attach - update this count when adding a listener');
 });
 
 test('sendAnswer writes answerCmd and returns true on success', async () => {

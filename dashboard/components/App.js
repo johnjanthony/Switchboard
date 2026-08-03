@@ -10,7 +10,7 @@ import { formatAge } from "../derive.js";
 // collapses the rail entirely instead of sticking at the min.
 const LEFT_COLLAPSE_AT = 322;
 
-function AdminStrip({ notifications }) {
+function AdminStrip({ notifications, onDismiss }) {
 	const rows = Object.entries(notifications || {})
 		.map(([key, n]) => ({ key, n: n || {} }))
 		.sort((a, b) => String(b.n.timestamp || "").localeCompare(String(a.n.timestamp || "")));
@@ -26,6 +26,7 @@ function AdminStrip({ notifications }) {
 					<div class="admin-note" key=${key}>
 						<div class="admin-note-text" dangerouslySetInnerHTML=${{ __html: renderMarkdown(n.text) }}></div>
 						<span class="admin-note-time" title=${n.timestamp || ""}>${rel}</span>
+						<button class="admin-note-dismiss" onClick=${() => onDismiss(key)} title="Dismiss">×</button>
 					</div>
 				`;
 			})}
@@ -90,7 +91,7 @@ export function App({ store }) {
 				? html`<${PaneBanner} message=${state.paneErrors.global}
 						onRetry=${() => store.setPaneError('global', null)} actionLabel="Dismiss" />`
 				: null}
-			<${AdminStrip} notifications=${state.adminNotifications} />
+			<${AdminStrip} notifications=${state.adminNotifications} onDismiss=${(key) => store.dismissAdminNotification(key)} />
 			<div class=${shellClass} style=${"--left-rail-width:" + state.ui.leftWidth + "px"}>
 				<${ConversationList} store=${store} />
 				<${ConversationDetail} store=${store} />

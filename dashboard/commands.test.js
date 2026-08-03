@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
 	answerCmd, awayOnCmd, awayOffCmd, spawnFreshCmd, resumeCmd, combineCmd, forceEndCmd, setHiddenCmd,
-	conveneCmd, ackSessionCmd, messageCmd,
+	conveneCmd, ackSessionCmd, messageCmd, dismissAdminNotificationCmd,
 } from './commands.js';
 
 const FIXED_ISO = '2026-06-15T12:00:00.000Z';
@@ -154,3 +154,12 @@ test('messageCmd builds the free-form message push into message_commands', () =>
 		value: { conversation_id: 'c1', text: 'hello', issued_at: 'T' },
 	});
 });
+
+test('dismissAdminNotificationCmd builds the null write at admin_notifications/<key>', () => {
+	const cmd = dismissAdminNotificationCmd('k1');
+	assert.deepEqual(cmd, {
+		path: 'admin_notifications/k1',
+		value: null,
+	});
+});
+

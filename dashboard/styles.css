@@ -609,6 +609,13 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .admin-note-text { flex: 1; color: var(--label-dim); }
 .admin-note-text p { margin: 0; }
 .admin-note-time { color: var(--label-faint); font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
+.admin-note-dismiss {
+	background: none; border: none; color: var(--label-faint); cursor: pointer;
+	font-size: 16px; line-height: 1; padding: 0 4px; font-family: sans-serif;
+	flex: none; display: flex; align-items: center; justify-content: center;
+}
+.admin-note-dismiss:hover { color: var(--lamp-red); }
+
 
 /* ============================================================================
    Scrollbars — thin, recessed, on-theme
