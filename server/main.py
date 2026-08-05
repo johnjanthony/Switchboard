@@ -53,8 +53,11 @@ from server.antigravity_status import AntigravityStatusService
 
 def _build_away_mode_route(registry: Registry, session_registry, backend=None, logger=None):
 	"""GET /away-mode - the turn-end hook's single check. With session_id, the
-	response also delivers (and pops) any queued wake notices for that session;
-	the hook blocks the turn with the notice text so the agent acts on it.
+	response also delivers (and pops) any queued wake notices for that session,
+	and reports pending_ask: whether the session holds a live blocking ask. The
+	harness backgrounds MCP calls that outlive ~120s, so a turn can end while
+	its ask_human is still awaiting John - the hook treats that live pending as
+	the agent's handback and lets the turn end instead of demanding a re-ask.
 	POST /away-mode - set away mode ON."""
 	async def away_mode(request: Request):
 		if request.method == "POST":
@@ -74,10 +77,14 @@ def _build_away_mode_route(registry: Registry, session_registry, backend=None, l
 				if logger:
 					await logger.info("http_away_mode_enter_global")
 		notices: list = []
+		pending_ask = False
 		session_id = request.query_params.get("session_id")
 		if session_id:
 			notices = session_registry.pop_notices(session_id)
-		return JSONResponse({"active": bool(registry.global_away_mode), "notices": notices})
+			conversation_id = registry.session_to_conversation_id.get(session_id)
+			if conversation_id:
+				pending_ask = registry.live_blocking_pending(conversation_id, session_id) is not None
+		return JSONResponse({"active": bool(registry.global_away_mode), "notices": notices, "pending_ask": pending_ask})
 	return away_mode
 
 

@@ -205,11 +205,11 @@ def test_away_mode_delivers_and_pops_queued_notice_for_session(cfg, logger):
 	with TestClient(app) as client:
 		resp = client.get("/away-mode", params={"session_id": "s1"})
 		assert resp.status_code == 200
-		assert resp.json() == {"active": True, "notices": ["wake up"]}
+		assert resp.json() == {"active": True, "notices": ["wake up"], "pending_ask": False}
 
 		resp2 = client.get("/away-mode", params={"session_id": "s1"})
 		assert resp2.status_code == 200
-		assert resp2.json() == {"active": True, "notices": []}
+		assert resp2.json() == {"active": True, "notices": [], "pending_ask": False}
 
 
 def test_away_mode_without_session_id_does_not_pop_notice(cfg, logger):
@@ -225,7 +225,7 @@ def test_away_mode_without_session_id_does_not_pop_notice(cfg, logger):
 	with TestClient(app) as client:
 		resp = client.get("/away-mode")
 		assert resp.status_code == 200
-		assert resp.json() == {"active": False, "notices": []}
+		assert resp.json() == {"active": False, "notices": [], "pending_ask": False}
 
 	# The notice was never popped since no session_id was supplied.
 	assert session_registry.pop_notices("s1") == ["wake up"]

@@ -460,6 +460,57 @@ def test_turn_end_hook_no_auth_header_without_token():
 	assert srv.received_auth == [None]
 
 
+# --- Backgrounded-ask handback: pending_ask gates the away-mode block ---
+
+def test_active_with_pending_ask_silent_exit():
+	"""A live blocking ask is the agent's handback: the harness backgrounds MCP
+	calls that outlive ~120s, so the turn legitimately ends while ask_human is
+	still awaiting John. The hook must let it end instead of demanding a re-ask
+	(which superseded the live question every cycle - the ask_human loop bug)."""
+	with _FakeServer({"active": True, "notices": [], "pending_ask": True}) as srv:
+		r = _run("claude", url_env=srv.url)
+	assert r.returncode == 0
+	assert r.stdout.strip() == ""
+
+
+def test_active_with_pending_ask_and_notices_blocks_with_notice_only():
+	"""Notices still deliver (they re-invoke the agent with the text), but the
+	away-mode redirect is withheld so the agent is not induced to re-ask over
+	its live pending."""
+	with _FakeServer({"active": True, "notices": ["N"], "pending_ask": True}) as srv:
+		r = _run("claude", url_env=srv.url)
+	assert r.returncode == 0
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
+	assert out["reason"] == "N"
+
+
+def test_active_pending_ask_false_still_blocks():
+	with _FakeServer({"active": True, "notices": [], "pending_ask": False}) as srv:
+		r = _run("claude", url_env=srv.url)
+	assert r.returncode == 0
+	out = json.loads(r.stdout)
+	assert out["decision"] == "block"
+	assert "away mode" in out["reason"].lower()
+
+
+def test_block_reason_explains_backgrounded_handback():
+	"""The redirect text must tell agents that a backgrounded ask_human means
+	they should simply end the turn."""
+	with _FakeServer({"active": True}) as srv:
+		r = _run("claude", url_env=srv.url)
+	assert r.returncode == 0
+	out = json.loads(r.stdout)
+	assert "background" in out["reason"].lower()
+
+
+def test_antigravity_active_with_pending_ask_silent_exit():
+	with _FakeServer({"active": True, "pending_ask": True}) as srv:
+		result = _run("antigravity", stdin=_ANTIGRAVITY_PAYLOAD, url_env=f"http://127.0.0.1:{srv.port}/away-mode")
+	assert result.returncode == 0
+	assert result.stdout.strip() == ""
+
+
 # --- Antigravity CLI support ---
 
 _ANTIGRAVITY_PAYLOAD = json.dumps({

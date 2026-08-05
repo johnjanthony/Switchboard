@@ -43,6 +43,10 @@ REDIRECT_REASON_AWAY_MODE = (
 	"You are in away mode. John is on his phone, not watching the terminal.\n"
 	"To hand your turn back, call ask_human() and wait for his reply. This is "
 	"the correct and ONLY way to end your turn while away.\n"
+	"If the harness moves your ask_human call to a background task (~120s), do "
+	"NOT call ask_human again - that would supersede the live question. Just end "
+	"your turn: the pending question is your handback, this check will allow it, "
+	"and John's reply arrives as the background task's result.\n"
 	"Do NOT end your turn with notify_human(): it is non-blocking, so it will not "
 	"end the turn and you will loop straight back to this message. (You may call "
 	"notify_human() to push a status update, but you must still end on ask_human().)\n"
@@ -50,19 +54,23 @@ REDIRECT_REASON_AWAY_MODE = (
 )
 
 
-def _fetch_state(url: str, session_id: str) -> tuple[bool, list]:
+def _fetch_state(url: str, session_id: str) -> tuple[bool, list, bool]:
 	from urllib.parse import urlencode
 	full_url = f"{url}?{urlencode({'session_id': session_id})}" if session_id else url
 	req = urllib.request.Request(full_url, headers=auth_headers())
 	try:
 		with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
 			if resp.status != 200:
-				return False, []
+				return False, [], False
 			data = json.loads(resp.read())
 		notices = data.get("notices")
-		return bool(data.get("active", False)), list(notices) if isinstance(notices, list) else []
+		return (
+			bool(data.get("active", False)),
+			list(notices) if isinstance(notices, list) else [],
+			bool(data.get("pending_ask", False)),
+		)
 	except (urllib.error.URLError, TimeoutError, ValueError, OSError):
-		return False, []
+		return False, [], False
 
 
 def _emit_claude(reason: str) -> None:
@@ -111,13 +119,20 @@ def main() -> int:
 		_post_idle_status(session_id)
 
 	away_url = base_url() + AWAY_MODE_PATH
-	active, notices = _fetch_state(away_url, session_id)
+	active, notices, pending_ask = _fetch_state(away_url, session_id)
 	if not active and not notices:
+		return 0
+	# A live blocking ask is the session's handback: the harness backgrounds
+	# MCP calls that outlive ~120s, so the turn can end while ask_human is
+	# still awaiting John. Demanding a re-ask here superseded the live question
+	# every cycle (the ask_human loop bug). Notices still block-deliver, but
+	# without the redirect text so the agent is not induced to re-ask.
+	if active and pending_ask and not notices:
 		return 0
 	reason_parts = []
 	if notices:
 		reason_parts.append("\n\n".join(notices))
-	if active:
+	if active and not pending_ask:
 		reason_parts.append(REDIRECT_REASON_AWAY_MODE)
 	reason = "\n\n".join(reason_parts)
 	if args.cli == "claude":
