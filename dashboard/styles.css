@@ -318,6 +318,9 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 	font-weight: 600; font-size: 13px; color: var(--label);
 }
 .conv-row.ended .conv-title { color: var(--label-dim); }
+/* Sole-agent state chip: reuses the sessions-rail chip palette, pinned against
+   the title's flex:1 so a long title ellipsizes instead of squeezing the chip. */
+.conv-line-1 .conv-chip { flex: 0 0 auto; }
 .conv-time {
 	flex: 0 0 auto; font-family: var(--font-mono); font-size: 11px; color: var(--label-faint);
 	font-variant-numeric: tabular-nums;
@@ -406,8 +409,8 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 	padding: 2px 9px; border-radius: 999px; border: 1px solid var(--rule);
 	color: var(--label-dim); text-transform: uppercase;
 }
-.line-state.active { color: var(--lamp-green); border-color: color-mix(in srgb, var(--lamp-green) 45%, var(--rule)); }
-.line-state.ended { color: var(--label-faint); }
+.line-state.open { color: var(--lamp-green); border-color: color-mix(in srgb, var(--lamp-green) 45%, var(--rule)); }
+.line-state.closed { color: var(--label-faint); }
 
 /* Line action bar — lifecycle actions live ON the line, not in a global rail. */
 .line-actions { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }

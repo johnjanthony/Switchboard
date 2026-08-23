@@ -249,6 +249,37 @@ export function sessionLabel(record) {
 	return tail || '(unknown)';
 }
 
+const TERMINAL_SESSION_STATES = new Set(['ended', 'lost']);
+
+// The single live session bound to a conversation, or null when there are zero
+// or several. Rows use it to show that agent's state chip.
+//
+// Bindings, not member counts, are what a row can actually see: the Operator
+// subscribes to the whole session roster globally but to members_active only for
+// the SELECTED conversation. A dormant member is an unbound session, so a
+// two-member conversation with one dormant agent resolves to its live survivor -
+// which is the honest reading, since the chip describes the agent that is here.
+export function soleSessionFor(convId, sessionsMap) {
+	if (!convId || !sessionsMap) {
+		return null;
+	}
+	let found = null;
+	for (const id of Object.keys(sessionsMap)) {
+		const record = sessionsMap[id];
+		if (!record || record.conversation_id !== convId) {
+			continue;
+		}
+		if (TERMINAL_SESSION_STATES.has(record.state)) {
+			continue;
+		}
+		if (found) {
+			return null;
+		}
+		found = record;
+	}
+	return found;
+}
+
 // True when an idle session has an unacknowledged event: no ack yet, or the
 // session's last_event_at is newer than the stored ack. Uses Date.parse (not
 // string comparison) because the server stamps "+00:00" while fb.nowIso stamps

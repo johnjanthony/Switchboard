@@ -220,6 +220,7 @@ class ConversationStore:
 		ended_at: float | None,
 		hidden: bool,
 		origin: str | None = None,
+		title_source: str | None = None,
 	) -> None:
 		"""Write the top-level conversation fields (everything except members and messages)."""
 		pass
@@ -281,8 +282,9 @@ class ConversationStore:
 		"""Update /conversations/<id>/meta/last_activity_at."""
 		pass
 
-	async def write_conversation_title(self, conv_id: str, title: str) -> None:
-		"""Update /conversations/<id>/meta/title (partial write). No-op default."""
+	async def write_conversation_title(self, conv_id: str, title: str, title_source: str | None = None) -> None:
+		"""Update /conversations/<id>/meta/title, optionally with its provenance
+		(see FirebaseBackend for why they share one write). No-op default."""
 		pass
 
 	async def set_session_home(self, session_id: str, conv_id: str | None) -> None:

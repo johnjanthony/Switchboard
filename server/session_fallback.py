@@ -94,7 +94,7 @@ def apply_fallback(registry, session_id: str, backend=None) -> None:
 		from server.conversation_ops import _infer_surface
 		new_id = "conv-" + uuid.uuid4().hex
 		now = time.time()
-		new_conv = Conversation(id=new_id, title="(home)", origin="fallback")
+		new_conv = Conversation(id=new_id, title="(home)", title_source="default", origin="fallback")
 		new_conv.created_at = now
 		new_conv.last_activity_at = now
 		# Bound implies member (DT-2/REV-112): the binding below survives a
@@ -132,6 +132,7 @@ def apply_fallback(registry, session_id: str, backend=None) -> None:
 					ended_at=None,
 					hidden=False,
 					origin="fallback",
+					title_source="default",
 				),
 				label=f"fb_write_conv_meta:{new_id}",
 			)

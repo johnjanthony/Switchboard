@@ -275,7 +275,37 @@ def _with_route_limit(handler, limiter, path: str, logger):
 	return limited
 
 
-def _build_widget_snapshot_route(store, backend, logger, session_registry=None):
+class _CachePolicyStaticFiles(StaticFiles):
+	"""StaticFiles with an explicit Cache-Control policy for Operator's assets.
+
+	Starlette sends ETag/Last-Modified but no Cache-Control, which leaves reuse
+	to heuristic freshness - and a zero-build ESM app gives no other staleness
+	signal, since an old tab keeps streaming live Firebase data through
+	month-old JavaScript. App code is served no-cache ("store it, but
+	revalidate"), so an edit is one reload away; on loopback a revalidation is a
+	0-byte 304. vendor/ bundles are pinned by version and never edited in place,
+	so they are cached hard rather than re-checked (~300 KB of markdown-it +
+	highlight.js) on every load.
+
+	Cache-Control cannot affect either auth path: the Bearer gate reads a
+	REQUEST header, and Firebase's Google sign-in lives in IndexedDB.
+	"""
+
+	APP = "no-cache"
+	VENDOR = "public, max-age=31536000, immutable"
+
+	async def get_response(self, path: str, scope):
+		response = await super().get_response(path, scope)
+		# One hook covers both outcomes: Starlette builds its 304 inside
+		# file_response, and NOT_MODIFIED_HEADERS keeps cache-control, so the
+		# directive set here survives onto the NotModifiedResponse too.
+		# get_path() normalizes with os.path, so the separator is '\' on Windows.
+		relative = str(path).replace("\\", "/").lstrip("/")
+		response.headers["cache-control"] = self.VENDOR if relative.startswith("vendor/") else self.APP
+		return response
+
+
+def _build_widget_snapshot_route(store, backend, logger, session_registry=None, registry=None):
 	"""POST /widget-snapshot - Watchtower pushes its rings + quota snapshot here
 	(localhost trust, same model as /stats and /agent_status). The store diffs
 	against the last push so RTDB is written only on change; pushed_at is always
@@ -304,6 +334,15 @@ def _build_widget_snapshot_route(store, backend, logger, session_registry=None):
 		rings_changed, quota_changed = store.apply(rings_map, quota, pushed_at)
 		if session_registry is not None:
 			session_registry.apply_rings(rings_map)
+		if registry is not None:
+			# Adopt Claude Code session titles as conversation titles. Isolated
+			# from the ring/quota writes below: a title-write failure must not
+			# make Watchtower's snapshot push look rejected.
+			try:
+				from server.conversation_ops import sync_session_titles
+				await sync_session_titles(registry, backend, rings_map)
+			except Exception as exc:
+				await logger.surface_error(f"session_title_sync_error: {exc}")
 		try:
 			if rings_changed:
 				await backend.write_widget_rings(rings_map)
@@ -914,7 +953,7 @@ async def _run(config: Config) -> None:
 	app.add_route(
 		"/widget-snapshot",
 		_with_route_limit(
-			_build_widget_snapshot_route(widget_store, backend, logger, session_registry),
+			_build_widget_snapshot_route(widget_store, backend, logger, session_registry, registry),
 			route_limiter, "/widget-snapshot", logger,
 		),
 		methods=["POST"],
@@ -943,7 +982,7 @@ async def _run(config: Config) -> None:
 		methods=["POST"],
 	)
 	dashboard_dir = _Path(__file__).resolve().parent.parent / "dashboard"
-	app.mount("/dashboard", StaticFiles(directory=str(dashboard_dir), html=True), name="dashboard")
+	app.mount("/dashboard", _CachePolicyStaticFiles(directory=str(dashboard_dir), html=True), name="dashboard")
 
 	uv_config = uvicorn.Config(
 		TokenAuthMiddleware(app, token=config.auth_token),

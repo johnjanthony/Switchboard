@@ -251,6 +251,12 @@ export function ConversationDetail({ store }) {
 
 	const meta = conv && conv.meta;
 	const active = isActive(meta);
+	// "open"/"closed", not "active"/"ended": this pill reports whether the ROOM
+	// is still open, while the conversation row's chip reports what its agent is
+	// doing. Both used to say "active" for unrelated reasons, which read as a
+	// contradiction on a room that is open but whose agent is idle. One value
+	// drives both the class and the text so they cannot disagree.
+	const lifecycle = active ? "open" : "closed";
 	const predTitle = predecessorTitle(conv, state.conversations);
 	const predecessorId = meta ? meta.continued_from : null;
 	const members = (conv && conv.members) || {};
@@ -270,7 +276,7 @@ export function ConversationDetail({ store }) {
 				${banner}
 				<div class="detail-title-row">
 					<h2 class="detail-title">${(meta && meta.title) || id}</h2>
-					<span class=${"line-state " + (active ? "active" : "ended")}>${(meta && meta.state) || "active"}</span>
+					<span class=${"line-state " + lifecycle}>${lifecycle}</span>
 					<div class="line-actions">
 						<button class="line-action" disabled=${!restorable}
 							title=${restorable ? "Restore the dormant line" : "Only a fully dormant line can be restored"}

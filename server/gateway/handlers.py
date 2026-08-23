@@ -671,9 +671,12 @@ def build_tool_handlers(
 			conv.last_activity_at = now_ts
 			caller_member.last_spoke_at = now_ts
 			if title is not None:
+				# An agent-supplied title is a choice, not a placeholder: mark it
+				# explicit so the Watchtower session-title sync stops overwriting.
 				conv.title = title
+				conv.title_source = "explicit"
 				_spawn_bg(
-					backend.write_conversation_title(conversation_id, title),
+					backend.write_conversation_title(conversation_id, title, "explicit"),
 					label=f"fb_write_title:{conversation_id}",
 				)
 
@@ -803,9 +806,12 @@ def build_tool_handlers(
 			conv.last_activity_at = now_ts
 			caller_member.last_spoke_at = now_ts
 			if title is not None:
+				# An agent-supplied title is a choice, not a placeholder: mark it
+				# explicit so the Watchtower session-title sync stops overwriting.
 				conv.title = title
+				conv.title_source = "explicit"
 				_spawn_bg(
-					backend.write_conversation_title(conversation_id, title),
+					backend.write_conversation_title(conversation_id, title, "explicit"),
 					label=f"fb_write_title:{conversation_id}",
 				)
 			_spawn_bg(

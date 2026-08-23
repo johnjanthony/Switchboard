@@ -557,6 +557,30 @@ async def test_hydrate_missing_origin_is_none():
 
 
 @pytest.mark.asyncio
+async def test_hydrate_restores_title_source():
+	"""The session-title sync guard lives in meta/title_source, so an explicit
+	title must still read as explicit after a restart - otherwise the sync would
+	start overwriting deliberate titles the moment the service bounced."""
+	registry = Registry()
+	logger = make_logger()
+
+	snapshot = {
+		"conversations": {
+			"conv-ts": conv_snapshot("conv-ts", extra_meta={"title_source": "explicit"}),
+			"conv-legacy": conv_snapshot("conv-legacy"),
+		},
+	}
+	mock_db = make_firebase_db_mock(snapshot)
+
+	with patch("server.hydration.db", mock_db):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, None, logger)
+
+	assert registry.conversations["conv-ts"].title_source == "explicit"
+	assert registry.conversations["conv-legacy"].title_source is None
+
+
+@pytest.mark.asyncio
 async def test_hydrate_sessions_skipped_when_session_registry_is_none():
 	"""Callers that don't pass session_registry (or lack the feature) still hydrate
 	cleanly - the sessions block is opt-in via the default None parameter."""

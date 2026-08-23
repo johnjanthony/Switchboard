@@ -43,6 +43,70 @@ def illegal_sender_reason(sender: str) -> str | None:
 	return None
 
 
+def default_title_for(sender: str, cwd: str) -> str:
+	"""The creation-time placeholder title. One definition, so the sync's
+	legacy-record heuristic below cannot drift from what creation actually wrote."""
+	return f"{sender} · {cwd}"
+
+
+def effective_title_source(conv) -> str:
+	"""Resolve a conversation's title provenance, inferring it for records
+	hydrated from a Firebase node written before title_source existed.
+
+	The inference is deliberately conservative: a legacy title is treated as
+	overwritable ONLY when it still matches the "sender · cwd" placeholder a
+	member would have produced. Anything else is assumed deliberate, so the sync
+	can never clobber a title someone chose."""
+	if conv.title_source in ("default", "session", "explicit"):
+		return conv.title_source
+	for member in conv.members_active.values():
+		if conv.title == default_title_for(member.sender, member.cwd):
+			return "default"
+	return "explicit"
+
+
+async def sync_session_titles(registry: Registry, backend, rings_map: dict) -> list[str]:
+	"""Adopt Claude Code session titles as conversation titles.
+
+	Watchtower parses each transcript's title records and reports the newest as
+	ring `name` (a custom /title wins over the AI-generated summary; both arrive
+	here identically). For every sighted session bound to a SINGLE-member Active
+	conversation whose title is not explicit, that name becomes the conversation
+	title, persisted so it survives the session's death and the 72h roster prune.
+
+	Single-member is the gate for ADOPTING a title, not for keeping one: a title
+	synced while a conversation was solo stays put if a second agent later joins
+	(it remains the best description of the room, and an explicit title still
+	overrides it). Returns the conversation ids actually updated.
+	"""
+	updated: list[str] = []
+	for session_id, ring in (rings_map or {}).items():
+		if not isinstance(ring, dict):
+			continue
+		name = ring.get("name")
+		if not isinstance(name, str) or not name.strip():
+			continue
+		conv_id = registry.session_to_conversation_id.get(session_id)
+		if conv_id is None:
+			continue
+		conv = registry.conversations.get(conv_id)
+		if conv is None or conv.state != "active":
+			continue
+		if len(conv.members_active) != 1:
+			continue
+		if effective_title_source(conv) == "explicit":
+			continue
+		new_title = name.strip()[:80]
+		if conv.title == new_title and conv.title_source == "session":
+			continue  # no-change: never spend an RTDB write re-asserting the same title
+		conv.title = new_title
+		conv.title_source = "session"
+		if backend is not None:
+			await backend.write_conversation_title(conv_id, new_title, "session")
+		updated.append(conv_id)
+	return updated
+
+
 def _disambiguate_sender(conv, desired: str, exclude_session_id: str | None = None) -> str:
 	"""Sender is a display label; make it unique among the conversation's members
 	(excluding the caller's own entry when renaming) by appending ' 2', ' 3', ...
@@ -131,8 +195,13 @@ async def _create_active_conversation_for_locked(
 		raise ValueError(f"illegal sender name {sender!r}: {reason}")
 	from server.gateway.bg_tasks import _spawn_bg
 	conv_id = "conv-" + uuid.uuid4().hex
-	resolved_title = title if title else f"{sender} · {cwd}"
-	conv = Conversation(id=conv_id, title=resolved_title, origin=origin)
+	resolved_title = title if title else default_title_for(sender, cwd)
+	conv = Conversation(
+		id=conv_id,
+		title=resolved_title,
+		title_source="explicit" if title else "default",
+		origin=origin,
+	)
 	now = time.time()
 	conv.created_at = now
 	conv.last_activity_at = now
@@ -163,6 +232,7 @@ async def _create_active_conversation_for_locked(
 				ended_at=None,
 				hidden=False,
 				origin=origin,
+				title_source=conv.title_source,
 			),
 			label=f"fb_write_conv_meta:{conv_id}",
 		)
@@ -860,7 +930,15 @@ async def _perform_convene(registry, session_registry, cmd: dict, logger, backen
 			return
 		_reserve_target_id()
 		now = time.time()
-		conv = Conversation(id=conv_id, title=title or f"Convened {len(session_ids)} agents", origin="convene")
+		# A convene title is composed, never a placeholder, so it is explicit even
+		# when defaulted: a convened room that later drops to one member keeps the
+		# title that describes why the room exists.
+		conv = Conversation(
+			id=conv_id,
+			title=title or f"Convened {len(session_ids)} agents",
+			title_source="explicit",
+			origin="convene",
+		)
 		conv.created_at = now
 		conv.last_activity_at = now
 		registry.conversations[conv_id] = conv
@@ -870,7 +948,7 @@ async def _perform_convene(registry, session_registry, cmd: dict, logger, backen
 				backend.write_conversation_meta(
 					conv_id, title=conv.title, state="active", continued_from=None,
 					created_at=now, last_activity_at=now, ended_at=None, hidden=False,
-					origin="convene",
+					origin="convene", title_source="explicit",
 				),
 				label=f"fb_write_conv_meta:{conv_id}",
 			)

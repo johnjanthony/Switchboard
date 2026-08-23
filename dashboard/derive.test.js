@@ -371,3 +371,33 @@ test('effortOptionsFor rules', () => {
 	assert.deepEqual(effortOptionsFor(SPAWN_OPTIONS, 'claude', null), ['low', 'medium', 'high', 'xhigh', 'max']);
 	assert.deepEqual(effortOptionsFor(null, 'claude', 'sonnet'), []);
 });
+
+const ROSTER = {
+	's-1': { conversation_id: 'conv-1', state: 'idle' },
+	's-2': { conversation_id: 'conv-2', state: 'active' },
+	's-3': { conversation_id: 'conv-2', state: 'ended' },
+	's-4': { conversation_id: 'conv-3', state: 'active' },
+	's-5': { conversation_id: 'conv-3', state: 'awaiting_human' },
+	's-6': { state: 'active' },
+};
+
+test('soleSessionFor: one live binding returns that record', () => {
+	assert.equal(derive.soleSessionFor('conv-1', ROSTER), ROSTER['s-1']);
+});
+
+test('soleSessionFor: terminal sessions do not count toward the total', () => {
+	// conv-2 has one active and one ended session: the ended one is gone, so the
+	// survivor still speaks for the row.
+	assert.equal(derive.soleSessionFor('conv-2', ROSTER), ROSTER['s-2']);
+});
+
+test('soleSessionFor: two live agents means no single answer', () => {
+	assert.equal(derive.soleSessionFor('conv-3', ROSTER), null);
+});
+
+test('soleSessionFor: unknown conversation, unbound session, and empty roster are null', () => {
+	assert.equal(derive.soleSessionFor('conv-none', ROSTER), null);
+	assert.equal(derive.soleSessionFor('conv-1', {}), null);
+	assert.equal(derive.soleSessionFor(null, ROSTER), null);
+	assert.equal(derive.soleSessionFor('conv-1', null), null);
+});

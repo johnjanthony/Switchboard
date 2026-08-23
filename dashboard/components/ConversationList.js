@@ -1,5 +1,5 @@
 import { html, useState } from "../vendor/htm-preact.js";
-import { pendingCountFor, isActive, isThinking, agentStatusLabel, pendingQuestionText, formatAge } from "../derive.js";
+import { pendingCountFor, isActive, isThinking, agentStatusLabel, pendingQuestionText, formatAge, soleSessionFor, sessionChip } from "../derive.js";
 import { SessionsRail } from "./SessionsRail.js";
 import { HeaderControls } from "./StatusBar.js";
 
@@ -49,6 +49,10 @@ export function ConversationList({ store }) {
 	const renderRow = (r) => {
 		const count = isActive(r.meta) ? pendingCountFor(r.pending) : 0;
 		const ended = !isActive(r.meta);
+		// Single-agent rows carry that agent's state chip; multi-agent and ended
+		// rows do not, because there is no one session the chip could describe.
+		const soleSession = ended ? null : soleSessionFor(r.id, state.sessions);
+		const chip = soleSession ? sessionChip(soleSession) : null;
 		const questionText = count > 0 ? pendingQuestionText(r.pending) : null;
 		const thinkingLabel = !questionText ? agentStatusLabel(r.agentStatus) : null;
 		const subText = questionText || thinkingLabel || r.meta.preview || r.meta.last_message || "";
@@ -63,6 +67,7 @@ export function ConversationList({ store }) {
 				<div class="conv-main">
 					<div class="conv-line-1">
 						<span class="conv-title">${r.meta.title || r.id}</span>
+						${chip ? html`<span class=${"session-chip conv-chip " + chip.cls}>${chip.label}</span>` : null}
 						${count > 0 ? html`<span class="badge">${count}</span>` : null}
 						<span class="conv-time">${fmtLastTraffic(r.meta.last_activity_at)}</span>
 					</div>

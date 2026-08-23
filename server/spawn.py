@@ -348,7 +348,9 @@ class SpawnHandler:
 			join_existing = True
 		else:
 			conv_id = "conv-" + uuid.uuid4().hex
-			conv = Conversation(id=conv_id, title=f"{project} ({surface})", origin="spawn")
+			# Generated placeholder, not a chosen title: the spawned agent's own
+			# session title supersedes it once Watchtower reports one.
+			conv = Conversation(id=conv_id, title=f"{project} ({surface})", title_source="default", origin="spawn")
 			agent_label = "Antigravity" if agent == "antigravity" else "Claude"
 			spawn_msg = {
 				"seq": 0,
@@ -376,6 +378,7 @@ class SpawnHandler:
 					ended_at=None,
 					hidden=False,
 					origin="spawn",
+					title_source=conv.title_source,
 				),
 				label=f"fb_write_conv_meta:{conv_id}",
 			)
@@ -507,7 +510,12 @@ class SpawnHandler:
 		from server.clock import now_iso
 		from server.gateway.bg_tasks import _spawn_bg as _sbg
 		new_id = "conv-" + uuid.uuid4().hex
-		new_conv = Conversation(id=new_id, title=source.title, continued_from=source_id, origin="resume")
+		# Inherit the source's title AND its provenance: a resumed conversation is
+		# as free (or as frozen) to adopt a session title as the one it continues.
+		new_conv = Conversation(
+			id=new_id, title=source.title, title_source=source.title_source,
+			continued_from=source_id, origin="resume",
+		)
 		resume_msg = {
 			"seq": 0,
 			"sender": "<system>",
@@ -532,6 +540,7 @@ class SpawnHandler:
 				ended_at=None,
 				hidden=False,
 				origin="resume",
+				title_source=new_conv.title_source,
 			),
 			label=f"fb_write_conv_meta:{new_id}",
 		)

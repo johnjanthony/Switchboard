@@ -666,6 +666,7 @@ class FirebaseBackend(
 		ended_at: float | None,
 		hidden: bool,
 		origin: str | None = None,
+		title_source: str | None = None,
 	) -> None:
 		"""Write the top-level conversation fields (everything except members and messages)."""
 		ref = db.reference(f"conversations/{conv_id}/meta")
@@ -684,6 +685,8 @@ class FirebaseBackend(
 		}
 		if origin is not None:
 			payload["origin"] = origin
+		if title_source is not None:
+			payload["title_source"] = title_source
 		await asyncio.to_thread(lambda: ref.update(payload))
 
 	async def remove_conversation_member(self, conv_id: str, sender: str) -> None:
@@ -891,13 +894,20 @@ class FirebaseBackend(
 		ref = db.reference(f"conversations/{conv_id}/meta/last_activity_at")
 		await asyncio.to_thread(ref.set, ts)
 
-	async def write_conversation_title(self, conv_id: str, title: str) -> None:
+	async def write_conversation_title(self, conv_id: str, title: str, title_source: str | None = None) -> None:
 		"""Update /conversations/<id>/meta/title without touching sibling fields.
 		Targeted update (not a full meta set) so a post-creation title change
 		from message_and_await_agent reaches the phone without clobbering
-		preview, state, or activity timestamps (M3)."""
+		preview, state, or activity timestamps (M3).
+
+		title_source travels in the SAME update as the title it describes: split
+		across two writes, a crash between them would leave a title whose
+		provenance says something else, and the sync guard reads that provenance."""
 		ref = db.reference(f"conversations/{conv_id}/meta")
-		await asyncio.to_thread(lambda: ref.update({"title": title[:80]}))
+		payload = {"title": title[:80]}
+		if title_source is not None:
+			payload["title_source"] = title_source
+		await asyncio.to_thread(lambda: ref.update(payload))
 
 	def _schedule_command_delete(self, node: str, cmd_id: str) -> None:
 		"""Bridge-safe Firebase delete from a listener-thread callback (M32):

@@ -138,3 +138,58 @@ async def test_ring_name_and_source_flow_into_session_registry():
 	assert rec is not None
 	assert rec.name == "Fixing tests"
 	assert rec.title_state == "star"
+
+
+@pytest.mark.asyncio
+async def test_ring_name_retitles_its_single_agent_conversation():
+	"""The route is the only place ring names arrive, so it is where the
+	session-title sync has to be wired."""
+	from server.registry import Registry
+	from tests.conftest import make_active_conversation
+
+	store, backend = WidgetSnapshotStore(), _FakeBackend()
+	registry = Registry()
+	conv = make_active_conversation(conversation_id="conv-w1", member_session_id="sid-1")
+	conv.title_source = "default"
+	registry.conversations["conv-w1"] = conv
+	registry.bind_session("sid-1", "conv-w1")
+	route = _build_widget_snapshot_route(store, backend, _FakeLogger(), SessionRegistry(), registry)
+
+	resp = await route(_request({
+		"rings": [{"session_id": "sid-1", "name": "Retitled by Watchtower", "name_source": "ai-title"}],
+		"quota": None,
+		"pushed_at": "2026-06-25T00:00:00+00:00",
+	}))
+
+	assert resp.status_code == 200
+	assert conv.title == "Retitled by Watchtower"
+	assert conv.title_source == "session"
+
+
+@pytest.mark.asyncio
+async def test_title_sync_failure_does_not_fail_the_snapshot_push():
+	"""Watchtower fails open on non-200, but a rejected push also hides ring and
+	quota data that wrote fine. A title-write failure must stay isolated."""
+	from server.registry import Registry
+	from tests.conftest import make_active_conversation
+
+	class _ExplodingTitleBackend(_FakeBackend):
+		async def write_conversation_title(self, conv_id, title, title_source=None):
+			raise RuntimeError("firebase down")
+
+	store, backend = WidgetSnapshotStore(), _ExplodingTitleBackend()
+	registry = Registry()
+	conv = make_active_conversation(conversation_id="conv-w2", member_session_id="sid-2")
+	conv.title_source = "default"
+	registry.conversations["conv-w2"] = conv
+	registry.bind_session("sid-2", "conv-w2")
+	route = _build_widget_snapshot_route(store, backend, _FakeLogger(), SessionRegistry(), registry)
+
+	resp = await route(_request({
+		"rings": [{"session_id": "sid-2", "pct": 0.3, "name": "Doomed title"}],
+		"quota": None,
+		"pushed_at": "2026-06-25T00:00:00+00:00",
+	}))
+
+	assert resp.status_code == 200
+	assert backend.rings is not None, "ring write must still land when the title write fails"

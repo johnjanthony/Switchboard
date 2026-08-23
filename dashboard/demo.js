@@ -161,7 +161,7 @@ function buildConversation1Members() {
 			sender: 'Antigravity',
 			alive: true,
 			surface: 'windows',
-			cli_session_id: 'demo-3',
+			cli_session_id: 'demo-6',
 		},
 	};
 }
@@ -381,10 +381,17 @@ function buildConversation5Messages() {
 // Session data (mirrors Watchtower demo)
 // ---------------------------------------------------------------------------
 
+// Session titles are what Watchtower reads out of each Claude Code transcript,
+// and what the server adopts as the conversation title for a solo room. The
+// names below therefore match their conversation's title: that equality IS the
+// feature, so a demo that omitted it would show the one thing it cannot check.
+// demo-1 and demo-6 are the two live agents of the debate; a shared room keeps
+// its own title and gets no single-agent chip, so neither name matches it.
 function buildSessions() {
 	return {
 		'demo-1': {
-			name: null,
+			name: 'Switchboard design virtues',
+			name_source: 'ai-title',
 			sender: 'Claude',
 			cwd: 'C:\\Work\\Switchboard',
 			state: 'active',
@@ -393,8 +400,20 @@ function buildSessions() {
 			context_pct: 0.56,
 			model: 'claude-3-7-fable',
 		},
+		'demo-6': {
+			name: 'Critique of the conversation model',
+			name_source: 'ai-title',
+			sender: 'Antigravity',
+			cwd: 'C:\\Work\\Switchboard',
+			state: 'active',
+			last_event_at: minsAgo(4),
+			conversation_id: CONV_IDS[0],
+			context_pct: 0.44,
+			model: 'gemini-2.5-pro',
+		},
 		'demo-2': {
-			name: null,
+			name: 'Away-mode enforcement hook',
+			name_source: 'ai-title',
 			sender: 'Claude',
 			cwd: 'C:\\Work\\Switchboard',
 			state: 'active',
@@ -404,7 +423,8 @@ function buildSessions() {
 			model: 'claude-3-5-sonnet',
 		},
 		'demo-3': {
-			name: null,
+			name: 'Firebase schema migration',
+			name_source: 'custom-title',
 			sender: 'Antigravity',
 			cwd: 'C:\\Work\\Switchboard',
 			state: 'active',
@@ -414,7 +434,8 @@ function buildSessions() {
 			model: 'gemini-2.5-pro',
 		},
 		'demo-4': {
-			name: null,
+			name: 'Watchtower ring rendering',
+			name_source: 'ai-title',
 			sender: 'Claude',
 			cwd: 'C:\\Work\\Switchboard',
 			state: 'active',
@@ -424,7 +445,8 @@ function buildSessions() {
 			model: 'claude-3-opus',
 		},
 		'demo-5': {
-			name: null,
+			name: 'Dashboard quota readout',
+			name_source: 'ai-title',
 			sender: 'Claude',
 			cwd: 'C:\\Work\\Switchboard',
 			state: 'idle',

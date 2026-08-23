@@ -271,6 +271,7 @@ def _hydrate_conversation(registry: Registry, conv_id: str, conv_node: Any) -> N
 	conv = Conversation(
 		id=conv_id,
 		title=meta.get("title", conv_id),
+		title_source=meta.get("title_source"),
 		state="active",
 		continued_from=meta.get("continued_from"),
 		origin=meta.get("origin"),

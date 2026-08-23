@@ -80,6 +80,13 @@ class ConversationMember:
 class Conversation:
 	id: str
 	title: str
+	# Provenance of `title`, and the guard the Watchtower session-title sync reads
+	# (conversation_ops.sync_session_titles): "default" = the creation-time
+	# "sender · cwd" placeholder, "session" = a synced Claude Code session title,
+	# "explicit" = agent-supplied or convene-supplied and never overwritten again.
+	# None on records hydrated from a pre-title_source Firebase node; the sync
+	# infers a value for those rather than assuming one.
+	title_source: str | None = None
 	state: Literal["active", "ended"] = "active"
 	continued_from: str | None = None
 	origin: str | None = None  # join|spawn|resume|convene|fallback; None = pre-origin record, never a join candidate

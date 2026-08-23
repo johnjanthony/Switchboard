@@ -19,10 +19,10 @@ from tests.test_gateway_notify_human import RecordingBackend
 class TitleTrackingBackend(RecordingBackend):
 	def __init__(self) -> None:
 		super().__init__()
-		self.titles_written: list[tuple[str, str]] = []
+		self.titles_written: list[tuple[str, str, str | None]] = []
 
-	async def write_conversation_title(self, conversation_id: str, title: str) -> None:
-		self.titles_written.append((conversation_id, title))
+	async def write_conversation_title(self, conversation_id: str, title: str, title_source: str | None = None) -> None:
+		self.titles_written.append((conversation_id, title, title_source))
 
 
 @pytest.mark.asyncio
@@ -46,5 +46,7 @@ async def test_message_and_await_agent_title_change_reaches_backend(tmp_path: Pa
 		cli_session_id="s-1", cwd="C:/Work/X",
 	)
 
-	assert ("conv-t1", "New Scope") in backend.titles_written, \
+	assert ("conv-t1", "New Scope", "explicit") in backend.titles_written, \
 		f"post-creation title change must reach the backend; got {backend.titles_written}"
+	assert conv.title_source == "explicit", \
+		"an agent-supplied title must be marked explicit so the session-title sync leaves it alone"

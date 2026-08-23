@@ -415,6 +415,7 @@ Claude Code prunes its own session transcript files — `~/.claude/projects/<dir
 conversations/<conversation_id>/
   meta/
     title                       (str)
+    title_source                "default" | "session" | "explicit" | absent   # provenance guard for the Watchtower session-title sync (§10.3); absent = pre-title_source record, inferred at sync time
     state                       "active" | "ended"
     continued_from              (conversation_id | null)
     origin                      "join" | "spawn" | "resume" | "convene" | "fallback" | absent   # gates the ref-less-join candidate rule (§2.4); absent = pre-origin record, never a candidate
@@ -604,6 +605,23 @@ Setting a Firebase node to `None` via `ref.set(None)` is rejected by `firebase_a
 | `document` | `send_document_human` | Carries `url`, `filename`, `storage_path`. |
 | `parting` | `leave_conversation` | Neither the phone nor Operator renders this specially — it's an ordinary bubble attributed to the departing sender; `[X left] <text>` is the agent-facing wake-payload rendering (`_compose_wake_payload`, §7), not a phone or Operator format. |
 | `system` | Server-internal | Dormancy notices, combine intro/markers, convene intro, force-end notices, spawn/resume opening notices, resume-into-existing notice, stale-reply notice (`rejected=true`). |
+
+### 10.3 Session-title sync
+
+Claude Code names each session in its transcript (an AI-generated summary, or a custom `/title`). Watchtower parses the newest such record and reports it as ring `name` with a `name_source` of `custom-title` or `ai-title`. `conversation_ops.sync_session_titles`, called from the `/widget-snapshot` route on every push, adopts that name as the conversation title so a Conversations row reads "Fix undo in grouped steps" instead of the creation placeholder "`sender · cwd`". Persisting it (rather than joining client-side) is what makes the title outlive the session, the 72h roster prune, and a restart, and what gets it onto the phone's Page A for free.
+
+A conversation qualifies only when the sighted session is bound to it, it is Active, it has exactly one member, and its `meta/title_source` is not `explicit`:
+
+| `title_source` | Written by | Sync behavior |
+|---|---|---|
+| `default` | Ref-less/`join` creation without a title, spawn (`project (surface)`), session-fallback (`(home)`) | Overwritten |
+| `session` | This sync | Overwritten again when the session is re-titled |
+| `explicit` | `title=` on `message_and_await_agent` / `post_agent_message` / `join_conversation`, convene | Never touched again |
+| absent | Any conversation written before this field existed | Inferred: `default` if the title still equals its member's `sender · cwd` placeholder, else `explicit` |
+
+The single-member rule gates ADOPTING a title, not keeping one: a title synced while a conversation was solo survives a later join, since it remains the room's best description and an explicit title still overrides it. `title_source` travels in the same RTDB `update()` as the title it describes, so a crash cannot leave provenance disagreeing with the title the guard reads. An unchanged title short-circuits before the write, because rings arrive every few seconds. Title-write failures are caught and logged inside the route rather than surfaced, so a Firebase hiccup cannot make Watchtower's whole snapshot push look rejected.
+
+Reach is limited by binding: a session is bound only once it has made a Switchboard MCP call, and the binding is cleared when it ends. Conversations whose agents are already dormant therefore keep their placeholder titles permanently; the list improves as new and resumed work flows through it. Resume inherits both `title` and `title_source` from its source conversation.
 
 ---
 
