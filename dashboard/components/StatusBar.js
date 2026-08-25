@@ -169,7 +169,6 @@ function buildWindowTooltip(label, window, durationMs) {
 function QuotaWindowGraph({ label, window, durationMs }) {
 	if (!window || window.pct == null) return null;
 	const usageFrac = Math.min(1, Math.max(0, Number(window.pct)));
-	const usagePct = Math.round(usageFrac * 100);
 	
 	const resetsAt = window.resetsAt || window.resets_at;
 	let elapsedFrac = null;
@@ -184,12 +183,33 @@ function QuotaWindowGraph({ label, window, durationMs }) {
 		}
 	}
 
+	const segmentCount = label === "5h" ? 5 : 7;
+	const segments = [];
+	for (let i = 0; i < segmentCount; i++) {
+		const segFillFrac = Math.max(0, Math.min(1, (usageFrac - i / segmentCount) * segmentCount));
+		const clipInset = (1 - segFillFrac) * 100;
+		const bgPos = segmentCount > 1 ? (i / (segmentCount - 1)) * 100 : 0;
+		segments.push(html`
+			<div class="quota-segment" key=${i}>
+				${segFillFrac > 0 ? html`
+					<div
+						class="quota-segment-fill gradient-fill"
+						style=${{
+							clipPath: `inset(0 ${clipInset}% 0 0)`,
+							backgroundSize: `${segmentCount * 100}% 100%`,
+							backgroundPosition: `${bgPos}% 0`,
+						}}
+					></div>
+				` : null}
+			</div>
+		`);
+	}
+
 	return html`
 		<div class="quota-row">
 			<div class="quota-bars">
 				<div class="quota-segment-track">
-					<div class="quota-segment gradient-fill" style=${{ clipPath: `inset(0 ${(1 - usageFrac) * 100}% 0 0 round 99px)` }}>
-					</div>
+					${segments}
 				</div>
 				${elapsedFrac != null ? html`
 					<div class="quota-pace-track">
