@@ -307,6 +307,12 @@ Hidden conversations are accessible via the overflow menu's "Show hidden" toggle
 - **Conversations persist; in-flight futures don't.** Conversation state persists in Firebase and rehydrates on restart (`server/hydration.py`); pending `ask_human` futures and wait queues are in-memory and do not survive restart. Don't add a second datastore without a design revision.
 - **Comments sparingly.** Explain why, not what.
 
+## Git policy
+
+John's global CLAUDE.md Git tiers apply: `add` / `commit` are allowed subject to the Branch Check; `push` and PR creation only at John's explicit direction; everything else (merge, rebase, reset, checkout/switch, branch creation) is prohibited.
+
+**This repo opts in to direct commits on `develop`.** Work here happens on `develop`, so the Branch Check's protected-branch rule does not block committing there. The opt-in does not extend to `main` or any other protected line, and every other step of the Branch Check still runs: confirm the branch fresh, confirm no merge or rebase is in progress, and never sweep changes you did not make into your commit.
+
 ## Knowledge graph & Obsidian vault
 
 The repo has a Graphify knowledge graph (`graphify-out/graph.json`, gitignored, rebuilt automatically by post-commit/post-checkout git hooks — AST-only, no LLM cost).
