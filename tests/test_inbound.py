@@ -296,3 +296,39 @@ async def test_background_answer_rung3_queues_notices_then_answer(tmp_path):
 	assert calls[1].args == ("sess-1", "John answered your earlier question 'are you ok?': yes, fine")
 	backend.remove_pending_question_record.assert_awaited_once_with("conv-1", "req-bg")
 	backend.mark_question_cancelled.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_message_returns_only_after_the_history_write_lands(tmp_path):
+	registry = Registry()
+	_conv(registry, members=[("sess-1", "Agent")])
+	backend = _backend()
+	gate = asyncio.Event()
+
+	async def slow_write(*args, **kwargs):
+		await gate.wait()
+		return ("corr", "msg-1")
+
+	backend.write_conversation_message = AsyncMock(side_effect=slow_write)
+	from server.logging_jsonl import JsonlLogger
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+	task = asyncio.ensure_future(
+		deliver_human_message(registry, backend, MagicMock(), logger, "conv-1", "hi"),
+	)
+	await _pump()
+	assert not task.done()
+	gate.set()
+	result = await asyncio.wait_for(task, 1.0)
+	assert result["delivered"] is True
+
+
+@pytest.mark.asyncio
+async def test_message_history_write_failure_raises(tmp_path):
+	registry = Registry()
+	_conv(registry, members=[("sess-1", "Agent")])
+	backend = _backend()
+	backend.write_conversation_message = AsyncMock(side_effect=RuntimeError("rtdb down"))
+	from server.logging_jsonl import JsonlLogger
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+	with pytest.raises(RuntimeError, match="rtdb down"):
+		await deliver_human_message(registry, backend, MagicMock(), logger, "conv-1", "hi")

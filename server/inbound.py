@@ -40,7 +40,7 @@ async def deliver_human_message(registry, backend, session_registry, logger, con
 		write_kwargs = {"format": "markdown", "suppress_push": True}
 		if command_id is not None:
 			write_kwargs["command_id"] = command_id
-		_spawn_bg(
+		write_task = _spawn_bg(
 			backend.write_conversation_message(conversation_id, "John", "human", text, **write_kwargs),
 			label=f"fb_write_human_msg:{conversation_id}",
 		)
@@ -74,6 +74,10 @@ async def deliver_human_message(registry, backend, session_registry, logger, con
 			await backend.mark_question_cancelled(conversation_id, request_id)
 		except Exception as exc:
 			await logger.surface_error(f"inbound_mark_cancelled_failed: conv={conversation_id} req={request_id} {exc}")
+	# The listener deletes the command once this returns, so the row must be in
+	# RTDB first: a client reads "command gone, no row" as not delivered. A
+	# failed write raises and leaves the command queued to replay.
+	await write_task
 	return {"delivered": True, "resolved": resolved, "woken": sorted(woken), "noticed": noticed}
 
 
