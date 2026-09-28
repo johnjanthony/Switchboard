@@ -336,6 +336,7 @@ private fun SwitchboardNavHost(
 					row = row,
 					awayActive = awayActive,
 					rings = widgetRings,
+					sessions = registrySessions,
 					onDismiss = { infoOpen = false },
 					onToggleHidden = {
 						if (row.hidden) viewModel.unhideConversation(convId)

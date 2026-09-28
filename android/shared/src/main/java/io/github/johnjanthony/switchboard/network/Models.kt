@@ -194,6 +194,9 @@ data class RegistrySession(
 	@get:PropertyName("title_state") @set:PropertyName("title_state") var titleState: String? = null,
 	@get:PropertyName("in_tool") @set:PropertyName("in_tool") var inTool: Boolean = false,
 	@get:PropertyName("blocked_on_approval") @set:PropertyName("blocked_on_approval") var blockedOnApproval: Boolean = false,
+	// Resolved by the server (server/model_label.py): observed model + effort, else the spawn pick.
+	@get:PropertyName("model_label") @set:PropertyName("model_label") var modelLabel: String? = null,
+	@get:PropertyName("model_source") @set:PropertyName("model_source") var modelSource: String? = null,
 )
 
 // --- Spawn model/effort catalog: mirrors the server-published spawn_options/ node.

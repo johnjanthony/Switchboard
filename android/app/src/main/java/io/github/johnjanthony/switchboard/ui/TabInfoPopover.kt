@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
@@ -18,6 +19,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.johnjanthony.switchboard.ringForMember
 import io.github.johnjanthony.switchboard.network.ConversationRow
+import io.github.johnjanthony.switchboard.network.RegistrySession
 import io.github.johnjanthony.switchboard.network.WidgetRing
 
 @Composable
@@ -25,6 +27,7 @@ fun TabInfoPopover(
 	row: ConversationRow,
 	awayActive: Boolean,
 	rings: Map<String, WidgetRing>,
+	sessions: Map<String, RegistrySession>,
 	onDismiss: () -> Unit,
 	onToggleHidden: () -> Unit,
 	onToggleAway: () -> Unit,
@@ -55,6 +58,7 @@ fun TabInfoPopover(
 								overflow = TextOverflow.Ellipsis,
 								modifier = Modifier.weight(1f),
 							)
+							ModelChip(sessions[member.cliSessionId], modifier = Modifier.padding(horizontal = 8.dp))
 							val ring = ringForMember(member, rings)
 							if (ring != null) {
 								ContextBadge(pct = ring.pct)

@@ -121,3 +121,13 @@ fun conversationResumable(members: List<ConversationMember>, sessions: Map<Strin
 		val rec = sessions[member.cliSessionId]
 		rec != null && rec.state in TERMINAL_STATES
 	}
+
+/** True when a session's model chip is its spawn pick, not yet confirmed by a transcript sighting. */
+fun modelChipIsSpawnPick(rec: RegistrySession): Boolean = rec.modelSource == "spawn"
+
+/** Detail-sheet Model row: the server-resolved chip label, marked when it is only the spawn pick. */
+fun sessionModelDetail(rec: RegistrySession): String {
+	val label = rec.modelLabel
+	if (label.isNullOrBlank()) return "-"
+	return if (modelChipIsSpawnPick(rec)) "$label (spawn pick, not yet observed)" else label
+}

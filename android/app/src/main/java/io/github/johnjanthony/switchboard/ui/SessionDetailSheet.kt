@@ -18,6 +18,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.github.johnjanthony.switchboard.network.RegistrySession
 import io.github.johnjanthony.switchboard.sessionBoardLabel
+import io.github.johnjanthony.switchboard.sessionModelDetail
 import kotlin.math.roundToInt
 
 /**
@@ -64,7 +65,7 @@ fun SessionDetailSheet(
 
 			DetailRow("State", rec.state + (rec.stateDetail?.let { " · $it" } ?: ""))
 			DetailRow("Provenance", rec.lastTransitionSource ?: "-")
-			DetailRow("Model", rec.model ?: "-")
+			DetailRow("Model", sessionModelDetail(rec))
 			DetailRow("Context", rec.contextPct?.let { "${(it * 100).roundToInt()}%" } ?: "-")
 			DetailRow("Path", rec.cwd)
 			DetailRow("Surface", rec.surface)

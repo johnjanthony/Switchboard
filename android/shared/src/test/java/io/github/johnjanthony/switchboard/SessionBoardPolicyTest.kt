@@ -343,4 +343,27 @@ class SessionBoardPolicyTest {
 		val sessions = mapOf("a" to rec(state = "ended", cwd = "C:\\Work\\X"))
 		assertFalse(conversationResumable(members, sessions))
 	}
+
+	@Test
+	fun `model detail shows an observed label as is`() {
+		val r = RegistrySession(cliSessionId = "s1", modelLabel = "Opus 5.5 · xhigh", modelSource = "observed")
+		assertEquals("Opus 5.5 · xhigh", sessionModelDetail(r))
+		assertFalse(modelChipIsSpawnPick(r))
+	}
+
+	@Test
+	fun `model detail marks an unconfirmed spawn pick`() {
+		val r = RegistrySession(cliSessionId = "s1", modelLabel = "Sonnet · medium", modelSource = "spawn")
+		assertEquals("Sonnet · medium (spawn pick, not yet observed)", sessionModelDetail(r))
+		assertTrue(modelChipIsSpawnPick(r))
+	}
+
+	@Test
+	fun `model detail is a dash without a label, and the fields default to null`() {
+		val r = RegistrySession()
+		assertEquals(null, r.modelLabel)
+		assertEquals(null, r.modelSource)
+		assertEquals("-", sessionModelDetail(r))
+		assertFalse(modelChipIsSpawnPick(r))
+	}
 }

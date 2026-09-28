@@ -112,11 +112,15 @@ fun RegistrySessionRow(
 					style = MaterialTheme.typography.titleMedium,
 					maxLines = 1,
 					overflow = TextOverflow.Ellipsis,
+					// fill = false keeps a short label at its natural width; a long one ellipsizes
+					// before it can push the model chip off the row.
+					modifier = Modifier.weight(1f, fill = false),
 				)
 				if (needsAttention) {
 					Spacer(Modifier.width(6.dp))
 					Box(modifier = Modifier.size(6.dp).background(MaterialTheme.colorScheme.tertiary, CircleShape))
 				}
+				ModelChip(rec, modifier = Modifier.padding(start = 8.dp))
 			}
 			val approvalSuffix = sessionApprovalHint(rec, System.currentTimeMillis()).let { if (it.isEmpty()) "" else " · $it" }
 			Text(
