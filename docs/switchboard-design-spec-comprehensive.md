@@ -652,13 +652,15 @@ Restart-survival has moved on from a blanket "everything in flight is lost": awa
 
 ## 12. Android UI
 
-Four nav destinations (conversation list, sessions board, conversation view, markdown viewer) plus around seven hoisted dialogs/sheets/popovers.
+Five nav destinations (conversation list, sessions board, conversation view, admin notices, markdown viewer) plus around seven hoisted dialogs/sheets/popovers.
 
 ### 12.1 Page A — conversation list
 
 Top app bar carries the **away pill** (long-press to toggle in either direction; tapping it does nothing), plus a row of status pills — Watchtower snapshot staleness, Antigravity/GCP status, Anthropic status. Immediately below the top bar, in the screen body, a `WidgetStatusHeader` shows Claude 5h/7d and per-Antigravity-group quota bars, tappable to a quota detail dialog. Turning away off raises a bulk-respond modal only when pending `ask_human` questions exist; with none pending it turns off immediately. Body is a vertical list of conversation rows — Active by default, plus Ended rows so the history is visible — topped by a synthetic, non-interactive admin row and followed by an inline collapsible "HIDDEN (n)" section rather than a separate toggle. Ended conversations' long-press menu **omits** the Combine and End items entirely (not merely greyed); only Resume is greyed, and its enablement is registry-state based, independent of conversation state.
 
 Each row shows: title with the comma-joined member roster appended, a line-2 priority chain (pending question text, else agent-status text, else the latest-message preview), last-activity timestamp, a single `CountChip` badge (`max(unreadCount, pendingResponses)`, not two separate badges), a per-row context-window-fill badge, and a 4-state status lamp (Calling / Thinking / Active / Idle) that replaces a separate agent-status indicator. There is no "open" marker on the row (§16), and no session-file-aging warning glyph (§9.6 is unimplemented).
+
+When `admin_notifications` holds entries, a synthetic **Admin** row (`_admin`, no Firebase conversation behind it) sits above the conversations. Its preview is the newest notice, derived client-side, and tapping it opens a read-only notices list with no composer; notices removed from RTDB (Operator dismissal, the retention prune) leave the phone too, and the row goes with the last one. While the list is scrolled to the very top it stays there as rows arrive above (`requestScrollToItem(0)`); a keyed `LazyColumn` would otherwise keep the old first row in view and leave the new newest row just off-screen.
 
 Swipe gestures (both raise a confirmation dialog before mutating):
 - **Swipe right** → End conversation. The long-press "End conversation" menu item is hidden for Ended convs, but the swipe-right gesture still raises the End-confirm dialog (force-end is a no-op on an already-ended conversation). Writes a `force_end_commands/<id>/` record; server-side `handle_force_end` applies session-fallback.
@@ -678,7 +680,7 @@ Title bar shows the conversation title followed by the comma-joined member sende
 
 Bubble feed renders messages chronologically, all left-aligned — identity is carried by byline color (brass for John, muted for agents), not alignment. Message subheaders (grouping dividers) are the closest thing to "system message" styling; there is no distinct system-message bubble type. Pending questions carry a coral left rail; rejected/withdrawn states render as tags. A trailing `AgentStatusRow` appends live agent-status while it's fresh. Markdown rendering when `format == "markdown"`, with a link-scheme allowlist and syntax highlighting. Suggestion chips render in the bottom reply bar, not under the question bubble. Message timestamps are shown permanently in the byline (the older horizontal-pull-to-reveal gesture is gone); pinch zooms text scale, persisted across sessions. FCM taps and in-app links deep-link to a specific message and scroll to it.
 
-Reply input is visible only when a pending `ask_human` is selected; with more than one pending and none selected it instead reads "Select a question to reply..." (auto-select fires only when exactly one pending exists). Replies route via `answers/<conv_id>/<request_id>/`. Suggestion-chip taps short-circuit the typing path.
+The bottom bar is the reply input when a pending `ask_human` is selected; with more than one pending and none selected it reads "Select a question to reply..." above the free-form message composer (auto-select fires only when exactly one pending exists); otherwise an Active conversation shows just the composer, which pushes to `message_commands` (§2.6). The composer's draft is owned by the screen, not the bar, so it survives the bar swapping to the reply input when a question arrives mid-typing. Replies route via `answers/<conv_id>/<request_id>/`. Suggestion-chip taps short-circuit the typing path.
 
 ### 12.3 Spawn dialog
 
