@@ -128,6 +128,9 @@ private fun SwitchboardNavHost(
 	val context = androidx.compose.ui.platform.LocalContext.current
 	val navController = rememberNavController()
 	val conversationRows by viewModel.conversationRows.collectAsState()
+	val messageCommands by viewModel.messageCommands.collectAsState()
+	val seenSends by viewModel.seenSends.collectAsState()
+	val firebaseConnected by viewModel.firebaseConnected.collectAsState()
 	val globalAway by viewModel.globalAway.collectAsState()
 	val pendingExitToggle by viewModel.pendingExitToggle.collectAsState()
 	val markdownViewerContent by viewModel.markdownViewerContent.collectAsState()
@@ -321,6 +324,12 @@ private fun SwitchboardNavHost(
 				onLongPressDownloadFile = { url, filename -> viewModel.saveFileToDownloads(context, url, filename) },
 				onMarkMessageOpened = { msgId -> viewModel.markMessageOpened(convId, msgId) },
 				onShowTabInfo = { infoOpen = true },
+				queuedCommands = messageCommands,
+				seenSends = seenSends,
+				firebaseConnected = firebaseConnected,
+				onWithdrawPendingSend = { key -> viewModel.withdrawQueuedMessage(key) },
+				onRetryPendingSend = { key, text -> viewModel.retryMessage(convId, key, text) },
+				onDismissPendingSend = { key -> viewModel.dismissUndelivered(key) },
 			)
 			if (infoOpen) {
 				TabInfoPopover(

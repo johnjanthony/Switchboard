@@ -126,6 +126,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _sessionAcks = MutableStateFlow<Map<String, String>>(emptyMap())
 	val sessionAcks: StateFlow<Map<String, String>> = _sessionAcks.asStateFlow()
 
+	private val _messageCommands = MutableStateFlow<Map<String, QueuedCommand>>(emptyMap())
+	val messageCommands: StateFlow<Map<String, QueuedCommand>> = _messageCommands.asStateFlow()
+
+	// Sends this device saw queued, kept so a command that vanishes without its
+	// row can be shown as not delivered. In-memory only.
+	private val _seenSends = MutableStateFlow<Map<String, SeenSend>>(emptyMap())
+	val seenSends: StateFlow<Map<String, SeenSend>> = _seenSends.asStateFlow()
+
+	private val _firebaseConnected = MutableStateFlow(true)
+	val firebaseConnected: StateFlow<Boolean> = _firebaseConnected.asStateFlow()
+
 	private val _pendingDeepLinkMessageId = MutableStateFlow<String?>(null)
 	val pendingDeepLinkMessageId: StateFlow<String?> = _pendingDeepLinkMessageId.asStateFlow()
 
@@ -179,6 +190,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 				setupAdminNotificationsListener()
 				startWidgetListeners()
 				startSessionRegistryListeners()
+				startMessageCommandListeners()
 			}
 		}
 		auth.addIdTokenListener(idListener)
@@ -283,6 +295,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	 * (REV-203), not derived here.
 	 */
 	private fun addMessageToConversation(convId: String, msgId: String, msg: ChannelMessage) {
+		msg.command_id?.let { id ->
+			if (_seenSends.value[id]?.goneAtMs != null) _seenSends.value = _seenSends.value - id
+		}
 		val row = _conversationRows.value[convId]
 		if (row == null) {
 			// Row not present yet (summary not loaded, or a transient parse failure).
@@ -369,6 +384,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		ref.addValueEventListener(listener)
 		subscriptions.add { ref.removeEventListener(listener) }
 	}
+
+	private fun startMessageCommandListeners() {
+		val ref = database.getReference("message_commands")
+		val listener = object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				val parsed = mutableMapOf<String, QueuedCommand>()
+				for (child in snapshot.children) {
+					val key = child.key ?: continue
+					PendingSendPolicy.parseQueued(child.value)?.let { parsed[key] = it }
+				}
+				_messageCommands.value = parsed
+				_seenSends.value = PendingSendPolicy.updateSeen(
+					_seenSends.value, parsed, System.currentTimeMillis(), allCommandIds(),
+				)
+			}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", "message_commands listener cancelled: $error")
+			}
+		}
+		ref.addValueEventListener(listener)
+		subscriptions.add { ref.removeEventListener(listener) }
+
+		val connectedRef = database.getReference(".info/connected")
+		val connectedListener = object : ValueEventListener {
+			override fun onDataChange(snapshot: DataSnapshot) {
+				_firebaseConnected.value = snapshot.getValue(Boolean::class.java) ?: false
+			}
+			override fun onCancelled(error: DatabaseError) {
+				android.util.Log.w("MainViewModel", ".info/connected listener cancelled: $error")
+			}
+		}
+		connectedRef.addValueEventListener(connectedListener)
+		subscriptions.add { connectedRef.removeEventListener(connectedListener) }
+	}
+
+	private fun allCommandIds(): Set<String> =
+		_conversationRows.value.values.flatMapTo(mutableSetOf()) { row -> PendingSendPolicy.commandIdsIn(row.messages) }
 
 	/**
 	 * Listen to the widget hub the server fans out from Watchtower: per-session context
@@ -951,6 +1003,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 			"send message",
 		)
 	}
+
+	// Forget a send locally BEFORE its command disappears, so this device does not
+	// then read the deletion as a failed delivery.
+	private fun forgetSend(key: String) {
+		_seenSends.value = _seenSends.value - key
+	}
+
+	fun withdrawQueuedMessage(key: String) {
+		forgetSend(key)
+		writeReporting(database.getReference("message_commands/$key"), null, "cancel message")
+	}
+
+	fun retryMessage(convId: String, key: String, text: String) {
+		forgetSend(key)
+		if (key in _messageCommands.value) {
+			writeReporting(database.getReference("message_commands/$key"), null, "discard message")
+		}
+		sendMessageToConversation(convId, text)
+	}
+
+	fun dismissUndelivered(key: String) = forgetSend(key)
 
 	/**
 	 * Resume a dormant session from the board. Mirrors spawnSession's away-mode auto-enable:

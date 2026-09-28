@@ -35,7 +35,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -48,7 +50,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import io.github.johnjanthony.switchboard.AwayModePillChip
+import io.github.johnjanthony.switchboard.PendingSendPolicy
+import io.github.johnjanthony.switchboard.QueuedCommand
+import io.github.johnjanthony.switchboard.SeenSend
 import io.github.johnjanthony.switchboard.network.ConversationRow
 import io.github.johnjanthony.switchboard.network.Pending
 
@@ -69,6 +75,12 @@ fun ConversationViewScreen(
 	onLongPressDownloadFile: (url: String, filename: String) -> Unit,
 	onMarkMessageOpened: (msgId: String) -> Unit,
 	onShowTabInfo: () -> Unit,
+	queuedCommands: Map<String, QueuedCommand> = emptyMap(),
+	seenSends: Map<String, SeenSend> = emptyMap(),
+	firebaseConnected: Boolean = true,
+	onWithdrawPendingSend: (key: String) -> Unit = {},
+	onRetryPendingSend: (key: String, text: String) -> Unit = { _, _ -> },
+	onDismissPendingSend: (key: String) -> Unit = {},
 ) {
 	val messages = row.messages
 	val currentPending = row.pendingQuestions
@@ -86,6 +98,19 @@ fun ConversationViewScreen(
 	val context = androidx.compose.ui.platform.LocalContext.current
 	var feedFontScale by remember { androidx.compose.runtime.mutableFloatStateOf(context.feedFontScale()) }
 
+	// Pending sends change state on a clock (20s, 10 min, the 5s grace), not only
+	// on data events, so tick while this conversation has any.
+	var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+	val needsTick = PendingSendPolicy.needsTick(row.id, queuedCommands, seenSends)
+	LaunchedEffect(needsTick) {
+		while (needsTick) {
+			nowMs = System.currentTimeMillis()
+			delay(1_000)
+		}
+	}
+	val deliveredIds = remember(messages) { PendingSendPolicy.commandIdsIn(messages) }
+	val pendingSends = PendingSendPolicy.derive(row.id, queuedCommands, deliveredIds, seenSends, nowMs, firebaseConnected)
+
 	// Auto-select if there is exactly one pending question
 	androidx.compose.runtime.LaunchedEffect(activePending.size) {
 		if (activePending.size == 1) {
@@ -95,7 +120,7 @@ fun ConversationViewScreen(
 		}
 	}
 
-	androidx.compose.runtime.LaunchedEffect(scrollToMessageId, messages.size) {
+	androidx.compose.runtime.LaunchedEffect(scrollToMessageId, messages.size, pendingSends.size) {
 		val targetId = scrollToMessageId
 		if (targetId != null) {
 			val idx = messages.indexOfFirst { it.first == targetId }
@@ -107,8 +132,9 @@ fun ConversationViewScreen(
 			// messages.size will retry. Don't fall through to scroll-to-bottom.
 			return@LaunchedEffect
 		}
-		if (messages.isNotEmpty()) {
-			listState.scrollToItem(messages.size - 1)
+		val lastIndex = messages.size + pendingSends.size - 1
+		if (lastIndex >= 0) {
+			listState.scrollToItem(lastIndex)
 		}
 	}
 
@@ -263,6 +289,21 @@ fun ConversationViewScreen(
 								onMarkMessageOpened(msgId)
 							},
 							onDownloadLongClick = onLongPressDownloadFile,
+						)
+					}
+					items(pendingSends.size, key = { idx -> "pending:" + pendingSends[idx].key }) { idx ->
+						val send = pendingSends[idx]
+						PendingSendRow(
+							send = send,
+							conversationActive = row.state == "active",
+							fontScale = feedFontScale,
+							onCancel = {
+								onWithdrawPendingSend(send.key)
+								messageDraft = PendingSendPolicy.restoreDraft(messageDraft, send.text)
+							},
+							onRetry = { onRetryPendingSend(send.key, send.text) },
+							onDiscard = { onWithdrawPendingSend(send.key) },
+							onDismiss = { onDismissPendingSend(send.key) },
 						)
 					}
 					if (agentStatus?.isFresh() == true) {
