@@ -414,6 +414,27 @@ async def cleanup(ctx: RunContext, rep: Reporter, args) -> None:
 	rep.flow("cleanup") context manager records a single PASS/FAIL."""
 	errors: list[str] = []
 
+	# Restore away mode FIRST: leaving a conversation while away mode is on
+	# re-homes the session into a fresh visible "(home)" conversation
+	# (session_fallback create_new), and the harness turned away mode on itself.
+	try:
+		current = http_get_json(f"{ctx.base_url}/away-mode")
+		# prior_away is None when preflight failed before reading it: then the
+		# harness never touched away mode, and "restoring" None would turn off a
+		# real away session.
+		if ctx.prior_away is not None and bool(current.get("active")) != bool(ctx.prior_away):
+			try:
+				await mcp_call(ctx, "set_away_mode", {"value": ctx.prior_away})
+			except Exception:
+				rtdb(ctx, "global_settings/away_mode").set(ctx.prior_away)
+
+			def _away_restored():
+				restored = http_get_json(f"{ctx.base_url}/away-mode")
+				return True if bool(restored.get("active")) == bool(ctx.prior_away) else None
+			await poll_until("away mode restored to prior state", _away_restored, 15)
+	except Exception as exc:
+		errors.append(f"away mode restore failed: {exc}")
+
 	if ctx.conversation_id is not None:
 		try:
 			await mcp_call(ctx, "leave_conversation", {"sender": ctx.sender, "parting_message": "smoke run complete"})
@@ -447,23 +468,18 @@ async def cleanup(ctx: RunContext, rep: Reporter, args) -> None:
 		except Exception as exc:
 			errors.append(str(exc))
 
-	try:
-		current = http_get_json(f"{ctx.base_url}/away-mode")
-		# prior_away is None when preflight failed before reading it: then the
-		# harness never touched away mode, and "restoring" None would turn off a
-		# real away session.
-		if ctx.prior_away is not None and bool(current.get("active")) != bool(ctx.prior_away):
-			try:
-				await mcp_call(ctx, "set_away_mode", {"value": ctx.prior_away})
-			except Exception:
-				rtdb(ctx, "global_settings/away_mode").set(ctx.prior_away)
-
-			def _away_restored():
-				restored = http_get_json(f"{ctx.base_url}/away-mode")
-				return True if bool(restored.get("active")) == bool(ctx.prior_away) else None
-			await poll_until("away mode restored to prior state", _away_restored, 15)
-	except Exception as exc:
-		errors.append(f"away mode restore failed: {exc}")
+		# A --force run keeps a real away session's away mode on, so the leave above
+		# still re-homed the session into a fresh "(home)" conversation. Hide any
+		# conversation besides the run's own that holds the smoke sender. Hide only:
+		# force-ending it while away mode is on would re-home the session yet again.
+		try:
+			convs = rtdb(ctx, "conversations").get() or {}
+			for cid, node in convs.items():
+				if cid != ctx.conversation_id and isinstance(node, dict) and ctx.sender in (node.get("members_active") or {}):
+					rtdb(ctx, f"conversations/{cid}/meta/hidden").set(True)
+					print(f"cleanup: hid re-homed conversation {cid}")
+		except Exception as exc:
+			errors.append(f"re-homed conversation sweep failed: {exc}")
 
 	try:
 		hz = http_get_json(f"{ctx.base_url}/healthz")

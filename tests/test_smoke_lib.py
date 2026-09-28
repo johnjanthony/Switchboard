@@ -211,3 +211,91 @@ async def test_cleanup_after_an_early_preflight_failure_touches_nothing(monkeypa
 
 	await smoke.cleanup(ctx, smoke_lib.Reporter(), None)
 	assert not [c for c in calls if c[0] == "MCP"]
+
+
+class _FakeService:
+	"""Records cleanup's calls against an in-memory stand-in for the service's
+	HTTP, MCP and RTDB surfaces."""
+
+	def __init__(self, away: bool, store: dict):
+		self.away = away
+		self.store = store
+		self.calls = []
+
+	def http_get_json(self, url):
+		if url.endswith("/away-mode"):
+			return {"active": self.away}
+		return {"listeners": [], "dispatch_loops": []}
+
+	async def mcp_call(self, ctx, tool, args, timeout=30):
+		self.calls.append(tool)
+		if tool == "set_away_mode":
+			self.away = args["value"]
+		return "ok"
+
+	def rtdb(self, ctx, path):
+		service = self
+
+		class _Ref:
+			def get(self):
+				return service.store.get(path)
+
+			def set(self, value):
+				service.calls.append(f"set {path}={value}")
+				service.store[path] = value
+		return _Ref()
+
+	def install(self, monkeypatch):
+		monkeypatch.setattr(smoke, "http_get_json", self.http_get_json)
+		monkeypatch.setattr(smoke, "mcp_call", self.mcp_call)
+		monkeypatch.setattr(smoke, "rtdb", self.rtdb)
+		monkeypatch.setattr(smoke, "write_session_end_marker", lambda ctx: self.calls.append("marker"))
+
+
+def _started_ctx(tmp_path, prior_away):
+	ctx = smoke_lib.make_context("http://127.0.0.1:9876", tmp_path)
+	ctx.prior_away = prior_away
+	ctx.session_started = True
+	ctx.conversation_id = "conv-smoke"
+	return ctx
+
+
+@pytest.mark.asyncio
+async def test_cleanup_restores_away_mode_before_leaving(monkeypatch, tmp_path):
+	"""Leaving while away mode is ON re-homes the session into a fresh visible
+	"(home)" conversation (session_fallback create_new). The harness turned
+	away mode on itself, so it must turn it back off before the leave."""
+	ctx = _started_ctx(tmp_path, prior_away=False)
+	service = _FakeService(away=True, store={
+		"conversations/conv-smoke/meta/state": "ended",
+		f"sessions/{ctx.cli_session_id}/state": "ended",
+	})
+	service.install(monkeypatch)
+
+	await smoke.cleanup(ctx, smoke_lib.Reporter(), None)
+	assert service.away is False
+	assert service.calls.index("set_away_mode") < service.calls.index("leave_conversation")
+
+
+@pytest.mark.asyncio
+async def test_cleanup_hides_a_rehomed_conversation_when_away_was_already_on(monkeypatch, tmp_path):
+	"""With --force, away mode was ON before the run, so cleanup leaves it on and
+	the leave still re-homes the session. Cleanup must hide that conversation
+	(only ones holding the smoke sender) and must not touch away mode."""
+	ctx = _started_ctx(tmp_path, prior_away=True)
+	service = _FakeService(away=True, store={
+		"conversations/conv-smoke/meta/state": "ended",
+		f"sessions/{ctx.cli_session_id}/state": "ended",
+		"conversations": {
+			"conv-smoke": {"meta": {"state": "ended"}, "members_active": {ctx.sender: {}}},
+			"conv-home": {"meta": {"title": "(home)", "state": "active"}, "members_active": {ctx.sender: {}}},
+			"conv-real": {"meta": {"title": "real work", "state": "active"}, "members_active": {"Claude Win": {}}},
+		},
+	})
+	service.install(monkeypatch)
+
+	await smoke.cleanup(ctx, smoke_lib.Reporter(), None)
+	assert "set conversations/conv-home/meta/hidden=True" in service.calls
+	assert not [c for c in service.calls if "conv-real" in c]
+	assert "set_away_mode" not in service.calls
+	assert service.away is True
