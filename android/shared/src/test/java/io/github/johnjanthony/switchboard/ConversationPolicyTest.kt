@@ -1,5 +1,6 @@
 package io.github.johnjanthony.switchboard
 
+import io.github.johnjanthony.switchboard.network.ChannelMessage
 import io.github.johnjanthony.switchboard.network.ConversationMember
 import io.github.johnjanthony.switchboard.network.ConversationRow
 import io.github.johnjanthony.switchboard.network.ConversationSummary
@@ -189,5 +190,32 @@ class ConversationPolicyTest {
 	@Test
 	fun `no zero for the synthetic admin row`() {
 		assertFalse(shouldZeroUnreadOnArrival(ADMIN_CONVERSATION_ID, ADMIN_CONVERSATION_ID, appForeground = true))
+	}
+
+	private fun notice(text: String) = ChannelMessage(sender = "system", type = "notify", text = text)
+
+	@Test
+	fun `latest message preview is the newest message on one line`() {
+		val messages = listOf(
+			"-a" to notice("Old notice"),
+			"-b" to notice("Cannot spawn: unknown model 'x'.\nPick one of: sonnet, opus"),
+		)
+		assertEquals("Cannot spawn: unknown model 'x'. Pick one of: sonnet, opus", latestMessagePreview(messages))
+	}
+
+	@Test
+	fun `no admin row once every notice is gone`() {
+		// Operator dismissals (T-264) and the 168h prune remove notices; an empty
+		// Admin row must disappear rather than linger with nothing to show.
+		assertEquals(null, adminConversationRow(emptyList()))
+	}
+
+	@Test
+	fun `admin row orders notices by push id and previews the newest`() {
+		val row = adminConversationRow(listOf("-b" to notice("second"), "-a" to notice("first")))!!
+		assertEquals(ADMIN_CONVERSATION_ID, row.id)
+		assertEquals("Admin", row.title)
+		assertEquals(listOf("-a", "-b"), row.messages.map { it.first })
+		assertEquals("second", row.preview)
 	}
 }

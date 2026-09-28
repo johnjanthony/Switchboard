@@ -1,5 +1,6 @@
 package io.github.johnjanthony.switchboard
 
+import io.github.johnjanthony.switchboard.network.ChannelMessage
 import io.github.johnjanthony.switchboard.network.ConversationMember
 import io.github.johnjanthony.switchboard.network.ConversationRow
 import io.github.johnjanthony.switchboard.network.ConversationSummary
@@ -16,6 +17,36 @@ const val ADMIN_CONVERSATION_ID = "_admin"
 /** True for synthetic conversation ids that have no real Firebase node behind them. */
 fun isSyntheticConversation(conversationId: String): Boolean =
 	conversationId == ADMIN_CONVERSATION_ID
+
+/**
+ * One-line preview of the newest message in [messages] (display order, newest
+ * last). Real rows get meta/preview from the server; the synthetic _admin row
+ * has no meta node, so its preview is derived here.
+ */
+fun latestMessagePreview(messages: List<Pair<String, ChannelMessage>>): String? =
+	messages.lastOrNull()?.second?.text?.replace('\n', ' ')
+
+/**
+ * The synthetic _admin row holding exactly [messages] (keyed by push id, any
+ * order), or null when none remain: notices leave through Operator dismissal
+ * (T-264) and the server's retention prune, and an empty Admin row must not
+ * linger in the list.
+ */
+fun adminConversationRow(messages: List<Pair<String, ChannelMessage>>): ConversationRow? {
+	if (messages.isEmpty()) return null
+	val ordered = applySpliceOrder(messages.sortedBy { it.first })
+	return ConversationRow(
+		summary = ConversationSummary(
+			id = ADMIN_CONVERSATION_ID,
+			title = "Admin",
+			state = "active",
+			members = emptyList(),
+			lastActivityAt = "",
+			preview = latestMessagePreview(ordered),
+		),
+		messages = ordered,
+	)
+}
 
 /**
  * True when a just-arrived message on [convId] should zero the server-side

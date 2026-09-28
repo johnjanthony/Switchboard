@@ -383,9 +383,10 @@ fun ConversationRow(
 
 /**
  * Static row for the synthetic `_admin` pseudo-conversation (admin_notifications surface).
- * Lives outside the conversation model and renders as a passive notification banner -
- * no swipe-to-hide, no resume/combine/end menu. Clicking opens the legacy session screen
- * (admin route) to view notifications.
+ * Lives outside the conversation model and renders as a notification banner - no
+ * swipe-to-hide, no resume/combine/end menu. The preview is the newest notice (derived
+ * client-side by adminConversationRow; there is no meta/preview behind it), and a click
+ * opens the read-only AdminNotificationsScreen.
  */
 @Composable
 fun AdminRow(
@@ -425,10 +426,12 @@ fun AdminRow(
 				CountChip(row.displayCount)
 			}
 		}
-		// Click target overlay so the row still feels clickable when tapped.
+		// Click target overlay so the row still feels clickable when tapped. matchParentSize,
+		// not fillMaxSize: a LazyColumn item's max height is unbounded, so fillMaxSize
+		// measured to zero height and the overlay never received a tap.
 		Box(
 			modifier = Modifier
-				.fillMaxSize()
+				.matchParentSize()
 				.combinedClickable(onClick = onClick, onLongClick = onClick)
 		)
 	}

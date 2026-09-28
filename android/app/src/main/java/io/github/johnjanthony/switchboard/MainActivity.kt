@@ -56,6 +56,7 @@ import io.github.johnjanthony.switchboard.fcm.BaseSwitchboardMessagingService
 import io.github.johnjanthony.switchboard.pickerTargets
 import io.github.johnjanthony.switchboard.shared.GoogleAuthHelper
 import android.widget.Toast
+import io.github.johnjanthony.switchboard.ui.AdminNotificationsScreen
 import io.github.johnjanthony.switchboard.ui.BulkRespondDialog
 import io.github.johnjanthony.switchboard.ui.CombineDialog
 import io.github.johnjanthony.switchboard.ui.MarkdownViewerScreen
@@ -215,10 +216,7 @@ private fun SwitchboardNavHost(
 				showHidden = showHidden,
 				globalAway = globalAway,
 				onSessionClick = { row -> navController.navigate("session/${row.id}") },
-				onAdminClick = { _ ->
-					// Admin row is currently a passive surface — clicking it doesn't navigate
-					// anywhere meaningful in this dispatch. Backlog: dedicated admin notifications screen.
-				},
+				onAdminClick = { _ -> navController.navigate("admin") { launchSingleTop = true } },
 				onToggleShowHidden = { showHidden = !showHidden },
 				onEnterGlobalAway = { viewModel.requestAwayModeToggle(null, true) },
 				onExitGlobalAway = { viewModel.requestAwayModeToggle(null, false) },
@@ -337,6 +335,12 @@ private fun SwitchboardNavHost(
 					onToggleAway = { viewModel.requestAwayModeToggle(null, !awayActive) },
 				)
 			}
+		}
+		composable("admin") {
+			AdminNotificationsScreen(
+				row = conversationRows["_admin"],
+				onBack = { navController.popBackStack() },
+			)
 		}
 		composable("markdown_viewer") {
 			val content = markdownViewerContent

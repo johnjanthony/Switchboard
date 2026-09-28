@@ -245,11 +245,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 					text = text, format = format, timestamp = timestamp,
 				)
 				// Surface via ConversationRow: synthesize a synthetic "_admin" row (R3).
-				ensureAdminRowExists()
-				appendAdminMessage(msgId, msg)
+				updateAdminMessages { current -> current.filter { it.first != msgId } + (msgId to msg) }
 			}
 			override fun onChildChanged(snapshot: DataSnapshot, prev: String?) {}
-			override fun onChildRemoved(snapshot: DataSnapshot) {}
+			override fun onChildRemoved(snapshot: DataSnapshot) {
+				// Operator dismissal (T-264) and the server's retention prune both delete here.
+				val msgId = snapshot.key ?: return
+				updateAdminMessages { current -> current.filter { it.first != msgId } }
+			}
 			override fun onChildMoved(snapshot: DataSnapshot, prev: String?) {}
 			override fun onCancelled(error: DatabaseError) {
 				android.util.Log.w("MainViewModel", "admin_notifications listener cancelled: $error")
@@ -259,34 +262,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		subscriptions.add { adminNotificationsRef.removeEventListener(listener) }
 	}
 
-	/** Ensure the synthetic _admin ConversationRow exists in _conversationRows (R3). */
-	private fun ensureAdminRowExists() {
-		if (!_conversationRows.value.containsKey(ADMIN_CONVERSATION_ID)) {
-			val newMap = _conversationRows.value.toMutableMap()
-			newMap[ADMIN_CONVERSATION_ID] = ConversationRow(
-				summary = ConversationSummary(
-					id = ADMIN_CONVERSATION_ID,
-					title = "Admin",
-					state = "active",
-					members = emptyList(),
-					lastActivityAt = "",
-				),
-			)
-			_conversationRows.value = newMap
-		}
-	}
-
-	/** Append an admin message to the synthetic _admin ConversationRow. */
-	private fun appendAdminMessage(msgId: String, msg: ChannelMessage) {
-		val row = _conversationRows.value[ADMIN_CONVERSATION_ID] ?: return
-		val rawMessages = row.messages.toMutableList()
-		val idx = rawMessages.indexOfFirst { it.first == msgId }
-		if (idx >= 0) rawMessages[idx] = msgId to msg else rawMessages.add(msgId to msg)
-		val sortedRaw = rawMessages.sortedBy { it.first }
-		val displayMessages = applySpliceOrder(sortedRaw)
-		val updated = row.copy(messages = displayMessages)
+	/**
+	 * Rebuild the synthetic _admin ConversationRow (R3) from its notice set after
+	 * [transform]; the row leaves the list when the last notice does.
+	 */
+	private fun updateAdminMessages(
+		transform: (List<Pair<String, ChannelMessage>>) -> List<Pair<String, ChannelMessage>>,
+	) {
+		val current = _conversationRows.value[ADMIN_CONVERSATION_ID]?.messages.orEmpty()
+		val next = adminConversationRow(transform(current))
 		val newMap = _conversationRows.value.toMutableMap()
-		newMap[ADMIN_CONVERSATION_ID] = updated
+		if (next == null) newMap.remove(ADMIN_CONVERSATION_ID) else newMap[ADMIN_CONVERSATION_ID] = next
 		_conversationRows.value = newMap
 	}
 

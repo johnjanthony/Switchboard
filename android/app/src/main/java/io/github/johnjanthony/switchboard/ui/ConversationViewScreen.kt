@@ -38,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,6 +76,8 @@ fun ConversationViewScreen(
 	val listState = rememberLazyListState()
 	val activePending = currentPending.filterValues { !it.cancelled }
 	var selectedRequestId by remember(row.id) { mutableStateOf<String?>(null) }
+	// Survives the bottomBar's branch swaps (see MessageInputBar).
+	var messageDraft by rememberSaveable(row.id) { mutableStateOf("") }
 
 	// Consume the shared VM's authoritative answered set directly; no local
 	// re-derivation (matches wear).
@@ -180,10 +183,10 @@ fun ConversationViewScreen(
 							)
 						}
 					}
-					MessageInputBar(onSubmit = onSendMessage)
+					MessageInputBar(text = messageDraft, onTextChange = { messageDraft = it }, onSubmit = onSendMessage)
 				}
 			} else if (row.state == "active") {
-				MessageInputBar(onSubmit = onSendMessage)
+				MessageInputBar(text = messageDraft, onTextChange = { messageDraft = it }, onSubmit = onSendMessage)
 			}
 		},
 	) { padding ->
@@ -341,23 +344,24 @@ private fun ReplyInputBar(
 	}
 }
 
+// The draft is owned by ConversationViewScreen, not this bar: the bottomBar swaps
+// branches when a pending question arrives, and bar-local state was discarded with
+// the branch, silently losing whatever was being typed.
 @Composable
-private fun MessageInputBar(onSubmit: (String) -> Unit) {
-	var text by remember { mutableStateOf("") }
-
+private fun MessageInputBar(text: String, onTextChange: (String) -> Unit, onSubmit: (String) -> Unit) {
 	Surface(tonalElevation = 2.dp) {
 		Column(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
 			Row(verticalAlignment = Alignment.CenterVertically) {
 				OutlinedTextField(
 					value = text,
-					onValueChange = { text = it },
+					onValueChange = onTextChange,
 					modifier = Modifier.weight(1f),
 					placeholder = { Text("Message the agents...") },
 					maxLines = 4,
 					shape = RoundedCornerShape(24.dp),
 				)
 				Spacer(Modifier.width(8.dp))
-				IconButton(onClick = { if (text.isNotBlank()) { onSubmit(text); text = "" } }) {
+				IconButton(onClick = { if (text.isNotBlank()) { onSubmit(text); onTextChange("") } }) {
 					Icon(Icons.Default.Send, contentDescription = "Send")
 				}
 			}
