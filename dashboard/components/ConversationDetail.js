@@ -317,9 +317,11 @@ export function ConversationDetail({ store }) {
 		seen: state.seenSends, nowMs: Date.now(), connected: state.connected,
 	});
 	const sendActions = {
-		cancel: async (row) => {
-			const ok = await store.withdrawQueuedMessage(row.key);
-			if (ok) setDrafts((d) => ({ ...d, [id]: restoreDraft(d[id] || "", row.text) }));
+		// The delete's promise settles only on server acknowledgement (after
+		// reconnect when offline), so the text goes back into the composer first.
+		cancel: (row) => {
+			setDrafts((d) => ({ ...d, [id]: restoreDraft(d[id] || "", row.text) }));
+			return store.withdrawQueuedMessage(row.key);
 		},
 		retry: (row) => store.retryMessage(row.key, id, row.text),
 		discard: (row) => store.withdrawQueuedMessage(row.key),

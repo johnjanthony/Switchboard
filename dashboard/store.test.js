@@ -730,3 +730,32 @@ test('dismissUndelivered forgets the send without writing', () => {
 	assert.equal(store.getState().seenSends.k1, undefined);
 	assert.deepEqual(fb.calls.set, []);
 });
+
+test('withdrawQueuedMessage forgets the send before the write, so the local apply is not read as a failed delivery', async () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const queueEntry = fb.calls.onValue.find((e) => e.path === 'message_commands');
+	store.upsertConversationMeta('c1', { state: 'active' });
+	store.selectConversation('c1');
+	queueEntry.cb({ k1: { conversation_id: 'c1', text: 'hi', issued_at: '2026-09-28T12:00:00.000Z' } });
+	let seenDuringWrite = 'unset';
+	fb.setValue = (path, value) => {
+		queueEntry.cb(value === null ? {} : null);
+		seenDuringWrite = store.getState().seenSends.k1;
+		return Promise.resolve();
+	};
+	await store.withdrawQueuedMessage('k1');
+	assert.equal(seenDuringWrite, undefined);
+	assert.equal(store.getState().seenSends.k1, undefined);
+});
+
+test('retryMessage pushes the fresh command without waiting for the delete to be acknowledged', async () => {
+	const { store, fb } = makeStore();
+	store.setMessageCommands({ k1: { conversation_id: 'c1', text: 'hi', issued_at: '2026-09-28T12:00:00.000Z' } });
+	fb.setValue = (path, value) => { fb.calls.set.push({ path, value }); return new Promise(() => {}); };
+	store.retryMessage('k1', 'c1', 'hi');
+	await Promise.resolve();
+	await Promise.resolve();
+	assert.deepEqual(fb.calls.set, [{ path: 'message_commands/k1', value: null }]);
+	assert.deepEqual(fb.calls.pushed, [messageCmd('c1', 'hi', fb.nowIso)]);
+});

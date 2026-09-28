@@ -561,12 +561,16 @@ export function createStore(deps) {
 	async function retryMessage(key, convId, text) {
 		forgetSend(key);
 		notify();
+		// Firebase write promises settle only on server acknowledgement, which is
+		// after reconnect when offline: start both writes now. One client's writes
+		// reach the server in order, so the old key is deleted before the new lands.
+		const writes = [];
 		if (key in state.messageCommands) {
 			const d = deleteMessageCmd(key);
-			const deleted = await guardedWrite('detail', () => fb.setValue(d.path, d.value));
-			if (!deleted) return false;
+			writes.push(guardedWrite('detail', () => fb.setValue(d.path, d.value)));
 		}
-		return sendMessage(convId, text);
+		writes.push(sendMessage(convId, text));
+		return (await Promise.all(writes)).every(Boolean);
 	}
 
 	function dismissUndelivered(key) {
