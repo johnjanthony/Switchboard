@@ -39,7 +39,8 @@ Every client surface that lists sessions shows what each session is running, as 
 ### 2. Server
 
 - **`SessionRecord.effort: str | None`**, commented as the ring-observed effort, the partner of `model`, distinct from `spawn_effort`.
-- **`apply_rings` pairing rule.** When a ring carries a non-empty model string, set `rec.model` as today and, if the ring has an `effort` key, set `rec.effort` to its value when it is a non-empty string and to None otherwise. A ring with no `effort` key (a Watchtower older than this change) leaves `rec.effort` untouched. This is the `"key" in ring` test `title_state` already uses. A ring without a model changes neither field.
+- **Route whitelist.** The `/widget-snapshot` route rebuilds each ring from `_RING_FIELDS` (`server/main.py`), filling every listed key with `r.get(k)`, so `effort` joins that tuple or it never reaches the registry. Because every listed key is always present afterwards, a ring from a Watchtower older than this change arrives with `effort: None`.
+- **`apply_rings` pairing rule.** When a ring carries a non-empty model string, set `rec.model` as today and set `rec.effort` to the ring's effort when that is a non-empty string, else None. An older Watchtower therefore clears the effort, which is the honest reading: nothing observed one. A ring without a model changes neither field. (Amended 2026-09-28 while planning: the first draft kept a stored effort when the key was absent, which the route whitelist makes unreachable.)
 - **Hydration** reads `effort` like `model`.
 - **New module `server/model_label.py`**, pure, no I/O:
   - `friendly_model_name(model_id: str) -> str`
@@ -87,14 +88,14 @@ None and the empty string are both "absent" for every input. Effort text is show
 Each new test is checked against its counterfactual: it must fail with the change reverted.
 
 - **pytest, new `tests/test_model_label.py`:** the naming table above row by row (all eight observed ids), and every `resolve` row, including that an observed model with no effort does not borrow the spawn effort.
-- **pytest, `tests/test_session_registry.py`:** ring model plus effort sets both; model without effort clears a stored effort (the `/model` Opus → Haiku case); a ring without an `effort` key leaves it; a ring without a model changes neither; `to_payload` carries `model_label` / `model_source`; hydration reads `effort` and ignores the derived keys.
+- **pytest, `tests/test_session_registry.py`:** ring model plus effort sets both; model without effort (key null or absent) clears a stored effort (the `/model` Opus → Haiku case); a ring without a model changes neither; the route passes `effort` through to the registry; `to_payload` carries `model_label` / `model_source`; hydration reads `effort` and ignores the derived keys.
 - **xUnit (`Switchboard.Watchtower.Core.Tests`):** `ParseAssistantLine` reads `effort`, yields null when absent, and returns null for a `<synthetic>` line; `LastAssistantLine` on a transcript ending in a synthetic line returns the prior real turn; the Antigravity parser reports a null model with no match but the same window as today; `WidgetRingDto` serializes `effort`.
 - **node:** `sessionModelChip` for observed, spawn and absent. The rail's rendering stays a manual check (no component harness, T-265).
 - **Android:** a DTO mapping test for `model_label` / `model_source`; `:shared:testDebugUnitTest :app:assembleDebug :app:lintDebug :wear:assembleDebug`.
 
 ### 5. Deploy and live verification
 
-Order: server, then Watchtower, then phone. The server treats an old Watchtower's missing `effort` key as "leave alone", so it is safe alone; the clients render nothing while `model_label` is absent, so their order does not matter.
+Order: server, then Watchtower, then phone. The server is safe alone: until Watchtower is redeployed, chips show the observed model without an effort; the clients render nothing while `model_label` is absent, so their order does not matter.
 
 1. `restart-service.ps1 -SkipTests` (severs live MCP sessions: ask John first), then `smoke.py --preflight-only`.
 2. `watchtower/deploy-widget.ps1`.
