@@ -16,7 +16,8 @@ public sealed record WidgetRingDto(
 	[property: JsonPropertyName("is_error")] bool IsError,
 	[property: JsonPropertyName("name")] string? Name,
 	[property: JsonPropertyName("name_source")] string? NameSource,
-	[property: JsonPropertyName("title_state")] string? TitleState);
+	[property: JsonPropertyName("title_state")] string? TitleState,
+	[property: JsonPropertyName("effort")] string? Effort = null);
 
 public sealed record WidgetQuotaWindowDto(
 	[property: JsonPropertyName("pct")] double Pct,
@@ -57,7 +58,8 @@ public static class WidgetSnapshotBuilder
 				s.IsError,
 				s.Name,
 				s.NameSource,
-				titleStates?.GetValueOrDefault(s.SessionId!)));
+				titleStates?.GetValueOrDefault(s.SessionId!),
+				s.Effort));
 		}
 
 		List<WidgetQuotaGroupDto>? agyDtos = null;

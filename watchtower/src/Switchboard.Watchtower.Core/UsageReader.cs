@@ -18,7 +18,7 @@ public static class UsageReader
 		var sessionId = Path.GetFileNameWithoutExtension(path);
 		var (name, nameSource) = TranscriptTitles.Read(path, sessionId);
 		return new SessionModel(label, distro, turn.Usage.ContextTokens, window, turn.Model, status, mtime,
-			SessionId: sessionId, Name: name, NameSource: nameSource);
+			SessionId: sessionId, Name: name, NameSource: nameSource, Effort: turn.Effort);
 	}
 
 	// When a transcript has no cwd field, fall back to the project folder name (the encoded cwd).

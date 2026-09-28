@@ -124,4 +124,16 @@ public class WidgetSnapshotBuilderTests
 		Assert.Contains("\"antigravity\":[", json);
 		Assert.Contains("\"display_name\":\"Claude and GPT models\"", json);
 	}
+
+	[Fact]
+	public void Build_maps_effort_under_its_contract_name()
+	{
+		var withEffort = Session("a", 0.5) with { Effort = "xhigh" };
+		var without = Session("b", 0.5);
+		var p = WidgetSnapshotBuilder.Build(new[] { withEffort, without }, null, Pushed);
+		Assert.Equal("xhigh", p.Rings[0].Effort);
+		Assert.Null(p.Rings[1].Effort);
+		// "effort" is the key the server's /widget-snapshot whitelist reads.
+		Assert.Contains("\"effort\":\"xhigh\"", JsonSerializer.Serialize(p));
+	}
 }

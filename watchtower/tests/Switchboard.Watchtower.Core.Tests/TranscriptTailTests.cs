@@ -48,4 +48,23 @@ public class TranscriptTailTests
 		}
 		finally { File.Delete(path); }
 	}
+
+	[Fact]
+	public void Skips_a_trailing_synthetic_line_to_the_last_real_turn()
+	{
+		var real = "{\"type\":\"assistant\",\"effort\":\"high\",\"message\":{\"model\":\"claude-opus-5-5\",\"usage\":{\"input_tokens\":900}}}";
+		var synthetic = "{\"type\":\"assistant\",\"message\":{\"model\":\"<synthetic>\",\"usage\":{\"input_tokens\":0}}}";
+		var path = TempFile(real, synthetic);
+		try
+		{
+			var line = TranscriptTail.LastAssistantLine(path);
+			Assert.NotNull(line);
+			var turn = TranscriptParser.ParseAssistantLine(line!);
+			Assert.NotNull(turn);
+			Assert.Equal("claude-opus-5-5", turn!.Model);
+			Assert.Equal("high", turn.Effort);
+			Assert.Equal(900, turn.Usage.ContextTokens);
+		}
+		finally { File.Delete(path); }
+	}
 }

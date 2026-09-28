@@ -29,6 +29,7 @@ public sealed class LastKnownSession
 	public string? SessionId { get; set; }
 	public string? Name { get; set; }
 	public string? NameSource { get; set; }
+	public string? Effort { get; set; }
 }
 
 public sealed class LastKnownQuota
@@ -114,6 +115,7 @@ public static class LastKnownStore
 				SessionId = s.SessionId,
 				Name = s.Name,
 				NameSource = s.NameSource,
+				Effort = s.Effort,
 			}).ToList(),
 			Quota = quota is QuotaUsage u
 				? new LastKnownQuota
@@ -143,7 +145,7 @@ public static class LastKnownStore
 		state.Sessions.Select(s => new SessionModel(
 			s.Label, s.Distro, s.ContextTokens, s.WindowSize, s.Model,
 			Enum.TryParse<SessionStatus>(s.Status, out var status) ? status : SessionStatus.Idle,
-			s.LastActiveUtc, s.IsError, s.SessionId, s.Name, s.NameSource)).ToList();
+			s.LastActiveUtc, s.IsError, s.SessionId, s.Name, s.NameSource, s.Effort)).ToList();
 
 	public static QuotaUsage? ToQuota(LastKnownState state) =>
 		state.Quota is LastKnownQuota q

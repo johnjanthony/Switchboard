@@ -38,4 +38,28 @@ public class TranscriptParserTests
 		Assert.NotNull(turn);
 		Assert.Equal(5, turn!.Usage.ContextTokens);
 	}
+
+	[Fact]
+	public void Reads_effort_from_the_line_root()
+	{
+		var line = "{\"type\":\"assistant\",\"effort\":\"xhigh\",\"message\":{\"model\":\"claude-opus-5-5\",\"usage\":{\"input_tokens\":5}}}";
+		var turn = TranscriptParser.ParseAssistantLine(line);
+		Assert.NotNull(turn);
+		Assert.Equal("xhigh", turn!.Effort);
+	}
+
+	[Fact]
+	public void Effort_is_null_when_absent()
+	{
+		var turn = TranscriptParser.ParseAssistantLine(AssistantLine);
+		Assert.NotNull(turn);
+		Assert.Null(turn!.Effort);
+	}
+
+	[Fact]
+	public void Returns_null_for_a_synthetic_line()
+	{
+		var line = "{\"type\":\"assistant\",\"message\":{\"model\":\"<synthetic>\",\"content\":[{\"type\":\"text\",\"text\":\"No response requested.\"}],\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}";
+		Assert.Null(TranscriptParser.ParseAssistantLine(line));
+	}
 }

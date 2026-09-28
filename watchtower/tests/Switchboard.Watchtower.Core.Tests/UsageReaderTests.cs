@@ -53,4 +53,17 @@ public class UsageReaderTests
 		}
 		finally { File.Delete(path); }
 	}
+
+	[Fact]
+	public void Read_carries_effort_from_the_last_turn()
+	{
+		var line = "{\"type\":\"assistant\",\"effort\":\"xhigh\",\"cwd\":\"C:\\\\Work\\\\Switchboard\",\"message\":{\"model\":\"claude-opus-5-5\",\"usage\":{\"input_tokens\":10}}}";
+		var path = TempFile(line);
+		try
+		{
+			var m = UsageReader.Read(path, distro: null, nowUtc: Now, liveThresholdSeconds: 90);
+			Assert.Equal("xhigh", m.Effort);
+		}
+		finally { File.Delete(path); }
+	}
 }

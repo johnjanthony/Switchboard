@@ -11,7 +11,7 @@ public class LastKnownTests
 	static SessionModel Session() => new(
 		Label: "Switchboard", Distro: "Ubuntu-22.04", ContextTokens: 50_000, WindowSize: 200_000,
 		Model: "claude-opus-4-8", Status: SessionStatus.Live, LastActiveUtc: Now.AddMinutes(-1),
-		IsError: false, SessionId: "abc123", Name: "chunk6", NameSource: "hook");
+		IsError: false, SessionId: "abc123", Name: "chunk6", NameSource: "hook", Effort: "high");
 
 	[Fact]
 	public void Round_trips_full_state_through_disk()

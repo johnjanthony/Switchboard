@@ -4,7 +4,13 @@ namespace Switchboard.Watchtower.Core;
 
 public static class TranscriptParser
 {
-	// Returns a ParsedTurn for assistant lines carrying message.usage; null for any other line or malformed JSON.
+	// Claude Code writes these for turns it generated itself ("No response requested."): zero
+	// usage, no effort. They are not real turns, so they must never replace the real model,
+	// effort or context of the turn before them.
+	const string SyntheticModel = "<synthetic>";
+
+	// Returns a ParsedTurn for assistant lines carrying message.usage; null for any other line, a
+	// synthetic line, or malformed JSON. Effort sits at the line root, beside `message`.
 	public static ParsedTurn? ParseAssistantLine(string line)
 	{
 		if (string.IsNullOrWhiteSpace(line)) return null;
@@ -20,11 +26,14 @@ public static class TranscriptParser
 			if (!msg.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object) return null;
 
 			string? model = msg.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
+			if (model == SyntheticModel) return null;
+			string? effort = root.TryGetProperty("effort", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+			if (string.IsNullOrEmpty(effort)) effort = null;
 
 			long Get(string name) => usage.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt64() : 0L;
 
 			var u = new Usage(Get("input_tokens"), Get("cache_creation_input_tokens"), Get("cache_read_input_tokens"), Get("output_tokens"));
-			return new ParsedTurn(model, u, cwd);
+			return new ParsedTurn(model, u, cwd, effort);
 		}
 		catch (JsonException)
 		{
