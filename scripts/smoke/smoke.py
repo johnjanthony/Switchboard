@@ -191,8 +191,9 @@ async def flow_message_inject(ctx, rep, args):
 	"""Free-form phone message pushed to /message_commands while a blocking
 	ask is live: it interjects rather than answering, so the ask resolves
 	with the interjection prefix, the raw text lands as its own human-type
-	message, and the interjected question's own message is marked cancelled
-	with its pending_questions record removed (cancellation is a resolution,
+	message carrying the command's key as command_id, and the interjected
+	question's own message is marked cancelled with its pending_questions
+	record removed (cancellation is a resolution,
 	not a plain flag flip - see mark_question_cancelled). Inherits away mode
 	ON and reuses the harness's one conversation."""
 	question = f"smoke message-inject probe {ctx.run_id}"
@@ -210,10 +211,10 @@ async def flow_message_inject(ctx, rep, args):
 	ctx.request_id = await poll_until("pending question recorded for message-inject probe", _find_pending, 15)
 
 	inject_text = f"smoke interjection {ctx.run_id}"
-	rtdb(ctx, "message_commands").push({
+	cmd_key = rtdb(ctx, "message_commands").push({
 		"conversation_id": ctx.conversation_id, "text": inject_text,
 		"issued_at": datetime.now(timezone.utc).isoformat(),
-	})
+	}).key
 
 	reply = await await_task("the interjection to resolve the blocking ask", task, 20)
 	if not reply.startswith("[John interjected"):
@@ -221,11 +222,15 @@ async def flow_message_inject(ctx, rep, args):
 
 	def _find_human_message():
 		msgs = rtdb(ctx, f"messages/{ctx.conversation_id}").get() or {}
-		for mid, node in msgs.items():
+		for node in msgs.values():
 			if isinstance(node, dict) and node.get("type") == "human" and node.get("text") == inject_text:
-				return mid
+				return node
 		return None
-	await poll_until("interjection landed as a human-type message", _find_human_message, 15)
+	human = await poll_until("interjection landed as a human-type message", _find_human_message, 15)
+	if human.get("command_id") != cmd_key:
+		raise SmokeFailure(
+			f"interjection row carries command_id {human.get('command_id')!r}, expected the command key {cmd_key!r}"
+		)
 
 	def _question_cancelled():
 		msgs = rtdb(ctx, f"messages/{ctx.conversation_id}").get() or {}
