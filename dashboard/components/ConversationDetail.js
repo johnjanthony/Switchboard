@@ -1,5 +1,8 @@
-import { html, useState } from "../vendor/htm-preact.js";
-import { memberState, isActive, predecessorTitle, ringForMember, ringSeverity } from "../derive.js";
+import { html, useState, useEffect } from "../vendor/htm-preact.js";
+import {
+	memberState, isActive, predecessorTitle, ringForMember, ringSeverity,
+	derivePendingSends, pendingSendsNeedTick, restoreDraft, PENDING_SEND_STATUS,
+} from "../derive.js";
 import { renderMarkdown } from "../markdown.js";
 import { documentPillHtml } from "../document.js";
 import { escapeText } from "../escape.js";
@@ -54,7 +57,35 @@ function MessageBody({ msg, convId, msgId }) {
 	return html`<div class="msg-body" dangerouslySetInnerHTML=${{ __html: inner }}></div>`;
 }
 
-function Transcript({ conv, convId, pendingMsgIds }) {
+// A message John sent that the server has not written back yet (or never will):
+// his own bubble, muted, with the delivery state and its actions underneath.
+function PendingSendRow({ row, active, actions }) {
+	const buttons = [];
+	if (row.state === "notPickedUp" || row.state === "offline") {
+		buttons.push(html`<button class="pending-action" onClick=${() => actions.cancel(row)}>Cancel</button>`);
+	} else if (row.state === "expired") {
+		buttons.push(html`<button class="pending-action" onClick=${() => actions.retry(row)}>Retry</button>`);
+		buttons.push(html`<button class="pending-action" onClick=${() => actions.discard(row)}>Discard</button>`);
+	} else if (row.state === "notDelivered") {
+		if (active) buttons.push(html`<button class="pending-action" onClick=${() => actions.retry(row)}>Retry</button>`);
+		buttons.push(html`<button class="pending-action" onClick=${() => actions.dismiss(row)}>Dismiss</button>`);
+	}
+	return html`
+		<div class=${"msg msg-pending msg-pending-" + row.state}>
+			<div class="msg-meta">
+				<span class="msg-sender">John</span>
+				<span class="msg-time">${fmtMsgTime(row.issuedAt)}</span>
+			</div>
+			<div class="msg-bubble"><div class="msg-body"><p class="pending-text">${row.text}</p></div></div>
+			<div class="pending-status">
+				<span class="pending-state">${PENDING_SEND_STATUS[row.state]}</span>
+				${buttons}
+			</div>
+		</div>
+	`;
+}
+
+function Transcript({ conv, convId, pendingMsgIds, pendingSends, active, sendActions }) {
 	const messages = (conv && conv.messages) || {};
 	// A currently-pending question already shows in its own answer box below, so
 	// suppress its transcript copy. Once answered it is no longer pending and
@@ -63,7 +94,7 @@ function Transcript({ conv, convId, pendingMsgIds }) {
 		.map(([msgId, m]) => ({ msgId, m: m || {} }))
 		.filter(({ msgId }) => !pendingMsgIds.has(msgId))
 		.sort((a, b) => String(a.m.timestamp || "").localeCompare(String(b.m.timestamp || "")));
-	if (ordered.length === 0) {
+	if (ordered.length === 0 && pendingSends.length === 0) {
 		// Don't claim "no traffic" when the only message is the suppressed pending
 		// question (its answer box is rendered separately).
 		return pendingMsgIds.size === 0
@@ -86,6 +117,7 @@ function Transcript({ conv, convId, pendingMsgIds }) {
 					</div>
 				`;
 			})}
+			${pendingSends.map((row) => html`<${PendingSendRow} key=${"pending:" + row.key} row=${row} active=${active} actions=${sendActions} />`)}
 		</div>
 	`;
 }
@@ -121,20 +153,21 @@ function AnswerBox({ store, convId, pending }) {
 	`;
 }
 
-function MessageComposer({ store, convId }) {
-	const [text, setText] = useState("");
+// The draft lives in ConversationDetail (per conversation), so a cancelled
+// pending send can put its text back.
+function MessageComposer({ store, convId, draft, setDraft }) {
 	const send = async () => {
-		const v = String(text == null ? "" : text).trim();
+		const v = String(draft == null ? "" : draft).trim();
 		if (!v) return;
 		const ok = await store.sendMessage(convId, v);
-		if (ok) setText("");
+		if (ok) setDraft("");
 	};
 	return html`<div class="message-composer">
 		<textarea
 			class="answer-input"
 			placeholder="Message the agents..."
-			value=${text}
-			onInput=${(e) => setText(e.target.value)}
+			value=${draft}
+			onInput=${(e) => setDraft(e.target.value)}
 		></textarea>
 		<button class="answer-send" onClick=${send}>Send</button>
 	</div>`;
@@ -238,6 +271,14 @@ export function ConversationDetail({ store }) {
 	const conv = id ? state.conversations[id] : null;
 	const [dialog, setDialog] = useState(null); // 'restore' | 'patch' | 'drop' | null
 	const close = () => setDialog(null);
+	const [drafts, setDrafts] = useState({});
+	const [, setTick] = useState(0);
+	const needsTick = !!id && pendingSendsNeedTick(id, state.messageCommands, state.seenSends);
+	useEffect(() => {
+		if (!needsTick) return undefined;
+		const timer = setInterval(() => setTick((n) => n + 1), 1000);
+		return () => clearInterval(timer);
+	}, [needsTick]);
 
 	const banner = state.paneErrors.detail
 		? html`<${PaneBanner} message=${state.paneErrors.detail}
@@ -269,6 +310,21 @@ export function ConversationDetail({ store }) {
 	// msgIds of the still-pending questions, so the transcript can suppress their
 	// duplicate copies (they render in answer boxes instead).
 	const pendingMsgIds = new Set(pendings.map((p) => p.msgId).filter(Boolean));
+	const draft = drafts[id] || "";
+	const setDraft = (value) => setDrafts((d) => ({ ...d, [id]: value }));
+	const pendingSends = derivePendingSends({
+		convId: id, queued: state.messageCommands, messages: (conv && conv.messages) || {},
+		seen: state.seenSends, nowMs: Date.now(), connected: state.connected,
+	});
+	const sendActions = {
+		cancel: async (row) => {
+			const ok = await store.withdrawQueuedMessage(row.key);
+			if (ok) setDrafts((d) => ({ ...d, [id]: restoreDraft(d[id] || "", row.text) }));
+		},
+		retry: (row) => store.retryMessage(row.key, id, row.text),
+		discard: (row) => store.withdrawQueuedMessage(row.key),
+		dismiss: (row) => store.dismissUndelivered(row.key),
+	};
 
 	return html`
 		<section class="detail">
@@ -294,11 +350,12 @@ export function ConversationDetail({ store }) {
 				${dialog === "drop" ? html`<${DropDialog} store=${store} convId=${id} onClose=${close} />` : null}
 			</div>
 			<div class="detail-body">
-				<${Transcript} conv=${conv} convId=${id} pendingMsgIds=${pendingMsgIds} />
+				<${Transcript} conv=${conv} convId=${id} pendingMsgIds=${pendingMsgIds}
+					pendingSends=${pendingSends} active=${active} sendActions=${sendActions} />
 				<div class="pending-stack">
 					${pendings.map((p) => html`<${AnswerBox} key=${p.requestId} store=${store} convId=${id} pending=${p} />`)}
 				</div>
-				${active ? html`<${MessageComposer} store=${store} convId=${id} />` : ""}
+				${active ? html`<${MessageComposer} store=${store} convId=${id} draft=${draft} setDraft=${setDraft} />` : ""}
 			</div>
 		</section>
 	`;

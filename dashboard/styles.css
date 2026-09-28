@@ -474,6 +474,19 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 	border-radius: var(--radius); border-top-left-radius: 3px;
 	padding: 10px 14px;
 }
+/* Pending sends: John's own bubble, muted, with its delivery state beneath. */
+.msg-pending .msg-bubble { opacity: 0.6; }
+.pending-text { white-space: pre-wrap; }
+.pending-status {
+	display: flex; align-items: center; gap: 10px; padding-left: 2px;
+	font-family: var(--font-mono); font-size: 11px; color: var(--label-dim);
+}
+.msg-pending-notPickedUp .pending-status { color: var(--lamp-amber); }
+.msg-pending-expired .pending-status, .msg-pending-notDelivered .pending-status { color: var(--lamp-red); }
+.pending-action {
+	background: none; border: 1px solid currentColor; color: inherit; border-radius: 4px;
+	padding: 1px 8px; font: inherit; cursor: pointer;
+}
 .msg-body p { margin: 6px 0; }
 .msg-body p:first-child { margin-top: 0; }
 .msg-body p:last-child { margin-bottom: 0; }
