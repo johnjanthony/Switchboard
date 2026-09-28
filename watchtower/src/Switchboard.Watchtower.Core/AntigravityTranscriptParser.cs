@@ -4,6 +4,10 @@ namespace Switchboard.Watchtower.Core;
 
 public static class AntigravityTranscriptParser
 {
+	// Only sizes the context window when the transcript never names a model. It is never
+	// reported as the session's model: a default presented as an observation is a lie.
+	const string DefaultWindowModel = "Gemini 3.1 Pro";
+
 	public static SessionModel Parse(string[] lines, string sessionId, DateTime mtimeUtc, DateTime nowUtc, int liveThresholdSeconds)
 	{
 		long totalChars = 0;
@@ -58,8 +62,7 @@ public static class AntigravityTranscriptParser
 		}
 
 		long contextTokens = Math.Max(0L, totalChars / 4L);
-		string model = lastModel ?? "Gemini 3.1 Pro";
-		long window = ModelWindowMap.EffectiveWindow(model, contextTokens);
+		long window = ModelWindowMap.EffectiveWindow(lastModel ?? DefaultWindowModel, contextTokens);
 		var status = ActiveClassifier.StatusFor(mtimeUtc, nowUtc, liveThresholdSeconds);
 		string label = foundCwd != null ? CwdLabeler.Label(foundCwd) : "Antigravity";
 
@@ -68,7 +71,7 @@ public static class AntigravityTranscriptParser
 			null,
 			contextTokens,
 			window,
-			model,
+			lastModel,
 			status,
 			mtimeUtc,
 			SessionId: sessionId,

@@ -44,4 +44,18 @@ public class AntigravityTranscriptParserTests
 
 		Assert.Equal("Gemini 3.6 Flash (High)", model);
 	}
+
+	[Fact]
+	public void Parse_reports_no_model_when_transcript_names_none_but_sizes_window_as_before()
+	{
+		var lines = new[]
+		{
+			"{\"step_index\":0,\"content\":\"<USER_REQUEST>\\nNo model change here\\n</USER_REQUEST>\"}",
+		};
+
+		var model = AntigravityTranscriptParser.Parse(lines, "conv-5678", Mtime, Now, liveThresholdSeconds: 90);
+
+		Assert.Null(model.Model);
+		Assert.Equal(ModelWindowMap.EffectiveWindow("Gemini 3.1 Pro", model.ContextTokens), model.WindowSize);
+	}
 }
