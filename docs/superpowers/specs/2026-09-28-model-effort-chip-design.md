@@ -120,5 +120,22 @@ Order: server, then Watchtower, then phone. The server is safe alone: until Watc
 ## Error handling
 
 - Unrecognized model ids render raw rather than being guessed at.
-- Malformed ring values (non-string model or effort) are ignored exactly as `apply_rings` ignores a non-string model today.
+- A non-string or empty model on a ring is ignored, as `apply_rings` already did. On a ring that does carry a model, a missing, empty or non-string effort clears the stored effort (the pairing rule), rather than being ignored.
 - No label resolves to no chip; nothing substitutes a placeholder model.
+
+## As built (2026-09-28)
+
+**Commits** (all on `develop`): `7354018` resolver module, `5214205` server record + route whitelist, `dca2e99` Watchtower effort + synthetic skip, `981f146` Antigravity null model, `cc2ef8e` Operator rail, `e644f58` phone surfaces, `7713ec7` docs, `bb57e36` final-review fix.
+
+**Deviations from the approved design.** The route-whitelist amendment (`3b0daad`, see Design section 2). The final whole-branch review found that the vendored Preact turns `title=${null}` into `title=""`, which hid the row tooltip over an observed chip; `SessionsRail.js` now spreads `title` only for a spawn chip (`bb57e36`), proven RED then GREEN on the live page's DOM (Operator has no component harness, T-265).
+
+**Verification.** pytest 1234 passed; Watchtower xUnit 230; Operator node 206; Android `:shared:testDebugUnitTest :app:assembleDebug :app:lintDebug :wear:assembleDebug` green; `smoke.py --skip-restart` every flow PASS. Counterfactuals run: the effort-clearing tests fail with a keep-only rule, the synthetic tests fail with the skip removed.
+
+**Live checks** (service restarted at `7713ec7`, Watchtower redeployed, debug build on the Pixel_10_Pro emulator):
+- This session's `sessions/` record: `Opus 5.5 · xhigh`, source `observed`. The effort arrived about 2 minutes after the Watchtower relaunch; until then the record showed `Opus 5.5` with no effort (rings pushed before the first full scan carried none). Cause not pinned; steady state is correct.
+- Operator rail: observed chips at normal weight with no `title` attribute; a spawn chip (from a throwaway RTDB fixture) italic at opacity 0.6 with the `spawn pick, not yet observed` tooltip, still legible; a long label ellipsizes and its chip stays whole. A second live session at `high` rendered `Opus 5.5 · high` beside this one at `xhigh`.
+- Emulator: board rows (observed chips normal, spawn chip muted, long label ellipsized), session detail sheet (`Opus 5.5 · xhigh`; the fixture's `Sonnet · medium (spawn pick, not yet observed)`), Page B member popover (both chips beside their context badge).
+
+**Not checked live.** A real spawn: spawning switches away mode on, which would block every agent's turn-end, so the spawn-pick rendering was checked with the fixture and the server path by `test_to_payload_resolves_spawn_pick_then_observation`. An `/effort` change inside one session needs a user slash command; `test_effort_change_alone_fires_mirror` pins the mirror, and two live sessions at different efforts rendered distinctly.
+
+**Known limits.** An Antigravity session live across the deploy keeps a pre-deploy `Gemini 3.1 Pro` until it ends (none were live). On the phone board the chip abuts the state pill. Watchtower's own popup reads `w/ model?` for an Antigravity session on the default model.
