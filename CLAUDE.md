@@ -25,6 +25,7 @@ server/
   config.py            Env-based Config loader (dotenv fallback)
   registry.py          PendingRequest + Registry (in-memory); conversations dict with members/pendings keyed by cli_session_id; session_to_conversation_id routing map; per-session asyncio.Lock for race-free first-call conv creation; away-mode flag
   session_registry.py  SessionRecord + SessionRegistry (session roster; push-fed; sweeper rules)
+  model_label.py       Session model chip text: friendly model names + observed-else-spawn-pick resolution, published on sessions/ records as model_label / model_source
   messenger.py         Backend lifecycle base + 3 trait ABCs (MessageWriter, ResponsePoller, AwayModeMirror) + ConversationStore protocol + IncomingResponse
   firebase.py          FirebaseBackend (implements every messenger surface); Firebase admin logic (FCM, Realtime DB)
   spawn.py             Agent session spawner (triggered from Android app)

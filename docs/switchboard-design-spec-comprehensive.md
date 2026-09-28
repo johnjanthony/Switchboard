@@ -572,8 +572,11 @@ sessions/<cli_session_id>/      # the SessionRegistry roster; source for Android
   conversation_id
   sender
   model                        # ring-OBSERVED, overwritten by Watchtower sightings
+  effort                       # ring-OBSERVED alongside `model`, from the same transcript turn; cleared when that turn has none
   spawn_model                  # COMMANDED at spawn time; deliberately distinct from `model` so a sighting cannot clobber the pick
   spawn_effort                 # COMMANDED at spawn time; re-passed on resume because `claude --resume` resets effort
+  model_label                  # DERIVED for display by server/model_label.py ("Opus 5.5 · xhigh"); never read back by hydration
+  model_source                 # "observed" | "spawn"; absent when there is no label
   context_pct
   end_reason
   source
@@ -622,6 +625,12 @@ A conversation qualifies only when the sighted session is bound to it, it is Act
 The single-member rule gates ADOPTING a title, not keeping one: a title synced while a conversation was solo survives a later join, since it remains the room's best description and an explicit title still overrides it. `title_source` travels in the same RTDB `update()` as the title it describes, so a crash cannot leave provenance disagreeing with the title the guard reads. An unchanged title short-circuits before the write, because rings arrive every few seconds. Title-write failures are caught and logged inside the route rather than surfaced, so a Firebase hiccup cannot make Watchtower's whole snapshot push look rejected.
 
 Reach is limited by binding: a session is bound only once it has made a Switchboard MCP call, and the binding is cleared when it ends. Conversations whose agents are already dormant therefore keep their placeholder titles permanently; the list improves as new and resumed work flows through it. Resume inherits both `title` and `title_source` from its source conversation.
+
+### 10.4 Session model chip
+
+Every session surface (the phone's sessions board row, Page B member popover and session detail sheet; Operator's sessions rail) shows the session's model and effort as a chip such as `Opus 5.5 · xhigh`. The server resolves it in `SessionRecord.to_payload` via `server/model_label.py`, so both clients render the same string: an observed model (Watchtower's ring) brings the observed effort, possibly none; otherwise the spawn pick (`spawn_model` / `spawn_effort`) shows, rendered muted, labelled `Default` when only an effort was picked. Claude ids read as family plus version (`claude-haiku-4-5-20251001` is `Haiku 4.5`), bare aliases as the family, `gemini-*` ids title-cased, names that already contain a space pass through, and anything else shows raw.
+
+Effort reaches the server as ring field `effort`, which Watchtower reads from the top level of each assistant transcript line. The `/widget-snapshot` route's `_RING_FIELDS` whitelist carries it, and since that whitelist fills every listed key, an older Watchtower's ring arrives with `effort: None` and clears a stored value. Watchtower skips Claude Code's `<synthetic>` assistant lines ("No response requested.", zero usage), which would otherwise replace the real model and zero the context %, and reports no model for an Antigravity session whose transcript never names one (the `Gemini 3.1 Pro` default only sizes the window).
 
 ---
 
@@ -717,7 +726,7 @@ Companion Wear app shows a conversation list (filtered to non-hidden) and suppor
 
 ### 12.8 Sessions board
 
-A separate screen (`sessions` nav destination, reached from Page A's overflow menu), listing the raw session roster rather than conversations: a LIVE section and a collapsible "RECENTLY ENDED (n)" section, per-session needs-attention marking with acknowledgment, a multi-select CONVENE mode that gathers chosen sessions into one conversation (flow semantics: §2.5), and a per-row menu ("Convene into…" / "Details" / "Resume…"). This is where `resume_session` (§9.1) originates. Supporting pure policy lives in the shared `SessionBoardPolicy` module.
+A separate screen (`sessions` nav destination, reached from Page A's overflow menu), listing the raw session roster rather than conversations: a LIVE section and a collapsible "RECENTLY ENDED (n)" section, per-session needs-attention marking with acknowledgment, a multi-select CONVENE mode that gathers chosen sessions into one conversation (flow semantics: §2.5), and a per-row menu ("Convene into…" / "Details" / "Resume…"). This is where `resume_session` (§9.1) originates. Supporting pure policy lives in the shared `SessionBoardPolicy` module. Each row's first line carries the session's model chip (§10.4).
 
 ---
 
