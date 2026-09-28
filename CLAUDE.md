@@ -87,7 +87,7 @@ dashboard/                  Switchboard Operator: zero-build Preact+htm web cock
   dashboard-config.js      Public Firebase web config (committed; the real access control is the RTDB rules)
   schema.js                RTDB path builders (single source of path truth)
   firebase.js              Firebase Web SDK wrapper (Google auth + RTDB listeners/writes)
-  derive.js                Pure derivations (member state, pending aggregation, oldest-pending age)
+  derive.js                Pure derivations (member state, pending aggregation, oldest-pending age, composer pending sends)
   commands.js              Pure write-command builders, each returning {path, value}
   store.js                 Reactive view-model store (the single owner of projected state)
   markdown.js              Markdown renderer wrapping vendored markdown-it + highlight.js (GFM + syntax coloring, link-scheme validation)
@@ -143,6 +143,8 @@ Requirements:
 - **`android/local.properties`** with `sdk.dir=...` pointing at your Android SDK. Gitignored — first-time setup only.
 - **`android/app/google-services.json`** — Firebase config, gitignored. Download from the Firebase Console (Project Settings -> Your apps) for an app registered under this module's `applicationId`.
 - **Android Studio**: open the `android/` directory (NOT the repo root) as the project.
+
+**Installing on the phone.** `scripts/install-client.ps1` installs the debug build. For the release build run `.\gradlew.bat :app:installRelease` from `android/`: release is signed with the debug key (see `app/build.gradle`), so it installs over a debug install in place and Google sign-in keeps working. It is not a distribution signing setup.
 
 **AV-induced first-build failures.** On Windows boxes with active on-access AV, the first build after a clean transforms cache can die with `Could not move temporary workspace ... AccessDeniedException` — the AV holds a handle on a freshly written jar while Gradle tries to atomic-rename its parent dir. Fix: re-run the build; by the second attempt the scan has finished. The failure only recurs after a cache wipe or Kotlin/AGP version bump.
 
