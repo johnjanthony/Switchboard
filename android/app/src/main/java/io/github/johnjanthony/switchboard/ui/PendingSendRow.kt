@@ -58,8 +58,7 @@ fun PendingSendRow(
 				modifier = Modifier.weight(1f),
 			)
 			when (send.state) {
-				PendingSendState.NOT_PICKED_UP, PendingSendState.OFFLINE ->
-					TextButton(onClick = onCancel) { Text("Cancel") }
+				PendingSendState.NOT_PICKED_UP -> TextButton(onClick = onCancel) { Text("Cancel") }
 				PendingSendState.EXPIRED -> {
 					TextButton(onClick = onRetry) { Text("Retry") }
 					TextButton(onClick = onDiscard) { Text("Discard") }
@@ -68,7 +67,8 @@ fun PendingSendRow(
 					if (conversationActive) TextButton(onClick = onRetry) { Text("Retry") }
 					TextButton(onClick = onDismiss) { Text("Dismiss") }
 				}
-				PendingSendState.SENDING -> {}
+				// A command queued offline cannot be recalled: the write replays before the delete.
+				PendingSendState.SENDING, PendingSendState.OFFLINE -> {}
 			}
 		}
 	}

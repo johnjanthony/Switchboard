@@ -61,7 +61,7 @@ function MessageBody({ msg, convId, msgId }) {
 // his own bubble, muted, with the delivery state and its actions underneath.
 function PendingSendRow({ row, active, actions }) {
 	const buttons = [];
-	if (row.state === "notPickedUp" || row.state === "offline") {
+	if (row.state === "notPickedUp") {
 		buttons.push(html`<button class="pending-action" onClick=${() => actions.cancel(row)}>Cancel</button>`);
 	} else if (row.state === "expired") {
 		buttons.push(html`<button class="pending-action" onClick=${() => actions.retry(row)}>Retry</button>`);
@@ -317,8 +317,8 @@ export function ConversationDetail({ store }) {
 		seen: state.seenSends, nowMs: Date.now(), connected: state.connected,
 	});
 	const sendActions = {
-		// The delete's promise settles only on server acknowledgement (after
-		// reconnect when offline), so the text goes back into the composer first.
+		// The delete's promise settles only on server acknowledgement, so the text
+		// goes back into the composer first.
 		cancel: (row) => {
 			setDrafts((d) => ({ ...d, [id]: restoreDraft(d[id] || "", row.text) }));
 			return store.withdrawQueuedMessage(row.key);
