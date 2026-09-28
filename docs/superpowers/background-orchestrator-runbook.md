@@ -73,4 +73,4 @@ What makes this cheap is ledger discipline DURING the run: if every ruling, cond
 ## Record of uses
 
 - 2026-07-28 — comprehensive-spec truth rewrite (opus orchestrator, 15 sub-dispatches in verifier/rewriter/auditor waves, background children + relay loop). Outcome: committed `1ed564d`.
-- 2026-07-30 — T-250 spawn model/effort (opus orchestrator, SDD over a 10-task plan, synchronous children + per-task turn-end reports). Outcome: recorded in the T-250 ledger row when closed.
+- 2026-07-30 — T-250 spawn model/effort (opus orchestrator, SDD over a 10-task plan, synchronous children + per-task turn-end reports). Outcome: shipped in `84f946a`; see the 2026-07-30 `PROJECT-JOURNAL.md` entry.
