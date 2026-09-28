@@ -19,7 +19,7 @@ INTERJECT_PREFIX = "[John interjected - not a direct answer to your question] "
 NOTICE_PREFIX = "John (from phone): "
 
 
-async def deliver_human_message(registry, backend, session_registry, logger, conversation_id: str, text: str) -> dict:
+async def deliver_human_message(registry, backend, session_registry, logger, conversation_id: str, text: str, command_id: str | None = None) -> dict:
 	conv = registry.conversations.get(conversation_id)
 	if conv is None or conv.state != "active":
 		return {"delivered": False, "resolved": [], "woken": [], "noticed": []}
@@ -29,15 +29,19 @@ async def deliver_human_message(registry, backend, session_registry, logger, con
 	noticed: list = []
 	async with conv.lock:
 		now_ts = time.time()
-		conv.messages.append({
+		message = {
 			"seq": len(conv.messages), "sender": "John", "type": "human",
 			"text": text, "timestamp": datetime.now(timezone.utc).isoformat(),
-		})
+		}
+		if command_id is not None:
+			message["command_id"] = command_id
+		conv.messages.append(message)
 		conv.last_activity_at = now_ts
+		write_kwargs = {"format": "markdown", "suppress_push": True}
+		if command_id is not None:
+			write_kwargs["command_id"] = command_id
 		_spawn_bg(
-			backend.write_conversation_message(
-				conversation_id, "John", "human", text, format="markdown", suppress_push=True,
-			),
+			backend.write_conversation_message(conversation_id, "John", "human", text, **write_kwargs),
 			label=f"fb_write_human_msg:{conversation_id}",
 		)
 		_spawn_bg(

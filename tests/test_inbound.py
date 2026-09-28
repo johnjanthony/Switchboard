@@ -208,6 +208,33 @@ async def test_message_appended_to_history_and_written_with_suppress_push(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_message_carries_command_id_into_history_and_write(tmp_path):
+	registry = Registry()
+	conv = _conv(registry, members=[("sess-1", "Agent")])
+	backend = _backend()
+	from server.logging_jsonl import JsonlLogger
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+	await deliver_human_message(registry, backend, MagicMock(), logger, "conv-1", "hi there", command_id="cmd-K")
+	await _pump()
+	assert conv.messages[0]["command_id"] == "cmd-K"
+	backend.write_conversation_message.assert_awaited_once_with(
+		"conv-1", "John", "human", "hi there", format="markdown", suppress_push=True, command_id="cmd-K",
+	)
+
+
+@pytest.mark.asyncio
+async def test_message_without_command_id_has_no_command_id_key(tmp_path):
+	registry = Registry()
+	conv = _conv(registry, members=[("sess-1", "Agent")])
+	backend = _backend()
+	from server.logging_jsonl import JsonlLogger
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+	await deliver_human_message(registry, backend, MagicMock(), logger, "conv-1", "hi there")
+	await _pump()
+	assert "command_id" not in conv.messages[0]
+
+
+@pytest.mark.asyncio
 async def test_background_answer_rung1_resolves_live_ask(tmp_path):
 	registry = Registry()
 	conv = _conv(registry, members=[("sess-1", "Agent")])

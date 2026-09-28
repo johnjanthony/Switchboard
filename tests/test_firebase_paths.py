@@ -76,6 +76,41 @@ async def test_write_conversation_message_omits_attached_to_msg_id_when_not_pass
 	assert "attached_to_msg_id" not in captured_payloads[0]
 
 
+@pytest.mark.asyncio
+async def test_write_conversation_message_persists_command_id(backend):
+	"""The command key the message came from lands on the row, so a client can
+	match its pending copy to the written message exactly."""
+	be, mock_db = backend
+	captured_payloads = []
+
+	fake_ref = MagicMock()
+	fake_ref.key = "msg-id-fake"
+	fake_ref.set.side_effect = lambda payload: captured_payloads.append(payload)
+	mock_db.reference.return_value.push.return_value = fake_ref
+
+	await be.write_conversation_message("conv-1", "John", "human", "hi", command_id="cmd-K")
+
+	assert len(captured_payloads) == 1
+	assert captured_payloads[0]["command_id"] == "cmd-K"
+
+
+@pytest.mark.asyncio
+async def test_write_conversation_message_omits_command_id_when_not_passed(backend):
+	"""No command key means no field: never write a null command_id."""
+	be, mock_db = backend
+	captured_payloads = []
+
+	fake_ref = MagicMock()
+	fake_ref.key = "msg-id-fake"
+	fake_ref.set.side_effect = lambda payload: captured_payloads.append(payload)
+	mock_db.reference.return_value.push.return_value = fake_ref
+
+	await be.write_conversation_message("conv-1", "Claude", "notify", "status")
+
+	assert len(captured_payloads) == 1
+	assert "command_id" not in captured_payloads[0]
+
+
 # ---------------------------------------------------------------------------
 # Task 29: new-schema Firebase method tests
 # ---------------------------------------------------------------------------

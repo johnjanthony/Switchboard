@@ -345,7 +345,7 @@ async def dispatch_message_commands(registry, backend, logger, supervisor, sessi
 	all come from the shared _start_command_listener."""
 	from server.inbound import deliver_human_message
 
-	async def _handle(cmd: dict, ack=None):
+	async def _handle(cmd: dict, command_id: str | None = None, ack=None):
 		try:
 			conversation_id = cmd.get("conversation_id")
 			text = cmd.get("text")
@@ -355,6 +355,7 @@ async def dispatch_message_commands(registry, backend, logger, supervisor, sessi
 				return
 			result = await deliver_human_message(
 				registry, backend, session_registry, logger, conversation_id, text.strip(),
+				command_id=command_id,
 			)
 			if not result.get("delivered") and hasattr(backend, "send_text"):
 				await backend.send_text("Message not delivered: that conversation is no longer active.")

@@ -111,6 +111,30 @@ async def test_leading_and_trailing_whitespace_is_stripped_before_delivery(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_command_key_reaches_the_written_message(tmp_path):
+	from server.gateway.dispatch import dispatch_message_commands
+
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+	registry = Registry()
+	conv = _conv(registry, members=[("sess-1", "Agent")])
+	backend, registered = _make_backend()
+	session_registry = MagicMock()
+	session_registry.queue_notice.return_value = True
+	supervisor = _make_supervisor()
+
+	await dispatch_message_commands(registry, backend, logger, supervisor, session_registry=session_registry)
+	await registered["handler"](
+		{"conversation_id": "conv-1", "text": "hello there", "issued_at": "2026-07-30T00:00:00+00:00"},
+		command_id="cmd-K",
+	)
+
+	assert conv.messages[0]["command_id"] == "cmd-K"
+	backend.write_conversation_message.assert_awaited_once_with(
+		"conv-1", "John", "human", "hello there", format="markdown", suppress_push=True, command_id="cmd-K",
+	)
+
+
+@pytest.mark.asyncio
 async def test_missing_conversation_id_is_invalid(tmp_path):
 	"""A command with no conversation_id never reaches deliver_human_message;
 	it logs message_command_invalid and still counts as a handled success (so

@@ -746,6 +746,7 @@ class FirebaseBackend(
 		attached_to_msg_id: str | None = None,
 		rejected: bool = False,
 		suppress_push: bool = False,
+		command_id: str | None = None,
 	):
 		"""Append a message to /messages/<conv_id>.
 
@@ -825,6 +826,8 @@ class FirebaseBackend(
 			payload["suggestions"] = list(suggestions)
 		if attached_to_msg_id is not None:
 			payload["attached_to_msg_id"] = attached_to_msg_id
+		if command_id is not None:
+			payload["command_id"] = command_id
 
 		if self._logger:
 			await self._logger.info(f"firebase_write_conv_message: {conv_id}")
@@ -922,6 +925,7 @@ class FirebaseBackend(
 	def _start_command_listener(
 		self, node: str, handler, *, name: str | None = None,
 		delete_before_dispatch: bool = False, stale_notice: bool = True,
+		pass_command_id: bool = False,
 	) -> None:
 		"""Shared listener for the /<node> command queues (combine_commands,
 		force_end_commands, spawn_commands, away_mode_commands, widget/status_request).
@@ -929,6 +933,9 @@ class FirebaseBackend(
 		- `name` overrides the /healthz supervisor key (defaults to node).
 		- `stale_notice` suppresses the phone notice for transient idempotent
 		  commands (the drop is still logged and deleted).
+		- `pass_command_id` calls handler(cmd, command_id=<push key>) so the
+		  handler can stamp its output with the entry the client wrote. Off by
+		  default; only the message listener sets it.
 		- Processes the initial snapshot as well as incremental puts, so
 		  commands written while the server was down are dispatched on
 		  (re)connect (H12/M13; T-015 queue-until-online).
@@ -962,6 +969,9 @@ class FirebaseBackend(
 
 		processed: set[str] = set()
 
+		def _invoke(c: dict, cid: str):
+			return handler(c, command_id=cid) if pass_command_id else handler(c)
+
 		def _dispatch_entry(cmd_id: str, cmd: dict) -> None:
 			if cmd_id in processed:
 				return
@@ -993,7 +1003,7 @@ class FirebaseBackend(
 				# crash cannot replay the command and double-launch.
 				async def _delete_then_handle(c=cmd, cid=cmd_id):
 					await asyncio.to_thread(lambda: db.reference(f"{node}/{cid}").delete())
-					await handler(c)
+					await _invoke(c, cid)
 				self._loop.call_soon_threadsafe(
 					lambda: _spawn_bg(_delete_then_handle(), label=f"fb_command:{node}/{cmd_id}"),
 				)
@@ -1007,7 +1017,7 @@ class FirebaseBackend(
 			# re-delivered entry older than the TTL takes the stale branch
 			# above instead.
 			async def _handle_then_delete(c=cmd, cid=cmd_id):
-				await handler(c)
+				await _invoke(c, cid)
 				await asyncio.to_thread(lambda: db.reference(f"{node}/{cid}").delete())
 			self._loop.call_soon_threadsafe(
 				lambda: _spawn_bg(_handle_then_delete(), label=f"fb_command:{node}/{cmd_id}"),
@@ -1047,9 +1057,9 @@ class FirebaseBackend(
 		self._start_command_listener("combine_commands", handler)
 
 	async def start_message_command_listener(self, handler) -> None:
-		"""Listen for entries under /message_commands; dispatch handler(cmd_dict)
+		"""Listen for entries under /message_commands; dispatch handler(cmd_dict, command_id=<push key>)
 		for each queued or new entry (initial snapshot included; TTL-gated)."""
-		self._start_command_listener("message_commands", handler)
+		self._start_command_listener("message_commands", handler, pass_command_id=True)
 
 	async def start_force_end_command_listener(self, handler) -> None:
 		"""Listen for entries under /force_end_commands; dispatch handler(cmd_dict)
