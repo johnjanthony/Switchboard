@@ -42,6 +42,7 @@ server/
   command_freshness.py Staleness gate for queued Firebase command entries (COMMAND_TTL_SECONDS)
   claude_status.py     Claude service-status watch (poll loop + status parse published to widget/status)
   widget_snapshot.py   WidgetSnapshotStore for the /widget-snapshot POST payload (canonical de-dup)
+  build_info.py        Running-service identity for /healthz (start time, server/ source fingerprint, git HEAD); the smoke harness keeps a pinned copy of the fingerprint
   gateway/             Tool handlers + dispatch loops
     handlers.py          ask_human, notify_human, send_document_human, message_and_await_agent, post_agent_message, join_conversation, combine_conversations, lookup_conversation_ids, leave_conversation, set_away_mode tool closures; JSON status envelopes (_envelope/_terminal_envelope/_wrap_wait_result)
     dispatch.py          dispatch_responses, dispatch_combine_commands, dispatch_force_end_commands, dispatch_spawn_commands, dispatch_away_mode_commands, dispatch_message_commands, dispatch_status_request_commands, dispatch_session_end_markers, dispatch_session_sweep, dispatch_conversation_sweep, handle_force_end
@@ -125,7 +126,7 @@ Integration tests run in-process; no external services required. The backends (F
 
 ### Live smoke harness
 
-`.venv\Scripts\python.exe scripts\smoke\smoke.py` drives the DEPLOYED service end-to-end: away-mode round-trip, at-desk redirect, live ask->answer->resolve, fastest-answer round-trip, restart survival (parked-pending recovery), cleanup. Real Firebase, real service, real FCM — each run pings the phone 1-2 times and briefly toggles away mode; the default run RESTARTS the service (severs every live MCP session). Use `--skip-restart` when other agents are working; `--preflight-only` is read-only and always safe. The run leaves one hidden Ended conversation for the 72h retention sweep. Exit 0 = all flows passed.
+`.venv\Scripts\python.exe scripts\smoke\smoke.py` drives the DEPLOYED service end-to-end: away-mode round-trip, at-desk redirect, live ask->answer->resolve, fastest-answer round-trip, message interjection, background ask, restart survival (parked-pending recovery), cleanup. Preflight first asserts the running service matches the working tree (the `/healthz` `service.source_fingerprint` against a hash of `server/**/*.py`) and fails with the restart command if not: a healthy-but-stale process otherwise passes flows it has no code for. It asserts, never restarts. Real Firebase, real service, real FCM — each run pings the phone 1-2 times and briefly toggles away mode; the default run RESTARTS the service (severs every live MCP session). Use `--skip-restart` when other agents are working; `--preflight-only` is read-only and always safe. The run leaves one hidden Ended conversation for the 72h retention sweep. Exit 0 = all flows passed.
 
 ## Building the Android app
 
@@ -238,7 +239,7 @@ nssm status switchboard
 
 Logs: `logs\switchboard.jsonl` (JSONL audit), `logs\nssm-stdout.log` / `nssm-stderr.log` (uvicorn console). NSSM sets `AppDirectory` to the repo root so `config.py`'s `.env` fallback resolves correctly.
 
-**Diagnostic:** `curl -s http://localhost:9876/healthz | python -m json.tool` reports listener supervision state, dispatch-loop crash counts, and pending-question state.
+**Diagnostic:** `curl -s http://localhost:9876/healthz | python -m json.tool` reports listener supervision state, dispatch-loop crash counts, pending-question state, and what the process is running (`service`: start time, source fingerprint, git HEAD). `smoke.py --preflight-only` is the read-only way to ask "is the deployed service current?".
 
 ## Away Mode Protocol
 

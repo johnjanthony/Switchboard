@@ -238,7 +238,7 @@ Nine added routes, plus the `/mcp` transport and a static mount, all wrapped onc
 | Route | Method(s) | Purpose | Token gate |
 |---|---|---|---|
 | `/mcp` | POST/GET (streamable HTTP + SSE) | The MCP tool surface (§4). Stateful sessions (`stateless_http=False`). | Gated (loopback exempt) |
-| `/healthz` | GET | Liveness + per-loop supervisor status; pending-question counts. | **EXEMPT** — the sole path-based exemption |
+| `/healthz` | GET | Liveness + per-loop supervisor status; pending-question counts; `service{started_at, source_fingerprint, git_head}`, captured once at startup (`server/build_info.py`), which the smoke preflight compares against the working tree. | **EXEMPT** — the sole path-based exemption |
 | `/widget-snapshot` | POST | Watchtower pushes context rings + Antigravity quota; store diffs and writes RTDB only on change, and feeds the SessionRegistry. | Gated; rate-limited |
 | `/widget-status` | GET, POST | Drives the server-owned Claude/Antigravity status watch (`?target=`, `?action=check\|stop`). | Gated |
 | `/away-mode` | GET, POST | GET returns `{"active", "notices", "pending_ask"}` — a `session_id` query param **pops** that session's queued wake notices as a side effect, and sets `pending_ask` true when the session's conversation holds a live blocking ask (`Registry.live_blocking_pending`; parked and background pendings excluded). POST (body `active`/`away`, default `True`) turns away mode **on** and mirrors to Firebase; there is no HTTP way to turn it off (only `set_away_mode(False)` or the phone). | Gated |

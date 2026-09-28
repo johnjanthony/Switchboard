@@ -9,7 +9,7 @@ from pathlib import Path
 
 from _smoke_lib import (
 	FlowSkip, Reporter, RunContext, SmokeFailure,
-	crash_counts, http_get_json, http_post_json, init_firebase, load_env, make_context,
+	assert_service_fresh, await_task, crash_counts, http_get_json, http_post_json, init_firebase, load_env, make_context,
 	mcp_call, poll_until, restart_service, rtdb, start_blocking_ask, write_session_end_marker,
 )
 
@@ -26,7 +26,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 async def flow_preflight(ctx, rep, args):
 	hz = http_get_json(f"{ctx.base_url}/healthz")
-	bad = [l["name"] for l in hz.get("listeners", []) if l.get("state") != "live"]
+	# First: every later check, and every flow, is meaningless against a
+	# service that is healthy but running code older than this tree.
+	assert_service_fresh(hz, ctx.repo_root / "server")
+	print(f"service matches the working tree (started {hz['service']['started_at']}, HEAD {(hz['service']['git_head'] or 'unknown')[:7]})")
+	bad =[l["name"] for l in hz.get("listeners", []) if l.get("state") != "live"]
 	if bad:
 		raise SmokeFailure(f"listeners not live: {bad}")
 	ctx.crash_snapshot = crash_counts(hz)
@@ -40,6 +44,7 @@ async def flow_preflight(ctx, rep, args):
 		{"session_id": ctx.cli_session_id, "cwd": ctx.cwd, "source": "startup"})
 	if status != 200:
 		raise SmokeFailure(f"/session_start returned {status}")
+	ctx.session_started = True
 
 
 async def flow_away_mode_roundtrip(ctx, rep, args):
@@ -112,7 +117,7 @@ async def flow_live_ask_answer(ctx, rep, args):
 		"request_id": ctx.request_id, "written_at": datetime.now(timezone.utc).isoformat(),
 	})
 
-	reply = await asyncio.wait_for(task, 20)
+	reply = await await_task("the answered blocking ask to return", task, 20)
 	if reply != expected_reply:
 		raise SmokeFailure(f"blocked ask returned {reply!r}, expected {expected_reply!r}")
 
@@ -168,7 +173,7 @@ async def flow_fast_answer(ctx, rep, args):
 		"request_id": request_id, "written_at": datetime.now(timezone.utc).isoformat(),
 	})
 
-	reply = await asyncio.wait_for(task, 20)
+	reply = await await_task("the fast-answered blocking ask to return", task, 20)
 	if reply != expected_reply:
 		raise SmokeFailure(f"fastest answer returned {reply!r}, expected {expected_reply!r}")
 
@@ -210,7 +215,7 @@ async def flow_message_inject(ctx, rep, args):
 		"issued_at": datetime.now(timezone.utc).isoformat(),
 	})
 
-	reply = await asyncio.wait_for(task, 20)
+	reply = await await_task("the interjection to resolve the blocking ask", task, 20)
 	if not reply.startswith("[John interjected"):
 		raise SmokeFailure(f"interjected ask did not carry the interject prefix: {reply!r}")
 
@@ -428,22 +433,26 @@ async def cleanup(ctx: RunContext, rep: Reporter, args) -> None:
 		except Exception as exc:
 			errors.append(f"hide conversation failed: {exc}")
 
-	try:
-		write_session_end_marker(ctx)
-	except Exception as exc:
-		errors.append(f"write_session_end_marker failed: {exc}")
+	if ctx.session_started:
+		try:
+			write_session_end_marker(ctx)
+		except Exception as exc:
+			errors.append(f"write_session_end_marker failed: {exc}")
 
-	def _session_ended():
-		state = rtdb(ctx, f"sessions/{ctx.cli_session_id}/state").get()
-		return True if state == "ended" else None
-	try:
-		await poll_until("session state == ended after marker sweep", _session_ended, 20, interval=5.0)
-	except Exception as exc:
-		errors.append(str(exc))
+		def _session_ended():
+			state = rtdb(ctx, f"sessions/{ctx.cli_session_id}/state").get()
+			return True if state == "ended" else None
+		try:
+			await poll_until("session state == ended after marker sweep", _session_ended, 20, interval=5.0)
+		except Exception as exc:
+			errors.append(str(exc))
 
 	try:
 		current = http_get_json(f"{ctx.base_url}/away-mode")
-		if bool(current.get("active")) != bool(ctx.prior_away):
+		# prior_away is None when preflight failed before reading it: then the
+		# harness never touched away mode, and "restoring" None would turn off a
+		# real away session.
+		if ctx.prior_away is not None and bool(current.get("active")) != bool(ctx.prior_away):
 			try:
 				await mcp_call(ctx, "set_away_mode", {"value": ctx.prior_away})
 			except Exception:
@@ -473,6 +482,24 @@ async def cleanup(ctx: RunContext, rep: Reporter, args) -> None:
 		raise SmokeFailure("; ".join(errors))
 
 
+async def run_flows(flows, ctx, rep: Reporter, args, skips: dict[str, str]) -> None:
+	"""Run flows in order; after the first failure the rest are reported NOT RUN
+	rather than left out, so every registered flow appears in the summary."""
+	failed = None
+	for name, fn in flows:
+		if name in skips:
+			rep.skip(name, skips[name])
+			continue
+		if failed is not None:
+			rep.not_run(name, f"stopped after {failed!r} failed")
+			continue
+		try:
+			with rep.flow(name):
+				await fn(ctx, rep, args)
+		except FlowSkip:
+			failed = name
+
+
 async def main() -> int:
 	args = build_arg_parser().parse_args()
 	repo_root = Path(__file__).resolve().parents[2]
@@ -481,18 +508,15 @@ async def main() -> int:
 	if not args.preflight_only:
 		sa, url = load_env(repo_root)
 		ctx.fb_app = init_firebase(sa, url)
+	skips = {}
+	if args.skip_restart:
+		# Resolved by identity, not a hardcoded name: a renamed flow must not
+		# silently turn --skip-restart into a restart that severs live sessions.
+		skips[next(name for name, fn in FLOWS if fn is flow_restart_survival)] = "--skip-restart"
+	if args.preflight_only:
+		skips.update({name: "--preflight-only" for name, fn in FLOWS if fn is not flow_preflight})
 	try:
-		for name, fn in FLOWS:
-			if fn is flow_restart_survival and args.skip_restart:
-				rep.skip(name, "--skip-restart")
-				continue
-			try:
-				with rep.flow(name):
-					await fn(ctx, rep, args)
-			except FlowSkip:
-				break
-			if fn is flow_preflight and args.preflight_only:
-				break
+		await run_flows(FLOWS, ctx, rep, args, skips)
 	finally:
 		if not args.keep and not args.preflight_only:
 			try:

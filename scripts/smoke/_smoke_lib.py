@@ -1,7 +1,7 @@
 """Shared infrastructure for the live smoke harness. No server imports -
 the harness exercises the deployed service over its public surfaces only."""
 from __future__ import annotations
-import asyncio, json, time, uuid
+import asyncio, hashlib, json, time, uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +9,31 @@ from urllib import request as _rq
 
 class SmokeFailure(Exception):
 	pass
+
+def source_fingerprint(root: Path) -> str:
+	"""Copy of server/build_info.py:source_fingerprint (the harness imports
+	nothing from server/); tests/test_smoke_lib.py pins the two together."""
+	digest = hashlib.sha256()
+	for rel, path in sorted((p.relative_to(root).as_posix(), p) for p in root.rglob("*.py")):
+		data = path.read_bytes().replace(b"\r\n", b"\n")
+		digest.update(f"{rel}\n{len(data)}\n".encode("utf-8"))
+		digest.update(data)
+	return digest.hexdigest()
+
+RESTART_HINT = r"restart it first: .\scripts\restart-service.ps1 -SkipTests"
+
+def assert_service_fresh(healthz: dict, source_root: Path) -> None:
+	"""Refuse to exercise a service that is not running the working tree's code:
+	/healthz stays healthy on a stale process, so a pass there means nothing.
+	An assertion, not a repair - restarting is left to the operator."""
+	service = healthz.get("service")
+	if service is None:
+		raise SmokeFailure(f"/healthz has no 'service' block, so the running service predates this tree - {RESTART_HINT}")
+	if service["source_fingerprint"] != source_fingerprint(source_root):
+		head = (service.get("git_head") or "unknown")[:7]
+		raise SmokeFailure(
+			f"the running service does not match the working tree's server/ sources "
+			f"(service started {service['started_at']} from HEAD {head}) - {RESTART_HINT}")
 
 def load_env(repo_root: Path) -> tuple[str, str]:
 	from dotenv import load_dotenv
@@ -48,6 +73,14 @@ async def poll_until(desc: str, fn, timeout: float, interval: float = 0.5):
 		await asyncio.sleep(interval)
 	raise SmokeFailure(f"timeout ({timeout}s) waiting for {desc}; last observation: {last!r}")
 
+async def await_task(desc: str, task, timeout: float):
+	"""asyncio.wait_for, but a timeout says what was being waited for:
+	str(asyncio.TimeoutError()) is empty, so a bare wait_for fails blank."""
+	try:
+		return await asyncio.wait_for(task, timeout)
+	except asyncio.TimeoutError:
+		raise SmokeFailure(f"timeout ({timeout}s) waiting for {desc}") from None
+
 def crash_counts(healthz: dict) -> dict[str, int]:
 	out = {}
 	for l in healthz.get("listeners", []):
@@ -71,7 +104,7 @@ async def mcp_call(ctx, tool: str, args: dict, timeout: float = 30) -> str:
 				if getattr(result, "isError", False):
 					raise SmokeFailure(f"{tool} returned tool-error: {text}")
 				return text
-	return await asyncio.wait_for(_run(), timeout)
+	return await await_task(f"the MCP {tool} call to return", _run(), timeout)
 
 def start_blocking_ask(ctx, question: str, suggestions=None) -> asyncio.Task:
 	async def _ask():
@@ -124,6 +157,7 @@ class RunContext:
 	repo_root: Path
 	fb_app: object = None
 	prior_away: bool | None = None
+	session_started: bool = False
 	conversation_id: str | None = None
 	request_id: str | None = None
 	crash_snapshot: dict | None = None
@@ -156,15 +190,21 @@ class Reporter:
 		return _FlowContext(self, name, idx)
 
 	def skip(self, name: str, why: str):
+		self._record_unrun(name, "SKIP", why)
+
+	def not_run(self, name: str, why: str):
+		self._record_unrun(name, "NOT RUN", why)
+
+	def _record_unrun(self, name: str, status: str, why: str):
 		idx = self._next_index
 		self._next_index += 1
-		self.results.append(FlowResult(name, "SKIP", why, 0.0))
-		print(f"FLOW {idx} SKIP - {name}: {why}")
+		self.results.append(FlowResult(name, status, why, 0.0))
+		print(f"FLOW {idx} {status} - {name}: {why}")
 
 	def summary(self) -> int:
 		print("\n=== smoke summary ===")
 		for r in self.results:
-			print(f"{r.name:<40} {r.status:<4} {r.detail} ({r.seconds:.1f}s)")
+			print(f"{r.name:<40} {r.status:<7} {r.detail} ({r.seconds:.1f}s)")
 		return 0 if all(r.status != "FAIL" for r in self.results) else 1
 
 class _FlowContext:
@@ -184,7 +224,11 @@ class _FlowContext:
 			self.reporter.results.append(FlowResult(self.name, "PASS", "", seconds))
 			print(f"FLOW {self.idx} PASS - {self.name} ({seconds:.1f}s)")
 			return False
+		# A SmokeFailure's message is the diagnosis; anything else is a crash, and
+		# some carry no message at all (str(asyncio.TimeoutError()) is empty).
 		detail = str(exc)
+		if not isinstance(exc, SmokeFailure) or not detail:
+			detail = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 		self.reporter.results.append(FlowResult(self.name, "FAIL", detail, seconds))
 		print(f"FLOW {self.idx} FAIL - {self.name} ({seconds:.1f}s): {detail}")
 		raise FlowSkip() from exc

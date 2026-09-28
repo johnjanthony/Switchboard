@@ -19,6 +19,7 @@ from starlette.staticfiles import StaticFiles
 
 import dataclasses
 
+from server.build_info import service_identity
 from server.config import Config, ConfigError, load_config
 from server.gateway import (
 	build_tool_handlers,
@@ -795,6 +796,11 @@ async def resolve_wsl_home(logger=None) -> str | None:
 
 
 async def _run(config: Config) -> None:
+	# Captured first, before anything else loads: /healthz reports what this
+	# process is running so the smoke harness can refuse a stale service.
+	source_root = _Path(__file__).resolve().parent
+	service = service_identity(source_root.parent, source_root, datetime.now(timezone.utc))
+
 	logger = JsonlLogger(config.log_path)
 
 	# Route background-task failures into the JSONL audit log (REV-105): the
@@ -945,6 +951,7 @@ async def _run(config: Config) -> None:
 			"healthy": healthy,
 			"listeners": listeners,
 			"dispatch_loops": dispatch_loops,
+			"service": service,
 		})
 
 	claude_status_service = ClaudeStatusService(publish=backend.write_widget_status)
