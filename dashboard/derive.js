@@ -179,6 +179,22 @@ export function sessionChip(record) {
 	return SESSION_CHIPS[state] || { label: state, cls: 'chip-idle' };
 }
 
+// A session's model + effort chip, exactly as the server resolved it (model_label and
+// model_source on the sessions/ record). A spawn pick no transcript has confirmed yet
+// gets the muted class. Null when there is no label.
+export function sessionModelChip(record) {
+	const text = record && typeof record.model_label === 'string' ? record.model_label : '';
+	if (!text) {
+		return null;
+	}
+	const spawn = record.model_source === 'spawn';
+	return {
+		text,
+		cls: spawn ? 'session-model spawn' : 'session-model',
+		title: spawn ? 'spawn pick, not yet observed' : null,
+	};
+}
+
 export function projectTail(cwd) {
 	if (!cwd) {
 		return '';

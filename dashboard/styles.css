@@ -758,6 +758,8 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .session-row:hover { background: var(--panel-hi); }
 .session-project { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-meta { margin-left: auto; display: flex; gap: 6px; font-size: 0.8em; opacity: 0.75; }
+.session-model { white-space: nowrap; }
+.session-model.spawn { font-style: italic; opacity: 0.6; }
 .session-chip { font-size: 0.7em; padding: 1px 6px; border-radius: 8px; white-space: nowrap; }
 .chip-active { background: #2d5a2d; }
 .chip-idle { background: #444; }

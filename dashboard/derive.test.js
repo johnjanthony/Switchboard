@@ -529,3 +529,23 @@ test('commandIdsIn collects command_id strings only; PENDING_SEND_STATUS carries
 	assert.equal(PENDING_SEND_STATUS.notPickedUp, "Server hasn't taken this. It delivers if the server returns within 10 min.");
 	assert.equal(PENDING_SEND_STATUS.offline, 'Offline: sends when you reconnect.');
 });
+
+test('sessionModelChip renders an observed label at normal weight', () => {
+	assert.deepEqual(
+		derive.sessionModelChip({ model_label: 'Opus 5.5 · xhigh', model_source: 'observed' }),
+		{ text: 'Opus 5.5 · xhigh', cls: 'session-model', title: null },
+	);
+});
+
+test('sessionModelChip mutes an unconfirmed spawn pick', () => {
+	assert.deepEqual(
+		derive.sessionModelChip({ model_label: 'Sonnet · medium', model_source: 'spawn' }),
+		{ text: 'Sonnet · medium', cls: 'session-model spawn', title: 'spawn pick, not yet observed' },
+	);
+});
+
+test('sessionModelChip is null without a label', () => {
+	assert.equal(derive.sessionModelChip({ model: 'claude-opus-5-5' }), null);
+	assert.equal(derive.sessionModelChip({ model_label: null, model_source: null }), null);
+	assert.equal(derive.sessionModelChip(null), null);
+});

@@ -1,6 +1,7 @@
 import { html, useState } from "../vendor/htm-preact.js";
 import {
 	sessionChip,
+	sessionModelChip,
 	sessionAgeSeconds,
 	formatAge,
 	sortSessionEntries,
@@ -70,6 +71,7 @@ export function SessionsRail({ store, collapsed }) {
 		const chip = sessionChip(record);
 		const age = formatAge(sessionAgeSeconds(record, Date.now()));
 		const ring = record.context_pct != null ? `${Math.round(record.context_pct * 100)}%` : "";
+		const modelChip = sessionModelChip(record);
 		const convenable = isConvenable(record);
 		const attn = needsAttention(record, state.sessionAcks[id]);
 		const tooltipParts = [
@@ -91,6 +93,7 @@ export function SessionsRail({ store, collapsed }) {
 				${attn ? html`<span class="session-attn" title="needs you"></span>` : null}
 				<span class="session-meta">
 					${record.sender ? html`<span class="session-sender">${record.sender}</span>` : null}
+					${modelChip ? html`<span class=${modelChip.cls} title=${modelChip.title}>${modelChip.text}</span>` : null}
 					${ring ? html`<span class="session-ring">${ring}</span>` : null}
 					<span class="session-age">${age}</span>
 					${record.conversation_id ? html`<span class="session-linked">⇢</span>` : null}
