@@ -401,3 +401,131 @@ test('soleSessionFor: unknown conversation, unbound session, and empty roster ar
 	assert.equal(derive.soleSessionFor(null, ROSTER), null);
 	assert.equal(derive.soleSessionFor('conv-1', null), null);
 });
+
+import {
+	derivePendingSends, updateSeenSends, pruneDeliveredSends, pendingSendsNeedTick,
+	restoreDraft, commandIdsIn, PENDING_SEND_STATUS,
+} from './derive.js';
+
+const T0 = Date.parse('2026-09-28T12:00:00.000Z');
+const isoAt = (ms) => new Date(ms).toISOString();
+const cmdAt = (convId, text, ms) => ({ conversation_id: convId, text, issued_at: isoAt(ms) });
+
+function pending(over) {
+	return derivePendingSends({
+		convId: 'c1', queued: {}, messages: {}, seen: {}, nowMs: T0, connected: true, ...over,
+	});
+}
+
+test('derivePendingSends: a fresh command for this conversation is sending; others and malformed ones are ignored', () => {
+	const rows = pending({
+		queued: {
+			k1: cmdAt('c1', 'hello', T0 - 1000),
+			k2: cmdAt('c2', 'other line', T0 - 1000),
+			k3: { conversation_id: 'c1', issued_at: isoAt(T0) },
+			k4: { conversation_id: 'c1', text: 42, issued_at: isoAt(T0) },
+		},
+	});
+	assert.deepEqual(rows, [{ key: 'k1', text: 'hello', issuedAt: isoAt(T0 - 1000), state: 'sending' }]);
+});
+
+test('derivePendingSends: sending under 20s, notPickedUp from 20s, expired from 600s', () => {
+	const at = (age) => pending({ queued: { k: cmdAt('c1', 'x', T0 - age) } })[0].state;
+	assert.equal(at(19999), 'sending');
+	assert.equal(at(20000), 'notPickedUp');
+	assert.equal(at(599999), 'notPickedUp');
+	assert.equal(at(600000), 'expired');
+});
+
+test('derivePendingSends: offline outranks notPickedUp and sending, but not expired', () => {
+	const at = (age) => pending({ queued: { k: cmdAt('c1', 'x', T0 - age) }, connected: false })[0].state;
+	assert.equal(at(1000), 'offline');
+	assert.equal(at(30000), 'offline');
+	assert.equal(at(600000), 'expired');
+});
+
+test('derivePendingSends: an unparseable issued_at is notPickedUp and never expires; a future one is sending', () => {
+	const bad = pending({ queued: { k: { conversation_id: 'c1', text: 'x', issued_at: 'not-a-time' } }, nowMs: T0 + 3600000 });
+	assert.equal(bad[0].state, 'notPickedUp');
+	const future = pending({ queued: { k: cmdAt('c1', 'x', T0 + 120000) } });
+	assert.equal(future[0].state, 'sending');
+});
+
+test('derivePendingSends: a command whose row already landed shows nothing while still queued', () => {
+	const rows = pending({
+		queued: { k1: cmdAt('c1', 'hello', T0 - 1000) },
+		messages: { m1: { type: 'human', text: 'hello', command_id: 'k1' } },
+	});
+	assert.deepEqual(rows, []);
+});
+
+test('derivePendingSends: identical texts resolve independently by key, never by text', () => {
+	const rows = pending({
+		queued: { k1: cmdAt('c1', 'same', T0 - 2000), k2: cmdAt('c1', 'same', T0 - 1000) },
+		messages: { m1: { type: 'human', text: 'same', command_id: 'k1' } },
+	});
+	assert.deepEqual(rows.map((r) => r.key), ['k2']);
+});
+
+test('derivePendingSends: a gone send is notDelivered only after the 5s grace and only without its row', () => {
+	const seen = { k1: { conversationId: 'c1', text: 'lost', issuedAt: isoAt(T0 - 30000), goneAtMs: T0 - 4999 } };
+	assert.deepEqual(pending({ seen }), []);
+	const later = pending({ seen, nowMs: T0 + 1 });
+	assert.deepEqual(later, [{ key: 'k1', text: 'lost', issuedAt: isoAt(T0 - 30000), state: 'notDelivered' }]);
+	const landed = pending({ seen, nowMs: T0 + 1, messages: { m: { command_id: 'k1' } } });
+	assert.deepEqual(landed, []);
+	const otherConv = pending({ seen: { k1: { ...seen.k1, conversationId: 'c2' } }, nowMs: T0 + 1 });
+	assert.deepEqual(otherConv, []);
+});
+
+test('derivePendingSends: rows sort by issued time, unparseable last', () => {
+	const rows = pending({
+		queued: {
+			kb: cmdAt('c1', 'b', T0 - 1000),
+			kx: { conversation_id: 'c1', text: 'x', issued_at: 'bad' },
+			ka: cmdAt('c1', 'a', T0 - 5000),
+		},
+	});
+	assert.deepEqual(rows.map((r) => r.key), ['ka', 'kb', 'kx']);
+});
+
+test('updateSeenSends: records queued sends, stamps a live one gone, drops other-conversation and delivered ones', () => {
+	const none = new Set();
+	const s1 = updateSeenSends({}, { k1: cmdAt('c1', 'a', T0), k2: cmdAt('c2', 'b', T0), bad: { text: 'x' } }, T0, 'c1', none);
+	assert.deepEqual(Object.keys(s1).sort(), ['k1', 'k2']);
+	assert.equal(s1.k1.goneAtMs, null);
+	const s2 = updateSeenSends(s1, {}, T0 + 10, 'c1', none);
+	assert.deepEqual(Object.keys(s2), ['k1']);
+	assert.equal(s2.k1.goneAtMs, T0 + 10);
+	const s3 = updateSeenSends(s2, {}, T0 + 99, 'c1', none);
+	assert.equal(s3.k1.goneAtMs, T0 + 10);
+	const s4 = updateSeenSends(s1, {}, T0 + 10, 'c1', new Set(['k1']));
+	assert.deepEqual(Object.keys(s4), []);
+});
+
+test('pruneDeliveredSends drops gone sends whose row landed and keeps queued ones', () => {
+	const seen = {
+		gone: { conversationId: 'c1', text: 'a', issuedAt: null, goneAtMs: T0 },
+		queuedStill: { conversationId: 'c1', text: 'b', issuedAt: null, goneAtMs: null },
+	};
+	const next = pruneDeliveredSends(seen, new Set(['gone', 'queuedStill']));
+	assert.deepEqual(Object.keys(next), ['queuedStill']);
+});
+
+test('pendingSendsNeedTick: true for a queued send or a gone one in grace, false otherwise', () => {
+	assert.equal(pendingSendsNeedTick('c1', { k: cmdAt('c1', 'x', T0) }, {}), true);
+	assert.equal(pendingSendsNeedTick('c1', {}, { k: { conversationId: 'c1', text: 'x', issuedAt: null, goneAtMs: T0 } }), true);
+	assert.equal(pendingSendsNeedTick('c1', { k: cmdAt('c2', 'x', T0) }, { k2: { conversationId: 'c1', text: 'x', issuedAt: null, goneAtMs: null } }), false);
+});
+
+test('restoreDraft replaces a blank draft and appends to a non-blank one', () => {
+	assert.equal(restoreDraft('', 'back'), 'back');
+	assert.equal(restoreDraft('  ', 'back'), 'back');
+	assert.equal(restoreDraft('typing', 'back'), 'typing\nback');
+});
+
+test('commandIdsIn collects command_id strings only; PENDING_SEND_STATUS carries the agreed copy', () => {
+	assert.deepEqual([...commandIdsIn({ a: { command_id: 'k1' }, b: {}, c: { command_id: 7 } })], ['k1']);
+	assert.equal(PENDING_SEND_STATUS.notPickedUp, "Server hasn't taken this. It delivers if the server returns within 10 min.");
+	assert.equal(PENDING_SEND_STATUS.offline, 'Offline: sends when you reconnect.');
+});

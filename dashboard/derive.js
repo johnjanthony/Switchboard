@@ -376,3 +376,117 @@ export function effortOptionsFor(spawnOptions, agent, modelId) {
 	const entry = models.find((m) => m && m.id === modelId);
 	return (entry && Array.isArray(entry.efforts) && entry.efforts) || [];
 }
+
+// ---- Pending sends: composer messages the server has not written back ----
+// A send is a /message_commands entry until the server consumes it; the server
+// deletes it only after writing the /messages row, which carries the entry's
+// key as command_id. These derivations turn the queue plus the conversation's
+// rows into the pending rows the transcript shows under its real messages.
+
+export const SENDING_WINDOW_MS = 20 * 1000;
+export const NOT_DELIVERED_GRACE_MS = 5 * 1000;
+// Mirrors the server's COMMAND_TTL_SECONDS (server/command_freshness.py), which
+// is not published to clients.
+export const COMMAND_TTL_MS = 600 * 1000;
+
+export const PENDING_SEND_STATUS = {
+	sending: 'sending...',
+	offline: 'Offline: sends when you reconnect.',
+	notPickedUp: "Server hasn't taken this. It delivers if the server returns within 10 min.",
+	expired: 'Expired: the server will drop this, not deliver it.',
+	notDelivered: 'Not delivered',
+};
+
+function isQueuedMessage(cmd) {
+	return !!cmd && typeof cmd.conversation_id === 'string' && typeof cmd.text === 'string';
+}
+
+export function commandIdsIn(messages) {
+	const ids = new Set();
+	for (const m of Object.values(messages || {})) {
+		if (m && typeof m.command_id === 'string') ids.add(m.command_id);
+	}
+	return ids;
+}
+
+function queuedSendState(issuedAt, nowMs, connected) {
+	const issuedMs = Date.parse(issuedAt);
+	// An unparseable stamp cannot age out, but it is still queued: show it as
+	// not picked up rather than an optimistic "sending" that never escalates.
+	const age = Number.isFinite(issuedMs) ? nowMs - issuedMs : SENDING_WINDOW_MS;
+	if (Number.isFinite(issuedMs) && age >= COMMAND_TTL_MS) return 'expired';
+	if (!connected) return 'offline';
+	if (age >= SENDING_WINDOW_MS) return 'notPickedUp';
+	return 'sending';
+}
+
+function issuedSortKey(issuedAt) {
+	const ms = Date.parse(issuedAt);
+	return Number.isFinite(ms) ? ms : Number.MAX_SAFE_INTEGER;
+}
+
+export function derivePendingSends({ convId, queued, messages, seen, nowMs, connected }) {
+	const q = queued || {};
+	const delivered = commandIdsIn(messages);
+	const rows = [];
+	for (const [key, cmd] of Object.entries(q)) {
+		if (!isQueuedMessage(cmd) || cmd.conversation_id !== convId || delivered.has(key)) continue;
+		rows.push({ key, text: cmd.text, issuedAt: cmd.issued_at || null, state: queuedSendState(cmd.issued_at, nowMs, connected) });
+	}
+	for (const [key, entry] of Object.entries(seen || {})) {
+		if (!entry || entry.conversationId !== convId || entry.goneAtMs == null) continue;
+		if (key in q || delivered.has(key)) continue;
+		if (nowMs - entry.goneAtMs < NOT_DELIVERED_GRACE_MS) continue;
+		rows.push({ key, text: entry.text, issuedAt: entry.issuedAt, state: 'notDelivered' });
+	}
+	rows.sort((a, b) => issuedSortKey(a.issuedAt) - issuedSortKey(b.issuedAt));
+	return rows;
+}
+
+// Operator only has the SELECTED conversation's messages loaded, so a send that
+// leaves the queue while its conversation is not selected cannot be checked
+// against its row: drop it instead of stamping it gone (liveConvId is the
+// selected conversation, or null).
+export function updateSeenSends(seen, queued, nowMs, liveConvId, deliveredIds) {
+	const q = queued || {};
+	const next = {};
+	for (const [key, entry] of Object.entries(seen || {})) {
+		if (key in q || entry.goneAtMs != null) {
+			next[key] = entry;
+			continue;
+		}
+		if (deliveredIds.has(key) || entry.conversationId !== liveConvId) continue;
+		next[key] = { ...entry, goneAtMs: nowMs };
+	}
+	for (const [key, cmd] of Object.entries(q)) {
+		if (next[key] || !isQueuedMessage(cmd)) continue;
+		next[key] = { conversationId: cmd.conversation_id, text: cmd.text, issuedAt: cmd.issued_at || null, goneAtMs: null };
+	}
+	return next;
+}
+
+export function pruneDeliveredSends(seen, deliveredIds) {
+	const next = {};
+	for (const [key, entry] of Object.entries(seen || {})) {
+		if (entry.goneAtMs != null && deliveredIds.has(key)) continue;
+		next[key] = entry;
+	}
+	return next;
+}
+
+// A gone send inside its grace window has no row yet, so "rows exist" alone
+// would never start the clock that makes its Not delivered row appear.
+export function pendingSendsNeedTick(convId, queued, seen) {
+	for (const cmd of Object.values(queued || {})) {
+		if (isQueuedMessage(cmd) && cmd.conversation_id === convId) return true;
+	}
+	for (const entry of Object.values(seen || {})) {
+		if (entry && entry.conversationId === convId && entry.goneAtMs != null) return true;
+	}
+	return false;
+}
+
+export function restoreDraft(current, text) {
+	const draft = current == null ? '' : String(current);
+	return draft.trim() === '' ? text : `${draft}\n${text}`;
+}
