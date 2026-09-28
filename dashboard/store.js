@@ -11,8 +11,9 @@
 import {
 	answerCmd, resumeCmd, combineCmd, forceEndCmd,
 	spawnFreshCmd, awayOnCmd, awayOffCmd, setHiddenCmd,
-	conveneCmd, ackSessionCmd, messageCmd, dismissAdminNotificationCmd,
+	conveneCmd, ackSessionCmd, messageCmd, deleteMessageCmd, dismissAdminNotificationCmd,
 } from './commands.js';
+import { updateSeenSends, pruneDeliveredSends, commandIdsIn } from './derive.js';
 
 export function createStore(deps) {
 	const { fb, paths, storage, nowMs, requestStatus } = deps;
@@ -129,6 +130,21 @@ export function createStore(deps) {
 
 	function setSessionAcks(map) {
 		state.sessionAcks = map || {};
+		notify();
+	}
+
+	function setMessageCommands(map) {
+		const queued = map || {};
+		const liveId = state.selectedConversationId || null;
+		const liveConv = liveId ? state.conversations[liveId] : null;
+		const delivered = commandIdsIn(liveConv && liveConv.messages);
+		state.seenSends = updateSeenSends(state.seenSends, queued, nowMs(), liveId, delivered);
+		state.messageCommands = queued;
+		notify();
+	}
+
+	function setConnected(value) {
+		state.connected = !!value;
 		notify();
 	}
 
@@ -284,6 +300,7 @@ export function createStore(deps) {
 		const conv = state.conversations[id] || {};
 		const messages = { ...(conv.messages || {}), ...(map || {}) };
 		state.conversations[id] = { ...conv, messages };
+		state.seenSends = pruneDeliveredSends(state.seenSends, commandIdsIn(messages));
 		notify();
 	}
 
@@ -309,6 +326,14 @@ export function createStore(deps) {
 	function selectConversation(id) {
 		detachSelectionListeners();
 		state.selectedConversationId = id;
+		// Only the selected conversation's rows are loaded, so a gone send of any
+		// other conversation can no longer be checked; forget it rather than risk
+		// a stale "Not delivered" on return.
+		const keptSends = {};
+		for (const [key, entry] of Object.entries(state.seenSends)) {
+			if (entry.goneAtMs == null || entry.conversationId === id) keptSends[key] = entry;
+		}
+		state.seenSends = keptSends;
 		notify();
 		if (id === null || id === undefined) {
 			return;
@@ -363,6 +388,8 @@ export function createStore(deps) {
 		globalUnsubs.push(fb.onValue(paths.widgetPushedAt(), (val) => setWidgetPushedAt(val || null), onReadError));
 		globalUnsubs.push(fb.onValue(paths.sessions(), (val) => setSessions(val || {}), onReadError));
 		globalUnsubs.push(fb.onValue(paths.sessionAcks(), (val) => setSessionAcks(val || {}), onReadError));
+		globalUnsubs.push(fb.onValue(paths.messageCommands(), (val) => setMessageCommands(val || {}), onReadError));
+		globalUnsubs.push(fb.onValue(paths.infoConnected(), (val) => setConnected(val !== false), onReadError));
 		globalUnsubs.push(fb.onChildAdded(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError));
 		globalUnsubs.push(fb.onChildChanged(paths.adminNotifications(), (val, key) => upsertAdminNotification(key, val), onReadError));
 		globalUnsubs.push(fb.onChildRemoved(paths.adminNotifications(), (_val, key) => removeAdminNotification(key), onReadError));
@@ -515,6 +542,38 @@ export function createStore(deps) {
 		return guardedWrite('detail', () => fb.pushValue(c.path, c.value));
 	}
 
+	// Forget a send locally BEFORE its command disappears, so this surface does
+	// not then read the deletion as a failed delivery.
+	function forgetSend(key) {
+		if (!(key in state.seenSends)) return;
+		const next = { ...state.seenSends };
+		delete next[key];
+		state.seenSends = next;
+	}
+
+	function withdrawQueuedMessage(key) {
+		forgetSend(key);
+		notify();
+		const c = deleteMessageCmd(key);
+		return guardedWrite('detail', () => fb.setValue(c.path, c.value));
+	}
+
+	async function retryMessage(key, convId, text) {
+		forgetSend(key);
+		notify();
+		if (key in state.messageCommands) {
+			const d = deleteMessageCmd(key);
+			const deleted = await guardedWrite('detail', () => fb.setValue(d.path, d.value));
+			if (!deleted) return false;
+		}
+		return sendMessage(convId, text);
+	}
+
+	function dismissUndelivered(key) {
+		forgetSend(key);
+		notify();
+	}
+
 	function dismissAdminNotification(key) {
 		const c = dismissAdminNotificationCmd(key);
 		return guardedWrite('global', () => fb.setValue(c.path, c.value));
@@ -538,6 +597,8 @@ export function createStore(deps) {
 		setWidgetPushedAt,
 		setSessions,
 		setSessionAcks,
+		setMessageCommands,
+		setConnected,
 		toggleSessionSelected,
 		clearSessionSelection,
 		ackSession,
@@ -573,6 +634,9 @@ export function createStore(deps) {
 		patchLine,
 		dropLine,
 		sendMessage,
+		withdrawQueuedMessage,
+		retryMessage,
+		dismissUndelivered,
 		dismissAdminNotification,
 	};
 }
@@ -608,6 +672,9 @@ function initialState(storage) {
 		sessions: {},
 		sessionAcks: {},
 		adminNotifications: {},
+		messageCommands: {},
+		seenSends: {},
+		connected: true,
 		widget: { rings: {}, quota: null, status: null, antigravityStatus: null, pushedAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],

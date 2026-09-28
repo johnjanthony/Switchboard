@@ -70,3 +70,11 @@ export function sessionAcks() {
 export function spawnOptions() {
 	return 'spawn_options';
 }
+
+export function messageCommands() {
+	return 'message_commands';
+}
+
+export function infoConnected() {
+	return '.info/connected';
+}

@@ -64,6 +64,9 @@ test('initialState shape is exactly the contract', () => {
 		sessions: {},
 		sessionAcks: {},
 		adminNotifications: {},
+		messageCommands: {},
+		seenSends: {},
+		connected: true,
 		widget: { rings: {}, quota: null, status: null, antigravityStatus: null, pushedAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
@@ -571,7 +574,7 @@ test('startGlobalListeners is idempotent: a second call detaches the first set',
 	const detached = fb.calls.unsubs.slice(unsubsBefore).map((u) => u.path);
 	assert.ok(detached.includes('conversations'), 'prior conversations listener detached before re-attach');
 	assert.ok(detached.includes('global_settings/away_mode'), 'prior away-mode listener detached');
-	assert.equal(detached.length, 16, 'all 16 global listeners detached before re-attach - update this count when adding a listener');
+	assert.equal(detached.length, 18, 'all 18 global listeners detached before re-attach - update this count when adding a listener');
 });
 
 test('sendAnswer writes answerCmd and returns true on success', async () => {
@@ -640,4 +643,90 @@ test('spawn_options listener updates state.spawnOptions', () => {
 	assert.deepEqual(store.getState().spawnOptions, SPAWN_OPTIONS);
 	entry.cb(null);
 	assert.equal(store.getState().spawnOptions, null);
+});
+
+test('startGlobalListeners feeds message_commands and .info/connected into the store', () => {
+	let now = 5000;
+	const { store, fb } = makeStore({ nowMs: () => now });
+	store.startGlobalListeners();
+	const queueEntry = fb.calls.onValue.find((e) => e.path === 'message_commands');
+	const connEntry = fb.calls.onValue.find((e) => e.path === '.info/connected');
+	assert.ok(queueEntry && connEntry);
+	store.upsertConversationMeta('c1', { state: 'active' });
+	store.selectConversation('c1');
+	queueEntry.cb({ k1: { conversation_id: 'c1', text: 'hi', issued_at: '2026-09-28T12:00:00.000Z' } });
+	assert.deepEqual(Object.keys(store.getState().messageCommands), ['k1']);
+	assert.equal(store.getState().seenSends.k1.goneAtMs, null);
+	now = 6000;
+	queueEntry.cb(null);
+	assert.deepEqual(store.getState().messageCommands, {});
+	assert.equal(store.getState().seenSends.k1.goneAtMs, 6000);
+	connEntry.cb(false);
+	assert.equal(store.getState().connected, false);
+});
+
+test('mergeConversationMessages prunes a gone send once its row lands', () => {
+	const { store } = makeStore({ nowMs: () => 7000 });
+	store.upsertConversationMeta('c1', { state: 'active' });
+	store.selectConversation('c1');
+	store.setMessageCommands({ k1: { conversation_id: 'c1', text: 'hi', issued_at: '2026-09-28T12:00:00.000Z' } });
+	store.setMessageCommands({});
+	assert.ok(store.getState().seenSends.k1);
+	store.mergeConversationMessages('c1', { m1: { type: 'human', text: 'hi', command_id: 'k1' } });
+	assert.equal(store.getState().seenSends.k1, undefined);
+});
+
+test('selecting another conversation drops gone sends of the one left behind', () => {
+	const { store } = makeStore({ nowMs: () => 7000 });
+	store.upsertConversationMeta('c1', { state: 'active' });
+	store.upsertConversationMeta('c2', { state: 'active' });
+	store.selectConversation('c1');
+	store.setMessageCommands({
+		k1: { conversation_id: 'c1', text: 'a', issued_at: '2026-09-28T12:00:00.000Z' },
+		k2: { conversation_id: 'c1', text: 'b', issued_at: '2026-09-28T12:00:00.000Z' },
+	});
+	store.setMessageCommands({ k2: { conversation_id: 'c1', text: 'b', issued_at: '2026-09-28T12:00:00.000Z' } });
+	assert.ok(store.getState().seenSends.k1.goneAtMs);
+	store.selectConversation('c2');
+	assert.equal(store.getState().seenSends.k1, undefined);
+	assert.ok(store.getState().seenSends.k2);
+});
+
+test('withdrawQueuedMessage forgets the send and writes null to its command', async () => {
+	const { store, fb } = makeStore();
+	store.upsertConversationMeta('c1', { state: 'active' });
+	store.selectConversation('c1');
+	store.setMessageCommands({ k1: { conversation_id: 'c1', text: 'hi', issued_at: '2026-09-28T12:00:00.000Z' } });
+	const ok = await store.withdrawQueuedMessage('k1');
+	assert.equal(ok, true);
+	assert.equal(store.getState().seenSends.k1, undefined);
+	assert.deepEqual(fb.calls.set, [{ path: 'message_commands/k1', value: null }]);
+});
+
+test('retryMessage deletes a still-queued command, then pushes a fresh one', async () => {
+	const { store, fb } = makeStore();
+	store.setMessageCommands({ k1: { conversation_id: 'c1', text: 'hi', issued_at: '2026-09-28T12:00:00.000Z' } });
+	const ok = await store.retryMessage('k1', 'c1', 'hi');
+	assert.equal(ok, true);
+	assert.deepEqual(fb.calls.set, [{ path: 'message_commands/k1', value: null }]);
+	assert.deepEqual(fb.calls.pushed, [messageCmd('c1', 'hi', fb.nowIso)]);
+});
+
+test('retryMessage for a send already gone only pushes', async () => {
+	const { store, fb } = makeStore();
+	const ok = await store.retryMessage('k1', 'c1', 'hi');
+	assert.equal(ok, true);
+	assert.deepEqual(fb.calls.set, []);
+	assert.deepEqual(fb.calls.pushed, [messageCmd('c1', 'hi', fb.nowIso)]);
+});
+
+test('dismissUndelivered forgets the send without writing', () => {
+	const { store, fb } = makeStore();
+	store.upsertConversationMeta('c1', { state: 'active' });
+	store.selectConversation('c1');
+	store.setMessageCommands({ k1: { conversation_id: 'c1', text: 'hi', issued_at: '2026-09-28T12:00:00.000Z' } });
+	store.setMessageCommands({});
+	store.dismissUndelivered('k1');
+	assert.equal(store.getState().seenSends.k1, undefined);
+	assert.deepEqual(fb.calls.set, []);
 });

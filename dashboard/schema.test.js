@@ -65,3 +65,11 @@ test('sessionAcks() is the session_acks root', () => {
 test('spawnOptions() targets spawn_options', () => {
 	assert.equal(schema.spawnOptions(), 'spawn_options');
 });
+
+test('messageCommands() is the message command queue root', () => {
+	assert.equal(schema.messageCommands(), 'message_commands');
+});
+
+test('infoConnected() is the SDK connection-state path', () => {
+	assert.equal(schema.infoConnected(), '.info/connected');
+});

@@ -92,6 +92,10 @@ export function messageCmd(convId, text, nowIsoFn) {
 	};
 }
 
+export function deleteMessageCmd(key) {
+	return { path: `message_commands/${key}`, value: null };
+}
+
 export function dismissAdminNotificationCmd(key) {
 	return {
 		path: `admin_notifications/${key}`,
