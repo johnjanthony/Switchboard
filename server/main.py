@@ -312,7 +312,7 @@ def _build_widget_snapshot_route(store, backend, logger, session_registry=None, 
 	against the last push so RTDB is written only on change; pushed_at is always
 	written so readers can show staleness. Also feeds the session registry so a
 	Watchtower ring can enrich or discover a session row."""
-	_RING_FIELDS = ("pct", "model", "status", "context_tokens", "window", "is_error", "name", "name_source", "title_state")
+	_RING_FIELDS = ("pct", "model", "status", "context_tokens", "window", "is_error", "name", "name_source", "title_state", "effort")
 
 	async def widget_snapshot(request: Request):
 		try:

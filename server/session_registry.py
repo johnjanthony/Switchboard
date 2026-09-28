@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from server.clock import now_iso
+from server.model_label import resolve as resolve_model_label
 
 SESSION_STATES = ("active", "idle", "awaiting_human", "awaiting_agent", "ended", "lost")
 TERMINAL_STATES = ("ended", "lost")
@@ -71,6 +72,9 @@ class SessionRecord:
 	conversation_id: str | None = None
 	sender: str | None = None
 	model: str | None = None
+	# Ring-OBSERVED effort, read from the same transcript turn as `model` and
+	# replaced together with it. Distinct from `spawn_effort`, the commanded pick.
+	effort: str | None = None
 	# Commanded at spawn time (phone/Operator pick). Distinct from `model`,
 	# which is the ring-OBSERVED value Watchtower sightings overwrite.
 	spawn_model: str | None = None
@@ -87,7 +91,12 @@ class SessionRecord:
 	pending_notices: list = field(default_factory=list)
 
 	def to_payload(self) -> dict:
-		return asdict(self)
+		payload = asdict(self)
+		# Derived for display; hydrate_record never reads these back.
+		payload["model_label"], payload["model_source"] = resolve_model_label(
+			self.model, self.effort, self.spawn_model, self.spawn_effort,
+		)
+		return payload
 
 
 class SessionRegistry:
@@ -277,6 +286,10 @@ class SessionRegistry:
 			pct = ring.get("pct")
 			if isinstance(model, str) and model:
 				rec.model = model
+				# Effort travels with the model it was read alongside, so a switch
+				# to a model without effort tiers (haiku) clears the old value.
+				effort = ring.get("effort")
+				rec.effort = effort if isinstance(effort, str) and effort else None
 			if isinstance(pct, (int, float)):
 				rec.context_pct = float(pct)
 			name = ring.get("name")
@@ -379,6 +392,7 @@ class SessionRegistry:
 			conversation_id=data.get("conversation_id"),
 			sender=data.get("sender"),
 			model=data.get("model"),
+			effort=data.get("effort"),
 			spawn_model=data.get("spawn_model"),
 			spawn_effort=data.get("spawn_effort"),
 			context_pct=data.get("context_pct"),

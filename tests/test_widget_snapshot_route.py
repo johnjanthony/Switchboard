@@ -62,7 +62,8 @@ async def test_first_push_writes_rings_keyed_by_session_id():
 	assert out["rings_changed"] is True and out["quota_changed"] is True
 	assert backend.rings == {"abc": {"pct": 0.4, "model": "opus", "status": "live",
 									  "context_tokens": 80000, "window": 200000, "is_error": False,
-									  "name": None, "name_source": None, "title_state": None}}
+									  "name": None, "name_source": None, "title_state": None,
+									  "effort": None}}
 	assert backend.pushed == "2026-06-25T00:00:00+00:00"
 
 
@@ -193,3 +194,21 @@ async def test_title_sync_failure_does_not_fail_the_snapshot_push():
 
 	assert resp.status_code == 200
 	assert backend.rings is not None, "ring write must still land when the title write fails"
+
+
+@pytest.mark.asyncio
+async def test_ring_effort_flows_into_session_registry():
+	store, backend = WidgetSnapshotStore(), _FakeBackend()
+	session_registry = SessionRegistry()
+	route = _build_widget_snapshot_route(store, backend, _FakeLogger(), session_registry)
+	body = {
+		"rings": [{"session_id": "sid-1", "pct": 0.3, "model": "claude-opus-5-5", "effort": "xhigh"}],
+		"quota": None,
+		"pushed_at": "2026-06-25T00:00:00+00:00",
+	}
+	resp = await route(_request(body))
+	assert resp.status_code == 200
+	rec = session_registry.get("sid-1")
+	assert rec.effort == "xhigh"
+	assert rec.to_payload()["model_label"] == "Opus 5.5 · xhigh"
+	assert backend.rings["sid-1"]["effort"] == "xhigh"
