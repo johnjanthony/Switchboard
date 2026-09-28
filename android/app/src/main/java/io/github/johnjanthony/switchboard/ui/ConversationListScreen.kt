@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
@@ -27,6 +28,8 @@ import androidx.compose.material3.Text
 import androidx.compose.foundation.layout.Row
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -74,6 +77,18 @@ fun ConversationListScreen(
 ) {
 	var menuExpanded by remember { mutableStateOf(false) }
 	var showQuotaPopup by remember { mutableStateOf(false) }
+
+	// A keyed LazyColumn keeps the first visible item's key in view when rows are inserted
+	// above it, so a new newest row (a fresh conversation, one bumped by activity, the Admin
+	// row returning) would land just above the viewport. While the list sits at the very top,
+	// pin the next remeasure to item 0 instead; a user scrolled down is left where they are.
+	val listState = rememberLazyListState()
+	val atTop by remember {
+		derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 }
+	}
+	SideEffect {
+		if (atTop) listState.requestScrollToItem(0)
+	}
 
 	Scaffold(
 		topBar = {
@@ -158,7 +173,7 @@ fun ConversationListScreen(
 					}
 				}
 			io.github.johnjanthony.switchboard.EmptyStateKind.NONE ->
-				LazyColumn(modifier = Modifier.fillMaxSize()) {
+				LazyColumn(modifier = Modifier.fillMaxSize(), state = listState) {
 					if (adminRow != null) {
 						item(key = "_admin_row") {
 							AdminRow(row = adminRow, onClick = { onAdminClick(adminRow) })
