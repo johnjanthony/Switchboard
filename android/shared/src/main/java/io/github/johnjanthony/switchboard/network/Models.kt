@@ -19,6 +19,7 @@ data class ChannelMessage(
 	@get:PropertyName("title") @set:PropertyName("title") var title: String? = null,
 	@get:PropertyName("attached_to_msg_id") @set:PropertyName("attached_to_msg_id") var attached_to_msg_id: String? = null,
 	@get:PropertyName("opened") @set:PropertyName("opened") var opened: Boolean = false,
+	@get:PropertyName("command_id") @set:PropertyName("command_id") var command_id: String? = null,
 )
 
 data class Pending(
