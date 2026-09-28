@@ -148,3 +148,15 @@ The build reaches John's phone only through `scripts/install-client.ps1`, at Joh
 - Publishing `COMMAND_TTL_SECONDS` to clients.
 - Pending state outside the open conversation (Page A, previews, Wear).
 - An Operator component-test harness (T-265).
+
+## As built (2026-09-28)
+
+Shipped in `822833b`..`4569642` on develop. Deviations from the sections above, each decided during execution:
+
+- **Offline offers no Cancel (John, 2026-09-28).** A command written while offline exists only in the client's local write queue; on reconnect Firebase replays its create before the Cancel's delete, and the server delivers it (live-proven on Android: both copies arrived). Cancel is offered only on "not picked up", where the command is on the server and deleting it does stop delivery. The Section 2 table's offline row therefore has no actions.
+- **Nothing in the Send, Cancel or Retry path waits for a server acknowledgement.** Firebase write promises settle only on server ack, which offline means after reconnect. Send clears the composer at once and restores the text only if the write fails; Cancel restores the text before its delete; Retry issues the delete and the fresh push together (one client's writes reach the server in order). The plan's "abort Retry if the delete fails" was dropped.
+- **Expired Retry only while the conversation is Active**, matching Not delivered; Discard is always offered.
+- **One store action for Cancel and Discard** (`withdrawQueuedMessage`): they differ only in the UI, where Cancel also restores the text.
+- **Operator's seen map is scoped to the selected conversation:** a send that leaves the queue while its conversation is not selected is forgotten rather than stamped gone (Operator loads only the selected conversation's rows), and switching conversations forgets gone sends of the one left behind. Android keeps every conversation's rows live, so it needs no such filter.
+
+Deferred follow-ups: bound the 1s ticker to rows that can still change state (it runs while a Not delivered row sits), and define one `issued_at` parse rule shared by the server and both clients (ISO-8601, missing offset = UTC). Both are latent today; every writer emits a zone-aware stamp.
