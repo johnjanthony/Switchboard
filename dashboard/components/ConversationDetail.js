@@ -64,7 +64,7 @@ function PendingSendRow({ row, active, actions }) {
 	if (row.state === "notPickedUp") {
 		buttons.push(html`<button class="pending-action" onClick=${() => actions.cancel(row)}>Cancel</button>`);
 	} else if (row.state === "expired") {
-		buttons.push(html`<button class="pending-action" onClick=${() => actions.retry(row)}>Retry</button>`);
+		if (active) buttons.push(html`<button class="pending-action" onClick=${() => actions.retry(row)}>Retry</button>`);
 		buttons.push(html`<button class="pending-action" onClick=${() => actions.discard(row)}>Discard</button>`);
 	} else if (row.state === "notDelivered") {
 		if (active) buttons.push(html`<button class="pending-action" onClick=${() => actions.retry(row)}>Retry</button>`);
@@ -155,12 +155,16 @@ function AnswerBox({ store, convId, pending }) {
 
 // The draft lives in ConversationDetail (per conversation), so a cancelled
 // pending send can put its text back.
-function MessageComposer({ store, convId, draft, setDraft }) {
+function MessageComposer({ store, convId, draft, setDraft, onSendFailed }) {
 	const send = async () => {
 		const v = String(draft == null ? "" : draft).trim();
 		if (!v) return;
+		// The push promise settles only on server acknowledgement (after reconnect
+		// when offline), and the echo row already shows the text, so clear at once
+		// and put the text back only if the write fails.
+		setDraft("");
 		const ok = await store.sendMessage(convId, v);
-		if (ok) setDraft("");
+		if (!ok) onSendFailed(v);
 	};
 	return html`<div class="message-composer">
 		<textarea
@@ -312,6 +316,8 @@ export function ConversationDetail({ store }) {
 	const pendingMsgIds = new Set(pendings.map((p) => p.msgId).filter(Boolean));
 	const draft = drafts[id] || "";
 	const setDraft = (value) => setDrafts((d) => ({ ...d, [id]: value }));
+	// Functional, so text typed since the draft was taken is kept.
+	const restoreToDraft = (text) => setDrafts((d) => ({ ...d, [id]: restoreDraft(d[id] || "", text) }));
 	const pendingSends = derivePendingSends({
 		convId: id, queued: state.messageCommands, messages: (conv && conv.messages) || {},
 		seen: state.seenSends, nowMs: Date.now(), connected: state.connected,
@@ -320,7 +326,7 @@ export function ConversationDetail({ store }) {
 		// The delete's promise settles only on server acknowledgement, so the text
 		// goes back into the composer first.
 		cancel: (row) => {
-			setDrafts((d) => ({ ...d, [id]: restoreDraft(d[id] || "", row.text) }));
+			restoreToDraft(row.text);
 			return store.withdrawQueuedMessage(row.key);
 		},
 		retry: (row) => store.retryMessage(row.key, id, row.text),
@@ -357,7 +363,7 @@ export function ConversationDetail({ store }) {
 				<div class="pending-stack">
 					${pendings.map((p) => html`<${AnswerBox} key=${p.requestId} store=${store} convId=${id} pending=${p} />`)}
 				</div>
-				${active ? html`<${MessageComposer} store=${store} convId=${id} draft=${draft} setDraft=${setDraft} />` : ""}
+				${active ? html`<${MessageComposer} store=${store} convId=${id} draft=${draft} setDraft=${setDraft} onSendFailed=${restoreToDraft} />` : ""}
 			</div>
 		</section>
 	`;

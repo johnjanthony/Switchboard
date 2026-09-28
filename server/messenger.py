@@ -262,6 +262,7 @@ class ConversationStore:
 		attached_to_msg_id: str | None = None,
 		rejected: bool = False,
 		suppress_push: bool = False,
+		command_id: str | None = None,
 	):
 		"""Append a message to /messages/<id>.
 

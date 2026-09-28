@@ -296,7 +296,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	 */
 	private fun addMessageToConversation(convId: String, msgId: String, msg: ChannelMessage) {
 		msg.command_id?.let { id ->
-			if (_seenSends.value[id]?.goneAtMs != null) _seenSends.value = _seenSends.value - id
+			_seenSends.value = PendingSendPolicy.pruneDelivered(_seenSends.value, setOf(id))
 		}
 		val row = _conversationRows.value[convId]
 		if (row == null) {

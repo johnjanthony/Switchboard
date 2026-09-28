@@ -60,7 +60,7 @@ fun PendingSendRow(
 			when (send.state) {
 				PendingSendState.NOT_PICKED_UP -> TextButton(onClick = onCancel) { Text("Cancel") }
 				PendingSendState.EXPIRED -> {
-					TextButton(onClick = onRetry) { Text("Retry") }
+					if (conversationActive) TextButton(onClick = onRetry) { Text("Retry") }
 					TextButton(onClick = onDiscard) { Text("Discard") }
 				}
 				PendingSendState.NOT_DELIVERED -> {
