@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace 'io.github.johnjanthony.switchboard'
+    namespace = 'io.github.johnjanthony.switchboard'
     compileSdk 36
 
     defaultConfig {
@@ -17,7 +17,7 @@ android {
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
-            useSupportLibrary true
+            useSupportLibrary = true
         }
     }
 
@@ -27,7 +27,7 @@ android {
             // Signed with the debug key so a release build installs over a debug
             // install in place and Google sign-in keeps working (Firebase knows
             // the debug key's fingerprint). Not a distribution signing setup.
-            signingConfig signingConfigs.debug
+            signingConfig = signingConfigs.debug
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
@@ -39,12 +39,12 @@ android {
         jvmToolchain(17)
     }
     buildFeatures {
-        compose true
+        compose = true
     }
     lint {
         // Re-enabling checks as they should be fixed in newer versions
-        abortOnError true
-        checkReleaseBuilds true
+        abortOnError = true
+        checkReleaseBuilds = true
     }
     packagingOptions {
         resources {

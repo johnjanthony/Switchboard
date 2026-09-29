@@ -18,7 +18,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -110,7 +110,7 @@ fun ConversationListScreen(
 										onClick = { onStopStatus(); menuExpanded = false }
 									)
 								}
-								Divider()
+								HorizontalDivider()
 								DropdownMenuItem(
 									text = { Text("Sessions") },
 									onClick = { onSessionsClick(); menuExpanded = false }
@@ -177,7 +177,7 @@ fun ConversationListScreen(
 					if (adminRow != null) {
 						item(key = "_admin_row") {
 							AdminRow(row = adminRow, onClick = { onAdminClick(adminRow) })
-							Divider()
+							HorizontalDivider()
 						}
 					}
 					items(rows, key = { it.id }) { row ->
@@ -192,7 +192,7 @@ fun ConversationListScreen(
 							onEndClick = onEndClick,
 							contextRing = listRowContextRing(row.members, rings),
 						)
-						Divider()
+						HorizontalDivider()
 					}
 					if (hiddenRows.isNotEmpty()) {
 						item(key = "_hidden_header") {
@@ -220,7 +220,7 @@ fun ConversationListScreen(
 									onEndClick = onEndClick,
 									contextRing = listRowContextRing(row.members, rings),
 								)
-								Divider()
+								HorizontalDivider()
 							}
 						}
 					}

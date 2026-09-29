@@ -39,6 +39,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,6 +56,7 @@ import io.github.johnjanthony.switchboard.network.WidgetRing
 import io.github.johnjanthony.switchboard.ui.theme.Amber
 import io.github.johnjanthony.switchboard.ui.theme.Coral
 import io.github.johnjanthony.switchboard.ui.theme.Jade
+import kotlinx.coroutines.launch
 
 // Status lamps matching the Operator board annunciators:
 // 1. Pending question: pulsing Coral
@@ -189,21 +191,8 @@ fun ConversationRow(
 		)
 	}
 
-	val swipeState = rememberSwipeToDismissBoxState(
-		confirmValueChange = { value ->
-			when (value) {
-				SwipeToDismissBoxValue.StartToEnd -> {
-					showEndConfirm = true
-					false
-				}
-				SwipeToDismissBoxValue.EndToStart -> {
-					showHideConfirm = true
-					false
-				}
-				else -> false
-			}
-		}
-	)
+	val swipeState = rememberSwipeToDismissBoxState()
+	val swipeScope = rememberCoroutineScope()
 
 	LaunchedEffect(row.hidden) {
 		if (swipeState.currentValue != SwipeToDismissBoxValue.Settled) {
@@ -213,6 +202,16 @@ fun ConversationRow(
 
 	SwipeToDismissBox(
 		state = swipeState,
+		// A completed swipe only asks: the matching dialog opens and the row returns,
+		// so End and Hide still happen only on the dialog's confirm.
+		onDismiss = { value ->
+			when (value) {
+				SwipeToDismissBoxValue.StartToEnd -> showEndConfirm = true
+				SwipeToDismissBoxValue.EndToStart -> showHideConfirm = true
+				SwipeToDismissBoxValue.Settled -> Unit
+			}
+			swipeScope.launch { swipeState.reset() }
+		},
 		backgroundContent = {
 			val direction = swipeState.dismissDirection
 			// End is destructive (loud red); hide is benign (quiet neutral).

@@ -20,10 +20,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Send
-import androidx.compose.material3.Divider
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -162,7 +162,7 @@ fun ConversationViewScreen(
 					},
 					navigationIcon = {
 						IconButton(onClick = onBack) {
-							Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+							Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
 						}
 					},
 					actions = {
@@ -261,7 +261,7 @@ fun ConversationViewScreen(
 						val showSubheader = idx == 0 || (msg.title != null && msg.title != prevTitle)
 						if (showSubheader && msg.title != null) {
 							Column(modifier = Modifier.fillMaxWidth()) {
-								Divider(modifier = Modifier.padding(horizontal = 24.dp))
+								HorizontalDivider(modifier = Modifier.padding(horizontal = 24.dp))
 								val titleText = msg.title
 								Text(
 									text = titleText ?: "",
@@ -328,7 +328,7 @@ private fun PredecessorBanner(title: String, onClick: () -> Unit) {
 			verticalAlignment = Alignment.CenterVertically,
 		) {
 			Icon(
-				Icons.Default.ArrowBack,
+				Icons.AutoMirrored.Filled.ArrowBack,
 				contentDescription = null,
 				modifier = Modifier.size(16.dp),
 				tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -378,7 +378,7 @@ private fun ReplyInputBar(
 				)
 				Spacer(Modifier.width(8.dp))
 				IconButton(onClick = { if (text.isNotBlank()) { onSubmit(text); text = "" } }) {
-					Icon(Icons.Default.Send, contentDescription = "Send")
+					Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
 				}
 			}
 		}
@@ -403,7 +403,7 @@ private fun MessageInputBar(text: String, onTextChange: (String) -> Unit, onSubm
 				)
 				Spacer(Modifier.width(8.dp))
 				IconButton(onClick = { if (text.isNotBlank()) { onSubmit(text); onTextChange("") } }) {
-					Icon(Icons.Default.Send, contentDescription = "Send")
+					Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
 				}
 			}
 		}

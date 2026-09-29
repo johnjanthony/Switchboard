@@ -8,7 +8,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -43,7 +43,7 @@ fun AdminNotificationsScreen(row: ConversationRow?, onBack: () -> Unit) {
 				title = { Text("Admin") },
 				navigationIcon = {
 					IconButton(onClick = onBack) {
-						Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+						Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
 					}
 				},
 			)

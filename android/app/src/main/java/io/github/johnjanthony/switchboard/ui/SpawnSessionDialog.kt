@@ -14,6 +14,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
@@ -128,7 +129,7 @@ fun SpawnSessionDialog(
 						onValueChange = {},
 						readOnly = true,
 						label = { Text("Model") },
-						modifier = Modifier.fillMaxWidth().menuAnchor(),
+						modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
 						trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelExpanded) },
 						colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
 					)
@@ -167,7 +168,7 @@ fun SpawnSessionDialog(
 							readOnly = true,
 							enabled = effortOptions.isNotEmpty(),
 							label = { Text("Effort") },
-							modifier = Modifier.fillMaxWidth().menuAnchor(),
+							modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
 							trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = effortExpanded) },
 							colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
 						)
@@ -199,7 +200,7 @@ fun SpawnSessionDialog(
 						onValueChange = { project = it },
 						label = { Text("Project") },
 						singleLine = true,
-						modifier = Modifier.fillMaxWidth().menuAnchor(),
+						modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryEditable),
 						trailingIcon = {
 							ExposedDropdownMenuDefaults.TrailingIcon(expanded = projectExpanded)
 						},
@@ -282,7 +283,7 @@ fun SpawnSessionDialog(
 								?: "select Active conversation…",
 							onValueChange = {},
 							readOnly = true,
-							modifier = Modifier.fillMaxWidth().menuAnchor(),
+							modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
 							trailingIcon = {
 								ExposedDropdownMenuDefaults.TrailingIcon(expanded = convExpanded)
 							},
