@@ -140,7 +140,7 @@ cd android
 
 Requirements:
 
-- **JDK 21** — AGP 9.x will not run on 17. Android Studio's bundled JBR is an easy source; set `JAVA_HOME` to it for CLI builds.
+- **JDK** — the Gradle daemon is pinned to JetBrains JDK 21 by `android/gradle/gradle-daemon-jvm.properties` (auto-provisioned), so `JAVA_HOME` only launches the wrapper; Android Studio's bundled JBR (JDK 25) works.
 - **`android/local.properties`** with `sdk.dir=...` pointing at your Android SDK. Gitignored — first-time setup only.
 - **`android/app/google-services.json`** — Firebase config, gitignored. Download from the Firebase Console (Project Settings -> Your apps) for an app registered under this module's `applicationId`.
 - **Android Studio**: open the `android/` directory (NOT the repo root) as the project.
