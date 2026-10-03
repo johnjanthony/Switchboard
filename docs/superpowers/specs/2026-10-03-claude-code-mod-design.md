@@ -1,7 +1,7 @@
 # Claude Code mod: phone wake and in-process hooks (design)
 
 **Date:** 2026-10-03
-**Status:** approved design (brainstorm with John, this session); spec awaiting John's review
+**Status:** approved by John 2026-10-03 (design and written spec); implementation plan `docs/superpowers/plans/2026-10-03-claude-code-mod.md` (disk-only, gitignored), approved the same day
 **Backlog:** none yet; new work from the 2026-10-03 research into Claude Code mods. Follow-ups listed under Out of scope.
 **Evidence:** vault note `Reference/Claude Code Mods` (C:\Work\ClaudeObsidian\Claude Vault), probe mod and logs at `C:\Work\Claude-Scratch\switchboard-mod-probe`.
 
@@ -53,20 +53,20 @@ From the probe mod on Claude Code 2.1.288 (Windows terminal), its type declarati
 }
 ```
 
-Mod units, one job each, under `hooks/`:
+Mod files under `hooks/` (as built 2026-10-03). The engine's load-time scan follows `$` and `$.state` references only within the module `hooks.json` names: a module that passes `$` into a function imported from another plugin file, or reads an atom declared in another file, does not load. So every function that takes `$`, and every atom, lives in `switchboard.ts`, and the other files hold the pure logic:
 
 | File | Job |
 |---|---|
-| `switchboard.ts` | `register`: wires events to the units; holds the injector. |
-| `client.ts` | Every HTTP call to the server: base URL from `SWITCHBOARD_BASE_URL` (default `http://127.0.0.1:9876`), `Authorization: Bearer` from `SWITCHBOARD_TOKEN` when set. |
-| `inbox.ts` | The 2 s poller and the delivery rules (section 3). |
-| `status.ts` | The agent-status mapping, ported from `agent-status-hook.py`. |
-| `turn-end.ts` | The `classic.Stop` away-mode check. |
-| `ask.ts` | The AskUserQuestion bridge (section 4). |
+| `switchboard.ts` | `register` and every hook; the server calls (base URL from `SWITCHBOARD_BASE_URL`, default `http://127.0.0.1:9876`, `Authorization: Bearer` from `SWITCHBOARD_TOKEN` when set); the 2 s poller and delivery rules (section 3); the turn-end check; the AskUserQuestion bridge (section 4); the `$.state` atoms. |
+| `client.ts` | Pure: default base URL, request headers, inbox-body parsing. |
+| `inbox.ts` | Pure: poll interval and backoff. |
+| `status.ts` | Pure: the agent-status mapping, ported from `agent-status-hook.py`. |
+| `turn-end.ts` | Pure: the turn-end block decision and the redirect text. |
+| `ask.ts` | Pure: the phone wording, reply unwrapping (`$.mcp.call` returns switchboard replies as `{"result": "<reply>"}`), and the terminal-sentinel check. |
 
-The session state the mod keeps lives in `$.state` under the plugin name `switchboard`, declared in a contract at `types/index.d.ts` and named in `.claude-plugin/plugin.json` as `"types"`: the held items (`string[]`), the busy flag, the running turn's id, and whether the 401 warning has been shown. `$.state` survives a hot reload; module variables do not.
+The session state the mod keeps lives in `$.state` under the plugin name `switchboard`, declared in a contract at `types/index.d.ts` and named in `.claude-plugin/plugin.json` as `"types"`: the held items (`string[]`), the busy flag, the running turn's id, and whether the 401 warning has been shown. The contract names each member inline in `PluginState` (the validator does not follow a type alias) and exports nothing else. `$.state` survives a hot reload; module variables do not.
 
-Deleted: `scripts/agent-status-hook.py`, `scripts/cli-session-injector-hook.py`, `scripts/away-mode-tool-guard-hook.py`, `scripts/cli-session-start-hook.py`, `scripts/cli-session-end-hook.py`. Kept until the agy removal, because agy's root `hooks.json` calls them: `scripts/turn-end-hook-away-mode.py`, `scripts/_hook_common.py`, `scripts/agy-identity-hook.py`.
+Deleted, but only once every Claude Code session has relaunched onto the mod: running sessions call the plugin's scripts from the live repo (the marketplace is a `directory` source), so deleting them earlier breaks those sessions' hooks. `scripts/agent-status-hook.py`, `scripts/cli-session-injector-hook.py`, `scripts/away-mode-tool-guard-hook.py`, `scripts/cli-session-start-hook.py`, `scripts/cli-session-end-hook.py`. Kept until the agy removal, because agy's root `hooks.json` calls them: `scripts/turn-end-hook-away-mode.py`, `scripts/_hook_common.py`, `scripts/agy-identity-hook.py`.
 
 ### 2. Hook mapping
 
@@ -199,3 +199,26 @@ Live checks after deploy:
 - Slash commands that run without a turn (`/away`, `/sb status`).
 - Using the inbox poll as a liveness heartbeat for the silence sweep.
 - The agy removal, which also takes the marker sweep, the `/agent_status` and `/away-mode` pops, and `SWITCHBOARD_MARKER_DIR`.
+
+## As built (2026-10-03)
+
+Commits `645a85d..32b6f39` on `develop`; plugin `2.0.0`. Where this section and the design above differ, this section is what shipped.
+
+**Task 1 probe.** All three answers were yes in a headless run: a `$.mcp.call` held 150 s returned, a `tool.call` hook's `context` reached the model, and an unawaited `$.http.fetch` finished after its hook returned. The first answer did not hold interactively (see the AskUserQuestion bridge below).
+
+**What the engine forced.**
+
+- **One module.** The engine's load-time scan follows `$`, and `$.state` atoms, only within the module `hooks.json` names; a module passing `$` into a function imported from another file does not load. Every `$`-taking function and every atom lives in `hooks/switchboard.ts`; `client.ts`, `status.ts`, `inbox.ts`, `turn-end.ts` and `ask.ts` hold only pure logic. The `$.state` contract names its members inline in `PluginState` and exports nothing (the validator rejects `export {}` and does not follow a type alias).
+- **No classic hooks, no `tool.check`.** The work org's security plugin `cc-plugin-sec-default` bypasses a user mod's `classic.*` and `tool.check` hooks, which `claude plugin test` cannot show. The turn-end check runs on a main-thread `turn.complete` that ended with an answer, and hands the agent its next turn with an unawaited `$.prompt.submit` (verified: the new turn starts about 200 ms after the hook returns) instead of a Stop block. Session start posts from `session.start`, without `source` (`/clear` raises none, so a cleared id is registered by its first status post). The switchboard tools are not pre-approved; John's sessions run in `bypassPermissions`.
+- **Sessions load the plugin from the live repo.** The marketplace is a `directory` source, so a new session reads `hooks/hooks.json` and the mod from the working tree and a version bump gates nothing, while `${CLAUDE_PLUGIN_ROOT}` in a running session's command hooks also points at the working tree. Deleting the Python scripts broke this session's running hooks once; the deletion waited until every session had relaunched onto the mod. WSL runs its own clone as its own directory marketplace.
+- **Server calls are bounded.** `$.http.fetch` has no timeout; every call races a 1.5 s timer (`FETCH_TIMEOUT_MS`).
+- **AskUserQuestion bridge and the 120 s rule.** Claude Code moves the mod's own `$.mcp.call` to a background task at 120 s, as it does the model's MCP calls, and hands back its own text in place of the reply. The bridge recognises that text (`backgroundedTaskId`, wording pinned by a test), asks nothing further, and denies with the task id, the answers so far and the questions not yet asked; John's answer then reaches the model as that task's result. Each question also races the turn's `next.signal`, so an interrupted turn stops waiting and asks nothing more. Moving the bridge off MCP is backlog T-276.
+- **`$.mcp.call` replies come wrapped** as `{"result": "<reply>"}`; `ask.ts` unwraps them.
+
+**Found and fixed on the way.** Esc on a pending `ask_human` never marked the phone card cancelled. `_await_with_progress_keepalive` awaited the handler task unshielded inside the MCP responder's still-cancelled anyio scope; that await was cancelled at once and asyncio forwarded the cancel into the handler, cutting its shielded cleanup short after the in-memory record was popped (no Firebase flag, the `pending_questions` record left behind, nothing logged). The await now runs under a 10 s shield (`32b6f39`). It predates the mod and hit every blocking tool. Operator's apparent failure to show a cancelled card was the left-over `pending_questions` record, which its answer panel reads.
+
+**Observed behaviour worth knowing.** `$.turn.abort` moves an in-flight Bash command to a background task rather than killing it, so a stop ends the turn but a running command finishes. A turn ending with no text is continued by Claude Code's own "no visible output" nudge before `turn.complete` fires.
+
+**Live checks (2026-10-03).** All passed: wake at the desk and in away mode (Windows), wake from WSL with the token, stop (377 ms from POST to `Stopped from phone`), the away-mode redirect and the live-ask exception, AskUserQuestion away (answered within 120 s, and held past 120 s with the denial and the answer arriving as the task result), Esc during a bridged question (the server cancels it; after `32b6f39` the card shows cancelled on the phone and Operator), `/exit` on Windows and WSL (member dormant through the POST), the sessions board, and `smoke.py --skip-restart`. Also checked: delivery while busy arrives as tool-result context, a draft at the desk holds delivery and the message rides the typed prompt, AskUserQuestion at the desk stays in the terminal.
+
+**Follow-ups.** Backlog T-275 to T-283: the Stop buttons, the bridge off MCP, the review's deferred minors, and the Out of scope items above.
