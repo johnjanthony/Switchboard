@@ -3,6 +3,9 @@ import { atom, read, update } from 'claude-code'
 
 import type { InboxAnswer, StatusBody } from './client'
 import { DEFAULT_BASE_URL, parseInboxBody, requestHeaders } from './client'
+import { preToolState } from './status'
+
+const SWITCHBOARD_TOOL = /^mcp__switchboard__/
 
 // The switchboard plugin's Claude Code mod: the session's link to the
 // switchboard server. Every function that takes `$`, and every $.state atom,
@@ -75,6 +78,41 @@ export const register: Register = on => {
 			await postJson($, '/session_start', { session_id: e.session_id, cwd: e.cwd, source: e.source })
 		} catch (error) {
 			$.ui.log(`switchboard: session start post failed: ${String(error)}`, { to: 'debug' })
+		}
+		return next(e)
+	})
+
+	// The Python injector answered permissionDecision "allow"; this keeps the
+	// switchboard tools pre-approved in sessions that are not in bypass mode.
+	on('tool.check', ($, e, next) =>
+		SWITCHBOARD_TOOL.test(e.tool)
+			? { decision: 'allow', reason: 'The switchboard plugin pre-approves its own tools.' }
+			: next(e),
+	)
+
+	on('tool.call', async ($, e, next) => {
+		const { tool, tool_use_id: _toolUseId, agentId: _agentId, ...input } = e
+		const sessionId = await $.session.id()
+		const cwd = await $.session.cwd()
+		postStatus($, { session_id: sessionId, cwd, event: 'PreToolUse', ...preToolState(tool, input as Record<string, unknown>) })
+		const call = SWITCHBOARD_TOOL.test(tool) ? ({ ...e, cli_session_id: sessionId, cwd } as typeof e) : e
+		const ran = await next(call)
+		postStatus($, { session_id: sessionId, cwd, event: 'PostToolUse', state: 'thinking' })
+		return ran
+	})
+
+	// turn.start fires for the main loop only (a subagent's run raises none).
+	on('turn.start', async ($, e, next) => {
+		await update($, busy, () => true)
+		await update($, turnId, () => e.turnId)
+		postStatus($, { session_id: await $.session.id(), cwd: await $.session.cwd(), event: 'UserPromptSubmit', state: 'thinking' })
+		return next(e)
+	})
+
+	on('turn.complete', async ($, e, next) => {
+		if (e.agentId === undefined) {
+			await update($, busy, () => false)
+			await update($, turnId, () => null)
 		}
 		return next(e)
 	})
