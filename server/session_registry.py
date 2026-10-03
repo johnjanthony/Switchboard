@@ -32,6 +32,10 @@ TERMINAL_STATES = ("ended", "lost")
 # lost-markable on the normal silence threshold.
 SWEEP_EXEMPT_STATES = ("awaiting_human", "awaiting_agent")
 
+# A stop from the phone is honoured only while this fresh: a stale one must
+# never cancel a turn that started after John pressed it.
+STOP_FRESH_SECONDS = 30.0
+
 # Marker-health detector: warn once when this many sessions have been
 # presumed dead while zero SessionEnd markers were applied since startup -
 # the signature of a client host whose marker dir is never swept (env var
@@ -110,6 +114,9 @@ class SessionRegistry:
 		self.markers_applied_total: int = 0
 		self.presumed_dead_total: int = 0
 		self._marker_health_warned: bool = False
+		# Stop requests by session, stamped with the monotonic clock. Kept apart
+		# from SessionRecord so a stop is never mirrored to Firebase or hydrated.
+		self._stops: dict[str, float] = {}
 
 	# -- reads ------------------------------------------------------------
 
@@ -342,6 +349,18 @@ class SessionRegistry:
 		rec.pending_notices.clear()
 		self._fire_mirror(rec)
 		return notices
+
+	def request_stop(self, cli_session_id: str) -> bool:
+		"""Queue a stop for the session's running turn; False for an unknown session."""
+		if cli_session_id not in self._records:
+			return False
+		self._stops[cli_session_id] = self._mono()
+		return True
+
+	def take_stop(self, cli_session_id: str) -> bool:
+		"""Pop the session's stop: True only when one was queued within STOP_FRESH_SECONDS."""
+		requested_at = self._stops.pop(cli_session_id, None)
+		return requested_at is not None and self._mono() - requested_at <= STOP_FRESH_SECONDS
 
 	def mark_wait_cancelled(self, cli_session_id: str) -> None:
 		"""John cancelled the blocking tool call from the CLI; without this the

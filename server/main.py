@@ -89,6 +89,44 @@ def _build_away_mode_route(registry: Registry, session_registry, backend=None, l
 	return away_mode
 
 
+def _build_inbox_route(registry: Registry, session_registry):
+	"""GET /sessions/{sid}/inbox - the Claude Code mod's single read route,
+	polled every 2 s. Pops the session's queued notices and its stop, and reads
+	away mode and the session's live blocking ask fresh. An unknown session gets
+	no notices and no stop, with away still read."""
+	async def inbox(request: Request):
+		session_id = request.path_params["sid"]
+		notices = session_registry.pop_notices(session_id)
+		stop = session_registry.take_stop(session_id)
+		pending_ask = False
+		conversation_id = registry.session_to_conversation_id.get(session_id)
+		if conversation_id:
+			pending_ask = registry.live_blocking_pending(conversation_id, session_id) is not None
+		return JSONResponse({
+			"notices": notices,
+			"stop": stop,
+			"away": bool(registry.global_away_mode),
+			"pending_ask": pending_ask,
+		})
+	return inbox
+
+
+def _build_stop_route(session_registry):
+	"""POST /sessions/{sid}/stop - queue a stop for the session's running turn,
+	delivered by its next inbox poll. The phone and Operator Stop buttons call it."""
+	async def stop(request: Request):
+		return JSONResponse({"queued": session_registry.request_stop(request.path_params["sid"])})
+	return stop
+
+
+class _DropInboxAccessLines(logging.Filter):
+	"""Every open session polls its inbox every 2 s; those lines would drown
+	logs/nssm-stdout.log, so uvicorn's access logger drops them."""
+
+	def filter(self, record: logging.LogRecord) -> bool:
+		return "/inbox" not in record.getMessage()
+
+
 def _build_session_start_route(session_registry: SessionRegistry, logger):
 	"""POST /session_start — SessionStart hook ingest. Always 200 (hook contract)."""
 	async def session_start(request: Request):
@@ -981,6 +1019,12 @@ async def _run(config: Config) -> None:
 		methods=["POST"],
 	)
 	app.add_route("/sessions", _build_sessions_route(session_registry), methods=["GET"])
+	app.add_route("/sessions/{sid}/inbox", _build_inbox_route(registry, session_registry), methods=["GET"])
+	app.add_route(
+		"/sessions/{sid}/stop",
+		_with_route_limit(_build_stop_route(session_registry), route_limiter, "/sessions/stop", logger),
+		methods=["POST"],
+	)
 	app.add_route(
 		"/agent_status",
 		_with_route_limit(
@@ -997,6 +1041,7 @@ async def _run(config: Config) -> None:
 		port=config.port,
 		log_level="info",
 	)
+	logging.getLogger("uvicorn.access").addFilter(_DropInboxAccessLines())
 	server = uvicorn.Server(uv_config)
 
 	session_end_marker_dir = _Path(config.log_path).parent / "session-end"
