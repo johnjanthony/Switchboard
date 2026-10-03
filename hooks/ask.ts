@@ -35,6 +35,34 @@ export function replyText(result: McpToolResult): string {
 	return text
 }
 
+// Claude Code moves an MCP call still running after 120 s to a background task,
+// the plugin's own $.mcp.call included, and hands the caller its own text in
+// place of the reply. The question is then still live on John's phone, and his
+// answer reaches the model as that task's result, never the bridge. Matching
+// Claude Code's wording is fragile: a test pins the text seen on 2.1.288.
+export function backgroundedTaskId(reply: string): string | undefined {
+	return /^MCP tool "[^"]+" is still running after \d+s\. It was moved to the background as task (\S+?) /.exec(reply)?.[1]
+}
+
+// What the model is told when a question went to the background: where the
+// answer will come from, what was answered already, and what was never asked.
+export function backgroundedDeny(
+	questions: readonly AskQuestion[],
+	index: number,
+	taskId: string,
+	answers: Readonly<Record<string, string>>,
+): string {
+	const parts = [
+		`John has not answered yet: question ${index + 1} of ${questions.length} ("${questions[index]?.question ?? ''}") is still live on his phone as background task ${taskId}, and his reply will arrive as that task's result.`,
+		'Do not ask it again or call ask_human before it arrives: a new ask would replace it on his phone.',
+	]
+	const answered = Object.entries(answers).map(([question, reply]) => `"${question}": ${reply}`)
+	if (answered.length > 0) parts.push(`Answered so far: ${answered.join('; ')}.`)
+	const rest = questions.slice(index + 1).map(q => `"${q.question}"`)
+	if (rest.length > 0) parts.push(`Not asked yet: ${rest.join('; ')}. Ask them with ask_human once his reply arrives.`)
+	return parts.join(' ')
+}
+
 // ask_human answers a terminal state with a JSON envelope ({"status": ...}) and
 // a refusal with text starting "ERROR:"; anything else is John's reply.
 export function isTerminal(reply: string): boolean {

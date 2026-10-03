@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { isTerminal, phoneQuestion, raceAbort } from '../ask'
+import { backgroundedTaskId, isTerminal, phoneQuestion, raceAbort } from '../ask'
 import { world } from './harness'
 
 const BRANCH = {
@@ -137,4 +137,41 @@ describe('raceAbort (a bridged question stops with its turn)', () => {
 		}
 		expect(String(error)).toContain('interrupted')
 	})
+})
+
+// Claude Code moves an MCP call still running after 120 s to a background task
+// and hands the caller this text instead of the reply, the mod's own $.mcp.call
+// included (seen live 2026-10-03, Claude Code 2.1.288).
+const BACKGROUNDED = 'MCP tool "switchboard/ask_human" is still running after 120s. It was moved to the background as task ktc87fbll and keeps running; you\'ll receive a notification with the result when it completes. You can keep working in the meantime. To stop it, use TaskStop with task_id "ktc87fbll". Note: it does not survive exiting this session.'
+
+describe('backgroundedTaskId', () => {
+	test('the harness text for a backgrounded call names its task', () => {
+		expect(backgroundedTaskId(BACKGROUNDED)).toBe('ktc87fbll')
+	})
+
+	test('a reply is not a backgrounded call', () => {
+		expect(backgroundedTaskId('develop')).toBeUndefined()
+		expect(backgroundedTaskId('run it in the background later')).toBeUndefined()
+	})
+})
+
+test('a question moved to the background stops the bridge without asking the rest', async ($, on) => {
+	const w = world(on)
+	w.inbox.push({ away: true })
+	w.mcpReplies.push(BACKGROUNDED)
+	const ran = await $.tool.call({ tool: 'AskUserQuestion', questions: [BRANCH, PUSH] })
+	expect(w.mcpCalls).toHaveLength(1)
+	expect(ran.deny).toContain('background task ktc87fbll')
+	expect(ran.deny).toContain('Which branch?')
+	expect(ran.deny).toContain('Not asked yet: "Push now?"')
+})
+
+test('answers given before a question moved to the background are reported', async ($, on) => {
+	const w = world(on)
+	w.inbox.push({ away: true })
+	w.mcpReplies.push('{"result":"develop"}', BACKGROUNDED)
+	const ran = await $.tool.call({ tool: 'AskUserQuestion', questions: [BRANCH, PUSH] })
+	expect(w.mcpCalls).toHaveLength(2)
+	expect(ran.deny).toContain('"Which branch?": develop')
+	expect(ran.deny).toContain('background task ktc87fbll')
 })

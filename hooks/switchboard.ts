@@ -2,7 +2,7 @@ import type { EngineInterface, HttpInit, HttpResponse, McpToolResult, Register, 
 import { atom, read, update } from 'claude-code'
 
 import type { AskQuestion } from './ask'
-import { isTerminal, phoneQuestion, raceAbort, replyText } from './ask'
+import { backgroundedDeny, backgroundedTaskId, isTerminal, phoneQuestion, raceAbort, replyText } from './ask'
 import type { InboxAnswer, StatusBody } from './client'
 import { DEFAULT_BASE_URL, FETCH_TIMEOUT_MS, parseInboxBody, requestHeaders } from './client'
 import { backoffMs, POLL_MS } from './inbox'
@@ -221,6 +221,8 @@ async function askFromPhone($: EngineInterface, questions: readonly AskQuestion[
 			return { deny: `Could not reach John's phone through switchboard: ${String(error)}` }
 		}
 		const reply = replyText(result)
+		const taskId = backgroundedTaskId(reply)
+		if (taskId !== undefined) return { deny: backgroundedDeny(questions, index, taskId, answers) }
 		if (result.isError || isTerminal(reply)) return { deny: `John's phone did not answer this question: ${reply}` }
 		answers[q.question] = reply
 	}

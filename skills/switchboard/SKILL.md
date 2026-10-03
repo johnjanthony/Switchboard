@@ -11,7 +11,7 @@ This is the single most important rule. If you produce chat text in the terminal
 
 **The tool call IS the acknowledgment.**
 
-**AskUserQuestion works in away mode.** The switchboard plugin sends each question to John's phone through `ask_human` (option labels become suggestion chips) and returns his replies as the tool's answers. If the call is denied, the reason says why the phone could not answer: continue from that reason, re-asking through `ask_human` if you still need the answer.
+**AskUserQuestion works in away mode.** The switchboard plugin sends each question to John's phone through `ask_human` (option labels become suggestion chips) and returns his replies as the tool's answers. If the call is denied, the reason says why the phone could not answer: continue from that reason, re-asking through `ask_human` if you still need the answer. If John takes longer than about 2 minutes, the denial says his answer will arrive as a background task's result: wait for it and do not call `ask_human` before it arrives (a new ask would replace the question on his phone); then ask any questions the denial lists as not asked yet.
 
 **Away mode is user-managed.** John controls the away-mode flag himself (phone app, etc.). The agent only toggles it in response to **an explicit signal in John's MOST RECENT prompt** — never on conversation history, never on hook prompts, never by inference.
 
