@@ -1,8 +1,9 @@
-import type { EngineInterface, HttpResponse, Register } from 'claude-code'
+import type { EngineInterface, HttpResponse, Register, ToolCallResult } from 'claude-code'
 import { atom, read, update } from 'claude-code'
 
 import type { InboxAnswer, StatusBody } from './client'
 import { DEFAULT_BASE_URL, parseInboxBody, requestHeaders } from './client'
+import { backoffMs, POLL_MS } from './inbox'
 import { preToolState } from './status'
 
 const SWITCHBOARD_TOOL = /^mcp__switchboard__/
@@ -68,9 +69,124 @@ function postStatus($: EngineInterface, body: StatusBody): void {
 	)
 }
 
+// -- inbox -------------------------------------------------------------------
+// The 2 s inbox poll and the delivery rules: idle, held items become a prompt;
+// busy, they ride the next main-loop tool result, a typed prompt, or the
+// turn-end block; a stop cancels the running turn.
+
+// The poller's own bookkeeping. Module variables on purpose: a hot reload
+// starts a fresh poller, and the old module's timer is dropped with it.
+let isPolling = false
+let failures = 0
+let resumeAt = 0
+let lastAway = false
+
+function startPoller($: EngineInterface): void {
+	isPolling = false
+	failures = 0
+	resumeAt = 0
+	$.clock.every(POLL_MS, () => {
+		void tick($)
+	})
+}
+
+async function tick($: EngineInterface): Promise<void> {
+	if (isPolling) return
+	const now = await $.clock.now()
+	if (now < resumeAt) return
+	isPolling = true
+	try {
+		const answer = await fetchInbox($, await $.session.id())
+		failures = 0
+		resumeAt = 0
+		await absorb($, answer)
+		await deliverIfIdle($)
+	} catch (error) {
+		failures += 1
+		resumeAt = now + backoffMs(failures)
+		$.ui.log(`switchboard: inbox poll failed (${failures} in a row): ${String(error)}`, { to: 'debug' })
+	} finally {
+		isPolling = false
+	}
+}
+
+async function holdNotices($: EngineInterface, notices: readonly string[]): Promise<void> {
+	if (notices.length > 0) await update($, held, list => [...list, ...notices])
+}
+
+async function absorb($: EngineInterface, answer: InboxAnswer): Promise<void> {
+	lastAway = answer.away
+	await holdNotices($, answer.notices)
+	if (answer.stop) await stopRunningTurn($)
+}
+
+// A stop applies only to a turn running now; one that finds the session idle
+// is dropped, so it can never cancel a turn John starts later.
+async function stopRunningTurn($: EngineInterface): Promise<void> {
+	const running = await read($, turnId)
+	if (!(await read($, busy)) || running === null) return
+	try {
+		await $.turn.abort({ turnId: running })
+		$.ui.log('Stopped from phone')
+	} catch (error) {
+		$.ui.log(`switchboard: stop from phone did not apply: ${String(error)}`, { to: 'debug' })
+	}
+}
+
+async function takeHeld($: EngineInterface): Promise<string[]> {
+	let taken: string[] = []
+	await update($, held, list => {
+		taken = list
+		return []
+	})
+	return taken
+}
+
+async function deliverIfIdle($: EngineInterface): Promise<void> {
+	if (await read($, busy)) return
+	if ((await read($, held)).length === 0) return
+	// At the desk John's half-typed prompt wins; the items ride on it when sent.
+	if (!lastAway && (await $.prompt.read()).text.trim() !== '') return
+	const items = await takeHeld($)
+	if (items.length === 0) return
+	// Busy first: the next tick must not submit the same session twice.
+	await update($, busy, () => true)
+	try {
+		const submitted = await $.prompt.submit({ text: items.join('\n\n') })
+		if ('drop' in submitted) {
+			await update($, busy, () => false)
+			$.ui.log('switchboard: a hook dropped the phone-message prompt', { to: 'debug' })
+		}
+	} catch (error) {
+		await update($, held, list => [...items, ...list])
+		await update($, busy, () => false)
+		$.ui.log(`switchboard: could not submit a phone message: ${String(error)}`, { to: 'debug' })
+	}
+}
+
+async function withHeldContext($: EngineInterface, ran: ToolCallResult): Promise<ToolCallResult> {
+	if ('deny' in ran && ran.deny !== undefined) return ran
+	const items = await takeHeld($)
+	if (items.length === 0) return ran
+	return { ...ran, context: [...(ran.context ?? []), ...items] }
+}
+
 // -- wiring ------------------------------------------------------------------
 
 export const register: Register = on => {
+	// session.start also fires after a hot reload, which restarts the poller.
+	// A -p run is about to exit, so a notice popped into it would be lost.
+	on('session.start', async ($, e, next) => {
+		if (e.isInteractive) startPoller($)
+		return next(e)
+	})
+
+	// A prompt John types while items are held carries them as context.
+	on('prompt.submit', async ($, e, next) => {
+		const items = await takeHeld($)
+		return items.length === 0 ? next(e) : next({ ...e, context: [...(e.context ?? []), ...items] })
+	})
+
 	// classic.SessionStart, not session.start: only it carries `source`
 	// (resume, clear), and /clear raises no session.start at all.
 	on('classic.SessionStart', async ($, e, next) => {
@@ -91,14 +207,15 @@ export const register: Register = on => {
 	)
 
 	on('tool.call', async ($, e, next) => {
-		const { tool, tool_use_id: _toolUseId, agentId: _agentId, ...input } = e
+		const { tool, tool_use_id: _toolUseId, agentId, ...input } = e
 		const sessionId = await $.session.id()
 		const cwd = await $.session.cwd()
 		postStatus($, { session_id: sessionId, cwd, event: 'PreToolUse', ...preToolState(tool, input as Record<string, unknown>) })
 		const call = SWITCHBOARD_TOOL.test(tool) ? ({ ...e, cli_session_id: sessionId, cwd } as typeof e) : e
 		const ran = await next(call)
 		postStatus($, { session_id: sessionId, cwd, event: 'PostToolUse', state: 'thinking' })
-		return ran
+		// Main loop only: a subagent must never receive John's message.
+		return agentId === undefined ? withHeldContext($, ran) : ran
 	})
 
 	// turn.start fires for the main loop only (a subagent's run raises none).
