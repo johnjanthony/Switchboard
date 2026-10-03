@@ -60,9 +60,21 @@ scripts/
   spawn-launcher.ps1         Runs in user session to open a new terminal tab
   install-client.ps1         Build and deploy the Android app to a connected phone
   agy-identity-hook.py       Antigravity (agy) hooks: PreInvocation identity teaching + status, PreToolUse identity corrector, PostToolUse status
+  mod-typecheck.sh           Type-check the Claude Code mod against the engine's declarations
 skills/
   switchboard/
     SKILL.md           Agent skill instructions (MCP tool signatures + Away Mode protocol)
+hooks/
+  hooks.json           Names the Claude Code mod's module (switchboard.ts)
+  switchboard.ts       The mod: every hook and every function that takes $ (server calls, inbox poll, delivery, stop, turn end, AskUserQuestion bridge, session start/end) plus the $.state atoms
+  client.ts            Pure: base URL default, request headers, inbox-body parsing
+  status.ts            Pure: activity-indicator mapping (tool state + detail)
+  inbox.ts             Pure: poll interval and backoff
+  turn-end.ts          Pure: away-mode turn-end decision + redirect text
+  ask.ts               Pure: AskUserQuestion phone wording, reply unwrapping, terminal-sentinel check
+  tests/               claude plugin test suites + harness.ts (the fake engine beneath the mod)
+types/
+  index.d.ts           The mod's $.state contract
 android/                     Three Gradle modules: app (phone UI), shared (library used by app + wear), wear (watch)
   shared/src/main/java/io/github/johnjanthony/switchboard/
     MainViewModel.kt         ALL Firebase RTDB listeners + command writers (StateFlow state; shared by app and wear)
@@ -153,7 +165,7 @@ Requirements:
 
 Active tools: `ask_human`, `notify_human`, `send_document_human`, `message_and_await_agent`, `post_agent_message`, `join_conversation`, `combine_conversations`, `lookup_conversation_ids`, `leave_conversation`, `set_away_mode`. Conversation tools return one-line JSON status envelopes (`ok | timeout | conversation_ended`); `ask_human` returns bare reply text with JSON terminal sentinels. `ask_human` also takes `background=true`, which returns `{"status":"pending","request_id":...}` immediately instead of blocking: the question becomes a future-less pending in a second registry slot (so it never supersedes, and is never superseded by, the session's blocking ask), a second background ask appends to the same card, and John's answer is delivered later through `server/inbound.py`'s ladder. A pending background ask does NOT satisfy the away-mode turn-end hook; a live blocking ask (e.g. one the harness moved to a background task at ~120s) DOES.
 
-Routing is by `cli_session_id`, injected by the `cli-session-injector-hook.py` PreToolUse hook. Agents pass `sender` and tool-specific args only. Non-Claude agents (Antigravity) have no injector; they pass cli_session_id (= their agy conversation UUID) and cwd explicitly on every call, taught and enforced by the agy hooks.
+Routing is by `cli_session_id`, injected by the plugin's Claude Code mod (a `tool.call` hook). Agents pass `sender` and tool-specific args only. Non-Claude agents (Antigravity) have no injector; they pass cli_session_id (= their agy conversation UUID) and cwd explicitly on every call, taught and enforced by the agy hooks.
 
 ## Conversation model
 
@@ -174,7 +186,7 @@ Switchboard ships as a Claude Code plugin. From any Claude Code session:
 /plugin install switchboard@switchboard
 ```
 
-The plugin install wires the skill and the turn-end + agent-status hooks. Two things are installed separately:
+The plugin install wires the skill and the Claude Code mod (`hooks/`). Two things are installed separately:
 
 1. **The MCP server connection.**
 
@@ -188,11 +200,11 @@ The plugin install wires the skill and the turn-end + agent-status hooks. Two th
 
     WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` AND `SWITCHBOARD_TOKEN` set - the server refuses to start non-loopback without a token (REV-003 fail-closed), and every non-loopback client must send `Authorization: Bearer <token>` on all routes except `/healthz` (loopback callers are exempt). install-service.ps1 creates the inbound firewall rule (TCP 9876, scoped to the WSL NAT pool 172.16.0.0/12, rule name "Switchboard MCP (WSL)") as defense-in-depth; the token is the enforced control.
 
-    For WSL agents, also point the hook scripts at the Windows host so their HTTP callbacks don't fall back to `127.0.0.1` (unreachable from WSL). Export these in the WSL **login-shell** chain (`~/.profile` or `~/.bash_profile`, sourced directly), NOT only `~/.bashrc`: phone-spawned WSL agents launch via `wsl.exe -e bash -l` (a login, non-interactive shell) whose `~/.bashrc` early-returns at its interactive guard before reaching the var, so a `~/.bashrc`-only value never reaches a spawned agent and its `Bearer ${SWITCHBOARD_TOKEN}` header then expands empty (401):
+    For WSL agents, also point the mod (and the agy hooks) at the Windows host so their HTTP callbacks don't fall back to `127.0.0.1` (unreachable from WSL). Export these in the WSL **login-shell** chain (`~/.profile` or `~/.bash_profile`, sourced directly), NOT only `~/.bashrc`: phone-spawned WSL agents launch via `wsl.exe -e bash -l` (a login, non-interactive shell) whose `~/.bashrc` early-returns at its interactive guard before reaching the var, so a `~/.bashrc`-only value never reaches a spawned agent and its `Bearer ${SWITCHBOARD_TOKEN}` header then expands empty (401):
 
-    - `SWITCHBOARD_BASE_URL=http://<windows-host-ip>:9876` - read by the three HTTP hooks (`agent-status-hook.py` POSTs to `/agent_status`; `turn-end-hook-away-mode.py` GETs `/away-mode`; `cli-session-start-hook.py` POSTs to `/session_start`).
-    - `SWITCHBOARD_TOKEN=<same value as the server's .env>` - read by the same three hooks; they attach `Authorization: Bearer <token>` when it is set. Required for WSL agents once the server has a token.
-    - `SWITCHBOARD_MARKER_DIR=<path>` - read by `cli-session-end-hook.py`, which writes a SessionEnd marker FILE (not an HTTP POST) that the server sweeps; point it at the server's `<logs>/session-end` dir when the hook runs on a different host.
+    - `SWITCHBOARD_BASE_URL=http://<windows-host-ip>:9876` - read by the Claude Code mod (`hooks/switchboard.ts`) and the agy hooks.
+    - `SWITCHBOARD_TOKEN=<same value as the server's .env>` - read by the same; sent as `Authorization: Bearer <token>`. Required for WSL agents once the server has a token; a wrong one shows as one `401` line in the session's transcript.
+    - `SWITCHBOARD_MARKER_DIR` is no longer read by Claude Code sessions (the mod POSTs `/session_end`); the server keeps sweeping the marker dir until the agy removal.
 
 2. **The Python server (NSSM Windows service).** Install with `scripts/install-service.ps1`. The plugin's MCP connection is useless until this is running.
 
@@ -200,20 +212,22 @@ The plugin install wires the skill and the turn-end + agent-status hooks. Two th
 
 ## Hooks
 
-The Switchboard plugin wires six Claude Code hook events automatically:
+The Switchboard plugin's Claude Code hooks are a **mod**: TypeScript function hooks that run inside the Claude Code process (`hooks/hooks.json` names `hooks/switchboard.ts`; Claude Code 2.1.287 or later). Every function that takes the engine's `$`, and every `$.state` atom, lives in `hooks/switchboard.ts`, because the engine's load-time scan follows `$` and state references only within the module `hooks.json` names; a mod that passes `$` into an imported function does not load. The pure logic sits beside it: `client.ts` (base URL, headers, inbox parsing), `status.ts` (the activity-indicator mapping), `inbox.ts` (poll timing and backoff), `turn-end.ts` (the away-mode block decision and redirect text), `ask.ts` (phone wording and reply parsing). The `$.state` contract is `types/index.d.ts`, with every member named inline in `PluginState` (the validator does not follow a type alias).
 
-- `Stop` (two handlers) — `turn-end-hook-away-mode.py` for the away-mode enforcement check; `agent-status-hook.py` for the per-conversation activity indicator. The away-mode check is pending-aware: `GET /away-mode?session_id=...` returns `pending_ask`, true when the session holds a live blocking ask, and the hook then lets the turn end silently — the harness backgrounds MCP calls still running at ~120s, so a turn can legitimately end while its `ask_human` awaits John (without this, the block message induced a re-ask that superseded the live question every ~2 minutes). Parked (future-less) and background asks do not count.
-- `UserPromptSubmit`, `PreToolUse`, `PostToolUse` — `agent-status-hook.py` for the activity indicator. `PreToolUse` also runs `cli-session-injector-hook.py`, which injects `cli_session_id` + `cwd` into every `mcp__switchboard__*` call. A separate `matcher: "AskUserQuestion"` PreToolUse entry runs `away-mode-tool-guard-hook.py`, which denies the built-in AskUserQuestion tool while away mode is on and redirects the agent to `ask_human` (option labels become `suggestions`).
-- `SessionStart` — `cli-session-start-hook.py` POSTs the session's birth (`session_id`, `cwd`, `source`) to the server's `/session_start` route so the SessionRegistry records the session; a missed birth self-heals on the first MCP call or agent-status event.
-- `SessionEnd` — `cli-session-end-hook.py` writes a SessionEnd marker file (under `SWITCHBOARD_MARKER_DIR`, the server's `<logs>/session-end` dir) that the server's `dispatch_session_end_markers` sweep applies to mark the session's member dormant on orderly exit (the marker write wins the process-exit race a synchronous POST loses).
+- **Injector:** a `tool.call` hook adds `cli_session_id` and `cwd` to every `mcp__switchboard__*` call, and a `tool.check` hook pre-approves those tools.
+- **Status:** `tool.call` posts the tool state before a call and `thinking` after; `turn.start` posts `thinking`; the turn end posts `clear`. Fire-and-forget POSTs to `/agent_status`.
+- **Inbox:** every interactive session polls `GET /sessions/{sid}/inbox` every 2 s, the only route that pops a Claude Code session's notices. Idle, held phone messages are submitted as a prompt (a turn starts with nobody at the terminal); busy, they ride the next main-loop tool result, a typed prompt, or the turn-end block. At the desk a draft in the prompt box defers delivery. A stop (`POST /sessions/{sid}/stop`) cancels the running turn.
+- **Turn end:** `classic.Stop` blocks with held messages, and in away mode without a live blocking ask blocks with the redirect text, as the Python hook did. A live blocking ask lets the turn end silently: the harness backgrounds MCP calls still running at ~120s, so a turn can legitimately end while its `ask_human` awaits John (without this, the block message induced a re-ask that superseded the live question every ~2 minutes). Parked (future-less) and background asks do not count.
+- **AskUserQuestion:** in away mode each question goes to the phone through `ask_human` (called with `$.mcp.call`; option labels become suggestions) and the replies return as the tool's answers. `$.mcp.call` hands back each switchboard reply wrapped as `{"result": "<reply>"}`, which `ask.ts` unwraps.
+- **Session start / end:** `classic.SessionStart` POSTs `/session_start`; `session.end` POSTs `/session_end` inside Claude Code's 1.5 s exit bound. The server still sweeps SessionEnd marker files until the agy removal.
 
-The hook scripts share `scripts/_hook_common.py` (stdin bytes-read, base URL, Bearer helpers); the injector deliberately remains standalone.
+Develop the mod with `claude plugin test .` (tests in `hooks/tests/`; `harness.ts` is the fake engine beneath the mod), `claude plugin validate .claude-plugin/plugin.json` (at the repo root, `validate .` checks only `marketplace.json` and never loads the hooks module), and `bash scripts/mod-typecheck.sh`; `tests/test_mod_plugin.py` runs the first two from pytest so a Claude Code update that breaks the early-access API fails the suite. An edited `hooks.json` reaches installed sessions only after a `.claude-plugin/plugin.json` version bump and a plugin update.
 
-See `hooks/hooks.json` for the canonical wiring.
+**Running sessions call the plugin's scripts from the live repo.** The marketplace is a `directory` source at this repo, so `${CLAUDE_PLUGIN_ROOT}` in a running session's hook commands expands to the working tree, not the version-gated cache. Deleting or renaming a script that some session's loaded `hooks.json` still calls breaks that session at once (a Python "can't open file" exits 2, which blocks every PreToolUse). Remove a hook script only after every session has relaunched onto hooks that no longer call it.
 
-Antigravity (agy) sessions wire four hook events - PreInvocation, PreToolUse, PostToolUse, Stop - via the repo-root `hooks.json` manifest consumed by `agy plugin install` (machines wired before the plugin restructure may still use the equivalent chezmoi-managed `~/.gemini/config/hooks.json`), not this Claude plugin. There are no SessionStart/SessionEnd equivalents: birth self-heals via the first hook POST or MCP call, and exits are detected by the sweeper's silence threshold rather than an explicit end signal.
+Antigravity (agy) sessions still use Python hooks - PreInvocation, PreToolUse, PostToolUse, Stop - via the repo-root `hooks.json` manifest consumed by `agy plugin install` (machines wired before the plugin restructure may still use the equivalent chezmoi-managed `~/.gemini/config/hooks.json`). Those scripts share `scripts/_hook_common.py`. There are no SessionStart/SessionEnd equivalents: birth self-heals via the first hook POST or MCP call, and exits are detected by the sweeper's silence threshold rather than an explicit end signal.
 
-**Server-side gating.** Hooks fire on every lifecycle event regardless of away-mode state, but the server's `/agent_status` handler short-circuits and skips the Firebase write when the cwd is not in away mode. The phone status indicator is therefore only visible during away mode. The `/agent_status` route upserts the SessionRegistry before that away-mode gate, so the session roster always updates even when the phone-facing conversation-status write is skipped; only the phone status indicator is away-mode-gated. The HTTP layer always returns 200 so the hook contract is unchanged; the gate is invisible to the hook script.
+**Server-side gating.** The server's `/agent_status` handler skips the Firebase conversation-status write when away mode is off, so the phone status indicator is only visible during away mode. The route upserts the SessionRegistry before that gate, so the session roster always updates. The HTTP layer always returns 200.
 
 ## Service management (Windows service via NSSM)
 
@@ -262,7 +276,7 @@ The moment the operator says they are stepping away (or any similar phrasing), s
 
 - Route **every** subsequent output (status, questions, completion) through `ask_human`, `notify_human`, or `send_document_human`.
 - Receiving a reply to `ask_human` **does not** exit away mode. Do not respond to replies in the terminal.
-- Never call the built-in `AskUserQuestion` tool in away mode — it renders only in the terminal. A PreToolUse guard denies it; use `ask_human` with `suggestions` instead.
+- The built-in `AskUserQuestion` tool works in away mode: the plugin's mod sends each question to John's phone through `ask_human` and returns his replies as the answers. If the call is denied, its reason says why the phone could not answer; continue from it, re-asking through `ask_human` if you still need the answer.
 
 **Exit:**
 

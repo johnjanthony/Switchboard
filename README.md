@@ -18,7 +18,7 @@ Switchboard is a local MCP gateway with cloud-synchronized state (Firebase) that
 
 ## Features
 
-- **Session-id routing**: Each agent session is identified by a `cli_session_id` injected automatically by the PreToolUse hook. Agents only pass `sender` and tool arguments.
+- **Session-id routing**: Each agent session is identified by a `cli_session_id` injected automatically by the plugin's Claude Code mod. Agents only pass `sender` and tool arguments.
 - **Conversations**: Messages, members, and state persist in Firebase as named conversations (Active / Ended). An agent joins a specific one by `ref`, or goes ref-less to land in the single still-solo conversation another agent minted ref-less in the last ~30 minutes — with no such candidate, a fresh room is minted.
 - **Asynchronous updates**: Send non-blocking notifications or deliver documents directly to your phone.
 - **In-line replies**: View your responses directly in the chat history for full context.
@@ -90,7 +90,7 @@ Switchboard ships as a Claude Code plugin. From any Claude Code session:
 /plugin install switchboard@switchboard
 ```
 
-The plugin install wires the skill and six Claude Code hook events: away-mode turn-end enforcement, the agent-status activity indicator, the `cli_session_id` injector, an away-mode guard on the built-in `AskUserQuestion` tool, and session start / end tracking. The MCP server connection is bootstrapped per host by a parallel chezmoi dotfiles effort (Windows uses `localhost:9876`; WSL uses the Windows host IP, resolvable from `/etc/resolv.conf` or `ip route show default | awk '{print $3}'`). If you are not using chezmoi, run `claude mcp add switchboard --scope user --transport http <resolved-url>` per host.
+The plugin install wires the skill and the Claude Code mod (in-process function hooks, Claude Code 2.1.287 or later): away-mode turn-end enforcement, the agent-status activity indicator, the `cli_session_id` injector, AskUserQuestion answered from the phone in away mode, session start / end tracking, and a 2 s inbox poll that lets a phone message wake an idle session. The MCP server connection is bootstrapped per host by a parallel chezmoi dotfiles effort (Windows uses `localhost:9876`; WSL uses the Windows host IP, resolvable from `/etc/resolv.conf` or `ip route show default | awk '{print $3}'`). If you are not using chezmoi, run `claude mcp add switchboard --scope user --transport http <resolved-url>` per host.
 
 WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` AND `SWITCHBOARD_TOKEN` set - the server refuses to start non-loopback without a token (fail-closed), and every non-loopback client must send `Authorization: Bearer <token>` on all routes except `/healthz` (loopback callers are exempt). The firewall inbound rule for TCP 9876 from the WSL subnet remains recommended as defense-in-depth; the token is the enforced control.
 
