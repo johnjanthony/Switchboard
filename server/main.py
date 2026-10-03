@@ -11,6 +11,7 @@ import signal
 from datetime import datetime, timezone
 from pathlib import Path as _Path
 
+import anyio
 import uvicorn
 from mcp.server.fastmcp import FastMCP
 from starlette.responses import JSONResponse
@@ -497,6 +498,9 @@ def _build_document_route(backend):
 
 
 KEEPALIVE_INTERVAL_SECONDS = 60.0
+# How long a cancelled blocking tool waits for its handler's cleanup (the
+# Firebase cancel writes) before giving up on it.
+HANDLER_CLEANUP_SECONDS = 10.0
 
 
 async def _await_with_progress_keepalive(mcp: FastMCP, coro, interval: float = KEEPALIVE_INTERVAL_SECONDS):
@@ -534,10 +538,15 @@ async def _await_with_progress_keepalive(mcp: FastMCP, coro, interval: float = K
 	except asyncio.CancelledError:
 		# Propagate the client's cancel INTO the handler so its own
 		# CancelledError cleanup (e.g. ask_human marking the question
-		# cancelled) runs before we re-raise.
+		# cancelled) runs before we re-raise. The MCP SDK cancels through the
+		# responder's anyio scope, which stays cancelled: unshielded, this await
+		# is itself cancelled at once, and asyncio forwards that second cancel
+		# into the handler, cutting its cleanup short. Bounded so a hung
+		# Firebase write cannot hold the request open.
 		task.cancel()
-		with contextlib.suppress(asyncio.CancelledError, Exception):
-			await task
+		with anyio.move_on_after(HANDLER_CLEANUP_SECONDS, shield=True):
+			with contextlib.suppress(asyncio.CancelledError, Exception):
+				await task
 		raise
 
 

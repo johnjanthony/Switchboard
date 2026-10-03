@@ -7,6 +7,7 @@ ask_human legitimately blocks for hours, so the server must heartbeat.
 
 import asyncio
 
+import anyio
 import pytest
 
 from server.main import _await_with_progress_keepalive
@@ -94,6 +95,38 @@ async def test_cancellation_reaches_handler_cleanup():
 	with pytest.raises(asyncio.CancelledError):
 		await waiter
 	assert cleanup_ran.is_set()
+
+
+@pytest.mark.anyio
+async def test_cancel_from_an_mcp_cancel_scope_lets_handler_cleanup_finish():
+	"""The MCP SDK cancels a tool call by cancelling the responder's anyio scope,
+	which stays cancelled. The keepalive's wait for the handler must not be
+	cancelled by that scope in turn: asyncio would forward the cancel into the
+	handler and cut its shielded cleanup short (Esc on ask_human left the
+	question card answerable on the phone, 2026-10-03)."""
+	mcp = _FakeMCP()
+	events = []
+
+	async def handler_with_awaited_cleanup():
+		try:
+			await asyncio.Event().wait()
+		except asyncio.CancelledError:
+			with anyio.CancelScope(shield=True):
+				await asyncio.sleep(0.02)
+				events.append("cleanup finished")
+			raise
+
+	scope = anyio.CancelScope()
+
+	async def call_tool():
+		with scope:
+			await _await_with_progress_keepalive(mcp, handler_with_awaited_cleanup(), interval=0.5)
+
+	async with anyio.create_task_group() as tg:
+		tg.start_soon(call_tool)
+		await asyncio.sleep(0.05)
+		scope.cancel()
+	assert events == ["cleanup finished"]
 
 
 @pytest.mark.anyio
