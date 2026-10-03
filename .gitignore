@@ -58,3 +58,6 @@ watchtower/**/publish/
 !/docs/switchboard-design-spec-comprehensive.md
 /docs/tracking/
 graphify-out/*
+# Claude Code writes this when the repo is loaded as a plugin with --plugin-dir
+# (it extends the engine's types under .claude-plugin/types/, which ignore themselves).
+/tsconfig.json
