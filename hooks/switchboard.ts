@@ -1,6 +1,8 @@
-import type { EngineInterface, HttpResponse, Register, ToolCallResult } from 'claude-code'
+import type { EngineInterface, HttpResponse, McpToolResult, Register, ToolCallResult } from 'claude-code'
 import { atom, read, update } from 'claude-code'
 
+import type { AskQuestion } from './ask'
+import { isTerminal, phoneQuestion, replyText } from './ask'
 import type { InboxAnswer, StatusBody } from './client'
 import { DEFAULT_BASE_URL, parseInboxBody, requestHeaders } from './client'
 import { backoffMs, POLL_MS } from './inbox'
@@ -172,6 +174,50 @@ async function withHeldContext($: EngineInterface, ran: ToolCallResult): Promise
 	return { ...ran, context: [...(ran.context ?? []), ...items] }
 }
 
+// -- AskUserQuestion from the phone --------------------------------------------
+// In away mode each question goes to John's phone through ask_human, one after
+// another, and his replies come back as the tool's answers.
+
+async function askFromPhone($: EngineInterface, questions: readonly AskQuestion[]): Promise<ToolCallResult> {
+	const sessionId = await $.session.id()
+	const cwd = await $.session.cwd()
+	const answers: Record<string, string> = {}
+	for (const [index, q] of questions.entries()) {
+		let result: McpToolResult
+		try {
+			// $.mcp.call is the plugin's own call, so the injector never sees it.
+			result = await $.mcp.call('switchboard', 'ask_human', {
+				question: phoneQuestion(q, index, questions.length),
+				suggestions: q.options.map(option => option.label),
+				sender: 'Claude',
+				cli_session_id: sessionId,
+				cwd,
+			})
+		} catch (error) {
+			return { deny: `Could not reach John's phone through switchboard: ${String(error)}` }
+		}
+		const reply = replyText(result)
+		if (result.isError || isTerminal(reply)) return { deny: `John's phone did not answer this question: ${reply}` }
+		answers[q.question] = reply
+	}
+	return { result: { questions, answers } }
+}
+
+// undefined: run the dialog in the terminal as usual (at the desk, or away
+// mode unreadable).
+async function answerIfAway($: EngineInterface, questions: readonly AskQuestion[]): Promise<ToolCallResult | undefined> {
+	let away: boolean
+	try {
+		const answer = await fetchInbox($, await $.session.id())
+		await absorb($, answer)
+		away = answer.away
+	} catch (error) {
+		$.ui.log(`switchboard: could not read away mode, so AskUserQuestion runs in the terminal: ${String(error)}`, { to: 'debug' })
+		return undefined
+	}
+	return away ? askFromPhone($, questions) : undefined
+}
+
 // -- wiring ------------------------------------------------------------------
 
 export const register: Register = on => {
@@ -213,7 +259,8 @@ export const register: Register = on => {
 		const cwd = await $.session.cwd()
 		postStatus($, { session_id: sessionId, cwd, event: 'PreToolUse', ...preToolState(tool, input as Record<string, unknown>) })
 		const call = SWITCHBOARD_TOOL.test(tool) ? ({ ...e, cli_session_id: sessionId, cwd } as typeof e) : e
-		const ran = await next(call)
+		const answered = e.tool === 'AskUserQuestion' ? await answerIfAway($, e.questions) : undefined
+		const ran = answered ?? (await next(call))
 		postStatus($, { session_id: sessionId, cwd, event: 'PostToolUse', state: 'thinking' })
 		// Main loop only: a subagent must never receive John's message.
 		return agentId === undefined ? withHeldContext($, ran) : ran
