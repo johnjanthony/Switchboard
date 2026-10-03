@@ -5,6 +5,7 @@ import type { InboxAnswer, StatusBody } from './client'
 import { DEFAULT_BASE_URL, parseInboxBody, requestHeaders } from './client'
 import { backoffMs, POLL_MS } from './inbox'
 import { preToolState } from './status'
+import { turnEndBlock } from './turn-end'
 
 const SWITCHBOARD_TOOL = /^mcp__switchboard__/
 
@@ -230,6 +231,36 @@ export const register: Register = on => {
 		if (e.agentId === undefined) {
 			await update($, busy, () => false)
 			await update($, turnId, () => null)
+		}
+		return next(e)
+	})
+
+	// Same contract as scripts/turn-end-hook-away-mode.py. A stop found here is
+	// dropped (the turn is ending anyway), so this reads notices only.
+	on('classic.Stop', async ($, e, next) => {
+		postStatus($, { session_id: e.session_id, cwd: e.cwd, event: 'Stop', state: 'clear' })
+		let answer: InboxAnswer | null = null
+		try {
+			const fetched = await fetchInbox($, e.session_id)
+			await holdNotices($, fetched.notices)
+			answer = fetched
+		} catch (error) {
+			$.ui.log(`switchboard: turn-end check could not reach the server: ${String(error)}`, { to: 'debug' })
+		}
+		const block = turnEndBlock(await takeHeld($), answer)
+		const result = await next(e)
+		if (block === undefined) return result
+		return { ...result, block: result.block === undefined ? block : `${result.block}\n\n${block}` }
+	})
+
+	// Awaited inside session.end's short bound: unlike a classic SessionEnd
+	// hook, this POST lands before the process exits. The silence sweep is the
+	// backstop for one that does not.
+	on('session.end', async ($, e, next) => {
+		try {
+			await postJson($, '/session_end', { session_id: e.sessionId, reason: e.reason })
+		} catch (error) {
+			$.ui.log(`switchboard: session end post failed: ${String(error)}`, { to: 'debug' })
 		}
 		return next(e)
 	})
