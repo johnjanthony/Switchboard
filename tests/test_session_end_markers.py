@@ -1,73 +1,14 @@
 """T-146: reliable SessionEnd dormancy via marker files + server sweep.
 
-Claude Code SessionEnd hooks are fire-and-forget and do not block process exit,
-so the prior synchronous HTTP POST raced termination and was dropped. The hook
-now writes a marker file (a fast filesystem write that wins the race); the
-server sweeps markers and applies handle_session_end."""
+Classic SessionEnd hooks are fire-and-forget and do not block process exit, so
+a synchronous HTTP POST raced termination and was dropped; the old Claude Code
+hook wrote a marker file instead and the server sweeps markers and applies
+handle_session_end. The Claude Code mod now POSTs /session_end inside its exit
+bound, but the sweep stays until the agy removal."""
 
 from __future__ import annotations
 
 import json
-import os
-import subprocess
-import sys
-from pathlib import Path
-
-import pytest
-
-_HOOK = Path(__file__).resolve().parents[1] / "scripts" / "cli-session-end-hook.py"
-
-
-def test_hook_writes_marker_file(tmp_path):
-	"""The hook reads {session_id, reason} from stdin and writes
-	<SWITCHBOARD_MARKER_DIR>/<session_id>.json with session_id, reason, ended_at."""
-	env = {**os.environ, "SWITCHBOARD_MARKER_DIR": str(tmp_path)}
-	payload = json.dumps({"session_id": "sess-abc-123", "reason": "other"}).encode("utf-8")
-	subprocess.run([sys.executable, str(_HOOK)], input=payload, env=env, check=True, timeout=10)
-
-	marker = tmp_path / "sess-abc-123.json"
-	assert marker.exists(), "hook must write a marker file named <session_id>.json"
-	data = json.loads(marker.read_text(encoding="utf-8"))
-	assert data["session_id"] == "sess-abc-123"
-	assert data["reason"] == "other"
-	assert isinstance(data.get("ended_at"), str) and data["ended_at"]
-
-
-def test_hook_writes_nothing_without_session_id(tmp_path):
-	"""No session_id in the payload -> no marker file (and no crash)."""
-	env = {**os.environ, "SWITCHBOARD_MARKER_DIR": str(tmp_path)}
-	payload = json.dumps({"reason": "other"}).encode("utf-8")
-	subprocess.run([sys.executable, str(_HOOK)], input=payload, env=env, check=True, timeout=10)
-	assert list(tmp_path.glob("*.json")) == []
-
-
-def test_hook_fallback_writes_breadcrumb(tmp_path):
-	"""Without SWITCHBOARD_MARKER_DIR the hook falls back to
-	<script>/../logs/session-end and drops an _UNPROVISIONED.txt breadcrumb
-	beside the marker. Run a COPY of the script from tmp so the fallback
-	resolves under tmp, not the repo's real logs dir."""
-	import shutil
-	scripts_dir = tmp_path / "scripts"
-	scripts_dir.mkdir()
-	hook_copy = scripts_dir / "cli-session-end-hook.py"
-	shutil.copy(_HOOK, hook_copy)
-	shutil.copy(_HOOK.parent / "_hook_common.py", scripts_dir / "_hook_common.py")
-	env = {k: v for k, v in os.environ.items() if k != "SWITCHBOARD_MARKER_DIR"}
-	payload = json.dumps({"session_id": "sess-fb-1", "reason": "other"}).encode("utf-8")
-	subprocess.run([sys.executable, str(hook_copy)], input=payload, env=env, check=True, timeout=10)
-	fallback = tmp_path / "logs" / "session-end"
-	assert (fallback / "sess-fb-1.json").exists()
-	crumb = fallback / "_UNPROVISIONED.txt"
-	assert crumb.exists()
-	assert "SWITCHBOARD_MARKER_DIR" in crumb.read_text(encoding="utf-8")
-
-
-def test_hook_env_set_writes_no_breadcrumb(tmp_path):
-	env = {**os.environ, "SWITCHBOARD_MARKER_DIR": str(tmp_path)}
-	payload = json.dumps({"session_id": "sess-nb-1", "reason": "other"}).encode("utf-8")
-	subprocess.run([sys.executable, str(_HOOK)], input=payload, env=env, check=True, timeout=10)
-	assert (tmp_path / "sess-nb-1.json").exists()
-	assert not (tmp_path / "_UNPROVISIONED.txt").exists()
 
 
 import pytest as _pytest

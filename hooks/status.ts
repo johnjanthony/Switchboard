@@ -1,4 +1,4 @@
-// The agent-status mapping, ported from scripts/agent-status-hook.py: the state
+// The agent-status mapping, ported from the former Python agent-status hook: the state
 // and one-line detail the phone shows while a session works.
 
 const CLEAR_TOOLS = new Set(['mcp__switchboard__ask_human'])
