@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { isTerminal, phoneQuestion } from '../ask'
+import { isTerminal, phoneQuestion, raceAbort } from '../ask'
 import { world } from './harness'
 
 const BRANCH = {
@@ -108,4 +108,33 @@ test('a wrapped terminal answer is recognised and denies the call', async ($, on
 	w.mcpReplies.push(JSON.stringify({ result: '{"status": "timeout"}' }))
 	const ran = await $.tool.call({ tool: 'AskUserQuestion', questions: [BRANCH] })
 	expect(ran.deny).toBe(`John's phone did not answer this question: {"status": "timeout"}`)
+})
+
+describe('raceAbort (a bridged question stops with its turn)', () => {
+	test('a wait that finishes first resolves', async () => {
+		expect(await raceAbort(Promise.resolve('develop'), new AbortController().signal)).toBe('develop')
+	})
+
+	test('an interrupted wait rejects at once', async () => {
+		const controller = new AbortController()
+		const waiting = raceAbort(new Promise<string>(() => {}), controller.signal)
+		controller.abort()
+		let error: unknown
+		try {
+			await waiting
+		} catch (caught) {
+			error = caught
+		}
+		expect(String(error)).toContain('interrupted')
+	})
+
+	test('a wait already interrupted rejects', async () => {
+		let error: unknown
+		try {
+			await raceAbort(Promise.resolve('develop'), AbortSignal.abort())
+		} catch (caught) {
+			error = caught
+		}
+		expect(String(error)).toContain('interrupted')
+	})
 })

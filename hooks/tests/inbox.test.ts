@@ -143,3 +143,16 @@ test('a refused submit puts the messages back and the next poll retries', async 
 	await w.clock.advance(2000)
 	expect(w.prompts.map(p => p.text)).toEqual([HI])
 })
+
+test('a poll the server never answers times out, and the poller recovers', async ($, on) => {
+	const w = world(on)
+	await startSession($, w)
+	w.hangFetch = true
+	await w.clock.advance(2000)
+	await w.clock.advance(1500)
+	expect(w.logs.some(l => l.to === 'debug' && l.text.includes('no answer within 1500 ms'))).toBe(true)
+	w.hangFetch = false
+	w.inbox.push({ notices: ['John (from phone): still there?'] })
+	await w.clock.advance(4000)
+	expect(w.prompts.map(p => p.text)).toEqual(['John (from phone): still there?'])
+})

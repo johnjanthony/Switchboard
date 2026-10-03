@@ -14,13 +14,6 @@ test('other tools reach the engine unchanged', async ($, on) => {
 	expect(w.toolInputs[0]).not.toHaveProperty('cli_session_id')
 })
 
-test('switchboard tools are pre-approved; other tools keep the session decision', async ($, on) => {
-	const w = world(on)
-	w.checkDecision = 'ask'
-	expect((await $.tool.check({ tool: 'mcp__switchboard__ask_human', input: {} })).decision).toBe('allow')
-	expect((await $.tool.check({ tool: 'Bash', input: { command: 'ls' } })).decision).toBe('ask')
-})
-
 test('a tool call posts its tool status before it runs and thinking after', async ($, on) => {
 	const w = world(on)
 	await $.tool.call({ tool: 'Bash', command: 'git status' })

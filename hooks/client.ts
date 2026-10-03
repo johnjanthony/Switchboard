@@ -4,6 +4,10 @@
 
 export const DEFAULT_BASE_URL = 'http://127.0.0.1:9876'
 
+// A server that accepts the connection and never answers (or a WSL route that
+// drops packets) must not stall a turn end or freeze the poller.
+export const FETCH_TIMEOUT_MS = 1_500
+
 export type InboxAnswer = { notices: string[]; stop: boolean; away: boolean; pending_ask: boolean }
 
 export type StatusBody = { session_id: string; state: string; event: string; cwd?: string; detail?: string }

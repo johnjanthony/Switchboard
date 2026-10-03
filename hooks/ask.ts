@@ -40,3 +40,23 @@ export function replyText(result: McpToolResult): string {
 export function isTerminal(reply: string): boolean {
 	return reply.startsWith('{"status":') || reply.startsWith('ERROR:')
 }
+
+// The engine leaves stopping in-flight work to the plugin: an interrupted turn
+// must not keep waiting on John's phone, or send it the next question.
+export function raceAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) return Promise.reject(new Error('interrupted'))
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = (): void => reject(new Error('interrupted'))
+		signal.addEventListener('abort', onAbort, { once: true })
+		work.then(
+			value => {
+				signal.removeEventListener('abort', onAbort)
+				resolve(value)
+			},
+			error => {
+				signal.removeEventListener('abort', onAbort)
+				reject(error)
+			},
+		)
+	})
+}

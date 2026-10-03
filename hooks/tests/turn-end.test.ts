@@ -1,7 +1,8 @@
+import type { Engine } from 'claude-code/testing'
 import { describe, expect, test } from 'claude-code/testing'
 
 import { REDIRECT_REASON_AWAY_MODE, turnEndBlock } from '../turn-end'
-import { postsTo, startSession, world } from './harness'
+import { inboxPolls, postsTo, startSession, world } from './harness'
 
 const ANSWER = { notices: [], stop: false, away: false, pending_ask: false }
 
@@ -32,40 +33,104 @@ test('the redirect text is the Python hook text, word for word', () => {
 	expect(REDIRECT_REASON_AWAY_MODE.endsWith('Only call set_away_mode(False) if John has explicitly told you he is back.')).toBe(true)
 })
 
-test('at the desk the turn ends', async ($, on) => {
-	world(on)
-	expect((await $.classic.Stop({ session_id: 'S1', stop_hook_active: false })).block).toBeUndefined()
+const DONE = { answer: '', durationMs: 1, isAborted: false, reason: 'answer' as const }
+
+async function runTurn($: Engine, id: string, done: Record<string, unknown> = {}): Promise<void> {
+	await $.turn.start({ text: 'go', turnId: id })
+	await $.turn.complete({ ...DONE, turnId: id, ...done })
+}
+
+test('at the desk the turn ends quietly', async ($, on) => {
+	const w = world(on)
+	await runTurn($, 'T1')
+	await w.clock.settle()
+	expect(w.prompts).toEqual([])
 })
 
-test('away with no live ask the turn end is blocked with the redirect', async ($, on) => {
+test('away with no live ask, the turn end hands the agent the redirect', async ($, on) => {
 	const w = world(on)
 	w.inbox.push({ away: true })
-	expect((await $.classic.Stop({ session_id: 'S1', stop_hook_active: false })).block).toBe(REDIRECT_REASON_AWAY_MODE)
+	await runTurn($, 'T1')
+	await w.clock.settle()
+	expect(w.prompts).toEqual([{ text: REDIRECT_REASON_AWAY_MODE, context: [] }])
 })
 
-test('messages waiting at turn end block it, ahead of the redirect', async ($, on) => {
+test('away with a live ask, the turn ends quietly', async ($, on) => {
+	const w = world(on)
+	w.inbox.push({ away: true, pending_ask: true })
+	await runTurn($, 'T1')
+	await w.clock.settle()
+	expect(w.prompts).toEqual([])
+})
+
+test('messages waiting at turn end ride ahead of the redirect', async ($, on) => {
 	const w = world(on)
 	w.inbox.push({ away: true, notices: ['John (from phone): wait'] })
-	expect((await $.classic.Stop({ session_id: 'S1', stop_hook_active: false })).block).toBe(
-		`John (from phone): wait\n\n${REDIRECT_REASON_AWAY_MODE}`,
-	)
+	await runTurn($, 'T1')
+	await w.clock.settle()
+	expect(w.prompts.map(p => p.text)).toEqual([`John (from phone): wait\n\n${REDIRECT_REASON_AWAY_MODE}`])
 })
 
-test('held messages block the turn end even with the server down', async ($, on) => {
+test('at the desk, messages waiting at turn end are delivered on their own', async ($, on) => {
+	const w = world(on)
+	w.inbox.push({ notices: ['John (from phone): wait'] })
+	await runTurn($, 'T1')
+	await w.clock.settle()
+	expect(w.prompts.map(p => p.text)).toEqual(['John (from phone): wait'])
+})
+
+test('held messages are delivered at turn end even with the server down', async ($, on) => {
 	const w = world(on)
 	await startSession($, w)
 	await $.turn.start({ text: '', turnId: 'T1' })
 	w.inbox.push({ notices: ['John (from phone): held'] })
 	await w.clock.advance(2000)
 	w.fetchError = 'connect ECONNREFUSED 127.0.0.1:9876'
-	expect((await $.classic.Stop({ session_id: 'S1', stop_hook_active: false })).block).toBe('John (from phone): held')
+	await $.turn.complete({ ...DONE, turnId: 'T1' })
+	await w.clock.settle()
+	expect(w.prompts.map(p => p.text)).toEqual(['John (from phone): held'])
+})
+
+test('an interrupted turn gets no redirect and no turn-end check', async ($, on) => {
+	const w = world(on)
+	w.inbox.push({ away: true })
+	await runTurn($, 'T1', { isAborted: true, reason: 'aborted' })
+	await w.clock.settle()
+	expect(w.prompts).toEqual([])
+	expect(inboxPolls(w)).toEqual([])
+})
+
+test('a refused redirect puts the messages back for the next poll', async ($, on) => {
+	const w = world(on)
+	await startSession($, w)
+	w.rejectSubmit = true
+	w.inbox.push({ away: true, notices: ['John (from phone): wait'] })
+	await runTurn($, 'T1')
+	await w.clock.settle()
+	expect(w.prompts).toEqual([])
+	expect(w.logs.some(l => l.to === 'debug' && l.text.includes('could not submit'))).toBe(true)
+	w.rejectSubmit = false
+	await w.clock.advance(2000)
+	expect(w.prompts.map(p => p.text)).toEqual(['John (from phone): wait'])
+})
+
+test('a server that never answers does not hold up the turn end', async ($, on) => {
+	const w = world(on)
+	w.hangFetch = true
+	await $.turn.start({ text: 'go', turnId: 'T1' })
+	const ended = $.turn.complete({ ...DONE, turnId: 'T1' })
+	await w.clock.advance(1500)
+	await ended
+	expect(w.prompts).toEqual([])
+	expect(w.logs.some(l => l.to === 'debug' && l.text.includes('no answer within 1500 ms'))).toBe(true)
 })
 
 test('the turn end posts clear', async ($, on) => {
 	const w = world(on)
-	await $.classic.Stop({ session_id: 'S1', cwd: 'C:/Work/X', stop_hook_active: false })
+	await runTurn($, 'T1')
 	await w.clock.settle()
-	expect(postsTo(w, '/agent_status').map(s => s.body)).toEqual([{ session_id: 'S1', cwd: 'C:/Work/X', event: 'Stop', state: 'clear' }])
+	const bodies = postsTo(w, '/agent_status').map(s => s.body)
+	expect(bodies[bodies.length - 1]).toEqual({ session_id: 'S1', cwd: 'C:/Work/X', event: 'Stop', state: 'clear' })
 })
 
 test('session end posts the session and the reason', async ($, on) => {

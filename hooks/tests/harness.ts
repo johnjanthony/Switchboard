@@ -15,6 +15,7 @@ export type World = {
 	inboxStatus: number
 	inboxRaw: string | null
 	fetchError: string | null
+	hangFetch: boolean
 	rejectSubmit: boolean
 	checkDecision: 'allow' | 'ask' | 'deny'
 	mcpReplies: string[]
@@ -35,6 +36,7 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		inboxStatus: 200,
 		inboxRaw: null,
 		fetchError: null,
+		hangFetch: false,
 		rejectSubmit: false,
 		checkDecision: 'allow',
 		mcpReplies: [],
@@ -81,6 +83,8 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		const body = e.init?.body === undefined ? null : (JSON.parse(e.init.body) as Record<string, unknown>)
 		w.sent.push({ url: e.url, method: e.init?.method ?? 'GET', headers: e.init?.headers ?? {}, body })
 		if (w.fetchError !== null) return { deny: w.fetchError }
+		// A server that accepts the connection and never answers.
+		if (w.hangFetch) return new Promise<never>(() => {})
 		if (!e.url.includes('/inbox')) return { value: { status: 200, ok: true, headers: {}, text: '{}' } }
 		const answer = { notices: [], stop: false, away: false, pending_ask: false, ...(w.inbox.shift() ?? {}) }
 		const ok = w.inboxStatus >= 200 && w.inboxStatus < 300
