@@ -74,6 +74,7 @@ Deleted: `scripts/agent-status-hook.py`, `scripts/cli-session-injector-hook.py`,
 |---|---|---|
 | SessionStart: `POST /session_start` | `classic.SessionStart` | Same body: `session_id`, `cwd`, `source`. `classic.SessionStart` rather than `session.start`, because only it carries `source` and `/clear` raises no `session.start`. |
 | Injector (PreToolUse) | `tool.call`, filtered in the hook on `e.tool` starting `mcp__switchboard__` | `next({ ...e, cli_session_id, cwd })` from `$.session.id()` and `$.session.cwd()`. |
+| Injector's `permissionDecision: "allow"` | `tool.check` on the same filter | Answers `{ decision: "allow" }`, so the switchboard tools stay pre-approved in sessions that are not in bypass mode, as the Python injector made them. |
 | Status on PreToolUse | `tool.call`, before `next` | `ask_human` posts `clear`, `message_and_await_agent` posts `waiting`, anything else `tool:<name>` with the same per-tool detail (Bash command, file name, URL host, Glob/Grep pattern; 200-char cap). Fire-and-forget. |
 | Status on PostToolUse | `tool.call`, after `await next(e)` | Posts `thinking`. Fire-and-forget. |
 | Status on UserPromptSubmit | `turn.start` on the main thread | Posts `thinking` with event `UserPromptSubmit`. `turn.start` catches typed and submitted turns alike, which the mod's own `prompt.submit` hook would not. |
@@ -98,7 +99,8 @@ Status POSTs keep sending the event names the server already maps (`map_hook_eve
 
 **Mod (`inbox.ts`).**
 
-- The poller starts on `session.start`, which also fires after a hot reload, as `$.clock.every(2000, ...)`. Each tick asks for the inbox of `$.session.id()`, so a `/clear` id change carries over. A tick is skipped while the previous one is in flight.
+- The poller starts on `session.start`, which also fires after a hot reload, as `$.clock.every(2000, ...)`, and only when `e.isInteractive`: a `claude -p` run is about to exit, so a notice popped into it would be lost. Each tick asks for the inbox of `$.session.id()`, so a `/clear` id change carries over. A tick is skipped while the previous one is in flight.
+- **At the desk, a draft in the prompt box defers delivery.** When away mode is off and `$.prompt.read()` returns non-empty text, the items stay held and ride as `context` on the prompt John is typing. In away mode a draft never holds delivery back, since a draft left behind would otherwise block every phone message.
 - On each answer:
   - **stop:** if busy, `$.turn.abort({ turnId })` and `$.ui.log("Stopped from phone")`; if idle, discard it. An abort the engine rejects (the turn already ended) goes to the debug log.
   - **notices:** append to the held list.
@@ -142,7 +144,7 @@ The server being down never breaks a Claude Code session.
 | Status POSTs | Fire-and-forget; a debug-log line (`$.ui.log(..., { to: "debug" })`) per failure. |
 | Inbox poller | Backs off from 2 s, doubling to 30 s, and returns to 2 s on the first success. Held items are kept. |
 | Turn-end check | Still blocks with items already held (they are local); no away-mode block, failing open as today. |
-| AskUserQuestion bridge | `{ deny }` with the error text, so the model can ask in the terminal instead. |
+| AskUserQuestion bridge | Away mode unreadable: the dialog runs in the terminal, as at the desk. A failed `ask_human` call: `{ deny }` with the error text, so the model can ask in the terminal instead. |
 | Session end | One attempt; the silence sweep is the backstop. |
 
 - **A 401** (WSL with a missing or wrong `SWITCHBOARD_TOKEN`) is written to the transcript once per session with `$.ui.log`, because otherwise a WSL session would silently never wake.
@@ -154,7 +156,8 @@ The server being down never breaks a Claude Code session.
 **Probe first** (the plan's first task), in an interactive session with the mod loaded by `--plugin-dir`:
 
 1. A `$.mcp.call("switchboard", "ask_human", ...)` that stays blocked past 2 minutes and then returns the reply. If it cannot, section 4 is replaced by porting today's deny (`away-mode-tool-guard-hook.py`'s reason text) and the rest of the design stands.
-2. A main-thread `tool.call` hook returning `{ ...ran, context }` is accepted and the model reads the context.
+2. A main-thread `tool.call` hook returning `{ ...ran, context }` is accepted and the model reads the context. If not, held items leave only with a typed prompt or the turn-end block.
+3. A `$.http.fetch` started without `await` in a hook completes after the hook returns. If not, the status POSTs are awaited instead (a localhost round trip is about 2 ms).
 
 **Mod tests** (`claude plugin test`, `*.test.ts`), with `mock.clock` and the test's own hooks answering `http.fetch`, `prompt.submit`, `turn.abort` and `mcp.call` beneath the mod:
 
