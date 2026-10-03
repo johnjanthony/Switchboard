@@ -231,7 +231,7 @@ def test_away_mode_without_session_id_does_not_pop_notice(cfg, logger):
 	assert session_registry.pop_notices("s1") == ["wake up"]
 
 
-def test_agent_status_user_prompt_submit_delivers_and_empties_queue(cfg, logger):
+def test_agent_status_user_prompt_submit_pops_only_for_antigravity(cfg, logger):
 	registry = Registry()
 	backend = RecordingBackend()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
@@ -246,10 +246,14 @@ def test_agent_status_user_prompt_submit_delivers_and_empties_queue(cfg, logger)
 			"state": "thinking",
 			"event": "UserPromptSubmit",
 		})
-		assert resp.status_code == 200
+		assert resp.json() == {"notices": []}
+		resp = client.post("/agent_status", json={
+			"session_id": "s1",
+			"state": "thinking",
+			"event": "UserPromptSubmit",
+			"cli": "antigravity",
+		})
 		assert resp.json() == {"notices": ["wake up"]}
-
-	assert session_registry.pop_notices("s1") == []
 
 
 def test_agent_status_pre_tool_use_does_not_pop_notice(cfg, logger):

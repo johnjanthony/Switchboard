@@ -20,6 +20,8 @@ from starlette.staticfiles import StaticFiles
 import dataclasses
 
 from server.build_info import service_identity
+from server.cli_session_end import handle_session_end
+from server.clock import now_iso
 from server.config import Config, ConfigError, load_config
 from server.gateway import (
 	build_tool_handlers,
@@ -152,6 +154,33 @@ def _build_session_start_route(session_registry: SessionRegistry, logger):
 	return session_start
 
 
+def _build_session_end_route(registry: Registry, session_registry, backend, logger):
+	"""POST /session_end - the Claude Code mod's session.end hook. A mod's
+	session.end is awaited inside a short bound, so a direct POST lands where a
+	classic SessionEnd hook's POST raced process exit (hence the marker files,
+	still swept for older clients). Always 200, like the other hook routes."""
+	async def session_end(request: Request):
+		try:
+			body = await request.json()
+		except Exception:
+			return JSONResponse({}, status_code=200)
+		session_id = body.get("session_id") if isinstance(body, dict) else None
+		if not isinstance(session_id, str) or not session_id:
+			return JSONResponse({}, status_code=200)
+		reason = body.get("reason")
+		await handle_session_end(
+			registry=registry,
+			session_id=session_id,
+			reason=reason if isinstance(reason, str) else "other",
+			now=now_iso,
+			backend=backend,
+			logger=logger,
+			session_registry=session_registry,
+		)
+		return JSONResponse({}, status_code=200)
+	return session_end
+
+
 def _build_sessions_route(session_registry: SessionRegistry):
 	"""GET /sessions - the roster as JSON (localhost trust, like /stats).
 	cli_session_id is redacted to an 8-char prefix (REV-003): the full id is
@@ -171,12 +200,11 @@ def _build_sessions_route(session_registry: SessionRegistry):
 def _build_agent_status_route(handlers, session_registry: SessionRegistry):
 	"""POST /agent_status - hook-driven status writes. Returns 200 with an empty
 	body on malformed input, or on success returns {"notices": [...]} - popped
-	for UserPromptSubmit (always) and PostToolUse (except when cli ==
-	"antigravity"). The Antigravity PostToolUse hook (agy-identity-hook.py's
-	handle_post_tool_use) posts fire-and-forget and discards the response body,
-	so popping there would destroy the notice with nothing to deliver it; its
-	own UserPromptSubmit hook is the one that actually surfaces notices to the
-	agent, so excluding it here just defers the pop to that call. The Firebase
+	only for UserPromptSubmit from cli == "antigravity", the agy hook that
+	surfaces notices to its agent. Claude Code sessions take their notices from
+	the mod's GET /sessions/{sid}/inbox poll instead, and the agy PostToolUse
+	hook discards the response body, so popping anywhere else would destroy a
+	notice with nothing to deliver it. The Firebase
 	write is awaited directly: it's a ~100ms operation, well inside the hook's
 	1-second timeout, and direct await avoids the test-loop complications of
 	background-spawned tasks.
@@ -214,7 +242,9 @@ def _build_agent_status_route(handlers, session_registry: SessionRegistry):
 			session_registry.touch_mcp(session_id, cwd=cwd or "")
 		await handlers.handle_agent_status(session_id, state, detail)
 		notices: list = []
-		if event == "UserPromptSubmit" or (event == "PostToolUse" and cli != "antigravity"):
+		# Claude Code sessions take their notices from the mod's inbox poll; only
+		# the agy UserPromptSubmit hook still pops here, until agy is removed.
+		if event == "UserPromptSubmit" and cli == "antigravity":
 			notices = session_registry.pop_notices(session_id)
 		return JSONResponse({"notices": notices}, status_code=200)
 	return agent_status
@@ -1015,6 +1045,13 @@ async def _run(config: Config) -> None:
 		"/session_start",
 		_with_route_limit(
 			_build_session_start_route(session_registry, logger), route_limiter, "/session_start", logger,
+		),
+		methods=["POST"],
+	)
+	app.add_route(
+		"/session_end",
+		_with_route_limit(
+			_build_session_end_route(registry, session_registry, backend, logger), route_limiter, "/session_end", logger,
 		),
 		methods=["POST"],
 	)

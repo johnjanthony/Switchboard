@@ -206,9 +206,9 @@ def test_post_agent_status_without_cli_keeps_default(cfg, logger):
 	assert sessions.get("c-1").cli == "claude"
 
 
-def test_post_tool_use_pops_notices_and_is_at_most_once(cfg, logger):
-	"""PostToolUse (Claude Code, no cli field) pops queued notices; a second
-	identical POST returns empty because pop_notices clears on read."""
+def test_post_tool_use_from_claude_code_does_not_pop_notices(cfg, logger):
+	"""Claude Code sessions take their notices from GET /sessions/{sid}/inbox
+	(the mod is the single consumer), so /agent_status leaves the queue alone."""
 	registry = Registry()
 	backend = RecordingBackend()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
@@ -220,11 +220,8 @@ def test_post_tool_use_pops_notices_and_is_at_most_once(cfg, logger):
 		resp = client.post("/agent_status", json={
 			"session_id": "c-1", "state": "thinking", "event": "PostToolUse", "cwd": "C:/Work/X",
 		})
-		assert resp.json() == {"notices": ["hello"]}
-		resp2 = client.post("/agent_status", json={
-			"session_id": "c-1", "state": "thinking", "event": "PostToolUse", "cwd": "C:/Work/X",
-		})
-		assert resp2.json() == {"notices": []}
+		assert resp.json() == {"notices": []}
+	assert sessions.pop_notices("c-1") == ["hello"]
 
 
 def test_pre_tool_use_does_not_pop_notices(cfg, logger):
@@ -269,8 +266,9 @@ def test_post_tool_use_from_antigravity_does_not_pop_notices(cfg, logger):
 		assert resp2.json() == {"notices": ["hello"]}
 
 
-def test_user_prompt_submit_still_pops_notices(cfg, logger):
-	"""UserPromptSubmit keeps its existing pop-on-read behavior, unchanged."""
+def test_user_prompt_submit_from_claude_code_does_not_pop_notices(cfg, logger):
+	"""Only the agy UserPromptSubmit hook still pops here (until agy is removed);
+	a Claude Code session's notices wait for its inbox poll."""
 	registry = Registry()
 	backend = RecordingBackend()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
@@ -282,4 +280,5 @@ def test_user_prompt_submit_still_pops_notices(cfg, logger):
 		resp = client.post("/agent_status", json={
 			"session_id": "c-1", "state": "thinking", "event": "UserPromptSubmit", "cwd": "C:/Work/X",
 		})
-		assert resp.json() == {"notices": ["hello"]}
+		assert resp.json() == {"notices": []}
+	assert sessions.pop_notices("c-1") == ["hello"]
