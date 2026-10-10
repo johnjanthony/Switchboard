@@ -61,7 +61,7 @@ async def test_stats_returns_all_keys_and_counts():
 	body = json.loads(resp.body)
 	assert set(body.keys()) == {
 		"active_conversations", "pending_count",
-		"oldest_pending_age_seconds", "away_mode", "healthy", "sessions", "needs_you",
+		"oldest_pending_age_seconds", "away_mode", "healthy", "sessions", "needs_you", "quota",
 	}
 	assert body["active_conversations"] == 3
 	assert body["pending_count"] == 2
@@ -153,7 +153,8 @@ async def test_stats_includes_sessions_block_with_counts_by_state():
 	resp = await route(_make_request())
 	body = json.loads(resp.body)
 
-	assert body["sessions"] == {"total": 2, "by_state": {"idle": 1, "ended": 1}}
+	assert body["sessions"]["total"] == 2
+	assert body["sessions"]["by_state"] == {"idle": 1, "ended": 1}
 
 
 @pytest.mark.asyncio
@@ -166,7 +167,7 @@ async def test_stats_sessions_block_defaults_when_session_registry_is_none():
 	resp = await route(_make_request())
 	body = json.loads(resp.body)
 
-	assert body["sessions"] == {"total": 0, "by_state": {}}
+	assert body["sessions"] == {"total": 0, "by_state": {}, "items": []}
 
 
 def test_compute_healthy_true_when_no_reconnecting_and_no_failures():
@@ -268,3 +269,33 @@ async def test_stats_needs_you_empty_when_nothing_pending():
 	route = _build_stats_route(registry, _FakeBackend([]), {"d": _FakeLoopSup(0)})
 	body = json.loads((await route(_make_request())).body)
 	assert body["needs_you"] == {}
+
+
+@pytest.mark.asyncio
+async def test_stats_lists_live_sessions_with_their_telemetry():
+	session_registry = SessionRegistry()
+	session_registry.record_session_start("sess-1", cwd="C:/Work/Switchboard")
+	session_registry.apply_telemetry("sess-1", {
+		"context": {"tokens": 412000, "window": 1000000}, "model": "claude-opus-5-5", "effort": "high",
+		"title": {"name": "Watchtower metrics reads", "source": "ai-title"},
+	})
+	session_registry.record_session_start("sess-2", cwd="C:/Work/X")
+	session_registry.record_session_end("sess-2", reason="exit", ended_at="t")
+	route = _build_stats_route(_registry(), _FakeBackend([]), {}, session_registry=session_registry)
+	body = json.loads((await route(_make_request())).body)
+	assert body["sessions"]["items"] == [{
+		"session_id": "sess-1", "name": "Watchtower metrics reads", "cwd": "C:/Work/Switchboard",
+		"surface": "windows", "state": "idle", "model_label": "Opus 5.5 · high", "effort": "high",
+		"context_pct": 0.412, "context_tokens": 412000, "context_window": 1000000,
+	}]
+
+
+@pytest.mark.asyncio
+async def test_stats_carries_the_quota_reading_or_null():
+	from server.quota_store import QuotaStore
+	quota = QuotaStore()
+	route = _build_stats_route(_registry(), _FakeBackend([]), {}, quota_store=quota)
+	assert json.loads((await route(_make_request())).body)["quota"] is None
+	quota.apply([{"kind": "five_hour", "percent_used": 10, "resets_at": None}], "t1")
+	body = json.loads((await route(_make_request())).body)
+	assert body["quota"] == {"five_hour": {"percent_used": 10, "resets_at": None}, "received_at": "t1"}

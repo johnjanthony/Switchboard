@@ -619,6 +619,11 @@ class FirebaseBackend(
 		value = await asyncio.to_thread(lambda: db.reference("quota").get())
 		return value if isinstance(value, dict) else None
 
+	async def write_presence(self, server_at: str) -> None:
+		"""Publish the server's heartbeat: the phone's and Operator's sign that
+		the server is up and reaching Firebase."""
+		await asyncio.to_thread(lambda: db.reference("presence/server_at").set(server_at))
+
 	async def write_widget_pushed_at(self, ts: str) -> None:
 		"""Publish the last-push timestamp (staleness signal for readers)."""
 		await asyncio.to_thread(lambda: db.reference("widget/pushed_at").set(ts))

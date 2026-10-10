@@ -39,6 +39,7 @@ from server.gateway.dispatch import (
 	dispatch_status_request_commands,
 	dispatch_session_sweep,
 	dispatch_conversation_sweep,
+	dispatch_presence,
 )
 from server.gateway.bg_tasks import BG_FAILURE_AUDIT_LABEL, _spawn_bg, set_bg_failure_hook
 from server.http_auth import TokenAuthMiddleware
@@ -328,7 +329,22 @@ def _compute_needs_you(registry: Registry, session_registry) -> dict:
 	return needs_you
 
 
-def _build_stats_route(registry: Registry, backend, loop_sups: dict, session_registry=None):
+_STATS_ITEM_FIELDS = ("name", "cwd", "surface", "state", "model_label", "effort", "context_pct", "context_tokens", "context_window")
+
+
+def _session_items(session_registry) -> list[dict]:
+	"""Every live session with the fields Watchtower draws. Full ids, as
+	needs_you in the same response already carries them."""
+	items = []
+	for rec in session_registry.snapshot():
+		if rec.state in TERMINAL_STATES:
+			continue
+		payload = rec.to_payload()
+		items.append({"session_id": rec.cli_session_id, **{key: payload.get(key) for key in _STATS_ITEM_FIELDS}})
+	return items
+
+
+def _build_stats_route(registry: Registry, backend, loop_sups: dict, session_registry=None, quota_store=None):
 	"""GET /stats - the widget-facing roll-up (localhost, unauthenticated, same
 	trust model as /healthz and /away-mode). The widget polls this so it never
 	needs Firebase.
@@ -360,8 +376,10 @@ def _build_stats_route(registry: Registry, backend, loop_sups: dict, session_reg
 			"sessions": {
 				"total": len(session_registry.snapshot()) if session_registry is not None else 0,
 				"by_state": session_registry.counts_by_state() if session_registry is not None else {},
+				"items": _session_items(session_registry) if session_registry is not None else [],
 			},
 			"needs_you": _compute_needs_you(registry, session_registry),
+			"quota": quota_store.snapshot() if quota_store is not None else None,
 		})
 	return stats
 
@@ -1022,6 +1040,7 @@ async def _run(config: Config) -> None:
 		"dispatch_status_request_commands": LoopSupervisor("dispatch_status_request_commands", backend, logger.surface_error),
 		"dispatch_session_sweep": LoopSupervisor("dispatch_session_sweep", backend, logger.surface_error),
 		"dispatch_conversation_sweep": LoopSupervisor("dispatch_conversation_sweep", backend, logger.surface_error),
+		"dispatch_presence": LoopSupervisor("dispatch_presence", backend, logger.surface_error),
 	}
 	mcp = _build_fastmcp(handlers, config.host)
 
@@ -1081,7 +1100,7 @@ async def _run(config: Config) -> None:
 	app.add_route("/away-mode", _build_away_mode_route(registry, session_registry, backend, logger), methods=["GET", "POST"])
 	app.add_route(
 		"/stats",
-		_build_stats_route(registry, backend, loop_sups, session_registry=session_registry),
+		_build_stats_route(registry, backend, loop_sups, session_registry=session_registry, quota_store=quota_store),
 		methods=["GET"],
 	)
 	app.add_route("/document", _build_document_route(backend), methods=["GET"])
@@ -1204,6 +1223,7 @@ async def _run(config: Config) -> None:
 			admin_retention_hours=config.admin_notification_retention_hours,
 		)
 	)
+	presence_task = asyncio.create_task(dispatch_presence(backend, loop_sups["dispatch_presence"]))
 
 	loop = asyncio.get_running_loop()
 
@@ -1233,6 +1253,7 @@ async def _run(config: Config) -> None:
 		status_request_task.cancel()
 		session_sweep_task.cancel()
 		conversation_sweep_task.cancel()
+		presence_task.cancel()
 		with contextlib.suppress(asyncio.CancelledError):
 			await dispatch_task
 		with contextlib.suppress(asyncio.CancelledError):
@@ -1255,6 +1276,8 @@ async def _run(config: Config) -> None:
 			await session_sweep_task
 		with contextlib.suppress(asyncio.CancelledError):
 			await conversation_sweep_task
+		with contextlib.suppress(asyncio.CancelledError):
+			await presence_task
 		# Flush outstanding fire-and-forget background writes (member removals,
 		# answer-history writes, pending-question cleanups, etc.) before the loop
 		# closes, so a clean shutdown doesn't drop them. Bounded so a stuck write

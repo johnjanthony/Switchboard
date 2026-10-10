@@ -807,6 +807,22 @@ async def dispatch_session_sweep(
 		await asyncio.sleep(interval)
 
 
+async def dispatch_presence(backend, supervisor, *, interval: float = 60.0, now=None):
+	"""Write presence/server_at at once and then every interval, so a reader can
+	tell the server is up and reaching Firebase without depending on Watchtower."""
+	from server.clock import now_iso
+	stamp = now or now_iso
+	while True:
+		try:
+			await backend.write_presence(stamp())
+			supervisor.record_success()
+		except asyncio.CancelledError:
+			raise
+		except Exception as exc:
+			await supervisor.record_crash(exc)
+		await asyncio.sleep(interval)
+
+
 async def _conversation_sweep_once(registry, backend, logger, *, retention_hours, now_ts=None):
 	"""One retention tick (WP-10): delete ended conversations older than the
 	horizon. RTDB meta decides ended/age; the in-memory registry is a veto -
