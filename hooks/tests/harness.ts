@@ -25,6 +25,10 @@ export type World = {
 	logs: Array<{ text: string; to: string }>
 	mcpCalls: Array<{ server: string; tool: string; args: Record<string, unknown> }>
 	toolInputs: Array<Record<string, unknown>>
+	dirs: string[]
+	files: Record<string, string>
+	readError: string | null
+	reads: string[]
 }
 
 export function world(on: On, env: Record<string, string> = {}): World {
@@ -46,6 +50,10 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		logs: [],
 		mcpCalls: [],
 		toolInputs: [],
+		dirs: [],
+		files: {},
+		readError: null,
+		reads: [],
 	}
 	mock.env(on, env)
 	on('session.id', () => ({ value: w.sessionId }))
@@ -90,6 +98,23 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		const ok = w.inboxStatus >= 200 && w.inboxStatus < 300
 		return { value: { status: w.inboxStatus, ok, headers: {}, text: w.inboxRaw ?? JSON.stringify(answer) } }
 	})
+	on('session.measure', (_$, e) => ({ changed: e.changed }))
+	on('command.run', (_$, e) => ({ text: `ran ${e.command}` }))
+	on('turn.step', async function* (_$, e) {
+		return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: null }
+	})
+	on('fs.list', () => ({ value: w.dirs.map(name => ({ name, kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false })) }))
+	// The engine hands fs handlers native paths (backslashes on Windows); the
+	// world keys files by the forward-slash paths the mod builds.
+	const slashed = (path: string): string => path.replaceAll('\\', '/')
+	on('fs.exists', (_$, e) => ({ value: slashed(e.path) in w.files }))
+	on('fs.read', (_$, e) => {
+		const path = slashed(e.path)
+		w.reads.push(path)
+		if (w.readError !== null) return { deny: w.readError }
+		const text = w.files[path]
+		return text === undefined ? { deny: `no such file: ${path}` } : { value: text }
+	})
 	return w
 }
 
@@ -105,4 +130,19 @@ export function postsTo(w: World, path: string): Sent[] {
 export async function startSession($: Engine, w: World): Promise<void> {
 	await $.session.start({ cwd: 'C:/Work/X', surface: 'terminal', isInteractive: true })
 	await w.clock.settle()
+}
+
+// One model request through the turn.step chain. The test engine leaves a
+// stream's `result` undefined, so the stream is drained by hand.
+export async function step(
+	$: Engine,
+	input: { model: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | number; agentId?: string },
+): Promise<void> {
+	const stream = $.turn.step({ turnId: 'T1', index: 0, messageCount: 1, ...input })
+	let chunk = await stream.next()
+	while (!chunk.done) chunk = await stream.next()
+}
+
+export async function runCommand($: Engine, command: string, args = ''): Promise<void> {
+	await $.command.run({ command, args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
 }

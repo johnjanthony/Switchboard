@@ -7,6 +7,8 @@ import type { InboxAnswer, StatusBody } from './client'
 import { DEFAULT_BASE_URL, FETCH_TIMEOUT_MS, parseInboxBody, requestHeaders } from './client'
 import { backoffMs, POLL_MS } from './inbox'
 import { preToolState } from './status'
+import type { Title } from './telemetry'
+import { claudeConfigDir, effortLevel, latestTitle, measureReport } from './telemetry'
 import { turnEndBlock } from './turn-end'
 
 const SWITCHBOARD_TOOL = /^mcp__switchboard__/
@@ -84,6 +86,89 @@ function postStatus($: EngineInterface, body: StatusBody): void {
 	postJson($, '/agent_status', body).catch(error =>
 		$.ui.log(`switchboard: status post failed: ${String(error)}`, { to: 'debug' }),
 	)
+}
+
+// -- telemetry ---------------------------------------------------------------
+// The session's context, rate limits, model, effort and title, reported to the
+// server as they change. Kept per session id, so after a /clear (a new id with
+// no session.start) the new session reports afresh.
+
+type Telemetry = {
+	sessionId: string
+	model?: string
+	effort?: string | null
+	title?: string
+	// No more reads after turns: a title was found, or the transcript could not be read.
+	titleDone: boolean
+	transcript?: string
+}
+
+let telemetry: Telemetry | undefined
+let telemetryFailing = false
+
+async function telemetryFor($: EngineInterface): Promise<Telemetry> {
+	const sessionId = await $.session.id()
+	if (telemetry?.sessionId !== sessionId) telemetry = { sessionId, titleDone: false }
+	return telemetry
+}
+
+// Fire-and-forget like the status posts, with no retry: the next measurement
+// carries fresh figures. A failing server is logged once per failure streak.
+function postTelemetry($: EngineInterface, sessionId: string, report: Record<string, unknown>): void {
+	if (Object.keys(report).length === 0) return
+	const failed = (reason: string): void => {
+		if (!telemetryFailing) $.ui.log(`switchboard: telemetry post failed: ${reason}`, { to: 'debug' })
+		telemetryFailing = true
+	}
+	postJson($, `/sessions/${encodeURIComponent(sessionId)}/telemetry`, report).then(
+		res => {
+			if (res.ok) telemetryFailing = false
+			else failed(`answered ${res.status}`)
+		},
+		error => failed(String(error)),
+	)
+}
+
+async function noteModel($: EngineInterface, model: string, effort: string | null): Promise<void> {
+	const t = await telemetryFor($)
+	if (t.model === model && t.effort === effort) return
+	t.model = model
+	t.effort = effort
+	postTelemetry($, t.sessionId, { model, effort })
+}
+
+async function findTranscript($: EngineInterface, sessionId: string): Promise<string | undefined> {
+	const base = claudeConfigDir(await $.env.get('CLAUDE_CONFIG_DIR'), await $.env.get('HOME'), await $.env.get('USERPROFILE'))
+	if (base === undefined) return undefined
+	for (const entry of await $.fs.list(`${base}/projects`)) {
+		if (entry.kind !== 'dir') continue
+		const path = `${base}/projects/${entry.name}/${sessionId}.jsonl`
+		if (await $.fs.exists(path)) return path
+	}
+	return undefined
+}
+
+// Reads the transcript for the session's latest title. $.fs.read refuses a file
+// over 4 MiB, which ends the search for this session (the server keeps the name
+// a resumed session already had); a /rename then falls back to its own args.
+async function refreshTitle($: EngineInterface, renamedTo = ''): Promise<void> {
+	const t = await telemetryFor($)
+	let title: Title | undefined
+	try {
+		t.transcript ??= await findTranscript($, t.sessionId)
+		if (t.transcript === undefined) return
+		title = latestTitle(await $.fs.read(t.transcript))
+	} catch (error) {
+		t.titleDone = true
+		$.ui.log(`switchboard: could not read the transcript for its title: ${String(error)}`, { to: 'debug' })
+		if (renamedTo.trim() !== '') title = { name: renamedTo.trim(), source: 'custom-title' }
+	}
+	if (title === undefined) return
+	t.titleDone = true
+	const key = `${title.source}\n${title.name}`
+	if (t.title === key) return
+	t.title = key
+	postTelemetry($, t.sessionId, { title })
 }
 
 // -- inbox -------------------------------------------------------------------
@@ -287,6 +372,8 @@ export const register: Register = on => {
 		} catch (error) {
 			$.ui.log(`switchboard: session start post failed: ${String(error)}`, { to: 'debug' })
 		}
+		// A resumed session's transcript may already hold its title.
+		void refreshTitle($)
 		if (e.isInteractive) startPoller($)
 		return next(e)
 	})
@@ -326,6 +413,8 @@ export const register: Register = on => {
 		if (e.agentId !== undefined) return next(e)
 		await update($, turnId, () => null)
 		postStatus($, { session_id: await $.session.id(), cwd: await $.session.cwd(), event: 'Stop', state: 'clear' })
+		// Claude Code writes the AI title after the first turn; read until found.
+		if (!(await telemetryFor($)).titleDone) void refreshTitle($)
 		if (e.reason === 'answer') await checkTurnEnd($)
 		else await update($, busy, () => false)
 		return next(e)
@@ -341,5 +430,26 @@ export const register: Register = on => {
 			$.ui.log(`switchboard: session end post failed: ${String(error)}`, { to: 'debug' })
 		}
 		return next(e)
+	})
+
+	// After each main-thread turn, and when a rate-limit window moves a point.
+	// It can fire before session.start; the server creates the record.
+	on('session.measure', async ($, e, next) => {
+		postTelemetry($, await $.session.id(), measureReport(e))
+		return next(e)
+	})
+
+	// Observe only: every chunk streams through untouched. Subagent steps are
+	// skipped, since a subagent may run on another model.
+	on('turn.step', async function* ($, e, next) {
+		if (e.agentId === undefined) await noteModel($, e.model, effortLevel(e.effort))
+		return yield* next(e)
+	})
+
+	// A /rename has written its custom-title row by the time its command returns.
+	on('command.run', { command: 'rename' }, async ($, e, next) => {
+		const ran = await next(e)
+		void refreshTitle($, e.args)
+		return ran
 	})
 }
