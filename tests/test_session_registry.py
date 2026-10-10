@@ -1,7 +1,5 @@
 """SessionRegistry unit tests - pure in-memory, no backend."""
 
-import pytest
-
 from server.session_registry import (
 	SessionRecord,
 	SessionRegistry,
@@ -67,16 +65,27 @@ def test_session_end_marks_ended():
 	assert rec.end_reason == "logout"
 	assert reg.record_session_end("sess-GONE", reason="logout", ended_at="x") is None
 
-def test_rings_enrich_and_discover():
+def test_rings_no_longer_write_session_fields_or_discover_sessions():
+	# The mod reports model, effort, context and title now; a Watchtower ring
+	# keeps only the tab-title marker until Watchtower retires.
 	reg = _reg()
 	reg.record_session_start("sess-A", cwd="C:/Work/X")
 	reg.apply_rings({
-		"sess-A": {"pct": 41.5, "model": "opus", "status": "ok"},
-		"sess-NEW": {"pct": 10.0, "model": "sonnet", "status": "ok"},
+		"sess-A": {"pct": 0.4, "model": "opus", "effort": "high", "name": "T", "name_source": "ai-title"},
+		"sess-NEW": {"pct": 0.1, "model": "sonnet", "title_state": "star"},
 	})
-	assert reg.get("sess-A").context_pct == 41.5
-	assert reg.get("sess-A").model == "opus"
-	assert reg.get("sess-NEW").source == "rings"
+	rec = reg.get("sess-A")
+	assert (rec.context_pct, rec.model, rec.effort, rec.name) == (None, None, None, None)
+	assert reg.get("sess-NEW") is None
+
+
+def test_a_ring_never_bumps_last_event_at():
+	clock = ["2026-07-06T12:00:00+00:00"]
+	reg = SessionRegistry(now=lambda: clock[0])
+	reg.record_session_start("sess-A", cwd="C:/Work/X")
+	clock[0] = "2026-07-06T13:00:00+00:00"
+	reg.apply_rings({"sess-A": {"title_state": "working"}})
+	assert reg.get("sess-A").last_event_at == "2026-07-06T12:00:00+00:00"
 
 def test_binding_and_sender_setters():
 	reg = _reg()
@@ -99,9 +108,9 @@ def test_mirror_fires_on_change_only():
 	reg.record_session_start("sess-A", cwd="C:/Work/X")
 	n = len(calls)
 	assert n >= 1
-	reg.apply_rings({"sess-A": {"pct": 41.5, "model": "opus", "status": "ok"}})
+	reg.apply_telemetry("sess-A", {"model": "opus", "effort": "high"})
 	assert len(calls) == n + 1
-	reg.apply_rings({"sess-A": {"pct": 41.5, "model": "opus", "status": "ok"}})
+	reg.apply_telemetry("sess-A", {"model": "opus", "effort": "high"})
 	assert len(calls) == n + 1  # identical payload, no re-fire
 
 def test_sweep_marks_lost_and_prunes():
@@ -177,16 +186,6 @@ def test_last_transition_source():
 	assert reg.get("sess-A").last_transition_source == "hook:UserPromptSubmit"
 	reg.record_session_end("sess-A", reason="logout", ended_at="2026-07-06T13:00:00+00:00")
 	assert reg.get("sess-A").last_transition_source == "session_end"
-
-def test_apply_rings_copies_name():
-	reg = _reg()
-	reg.record_session_start("sess-A", cwd="C:/Work/X")
-	reg.apply_rings({"sess-A": {"pct": 10.0, "model": "opus", "status": "ok",
-		"name": "Fixing FCM tests", "name_source": "ai-title"}})
-	rec = reg.get("sess-A")
-	assert rec.name == "Fixing FCM tests"
-	assert rec.name_source == "ai-title"
-	assert rec.last_transition_source == "session_start"  # apply_rings must not touch it
 
 def test_resume_sentinel_detects_id_change():
 	clock = [1000.0]
@@ -471,50 +470,15 @@ def test_record_spawn_choice_does_not_clobber_existing_cwd():
 	assert rec.surface == "windows"
 
 
-def test_apply_rings_sets_effort_alongside_model():
-	reg = _reg()
-	reg.record_session_start("sess-A", cwd="C:/Work/X")
-	reg.apply_rings({"sess-A": {"pct": 0.1, "model": "claude-opus-5-5", "effort": "xhigh"}})
-	rec = reg.get("sess-A")
-	assert rec.model == "claude-opus-5-5"
-	assert rec.effort == "xhigh"
-
-
-@pytest.mark.parametrize("haiku_ring", [
-	{"pct": 0.1, "model": "claude-haiku-4-5-20251001", "effort": None},
-	{"pct": 0.1, "model": "claude-haiku-4-5-20251001"},
-])
-def test_apply_rings_model_without_effort_clears_effort(haiku_ring):
-	# A /model switch to haiku, whose turns carry no effort. The route always
-	# supplies the key (None when absent); a direct caller may omit it.
-	reg = _reg()
-	reg.record_session_start("sess-A", cwd="C:/Work/X")
-	reg.apply_rings({"sess-A": {"pct": 0.1, "model": "claude-opus-5-5", "effort": "xhigh"}})
-	reg.apply_rings({"sess-A": haiku_ring})
-	rec = reg.get("sess-A")
-	assert rec.model == "claude-haiku-4-5-20251001"
-	assert rec.effort is None
-
-
-def test_apply_rings_without_model_changes_neither():
-	reg = _reg()
-	reg.record_session_start("sess-A", cwd="C:/Work/X")
-	reg.apply_rings({"sess-A": {"pct": 0.1, "model": "claude-opus-5-5", "effort": "xhigh"}})
-	reg.apply_rings({"sess-A": {"pct": 0.2, "model": None, "effort": "low"}})
-	rec = reg.get("sess-A")
-	assert rec.model == "claude-opus-5-5"
-	assert rec.effort == "xhigh"
-
-
 def test_effort_change_alone_fires_mirror():
 	# /effort mid-session changes only effort; the chip must still update.
 	calls = []
 	reg = _reg()
 	reg.set_mirror(lambda sid, payload: calls.append(payload))
 	reg.record_session_start("sess-A", cwd="C:/Work/X")
-	reg.apply_rings({"sess-A": {"pct": 0.1, "model": "claude-opus-5-5", "effort": "high"}})
+	reg.apply_telemetry("sess-A", {"model": "claude-opus-5-5", "effort": "high"})
 	n = len(calls)
-	reg.apply_rings({"sess-A": {"pct": 0.1, "model": "claude-opus-5-5", "effort": "xhigh"}})
+	reg.apply_telemetry("sess-A", {"model": "claude-opus-5-5", "effort": "xhigh"})
 	assert len(calls) == n + 1
 	assert calls[-1]["model_label"] == "Opus 5.5 · xhigh"
 
@@ -525,7 +489,7 @@ def test_to_payload_resolves_spawn_pick_then_observation():
 	payload = reg.get("sess-A").to_payload()
 	assert payload["model_label"] == "Sonnet · medium"
 	assert payload["model_source"] == "spawn"
-	reg.apply_rings({"sess-A": {"pct": 0.1, "model": "claude-sonnet-5-5", "effort": "medium"}})
+	reg.apply_telemetry("sess-A", {"model": "claude-sonnet-5-5", "effort": "medium"})
 	payload = reg.get("sess-A").to_payload()
 	assert payload["model_label"] == "Sonnet 5.5 · medium"
 	assert payload["model_source"] == "observed"

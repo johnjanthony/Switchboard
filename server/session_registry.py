@@ -307,44 +307,20 @@ class SessionRegistry:
 		return rec
 
 	def apply_rings(self, rings: dict) -> None:
-		"""Enrich known sessions from a Watchtower snapshot; discover unknown ones.
-		A ring sighting bumps last_event_at (a second, hook-independent liveness
-		signal) but never changes state - state is the hooks' story. Terminal
-		(ended/lost) records are skipped entirely: a transcript ring is not
-		proof of life and must not defer retention pruning (REV-114)."""
+		"""Take the tab-title marker from a Watchtower snapshot, the one session
+		field Watchtower still owns until it retires. Model, effort, context and
+		title come from the session's mod (apply_telemetry) and liveness from its
+		inbox poll, so a ring writes none of those, never bumps last_event_at and
+		never creates a record. Terminal records are skipped (REV-114)."""
 		for session_id, ring in (rings or {}).items():
-			if not isinstance(ring, dict):
+			if not isinstance(ring, dict) or "title_state" not in ring:
 				continue
 			rec = self._records.get(session_id)
-			if rec is None:
-				rec = self._ensure(session_id, source="rings")
-			elif rec.state in TERMINAL_STATES:
-				# REV-114: a ring is a transcript-file sighting, not proof of
-				# life - transcripts outlive their sessions. Bumping
-				# last_event_at here would defer the retention prune for as
-				# long as Watchtower keeps sighting the file. Skip terminal
-				# records entirely (no enrichment, no mirror churn).
+			if rec is None or rec.state in TERMINAL_STATES:
 				continue
-			model = ring.get("model")
-			pct = ring.get("pct")
-			if isinstance(model, str) and model:
-				rec.model = model
-				# Effort travels with the model it was read alongside, so a switch
-				# to a model without effort tiers (haiku) clears the old value.
-				effort = ring.get("effort")
-				rec.effort = effort if isinstance(effort, str) and effort else None
-			if isinstance(pct, (int, float)):
-				rec.context_pct = float(pct)
-			name = ring.get("name")
-			name_source = ring.get("name_source")
-			if isinstance(name, str) and name:
-				rec.name = name
-				rec.name_source = name_source if isinstance(name_source, str) else None
-			if "title_state" in ring:
-				ts = ring.get("title_state")
-				rec.title_state = ts if isinstance(ts, str) and ts in ("working", "star") else None
+			ts = ring.get("title_state")
+			rec.title_state = ts if isinstance(ts, str) and ts in ("working", "star") else None
 			self._recompute_blocked(rec)
-			rec.last_event_at = self._now()
 			self._fire_mirror(rec)
 
 	def set_binding(self, cli_session_id: str, conversation_id: str | None) -> None:

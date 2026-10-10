@@ -106,26 +106,22 @@ async def test_rings_not_a_list_returns_400():
 
 
 @pytest.mark.asyncio
-async def test_unknown_ring_discovers_session_in_registry():
+async def test_an_unknown_ring_no_longer_creates_a_session():
 	store, backend = WidgetSnapshotStore(), _FakeBackend()
 	session_registry = SessionRegistry()
 	route = _build_widget_snapshot_route(store, backend, _FakeLogger(), session_registry)
-	body = {
-		"rings": [{"session_id": "unseen-session", "pct": 0.3, "model": "sonnet"}],
-		"quota": None,
-		"pushed_at": "2026-06-25T00:00:00+00:00",
-	}
+	body = {"rings": [{"session_id": "unseen-session", "pct": 0.3, "model": "sonnet"}], "quota": None, "pushed_at": "t"}
 	resp = await route(_request(body))
 	assert resp.status_code == 200
-	rec = session_registry.get("unseen-session")
-	assert rec is not None
-	assert rec.source == "rings"
+	assert session_registry.get("unseen-session") is None
+	assert "unseen-session" in backend.rings  # widget/rings still carries it for consumers not yet moved
 
 
 @pytest.mark.asyncio
-async def test_ring_name_and_source_flow_into_session_registry():
+async def test_only_the_tab_title_marker_flows_into_a_known_session():
 	store, backend = WidgetSnapshotStore(), _FakeBackend()
 	session_registry = SessionRegistry()
+	session_registry.record_session_start("sid-1", cwd="C:/Work/X")
 	route = _build_widget_snapshot_route(store, backend, _FakeLogger(), session_registry)
 	body = {
 		"rings": [{"session_id": "sid-1", "pct": 0.3, "model": "sonnet",
@@ -136,70 +132,14 @@ async def test_ring_name_and_source_flow_into_session_registry():
 	resp = await route(_request(body))
 	assert resp.status_code == 200
 	rec = session_registry.get("sid-1")
-	assert rec is not None
-	assert rec.name == "Fixing tests"
-	assert rec.title_state == "star"
+	assert (rec.name, rec.model, rec.title_state) == (None, None, "star")
 
 
 @pytest.mark.asyncio
-async def test_ring_name_retitles_its_single_agent_conversation():
-	"""The route is the only place ring names arrive, so it is where the
-	session-title sync has to be wired."""
-	from server.registry import Registry
-	from tests.conftest import make_active_conversation
-
-	store, backend = WidgetSnapshotStore(), _FakeBackend()
-	registry = Registry()
-	conv = make_active_conversation(conversation_id="conv-w1", member_session_id="sid-1")
-	conv.title_source = "default"
-	registry.conversations["conv-w1"] = conv
-	registry.bind_session("sid-1", "conv-w1")
-	route = _build_widget_snapshot_route(store, backend, _FakeLogger(), SessionRegistry(), registry)
-
-	resp = await route(_request({
-		"rings": [{"session_id": "sid-1", "name": "Retitled by Watchtower", "name_source": "ai-title"}],
-		"quota": None,
-		"pushed_at": "2026-06-25T00:00:00+00:00",
-	}))
-
-	assert resp.status_code == 200
-	assert conv.title == "Retitled by Watchtower"
-	assert conv.title_source == "session"
-
-
-@pytest.mark.asyncio
-async def test_title_sync_failure_does_not_fail_the_snapshot_push():
-	"""Watchtower fails open on non-200, but a rejected push also hides ring and
-	quota data that wrote fine. A title-write failure must stay isolated."""
-	from server.registry import Registry
-	from tests.conftest import make_active_conversation
-
-	class _ExplodingTitleBackend(_FakeBackend):
-		async def write_conversation_title(self, conv_id, title, title_source=None):
-			raise RuntimeError("firebase down")
-
-	store, backend = WidgetSnapshotStore(), _ExplodingTitleBackend()
-	registry = Registry()
-	conv = make_active_conversation(conversation_id="conv-w2", member_session_id="sid-2")
-	conv.title_source = "default"
-	registry.conversations["conv-w2"] = conv
-	registry.bind_session("sid-2", "conv-w2")
-	route = _build_widget_snapshot_route(store, backend, _FakeLogger(), SessionRegistry(), registry)
-
-	resp = await route(_request({
-		"rings": [{"session_id": "sid-2", "pct": 0.3, "name": "Doomed title"}],
-		"quota": None,
-		"pushed_at": "2026-06-25T00:00:00+00:00",
-	}))
-
-	assert resp.status_code == 200
-	assert backend.rings is not None, "ring write must still land when the title write fails"
-
-
-@pytest.mark.asyncio
-async def test_ring_effort_flows_into_session_registry():
+async def test_ring_effort_no_longer_reaches_the_session_record():
 	store, backend = WidgetSnapshotStore(), _FakeBackend()
 	session_registry = SessionRegistry()
+	session_registry.record_session_start("sid-1", cwd="C:/Work/X")
 	route = _build_widget_snapshot_route(store, backend, _FakeLogger(), session_registry)
 	body = {
 		"rings": [{"session_id": "sid-1", "pct": 0.3, "model": "claude-opus-5-5", "effort": "xhigh"}],
@@ -208,7 +148,5 @@ async def test_ring_effort_flows_into_session_registry():
 	}
 	resp = await route(_request(body))
 	assert resp.status_code == 200
-	rec = session_registry.get("sid-1")
-	assert rec.effort == "xhigh"
-	assert rec.to_payload()["model_label"] == "Opus 5.5 · xhigh"
+	assert session_registry.get("sid-1").effort is None
 	assert backend.rings["sid-1"]["effort"] == "xhigh"

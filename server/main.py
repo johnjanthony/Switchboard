@@ -411,12 +411,13 @@ class _CachePolicyStaticFiles(StaticFiles):
 		return response
 
 
-def _build_widget_snapshot_route(store, backend, logger, session_registry=None, registry=None):
+def _build_widget_snapshot_route(store, backend, logger, session_registry=None):
 	"""POST /widget-snapshot - Watchtower pushes its rings + quota snapshot here
 	(localhost trust, same model as /stats and /agent_status). The store diffs
 	against the last push so RTDB is written only on change; pushed_at is always
-	written so readers can show staleness. Also feeds the session registry so a
-	Watchtower ring can enrich or discover a session row."""
+	written so readers can show staleness. Session records take only the
+	tab-title marker from it: model, effort, context and title come from each
+	session's mod, and liveness from its inbox poll."""
 	_RING_FIELDS = ("pct", "model", "status", "context_tokens", "window", "is_error", "name", "name_source", "title_state", "effort")
 
 	async def widget_snapshot(request: Request):
@@ -440,15 +441,6 @@ def _build_widget_snapshot_route(store, backend, logger, session_registry=None, 
 		rings_changed, quota_changed = store.apply(rings_map, quota, pushed_at)
 		if session_registry is not None:
 			session_registry.apply_rings(rings_map)
-		if registry is not None:
-			# Adopt Claude Code session titles as conversation titles. Isolated
-			# from the ring/quota writes below: a title-write failure must not
-			# make Watchtower's snapshot push look rejected.
-			try:
-				from server.conversation_ops import sync_session_titles
-				await sync_session_titles(registry, backend, rings_map)
-			except Exception as exc:
-				await logger.surface_error(f"session_title_sync_error: {exc}")
 		try:
 			if rings_changed:
 				await backend.write_widget_rings(rings_map)
@@ -1080,7 +1072,7 @@ async def _run(config: Config) -> None:
 	app.add_route(
 		"/widget-snapshot",
 		_with_route_limit(
-			_build_widget_snapshot_route(widget_store, backend, logger, session_registry, registry),
+			_build_widget_snapshot_route(widget_store, backend, logger, session_registry),
 			route_limiter, "/widget-snapshot", logger,
 		),
 		methods=["POST"],
