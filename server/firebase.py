@@ -605,6 +605,20 @@ class FirebaseBackend(
 		else:
 			await asyncio.to_thread(lambda: ref.set(quota))
 
+	async def write_quota(self, quota: dict | None) -> None:
+		"""Publish the account's plan usage as the sessions' mods report it.
+		firebase_admin rejects set(None), so None deletes the node."""
+		ref = db.reference("quota")
+		if quota is None:
+			await asyncio.to_thread(ref.delete)
+		else:
+			await asyncio.to_thread(lambda: ref.set(quota))
+
+	async def read_quota(self) -> dict | None:
+		"""The last published plan usage, for the quota store to start from."""
+		value = await asyncio.to_thread(lambda: db.reference("quota").get())
+		return value if isinstance(value, dict) else None
+
 	async def write_widget_pushed_at(self, ts: str) -> None:
 		"""Publish the last-push timestamp (staleness signal for readers)."""
 		await asyncio.to_thread(lambda: db.reference("widget/pushed_at").set(ts))
