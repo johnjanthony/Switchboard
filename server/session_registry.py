@@ -84,6 +84,10 @@ class SessionRecord:
 	spawn_model: str | None = None
 	spawn_effort: str | None = None
 	context_pct: float | None = None
+	# Input tokens the last response was answered over, and the model's context
+	# window, as the session's mod reports them (session.measure).
+	context_tokens: int | None = None
+	context_window: int | None = None
 	end_reason: str | None = None
 	source: str = "hook"
 	name: str | None = None
@@ -270,6 +274,34 @@ class SessionRegistry:
 		self._fire_mirror(rec)
 		return rec
 
+	def apply_telemetry(self, cli_session_id: str, report: dict) -> SessionRecord | None:
+		"""Apply a validated telemetry report (server/telemetry.py) from the
+		session's mod. Keys absent from the report are unchanged. context_pct
+		keeps the 0-1 scale every consumer reads: tokens over window. An ended
+		record is left alone, since its session end is authoritative (REV-114).
+		A report is proof of life, so it bumps last_event_at, but it never
+		changes state: a lost session revives on its next inbox poll."""
+		existing = self._records.get(cli_session_id)
+		if existing is not None and existing.state == "ended":
+			return None
+		rec = self._ensure(cli_session_id, source="telemetry")
+		context = report.get("context")
+		if context is not None:
+			rec.context_window = context["window"]
+			rec.context_tokens = context["tokens"]
+			rec.context_pct = None if rec.context_tokens is None else rec.context_tokens / rec.context_window
+		if "model" in report:
+			rec.model = report["model"]
+		if "effort" in report:
+			rec.effort = report["effort"]
+		title = report.get("title")
+		if title is not None:
+			rec.name = title["name"]
+			rec.name_source = title["source"]
+		rec.last_event_at = self._now()
+		self._fire_mirror(rec)
+		return rec
+
 	def apply_rings(self, rings: dict) -> None:
 		"""Enrich known sessions from a Watchtower snapshot; discover unknown ones.
 		A ring sighting bumps last_event_at (a second, hook-independent liveness
@@ -415,6 +447,8 @@ class SessionRegistry:
 			spawn_model=data.get("spawn_model"),
 			spawn_effort=data.get("spawn_effort"),
 			context_pct=data.get("context_pct"),
+			context_tokens=data.get("context_tokens"),
+			context_window=data.get("context_window"),
 			end_reason=data.get("end_reason"),
 			source="hydration",
 			name=data.get("name"),
