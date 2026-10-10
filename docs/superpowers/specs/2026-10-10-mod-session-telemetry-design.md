@@ -1,7 +1,7 @@
 # Session telemetry from the Claude Code mod; Watchtower as a display client (design)
 
 **Date:** 2026-10-10
-**Status:** design approved by John 2026-10-10 in conversation; written spec awaiting his review
+**Status:** approved by John 2026-10-10 (design and written spec); chunk 1 plan `docs/superpowers/plans/2026-10-10-mod-session-telemetry-chunk1.md` (disk-only, gitignored). Two details were revised at planning after a probe, each marked "revised at planning" below.
 **Backlog:** T-279 (session telemetry from `session.measure`), with T-282 (inbox poll as a liveness heartbeat) rolled in and T-015's remaining stale-pill gap folded in. Follow-ups filed during the brainstorm: T-284 (approval prompts through the mod), T-285 (cut the Wear app down to notifications).
 **Evidence:** Claude Code 2.1.293 mod declarations (`plugin-authoring/types/claude-code.d.ts`, written by the plugin-authoring skill under `%LOCALAPPDATA%\Temp\claude\bundled-skills\`), vault note `Reference/Claude Code Mods`, local transcripts under `~/.claude/projects/C--Work-Switchboard/`, and the code paths cited below.
 
@@ -24,9 +24,11 @@ From the 2.1.293 declarations unless stated:
 - **`session.measure` can fire before `session.start`** (about 270 ms earlier; vault note).
 - **`turn.step`** carries `model` and `effort` (`low` to `max`, or a number; absent for a model without effort); `agentId` is absent on the main thread.
 - **No mod call reads the session title.** A settings hook can set one (`sessionTitle`); nothing in `$.session` returns it.
-- **`session.append` rows are typed `user`, `assistant`, `attachment` or `system`.** Transcript title records are a different type (`{"type":"ai-title","aiTitle":...}`, `{"type":"custom-title",...}`), so I believe they never pass through it. Unprobed.
+- **Title rows never pass through `session.append`.** A headless probe on 2.1.296 renamed a session with `/rename`: the transcript gained a `custom-title` row (`{"type":"custom-title","customTitle":...}`), while `session.append` saw only the command's `user` and `system` rows.
+- **`command.run` fires for the built-in `/rename`**, with the new name as `args`; by the time its `next(e)` resolves, the `custom-title` row is in the transcript (same probe).
+- **Verified live (headless probe, 2.1.296, 2026-10-10):** `session.measure` after the turn carried `context` `{tokens: 65416, window: 1000000, percent: 7}`, `rateLimits` `five_hour` and `seven_day` with `percentUsed` and `resetsAt`, and `cost`; the main-thread `turn.step` carried `model` `claude-sonnet-5-5` and `effort` `low` with no `agentId`; the mod found its transcript by listing `<home>/.claude/projects/` (37 directories) and read it.
 - **Title rows are cheap to find.** Claude Code writes the `ai-title` after the first turn and re-appends it every 10-20 lines with the same value (19 rows in a 331-line transcript, 118 in a 2,351-line one). The largest local transcript is 8 MB. Watchtower prefers the last `custom-title` over the last `ai-title` (`TranscriptTitles.cs`).
-- **`$.fs.read` returns a whole file;** it has no byte ranges.
+- **`$.fs.read` returns a whole file and refuses one over 4 MiB** (`refused: the file is over the 4194304-byte limit`, probe 2026-10-10); it has no byte ranges. Four of the six largest local transcripts are over that.
 - **The poller runs only in interactive sessions** (`if (e.isInteractive) startPoller($)`, `hooks/switchboard.ts:290`), every 2 s, backing off to a 30 s cap on failures (`hooks/inbox.ts`).
 - **The sweep today** (`server/session_registry.py:436-476`, every 60 s from `dispatch.py:746`): marks a session lost after 900 s of silence, only while Watchtower pushed within 120 s (`rings_are_fresh`), and never while the session has a ring. Awaiting-human and awaiting-agent sessions backed by a live structure are exempt. `lost` is final today.
 - **`apply_rings`** (`session_registry.py:273`) writes `model`, `effort`, `context_pct`, `name`, `name_source` and `title_state` onto records, bumps `last_event_at`, and creates records for unknown sessions. `sync_session_titles` runs on every Watchtower push for every ringed session (`server/main.py:413`).
@@ -41,7 +43,7 @@ From the 2.1.293 declarations unless stated:
 
 1. **Watchtower becomes a display-only client.** It stops reading transcripts, tab titles and the OAuth endpoint, and renders what the server holds. Rejected: drop transcripts but keep the OAuth quota poll; mod first with the transcript scan as a fallback.
 2. **Idle quota shows the last reading and its time.** When a window's `resets_at` passes with no newer reading, the server zeroes that window. Rejected: keep the OAuth poll as a fallback for when no session runs. Accepted cost: usage from claude.ai, the mobile app or other machines stays unseen until the next turn here.
-3. **Titles come from the mod reading its own transcript.** Chunk 1 opens with a probe of whether `session.append` sees title rows, which would replace the read. Rejected: Watchtower keeps a title reader; drop Claude Code titles.
+3. **Titles come from the mod reading its own transcript, capped, plus a `/rename` hook** (revised at planning, 2026-10-10, after the probe found the 4 MiB read limit and no title rows in `session.append`). Rejected: Watchtower keeps a title reader; drop Claude Code titles; a full transcript read after every turn (refused past 4 MiB).
 4. **The approval marker is dropped.** `title_state` and `blocked_on_approval` go. Mod-based approval support is T-284. Rejected: keep Watchtower's tab-title reader for this one signal.
 5. **Liveness: the poll is the fast path, the silence rule the backstop** (section 3). Rejected: poll only.
 6. **Consumers move to `sessions/` and a new `quota` node in this work, and `widget/rings`, `widget/quota` and `widget/pushed_at` are retired.** Rejected: the server synthesizing `widget/*` in today's shape.
@@ -80,7 +82,7 @@ From the 2.1.293 declarations unless stated:
 | `title` | the session's own transcript | differs from the last value posted |
 
 - **Effort travels with the model**, as `apply_rings` treats it today: a `turn.step` without `effort` (a model without effort tiers) sends `"effort": null`. A numeric effort is sent as `null`, since the label logic knows only the level names.
-- **Titles.** At `session.start` and after each main-thread `turn.complete`, the mod reads its transcript and takes the last `custom-title` row, else the last `ai-title` row, found with a string search rather than a parse of every line. A pure function in a new module (`hooks/telemetry.ts`) does the extraction. The mod locates its transcript once, as `<session id>.jsonl` under a directory of `<config dir>/projects/`, and keeps the path. The read is fire-and-forget, off the turn's critical path.
+- **Titles** (revised at planning). The mod reads its transcript and takes the last `custom-title` row, else the last `ai-title` row, found with a string search rather than a parse of every line (a pure function in a new module, `hooks/telemetry.ts`). It reads at `session.start` and after each main-thread `turn.complete` until it has a title, which Claude Code writes after the first turn while the file is still small, then stops. A read refused for size also stops it for the session; a resumed session's record already holds its name from before. A `command.run` hook on `rename` reads again once the command has run, falling back to the command's `args` when that read is refused. The mod locates its transcript as `<session id>.jsonl` under a directory of `<config dir>/projects/` (`CLAUDE_CONFIG_DIR`, else `HOME` or `USERPROFILE` plus `/.claude`) and keeps the path once found. Reads are fire-and-forget, off the turn's critical path.
 - **Sending** is fire-and-forget under the existing 1.5 s bound (`FETCH_TIMEOUT_MS`), with no retry: the next measurement carries fresh figures. Subagent steps and turns are ignored.
 - **Last-posted values** live in module variables, like the poller's bookkeeping. A hot reload resets them and the next events re-post once, which is harmless.
 - **The heartbeat needs no mod change:** the existing inbox poll is it.
@@ -91,7 +93,7 @@ From the 2.1.293 declarations unless stated:
 
 **Session records** gain `context_tokens` and `context_window`, hydrated like the other fields. `context_pct` stays a 0-1 fraction, today's ring scale, computed as `tokens / window`; the mod's whole-number `percent` is not stored. `model`, `effort`, `name` and `name_source` keep their meaning and change writer: once a session reports telemetry, only the mod writes them.
 
-**Titles to conversations.** When a title changes, the route calls the existing `sync_session_titles` for that session. Watchtower's push re-offered every title every minute, so a session that joined a conversation after its title appeared still had it adopted; event-driven titles lose that, so adoption also runs when a session binds to a conversation, from the name already on the record.
+**Titles to conversations.** When a title changes, the route calls the existing `sync_session_titles` for that session. Watchtower's push re-offered every title every minute, so a session that joined a conversation after its title appeared still had it adopted; event-driven titles lose that, so each sweep tick (every 60 s) re-offers every non-terminal record's name, the same cadence as today. `sync_session_titles` writes only on a change, so a re-offer costs nothing when the title already stands. (Revised at planning: the spec first had adoption run at bind time, but `bind_session` is synchronous and called from seven places.)
 
 **Quota.** A new `QuotaStore` (`server/quota_store.py`) holds one reading:
 
@@ -184,7 +186,7 @@ Stays: `widget/status`, the Claude status watch and `/widget-status`. The Antigr
 
 Each chunk leaves the system working.
 
-1. **Mod and server.** The title probe first, then the telemetry route, record fields, quota store and node, title adoption on bind, heartbeat liveness in the sweep, the presence loop, the `/stats` additions, and the chunk-1 handover. Consumers are untouched.
+1. **Mod and server.** The telemetry route, record fields, quota store and node, the sweep's title re-offer, heartbeat liveness in the sweep, the presence loop, the `/stats` additions, and the chunk-1 handover. Consumers are untouched.
 2. **Consumers.** The phone (with Wear rebuilt), Operator, then Watchtower with its readers deleted, in that deploy order.
 3. **Server and Firebase cleanup.** Section 6, chunk 3, plus the tracking-doc updates (cut T-279 and T-282 from the backlog; re-scope T-015 to its spawn-dialog copy).
 
@@ -198,7 +200,7 @@ Each chunk leaves the system working.
 
 ## Testing
 
-- **Server (pytest):** the route's partial updates, `null` clears, field validation and record creation; `context_pct` as `tokens / window`; the quota store's per-window replace, `received_at` stamping and reset zeroing; the sweep's poll-lost, grace, never-polled silence, revival and sleep-gap rules (driven through `_session_sweep_once` with an injected clock); title adoption on bind; the presence loop; the `/stats` `items` and `quota` keys; the chunk-1 handover (a ring no longer overwrites mod-written fields).
+- **Server (pytest):** the route's partial updates, `null` clears, field validation and record creation; `context_pct` as `tokens / window`; the quota store's per-window replace, `received_at` stamping and reset zeroing; the sweep's poll-lost, grace, never-polled silence, revival and sleep-gap rules (driven through `_session_sweep_once` with an injected clock); the sweep's title re-offer; the presence loop; the `/stats` `items` and `quota` keys; the chunk-1 handover (a ring no longer overwrites mod-written fields).
 - **Mod:** `claude plugin test .` suites for the `session.measure` and `turn.step` reporting (change detection, subagent steps ignored, effort cleared with a model change) and `hooks/telemetry.ts`'s title extraction; `bash scripts/mod-typecheck.sh`; `claude plugin validate .claude-plugin/plugin.json`. `tests/test_mod_plugin.py` already runs the first two from pytest.
 - **Android:** `shared` unit tests for the sessions-to-rings and quota mappings; `:shared:testDebugUnitTest`, `:app:assembleDebug`, `:wear:assembleDebug`, `:app:lintDebug` (the full `./gradlew build` fails on T-262).
 - **Operator:** `node --test` for the store and derive changes.
@@ -207,7 +209,7 @@ Each chunk leaves the system working.
 ## Rollout and live verification
 
 - **Deploy order:** server first, then mod (a mod edit reaches the next session opened straight from the working tree), per `CLAUDE.md`. WSL sessions report only after a `git pull --ff-only` in the WSL clone. Chunk 2 deploys Watchtower last.
-- **Probe (chunk 1, first):** a throwaway mod logging every `session.append` row's `type`, `name` and door in an interactive session across a first turn and a `/rename`, to see whether title rows pass through.
+- **Probe:** run during planning (see the verified facts above); none remains for chunk 1.
 - **Live checks, chunk 1:**
   - A 1M session's record shows `context_window` 1000000.
   - The `quota` node matches `GET /api/oauth/usage` once, while that poll still exists.
