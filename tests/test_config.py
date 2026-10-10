@@ -19,6 +19,7 @@ def _clear_env(monkeypatch):
 		"SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT",
 		"SWITCHBOARD_RATE_LIMIT",
 		"SWITCHBOARD_SESSION_LOST_AFTER_SECONDS",
+		"SWITCHBOARD_SESSION_POLL_LOST_AFTER_SECONDS",
 		"SWITCHBOARD_SESSION_RETENTION_HOURS",
 		"SWITCHBOARD_TOKEN",
 		"SWITCHBOARD_ROUTE_RATE_LIMIT",
@@ -149,6 +150,19 @@ def test_session_lost_after_seconds_configurable_via_env(monkeypatch, tmp_path):
 	monkeypatch.setenv("SWITCHBOARD_SESSION_LOST_AFTER_SECONDS", "120")
 	cfg = load_config(dotenv_path=tmp_path / "no.env")
 	assert cfg.session_lost_after_seconds == 120
+
+
+def test_session_poll_lost_after_seconds_defaults_to_90(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.session_poll_lost_after_seconds == 90
+
+
+def test_session_poll_lost_after_seconds_configurable_via_env(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	monkeypatch.setenv("SWITCHBOARD_SESSION_POLL_LOST_AFTER_SECONDS", "45")
+	cfg = load_config(dotenv_path=tmp_path / "no.env")
+	assert cfg.session_poll_lost_after_seconds == 45
 
 
 def test_session_retention_hours_defaults_to_72(monkeypatch, tmp_path):

@@ -94,11 +94,13 @@ def _build_away_mode_route(registry: Registry, session_registry, backend=None, l
 
 def _build_inbox_route(registry: Registry, session_registry):
 	"""GET /sessions/{sid}/inbox - the Claude Code mod's single read route,
-	polled every 2 s. Pops the session's queued notices and its stop, and reads
-	away mode and the session's live blocking ask fresh. An unknown session gets
-	no notices and no stop, with away still read."""
+	polled every 2 s, and so the session's liveness heartbeat (note_poll). Pops
+	the session's queued notices and its stop, and reads away mode and the
+	session's live blocking ask fresh. An unknown session gets no notices and
+	no stop, with away still read."""
 	async def inbox(request: Request):
 		session_id = request.path_params["sid"]
+		session_registry.note_poll(session_id)
 		notices = session_registry.pop_notices(session_id)
 		stop = session_registry.take_stop(session_id)
 		pending_ask = False
@@ -1145,8 +1147,9 @@ async def _run(config: Config) -> None:
 
 	session_sweep_task = asyncio.create_task(
 		dispatch_session_sweep(
-			session_registry, widget_store, logger, loop_sups["dispatch_session_sweep"],
+			session_registry, logger, loop_sups["dispatch_session_sweep"],
 			lost_after_seconds=config.session_lost_after_seconds,
+			poll_lost_after_seconds=config.session_poll_lost_after_seconds,
 			retention_hours=config.session_retention_hours,
 			registry=registry, backend=backend, marker_dir=session_end_marker_dir,
 		)

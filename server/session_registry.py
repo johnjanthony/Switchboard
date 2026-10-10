@@ -121,6 +121,10 @@ class SessionRegistry:
 		# Stop requests by session, stamped with the monotonic clock. Kept apart
 		# from SessionRecord so a stop is never mirrored to Firebase or hydrated.
 		self._stops: dict[str, float] = {}
+		# Last inbox poll by session, on the monotonic clock: the liveness
+		# heartbeat. Kept apart from SessionRecord, like stops, so a poll every
+		# 2 s never reaches Firebase.
+		self._polls: dict[str, float] = {}
 
 	# -- reads ------------------------------------------------------------
 
@@ -394,6 +398,24 @@ class SessionRegistry:
 		requested_at = self._stops.pop(cli_session_id, None)
 		return requested_at is not None and self._mono() - requested_at <= STOP_FRESH_SECONDS
 
+	def note_poll(self, cli_session_id: str) -> None:
+		"""Record an inbox poll. A poll from an unknown session creates its
+		record; one from a lost session revives it, since a poll is proof of
+		life. An ended record stays ended: its session end is authoritative."""
+		rec = self._records.get(cli_session_id)
+		if rec is not None and rec.state == "ended":
+			return
+		self._polls[cli_session_id] = self._mono()
+		if rec is None:
+			self._fire_mirror(self._ensure(cli_session_id, source="poll"))
+			return
+		if rec.state == "lost":
+			rec.state = "idle"
+			rec.end_reason = None
+			rec.last_transition_source = "poll"
+			rec.last_event_at = self._now()
+			self._fire_mirror(rec)
+
 	def mark_wait_cancelled(self, cli_session_id: str) -> None:
 		"""John cancelled the blocking tool call from the CLI; without this the
 		roster shows a stale awaiting_* chip until the next hook event."""
@@ -472,41 +494,48 @@ class SessionRegistry:
 		*,
 		now_ts: float,
 		lost_after_seconds: float,
+		poll_lost_after_seconds: float,
 		retention_seconds: float,
-		rings_fresh: bool,
-		ring_ids: set[str],
+		in_grace: bool = False,
 		live_ask_ids: set | None = None,
 		live_wait_ids: set | None = None,
 	) -> list[str]:
 		"""Apply staleness rules. Returns the ids pruned (terminal past retention)
-		so the caller can delete their RTDB entries. Marks lost only when ALL of:
-		silent past lost_after_seconds, not blocked awaiting human/agent, absent
-		from a FRESH Watchtower snapshot. When the sensor is stale/offline the
-		lost-marking is suspended entirely - never guess from a blind sensor."""
+		so the caller can delete their RTDB entries. During the grace period no
+		session is marked lost. Otherwise a session that has polled since the
+		server started is lost after poll_lost_after_seconds without a poll, and
+		one that never polled (a -p run, Antigravity, a record hydrated after a
+		restart that has not polled yet) after lost_after_seconds of silence.
+		Awaiting human/agent sessions backed by a live structure are exempt."""
 		pruned: list[str] = []
+		mono_now = self._mono()
 		for sid, rec in list(self._records.items()):
-			age = _age_seconds(rec.last_event_at, now_ts)
-			if age is None:
-				continue
 			if rec.state in TERMINAL_STATES:
-				if age > retention_seconds:
+				age = _age_seconds(rec.last_event_at, now_ts)
+				if age is not None and age > retention_seconds:
 					del self._records[sid]
+					self._polls.pop(sid, None)
 					pruned.append(sid)
 					self._fire_mirror_delete(sid)
 				continue
-			if not rings_fresh:
+			if in_grace:
 				continue
 			if rec.state in SWEEP_EXEMPT_STATES and _exemption_live(rec.state, sid, live_ask_ids, live_wait_ids):
 				continue
-			if sid in ring_ids:
-				continue
-			if age > lost_after_seconds:
-				rec.state = "lost"
-				rec.end_reason = "presumed-dead"
-				self.presumed_dead_total += 1
-				rec.in_tool = False
-				self._recompute_blocked(rec)
-				self._fire_mirror(rec)
+			polled_at = self._polls.get(sid)
+			if polled_at is not None:
+				if mono_now - polled_at <= poll_lost_after_seconds:
+					continue
+			else:
+				age = _age_seconds(rec.last_event_at, now_ts)
+				if age is None or age <= lost_after_seconds:
+					continue
+			rec.state = "lost"
+			rec.end_reason = "presumed-dead"
+			self.presumed_dead_total += 1
+			rec.in_tool = False
+			self._recompute_blocked(rec)
+			self._fire_mirror(rec)
 		return pruned
 
 	def marker_health_check(self) -> bool:
@@ -538,6 +567,26 @@ def _exemption_live(state: str, sid: str, live_ask_ids: set | None, live_wait_id
 	if state == "awaiting_human":
 		return sid in (live_ask_ids or set())
 	return sid in (live_wait_ids or set())
+
+
+class LivenessGrace:
+	"""Holds back lost-marking for grace_seconds after the sweep loop starts,
+	and again whenever it sees more than three intervals pass between its own
+	ticks (the machine slept, or the loop stalled), so sessions have time to
+	resume polling before anyone is judged. Wall-clock seconds."""
+
+	def __init__(self, grace_seconds: float, interval: float, start_ts: float) -> None:
+		self._grace_seconds = grace_seconds
+		self._max_gap = 3 * interval
+		self._grace_until = start_ts + grace_seconds
+		self._last_tick = start_ts
+
+	def tick(self, now_ts: float) -> bool:
+		"""True while this tick falls in a grace period."""
+		if now_ts - self._last_tick > self._max_gap:
+			self._grace_until = now_ts + self._grace_seconds
+		self._last_tick = now_ts
+		return now_ts < self._grace_until
 
 
 WATCHTOWER_FRESH_SECONDS = 120

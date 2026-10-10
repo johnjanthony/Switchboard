@@ -84,8 +84,7 @@ async def test_sweep_pruning_terminal_record_fires_delete():
 		now_ts=1767225600.0 + 10.0,  # 10s after the fixed ended_at, past a 1s retention
 		lost_after_seconds=60.0,
 		retention_seconds=1.0,
-		rings_fresh=True,
-		ring_ids=set(),
+		poll_lost_after_seconds=90.0,
 	)
 	await _drain_bg()
 

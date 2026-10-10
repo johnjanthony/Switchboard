@@ -260,7 +260,6 @@ async def test_parked_ttl_sweep_cancels_expired_background_record(tmp_path):
 async def test_session_sweep_loop_runs_parked_sweep_when_wired(tmp_path):
 	from server.gateway.dispatch import dispatch_session_sweep
 	from server.session_registry import SessionRegistry
-	from server.widget_snapshot import WidgetSnapshotStore
 	from tests.conftest import _make_loop_supervisor
 
 	registry = Registry()
@@ -275,8 +274,8 @@ async def test_session_sweep_loop_runs_parked_sweep_when_wired(tmp_path):
 
 	task = asyncio.create_task(
 		dispatch_session_sweep(
-			SessionRegistry(), WidgetSnapshotStore(), logger, supervisor,
-			lost_after_seconds=900, retention_hours=72, interval=10.0,
+			SessionRegistry(), logger, supervisor,
+			lost_after_seconds=900, poll_lost_after_seconds=90, retention_hours=72, interval=10.0,
 			registry=registry, backend=backend,
 		)
 	)

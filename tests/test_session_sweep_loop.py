@@ -9,34 +9,36 @@ import pytest
 
 from server.registry import Conversation, ConversationMember, Registry
 from server.session_registry import SessionRegistry
-from server.widget_snapshot import WidgetSnapshotStore
+
+LAST = datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
 
 
 def _reg():
 	return SessionRegistry(now=lambda: "2026-07-06T12:00:00+00:00")
 
 
-@pytest.mark.asyncio
-async def test_sweep_once_marks_lost_when_rings_fresh():
-	"""A fresh Watchtower push (pushed_at within WATCHTOWER_FRESH_SECONDS of now)
-	means ring absence is trustworthy, so a long-silent session gets marked lost."""
+async def _sweep_once(reg, **overrides):
 	from server.gateway.dispatch import _session_sweep_once
+	args = dict(lost_after_seconds=900, poll_lost_after_seconds=90, retention_hours=72, now_ts=LAST + 1000)
+	args.update(overrides)
+	return await _session_sweep_once(reg, **args)
 
+
+@pytest.mark.asyncio
+async def test_sweep_once_marks_a_silent_never_polled_session_lost():
 	reg = _reg()
 	reg.record_session_start("sess-OLD", cwd="C:/Work/X")
-	store = WidgetSnapshotStore()
-	store.rings = {}
-
-	import datetime as _dt
-	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
-	now_ts = last + 1000
-	# Fresh relative to now_ts (the sweep's clock), not real wall-clock time.
-	store.pushed_at = datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat()
-	pruned = await _session_sweep_once(
-		reg, store, lost_after_seconds=900, retention_hours=72, now_ts=now_ts,
-	)
+	pruned = await _sweep_once(reg)
 	assert pruned == []
 	assert reg.get("sess-OLD").state == "lost"
+
+
+@pytest.mark.asyncio
+async def test_sweep_once_in_grace_marks_nothing_lost():
+	reg = _reg()
+	reg.record_session_start("sess-OLD", cwd="C:/Work/X")
+	await _sweep_once(reg, in_grace=True)
+	assert reg.get("sess-OLD").state == "idle"
 
 
 @pytest.mark.asyncio
@@ -46,13 +48,8 @@ async def test_sweep_flips_lost_antigravity_member_dormant_and_resumable():
 	session lost, the bound member must become dormant (alive=False) and resumable
 	(not permanently lost), and the session must be unbound - otherwise phone /
 	Operator resume finds no resumable members and silently no-ops."""
-	from server.gateway.dispatch import _session_sweep_once
-
 	reg = _reg()
 	reg.record_session_start("agy-sess", cwd="C:/Work/client", cli="antigravity")
-	store = WidgetSnapshotStore()
-	store.rings = {}
-
 	registry = Registry()
 	registry.sessions = reg
 	conv = Conversation(id="conv-1", title="client (windows)")
@@ -64,14 +61,7 @@ async def test_sweep_flips_lost_antigravity_member_dormant_and_resumable():
 	registry.conversations["conv-1"] = conv
 	registry.bind_session("agy-sess", "conv-1")
 
-	import datetime as _dt
-	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
-	now_ts = last + 1000
-	store.pushed_at = datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat()
-
-	await _session_sweep_once(
-		reg, store, lost_after_seconds=900, retention_hours=72, now_ts=now_ts, registry=registry,
-	)
+	await _sweep_once(reg, registry=registry)
 
 	assert member.alive is False
 	assert member.session_lost_permanently is False
@@ -81,15 +71,10 @@ async def test_sweep_flips_lost_antigravity_member_dormant_and_resumable():
 @pytest.mark.asyncio
 async def test_sweep_leaves_lost_claude_member_untouched():
 	"""The propagation is Antigravity-only: a lost Claude session's member is left
-	for the SessionEnd-marker path, not flipped by the silence sweep (avoids
-	altering Claude lifecycle as a side effect)."""
-	from server.gateway.dispatch import _session_sweep_once
-
+	for the SessionEnd path, not flipped by the silence sweep (avoids altering
+	Claude lifecycle as a side effect)."""
 	reg = _reg()
 	reg.record_session_start("cc-sess", cwd="C:/Work/X", cli="claude")
-	store = WidgetSnapshotStore()
-	store.rings = {}
-
 	registry = Registry()
 	registry.sessions = reg
 	conv = Conversation(id="conv-2", title="X (windows)")
@@ -101,14 +86,7 @@ async def test_sweep_leaves_lost_claude_member_untouched():
 	registry.conversations["conv-2"] = conv
 	registry.bind_session("cc-sess", "conv-2")
 
-	import datetime as _dt
-	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
-	now_ts = last + 1000
-	store.pushed_at = datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat()
-
-	await _session_sweep_once(
-		reg, store, lost_after_seconds=900, retention_hours=72, now_ts=now_ts, registry=registry,
-	)
+	await _sweep_once(reg, registry=registry)
 
 	assert reg.get("cc-sess").state == "lost"
 	assert member.alive is True
@@ -116,37 +94,13 @@ async def test_sweep_leaves_lost_claude_member_untouched():
 
 
 @pytest.mark.asyncio
-async def test_sweep_once_suspends_lost_marking_when_rings_stale():
-	"""A stale (or absent) Watchtower push means ring absence proves nothing, so
-	lost-marking is suspended rather than guessed."""
-	from server.gateway.dispatch import _session_sweep_once
-
-	reg = _reg()
-	reg.record_session_start("sess-OLD", cwd="C:/Work/X")
-	store = WidgetSnapshotStore()
-	store.pushed_at = "2026-01-01T00:00:00+00:00"
-	store.rings = {}
-
-	import datetime as _dt
-	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
-	pruned = await _session_sweep_once(
-		reg, store, lost_after_seconds=900, retention_hours=72, now_ts=last + 1000,
-	)
-	assert pruned == []
-	assert reg.get("sess-OLD").state == "idle"
-
-
-@pytest.mark.asyncio
 async def test_sweep_once_defaults_now_ts_to_wall_clock():
 	"""now_ts=None falls back to time.time() rather than requiring the caller
-	to always supply one (the production loop never passes it)."""
+	to always supply one."""
 	from server.gateway.dispatch import _session_sweep_once
-
 	reg = SessionRegistry()  # real wall-clock now()
 	reg.record_session_start("sess-FRESH", cwd="C:/Work/X")
-	store = WidgetSnapshotStore()
-
-	pruned = await _session_sweep_once(reg, store, lost_after_seconds=900, retention_hours=72)
+	pruned = await _session_sweep_once(reg, lost_after_seconds=900, poll_lost_after_seconds=90, retention_hours=72)
 	assert pruned == []
 	assert reg.get("sess-FRESH").state == "idle"  # far too young to be marked lost
 
@@ -159,9 +113,6 @@ async def test_dispatch_loop_runs_and_can_be_cancelled(tmp_path):
 
 	reg = _reg()
 	reg.record_session_start("sess-OLD", cwd="C:/Work/X")
-	store = WidgetSnapshotStore()
-	store.pushed_at = datetime.now(timezone.utc).isoformat()
-
 	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
 	supervisor = _make_loop_supervisor(None, logger, "dispatch_session_sweep")
 
@@ -171,12 +122,13 @@ async def test_dispatch_loop_runs_and_can_be_cancelled(tmp_path):
 	past = datetime.now(timezone.utc).timestamp() - 901
 	reg.get("sess-OLD").last_event_at = datetime.fromtimestamp(past, tz=timezone.utc).isoformat()
 
-	# Interval long enough that only the first (immediate) tick fires before we
-	# assert and cancel - avoids a second tick pruning the now-terminal record.
+	# grace_seconds=0 so the first tick judges at once; the interval is long
+	# enough that only that tick fires before we assert and cancel.
 	task = asyncio.create_task(
 		dispatch_session_sweep(
-			reg, store, logger, supervisor,
-			lost_after_seconds=900, retention_hours=72, interval=10.0,
+			reg, logger, supervisor,
+			lost_after_seconds=900, poll_lost_after_seconds=90, retention_hours=72,
+			interval=10.0, grace_seconds=0,
 		)
 	)
 	for _ in range(5):
@@ -195,8 +147,6 @@ async def test_dispatch_loop_runs_and_can_be_cancelled(tmp_path):
 async def test_sweep_once_derives_liveness_from_registry():
 	"""A parked (future-less) pending is NOT a liveness proof; a live future or
 	a live wait-queue entry is."""
-	from server.gateway.dispatch import _session_sweep_once
-
 	reg = _reg()
 	for sid in ("s-parked", "s-live", "s-wait"):
 		reg.record_session_start(sid, cwd="C:/Work/X")
@@ -213,14 +163,7 @@ async def test_sweep_once_derives_liveness_from_registry():
 	conv.wait_queue.append({"member": member, "future": fut, "waiting_kind": "msg_and_await", "block_position": 0.0})
 	registry.conversations["conv-3"] = conv
 
-	store = WidgetSnapshotStore()
-	store.pushed_at = "2026-07-06T12:15:00+00:00"
-	import datetime as _dt
-	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
-	await _session_sweep_once(
-		reg, store, lost_after_seconds=900, retention_hours=72,
-		now_ts=last + 1000, registry=registry,
-	)
+	await _sweep_once(reg, registry=registry)
 	assert reg.get("s-parked").state == "lost"
 	assert reg.get("s-live").state == "awaiting_human"
 	assert reg.get("s-wait").state == "awaiting_agent"

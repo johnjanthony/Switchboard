@@ -109,30 +109,17 @@ def test_sweep_marks_lost_and_prunes():
 	reg.record_session_start("sess-OLD", cwd="C:/Work/X")
 	reg.record_session_start("sess-BLOCKED", cwd="C:/Work/Y")
 	reg.upsert_from_hook("sess-BLOCKED", state="awaiting_human")
-	reg.record_session_start("sess-RINGING", cwd="C:/Work/Z")
-	now_ts = 1782648000.0  # arbitrary epoch; only deltas matter
 	import datetime as _dt
 	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
 	pruned = reg.sweep(
 		now_ts=last + 1000,
 		lost_after_seconds=900,
+		poll_lost_after_seconds=90,
 		retention_seconds=72 * 3600,
-		rings_fresh=True,
-		ring_ids={"sess-RINGING"},
 	)
 	assert reg.get("sess-OLD").state == "lost"
 	assert reg.get("sess-BLOCKED").state == "awaiting_human"  # blocked exemption
-	assert reg.get("sess-RINGING").state == "idle"            # ring is liveness
 	assert pruned == []
-
-def test_sweep_suspends_lost_marking_when_sensor_offline():
-	reg = SessionRegistry(now=lambda: "2026-07-06T12:00:00+00:00")
-	reg.record_session_start("sess-OLD", cwd="C:/Work/X")
-	import datetime as _dt
-	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
-	reg.sweep(now_ts=last + 10000, lost_after_seconds=900, retention_seconds=999999,
-		rings_fresh=False, ring_ids=set())
-	assert reg.get("sess-OLD").state == "idle"
 
 def test_sweep_prunes_terminal_records_past_retention():
 	reg = SessionRegistry(now=lambda: "2026-07-06T12:00:00+00:00")
@@ -141,7 +128,7 @@ def test_sweep_prunes_terminal_records_past_retention():
 	import datetime as _dt
 	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
 	pruned = reg.sweep(now_ts=last + 73 * 3600, lost_after_seconds=900,
-		retention_seconds=72 * 3600, rings_fresh=True, ring_ids=set())
+		retention_seconds=72 * 3600, poll_lost_after_seconds=90)
 	assert pruned == ["sess-A"]
 	assert reg.get("sess-A") is None
 
@@ -286,7 +273,7 @@ def test_sweep_lost_clears_blocked_on_approval():
 	import datetime as _dt
 	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
 	reg.sweep(now_ts=last + 1000, lost_after_seconds=900, retention_seconds=72 * 3600,
-		rings_fresh=True, ring_ids=set())
+		poll_lost_after_seconds=90)
 	rec = reg.get("s1")
 	assert rec.state == "lost"
 	assert rec.in_tool is False
@@ -296,7 +283,7 @@ def _sweep(reg, **overrides):
 	import datetime as _dt
 	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
 	args = dict(now_ts=last + 1000, lost_after_seconds=900, retention_seconds=72 * 3600,
-		rings_fresh=True, ring_ids=set())
+		poll_lost_after_seconds=90)
 	args.update(overrides)
 	return reg.sweep(**args)
 
@@ -379,7 +366,7 @@ def test_ringed_terminal_record_still_prunes_at_retention():
 	import datetime as _dt
 	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
 	pruned = reg.sweep(now_ts=last + 73 * 3600, lost_after_seconds=900,
-		retention_seconds=72 * 3600, rings_fresh=True, ring_ids={"sess-A"})
+		retention_seconds=72 * 3600, poll_lost_after_seconds=90)
 	assert pruned == ["sess-A"]
 	assert reg.get("sess-A") is None
 
@@ -391,7 +378,7 @@ def test_sweep_presumed_dead_increments_counter():
 	last = _dt.datetime.fromisoformat("2026-07-14T12:00:00+00:00").timestamp()
 	reg.sweep(
 		now_ts=last + 1000, lost_after_seconds=900, retention_seconds=72 * 3600,
-		rings_fresh=True, ring_ids=set(),
+		poll_lost_after_seconds=90,
 	)
 	assert reg.get("sess-pd-1").state == "lost"
 	assert reg.presumed_dead_total == 1

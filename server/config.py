@@ -64,6 +64,10 @@ class Config:
 	# Silent-past-this-many-seconds threshold for the session sweeper to mark a
 	# session lost. Env: SWITCHBOARD_SESSION_LOST_AFTER_SECONDS, default 900 (15m).
 	session_lost_after_seconds: int = 900
+	# Seconds without an inbox poll before the sweeper marks a polling session
+	# lost; also the grace period after a start or a sleep. Must stay above the
+	# mod's 30 s poll backoff cap. Env: SWITCHBOARD_SESSION_POLL_LOST_AFTER_SECONDS.
+	session_poll_lost_after_seconds: int = 90
 	# How long a terminal (ended/lost) session record survives before the sweeper
 	# prunes it. Env: SWITCHBOARD_SESSION_RETENTION_HOURS, default 72.
 	session_retention_hours: int = 72
@@ -109,6 +113,7 @@ def load_config(dotenv_path: str | Path | None = None) -> Config:
 		route_rate_limit=int(os.environ.get("SWITCHBOARD_ROUTE_RATE_LIMIT", "600")),
 		wsl_spawn_root_segment=os.environ.get("SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT", "work"),
 		session_lost_after_seconds=int(os.environ.get("SWITCHBOARD_SESSION_LOST_AFTER_SECONDS", "900")),
+		session_poll_lost_after_seconds=int(os.environ.get("SWITCHBOARD_SESSION_POLL_LOST_AFTER_SECONDS", "90")),
 		session_retention_hours=int(os.environ.get("SWITCHBOARD_SESSION_RETENTION_HOURS", "72")),
 		conversation_retention_hours=int(os.environ.get("SWITCHBOARD_CONVERSATION_RETENTION_HOURS", "72")),
 		admin_notification_retention_hours=int(os.environ.get("SWITCHBOARD_ADMIN_NOTIFICATION_RETENTION_HOURS", "168")),

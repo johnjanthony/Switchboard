@@ -696,17 +696,13 @@ async def _propagate_agy_lost_to_members(session_registry, registry, backend, lo
 
 
 async def _session_sweep_once(
-	session_registry, widget_store, *, lost_after_seconds, retention_hours, now_ts=None, registry=None,
-	backend=None, logger=None,
+	session_registry, *, lost_after_seconds, poll_lost_after_seconds, retention_hours, in_grace=False,
+	now_ts=None, registry=None, backend=None, logger=None,
 ):
 	"""One tick of the staleness sweep, factored out so tests can drive it
-	directly instead of running the infinite loop. Reads the widget store's
-	last Watchtower push to decide whether ring absence is trustworthy."""
+	directly instead of running the infinite loop."""
 	import time as _time
-	from server.session_registry import rings_are_fresh
 	now = now_ts if now_ts is not None else _time.time()
-	fresh = rings_are_fresh(getattr(widget_store, "pushed_at", None), now)
-	ring_ids = set((getattr(widget_store, "rings", None) or {}).keys())
 	live_ask_ids = live_wait_ids = None
 	if registry is not None:
 		live_ask_ids = {p.cli_session_id for p in registry.all_pending() if p.future is not None}
@@ -720,9 +716,9 @@ async def _session_sweep_once(
 	pruned = session_registry.sweep(
 		now_ts=now,
 		lost_after_seconds=lost_after_seconds,
+		poll_lost_after_seconds=poll_lost_after_seconds,
 		retention_seconds=retention_hours * 3600,
-		rings_fresh=fresh,
-		ring_ids=ring_ids,
+		in_grace=in_grace,
 		live_ask_ids=live_ask_ids,
 		live_wait_ids=live_wait_ids,
 	)
@@ -744,16 +740,28 @@ async def _maybe_warn_marker_health(session_registry, logger, marker_dir) -> Non
 
 
 async def dispatch_session_sweep(
-	session_registry, widget_store, logger, supervisor, *,
-	lost_after_seconds, retention_hours, interval: float = 60.0, registry=None, backend=None, marker_dir=None,
+	session_registry, logger, supervisor, *,
+	lost_after_seconds, poll_lost_after_seconds, retention_hours, interval: float = 60.0,
+	grace_seconds: float | None = None, registry=None, backend=None, marker_dir=None,
 ):
 	"""Periodic staleness judge for the session roster. Pure rules live in
-	SessionRegistry.sweep; this loop only supplies the sensor context."""
+	SessionRegistry.sweep; this loop supplies the clock, the grace period after
+	a start or a sleep (LivenessGrace, as long as the poll threshold unless
+	grace_seconds says otherwise), and the live asks and waits."""
+	import time as _time
+	from server.session_registry import LivenessGrace
+	grace = LivenessGrace(
+		grace_seconds=poll_lost_after_seconds if grace_seconds is None else grace_seconds,
+		interval=interval,
+		start_ts=_time.time(),
+	)
 	while True:
 		try:
+			now = _time.time()
 			pruned = await _session_sweep_once(
-				session_registry, widget_store,
-				lost_after_seconds=lost_after_seconds, retention_hours=retention_hours,
+				session_registry,
+				lost_after_seconds=lost_after_seconds, poll_lost_after_seconds=poll_lost_after_seconds,
+				retention_hours=retention_hours, in_grace=grace.tick(now), now_ts=now,
 				registry=registry, backend=backend, logger=logger,
 			)
 			if pruned:
