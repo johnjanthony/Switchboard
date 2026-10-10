@@ -51,6 +51,8 @@ from server.firebase import FirebaseBackend
 from server.firebase_supervisor import LoopSupervisor
 from server.rules_audit import audit_rtdb_rules
 from server.widget_snapshot import WidgetSnapshotStore
+from server.quota_store import QuotaStore
+from server.telemetry import parse_telemetry
 from server.claude_status import ClaudeStatusService
 from server.antigravity_status import AntigravityStatusService
 
@@ -122,6 +124,38 @@ def _build_stop_route(session_registry):
 	async def stop(request: Request):
 		return JSONResponse({"queued": session_registry.request_stop(request.path_params["sid"])})
 	return stop
+
+
+def _build_telemetry_route(session_registry, quota_store, backend, logger, registry=None):
+	"""POST /sessions/{sid}/telemetry - the Claude Code mod's report of the
+	session's context, rate limits, model, effort and title, validated field by
+	field (server/telemetry.py). Writes the session record and the account's
+	quota reading, and offers a reported title to the session's conversation at
+	once. Always 200, like the other hook routes."""
+	async def telemetry(request: Request):
+		session_id = request.path_params["sid"]
+		try:
+			body = await request.json()
+		except Exception:
+			return JSONResponse({}, status_code=200)
+		report = parse_telemetry(body)
+		if not report:
+			return JSONResponse({}, status_code=200)
+		rec = session_registry.apply_telemetry(session_id, report)
+		rate_limits = report.get("rate_limits")
+		if rate_limits and quota_store.apply(rate_limits, now_iso()):
+			try:
+				await backend.write_quota(quota_store.snapshot())
+			except Exception as exc:
+				await logger.surface_error(f"quota_write_error: {exc}")
+		if rec is not None and "title" in report and registry is not None:
+			from server.conversation_ops import sync_session_titles
+			try:
+				await sync_session_titles(registry, backend, {session_id: {"name": report["title"]["name"]}})
+			except Exception as exc:
+				await logger.surface_error(f"session_title_sync_error: {exc}")
+		return JSONResponse({}, status_code=200)
+	return telemetry
 
 
 class _DropInboxAccessLines(logging.Filter):
@@ -896,6 +930,7 @@ async def _run(config: Config) -> None:
 	session_registry = SessionRegistry()
 	registry.sessions = session_registry
 	widget_store = WidgetSnapshotStore()
+	quota_store = QuotaStore()
 
 	def _session_mirror(sid: str, payload: dict | None) -> None:
 		if payload is None:
@@ -950,6 +985,12 @@ async def _run(config: Config) -> None:
 		registry.set_pending_mirror(mirror_writer_fn())
 
 	await hydrate_from_firebase(registry, backend, logger, session_registry=session_registry)
+	# Start from the last published quota reading, so a restart keeps showing
+	# it and still zeroes it when its reset passes.
+	try:
+		quota_store.load(await backend.read_quota())
+	except Exception as exc:
+		await logger.surface_error(f"quota_load_failed: {exc}")
 
 	try:
 		await backend.set_global_wsl_available(bool(config.wsl_home_resolved))
@@ -1074,6 +1115,14 @@ async def _run(config: Config) -> None:
 		methods=["POST"],
 	)
 	app.add_route(
+		"/sessions/{sid}/telemetry",
+		_with_route_limit(
+			_build_telemetry_route(session_registry, quota_store, backend, logger, registry),
+			route_limiter, "/sessions/telemetry", logger,
+		),
+		methods=["POST"],
+	)
+	app.add_route(
 		"/agent_status",
 		_with_route_limit(
 			_build_agent_status_route(handlers, session_registry), route_limiter, "/agent_status", logger,
@@ -1152,6 +1201,7 @@ async def _run(config: Config) -> None:
 			poll_lost_after_seconds=config.session_poll_lost_after_seconds,
 			retention_hours=config.session_retention_hours,
 			registry=registry, backend=backend, marker_dir=session_end_marker_dir,
+			quota_store=quota_store,
 		)
 	)
 

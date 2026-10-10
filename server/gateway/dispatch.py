@@ -695,12 +695,34 @@ async def _propagate_agy_lost_to_members(session_registry, registry, backend, lo
 		)
 
 
+async def _reoffer_session_titles(session_registry, registry, backend, logger) -> None:
+	"""Offer every live session's title to its conversation, as Watchtower's
+	push did each minute: a session that joins a conversation after its title
+	arrived still gets the title adopted. sync_session_titles writes only on a
+	change. A failed write is logged, never a sweep crash."""
+	from server.conversation_ops import sync_session_titles
+	from server.session_registry import TERMINAL_STATES
+	names = {
+		rec.cli_session_id: {"name": rec.name}
+		for rec in session_registry.snapshot()
+		if rec.name and rec.state not in TERMINAL_STATES
+	}
+	if not names:
+		return
+	try:
+		await sync_session_titles(registry, backend, names)
+	except Exception as exc:
+		if logger is not None:
+			await logger.surface_error(f"session_title_reoffer_error: {exc}")
+
+
 async def _session_sweep_once(
 	session_registry, *, lost_after_seconds, poll_lost_after_seconds, retention_hours, in_grace=False,
-	now_ts=None, registry=None, backend=None, logger=None,
+	now_ts=None, registry=None, backend=None, logger=None, quota_store=None,
 ):
 	"""One tick of the staleness sweep, factored out so tests can drive it
-	directly instead of running the infinite loop."""
+	directly instead of running the infinite loop. Also zeroes expired quota
+	windows and re-offers session titles to their conversations."""
 	import time as _time
 	now = now_ts if now_ts is not None else _time.time()
 	live_ask_ids = live_wait_ids = None
@@ -724,6 +746,14 @@ async def _session_sweep_once(
 	)
 	if registry is not None:
 		await _propagate_agy_lost_to_members(session_registry, registry, backend, logger)
+	if quota_store is not None and backend is not None and quota_store.expire(now):
+		try:
+			await backend.write_quota(quota_store.snapshot())
+		except Exception as exc:
+			if logger is not None:
+				await logger.surface_error(f"quota_write_error: {exc}")
+	if registry is not None and backend is not None:
+		await _reoffer_session_titles(session_registry, registry, backend, logger)
 	return pruned
 
 
@@ -742,7 +772,7 @@ async def _maybe_warn_marker_health(session_registry, logger, marker_dir) -> Non
 async def dispatch_session_sweep(
 	session_registry, logger, supervisor, *,
 	lost_after_seconds, poll_lost_after_seconds, retention_hours, interval: float = 60.0,
-	grace_seconds: float | None = None, registry=None, backend=None, marker_dir=None,
+	grace_seconds: float | None = None, registry=None, backend=None, marker_dir=None, quota_store=None,
 ):
 	"""Periodic staleness judge for the session roster. Pure rules live in
 	SessionRegistry.sweep; this loop supplies the clock, the grace period after
@@ -762,7 +792,7 @@ async def dispatch_session_sweep(
 				session_registry,
 				lost_after_seconds=lost_after_seconds, poll_lost_after_seconds=poll_lost_after_seconds,
 				retention_hours=retention_hours, in_grace=grace.tick(now), now_ts=now,
-				registry=registry, backend=backend, logger=logger,
+				registry=registry, backend=backend, logger=logger, quota_store=quota_store,
 			)
 			if pruned:
 				await logger.info(f"session_sweep_pruned: {len(pruned)}")

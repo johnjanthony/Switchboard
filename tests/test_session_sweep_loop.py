@@ -183,3 +183,45 @@ async def test_marker_health_warning_emitted_once(tmp_path):
 	lines = [_json.loads(l) for l in log_path.read_text(encoding="utf-8").splitlines()]
 	warnings = [l for l in lines if l.get("event") == "surface_error" and "session_end_markers_missing" in (l.get("detail") or "")]
 	assert len(warnings) == 1
+
+
+class _TitleBackend:
+	def __init__(self) -> None:
+		self.titles: list = []
+
+	async def write_conversation_title(self, conv_id, title, title_source=None):
+		self.titles.append((conv_id, title, title_source))
+
+
+@pytest.mark.asyncio
+async def test_sweep_zeroes_an_expired_quota_window_and_publishes_it():
+	from unittest.mock import AsyncMock, MagicMock
+	from server.quota_store import QuotaStore
+
+	quota = QuotaStore()
+	quota.apply([{"kind": "five_hour", "percent_used": 40, "resets_at": "2026-07-06T12:30:00+00:00"}], "t1")
+	backend = MagicMock()
+	backend.write_quota = AsyncMock()
+	await _sweep_once(_reg(), now_ts=LAST + 3600, backend=backend, quota_store=quota)
+	backend.write_quota.assert_awaited_once_with({"five_hour": {"percent_used": 0, "resets_at": None}, "received_at": "t1"})
+
+
+@pytest.mark.asyncio
+async def test_sweep_reoffers_live_session_titles_to_their_conversations():
+	"""A session that joins a conversation after its title arrived still gets
+	the title adopted, as Watchtower's minute-by-minute push did."""
+	from tests.conftest import make_active_conversation
+
+	reg = _reg()
+	reg.record_session_start("s1", cwd="C:/Work/X")
+	reg.apply_telemetry("s1", {"title": {"name": "Joined late", "source": "ai-title"}})
+	registry = Registry()
+	registry.sessions = reg
+	conv = make_active_conversation(conversation_id="conv-1", member_session_id="s1")
+	conv.title_source = "default"
+	registry.conversations["conv-1"] = conv
+	registry.bind_session("s1", "conv-1")
+	backend = _TitleBackend()
+	await _sweep_once(reg, now_ts=LAST + 10, registry=registry, backend=backend)
+	assert conv.title == "Joined late"
+	assert backend.titles == [("conv-1", "Joined late", "session")]
