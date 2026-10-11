@@ -155,6 +155,22 @@ data class WidgetQuota(
 	@get:PropertyName("antigravity") @set:PropertyName("antigravity") var antigravity: List<WidgetQuotaGroup>? = null,
 )
 
+// --- Account plan usage: mirrors the server-written quota/ node (server/quota_store.py).
+// percent_used is 0-100 here; the widget DTOs the screens read carry 0-1 fractions.
+
+@IgnoreExtraProperties
+data class QuotaNodeWindow(
+	@get:PropertyName("percent_used") @set:PropertyName("percent_used") var percentUsed: Double? = null,
+	@get:PropertyName("resets_at") @set:PropertyName("resets_at") var resetsAt: String? = null,
+)
+
+@IgnoreExtraProperties
+data class QuotaNode(
+	@get:PropertyName("five_hour") @set:PropertyName("five_hour") var fiveHour: QuotaNodeWindow? = null,
+	@get:PropertyName("seven_day") @set:PropertyName("seven_day") var sevenDay: QuotaNodeWindow? = null,
+	@get:PropertyName("received_at") @set:PropertyName("received_at") var receivedAt: String? = null,
+)
+
 @IgnoreExtraProperties
 data class WidgetStatus(
 	@get:PropertyName("level") @set:PropertyName("level") var level: String = "unknown",
@@ -187,13 +203,13 @@ data class RegistrySession(
 	@get:PropertyName("sender") @set:PropertyName("sender") var sender: String? = null,
 	@get:PropertyName("model") @set:PropertyName("model") var model: String? = null,
 	@get:PropertyName("context_pct") @set:PropertyName("context_pct") var contextPct: Double? = null,
+	@get:PropertyName("context_tokens") @set:PropertyName("context_tokens") var contextTokens: Long? = null,
+	@get:PropertyName("context_window") @set:PropertyName("context_window") var contextWindow: Long? = null,
 	@get:PropertyName("end_reason") @set:PropertyName("end_reason") var endReason: String? = null,
 	@get:PropertyName("name") @set:PropertyName("name") var name: String? = null,
 	@get:PropertyName("name_source") @set:PropertyName("name_source") var nameSource: String? = null,
 	@get:PropertyName("last_transition_source") @set:PropertyName("last_transition_source") var lastTransitionSource: String? = null,
-	@get:PropertyName("title_state") @set:PropertyName("title_state") var titleState: String? = null,
 	@get:PropertyName("in_tool") @set:PropertyName("in_tool") var inTool: Boolean = false,
-	@get:PropertyName("blocked_on_approval") @set:PropertyName("blocked_on_approval") var blockedOnApproval: Boolean = false,
 	// Resolved by the server (server/model_label.py): observed model + effort, else the spawn pick.
 	@get:PropertyName("model_label") @set:PropertyName("model_label") var modelLabel: String? = null,
 	@get:PropertyName("model_source") @set:PropertyName("model_source") var modelSource: String? = null,

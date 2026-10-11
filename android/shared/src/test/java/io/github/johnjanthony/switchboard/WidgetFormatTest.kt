@@ -42,4 +42,18 @@ class WidgetFormatTest {
 		assertTrue(widgetStale(now, ""))
 		assertTrue(widgetStale(now, "not-a-date"))
 	}
+
+	@Test
+	fun `formatAsOf renders the reading's age`() {
+		assertEquals("as of just now", formatAsOf(now, "2026-06-26T11:59:30Z"))
+		assertEquals("as of 5m ago", formatAsOf(now, "2026-06-26T11:55:00Z"))
+		assertEquals("as of 3h ago", formatAsOf(now, "2026-06-26T09:00:00+00:00"))
+		assertEquals("as of 2d ago", formatAsOf(now, "2026-06-24T12:00:00Z"))
+	}
+
+	@Test
+	fun `formatAsOf is empty for absent or unparseable input`() {
+		assertEquals("", formatAsOf(now, null))
+		assertEquals("", formatAsOf(now, "not-a-date"))
+	}
 }

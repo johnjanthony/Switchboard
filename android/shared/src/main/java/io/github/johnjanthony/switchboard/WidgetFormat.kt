@@ -27,9 +27,8 @@ fun formatResetCountdown(nowMs: Long, resetsAtIso: String?): String {
 }
 
 /**
- * Whether the widget snapshot is stale - Watchtower has not pushed within thresholdMs, or
- * pushed_at is absent/unparseable. Readers show "Watchtower offline / as of N min ago"
- * rather than presenting stale rings and quota as live.
+ * Whether a heartbeat timestamp is stale: older than thresholdMs, or absent/unparseable. The
+ * stale pill reads the server's presence/server_at, rewritten every 60 s.
  */
 fun widgetStale(nowMs: Long, pushedAtIso: String?, thresholdMs: Long = 5L * 60L * 1000L): Boolean {
 	if (pushedAtIso.isNullOrBlank()) return true
@@ -39,6 +38,22 @@ fun widgetStale(nowMs: Long, pushedAtIso: String?, thresholdMs: Long = 5L * 60L 
 		return true
 	}
 	return (nowMs - ms) > thresholdMs
+}
+
+/**
+ * "as of 5m ago" for a reading's timestamp (minutes, hours, then days); "as of just now" under a
+ * minute; "" when absent or unparseable. The quota reading changes only when a session's turn
+ * reports one, so its age tells John how current the bars are.
+ */
+fun formatAsOf(nowMs: Long, iso: String?): String {
+	val ms = parseIsoMs(iso) ?: return ""
+	val minutes = (nowMs - ms).coerceAtLeast(0L) / 60_000L
+	return when {
+		minutes < 1L -> "as of just now"
+		minutes < 60L -> "as of ${minutes}m ago"
+		minutes < 24L * 60L -> "as of ${minutes / 60L}h ago"
+		else -> "as of ${minutes / (24L * 60L)}d ago"
+	}
 }
 
 /**
