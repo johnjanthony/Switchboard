@@ -227,43 +227,6 @@ async def test_stats_needs_you_oldest_age_wins_across_conversations():
 
 
 @pytest.mark.asyncio
-async def test_stats_needs_you_blocked_on_approval():
-	registry = _registry()
-	sreg = SessionRegistry()
-	sreg.upsert_from_hook("s-appr", state="active", event="PreToolUse", in_tool=True)
-	sreg.apply_rings({"s-appr": {"title_state": "star"}})
-	route = _build_stats_route(registry, _FakeBackend([]), {"d": _FakeLoopSup(0)}, session_registry=sreg)
-	body = json.loads((await route(_make_request())).body)
-	assert body["needs_you"]["s-appr"]["reason"] == "approval"
-	assert body["needs_you"]["s-appr"]["age_seconds"] >= 0.0
-
-
-@pytest.mark.asyncio
-async def test_stats_needs_you_excludes_terminal_approval_records():
-	registry = _registry()
-	sreg = SessionRegistry()
-	sreg.upsert_from_hook("s-lost", state="active", event="PreToolUse", in_tool=True)
-	sreg.apply_rings({"s-lost": {"title_state": "star"}})
-	rec = sreg.get("s-lost")
-	rec.state = "lost"  # belt test: terminal transitions normally clear the flag; force the stale combination
-	route = _build_stats_route(registry, _FakeBackend([]), {"d": _FakeLoopSup(0)}, session_registry=sreg)
-	body = json.loads((await route(_make_request())).body)
-	assert "s-lost" not in body["needs_you"]
-
-
-@pytest.mark.asyncio
-async def test_stats_needs_you_ask_wins_over_approval():
-	registry = _registry(active=1)
-	registry.add(conversation_id="a0", cli_session_id="s-both", sender="Claude", request_id="r1")
-	sreg = SessionRegistry()
-	sreg.upsert_from_hook("s-both", state="active", event="PreToolUse", in_tool=True)
-	sreg.apply_rings({"s-both": {"title_state": "star"}})
-	route = _build_stats_route(registry, _FakeBackend([]), {"d": _FakeLoopSup(0)}, session_registry=sreg)
-	body = json.loads((await route(_make_request())).body)
-	assert body["needs_you"]["s-both"]["reason"] == "ask"
-
-
-@pytest.mark.asyncio
 async def test_stats_needs_you_empty_when_nothing_pending():
 	registry = _registry(active=1)
 	route = _build_stats_route(registry, _FakeBackend([]), {"d": _FakeLoopSup(0)})
@@ -299,3 +262,16 @@ async def test_stats_carries_the_quota_reading_or_null():
 	quota.apply([{"kind": "five_hour", "percent_used": 10, "resets_at": None}], "t1")
 	body = json.loads((await route(_make_request())).body)
 	assert body["quota"] == {"five_hour": {"percent_used": 10, "resets_at": None}, "received_at": "t1"}
+
+
+@pytest.mark.asyncio
+async def test_stats_needs_you_ignores_a_record_from_before_the_approval_marker_was_retired():
+	sreg = SessionRegistry()
+	sreg.hydrate_record({
+		"cli_session_id": "s-old", "cwd": "C:/Work/X", "state": "active",
+		"last_event_at": "2026-10-10T12:00:00+00:00",
+		"in_tool": True, "title_state": "star", "blocked_on_approval": True,
+	})
+	route = _build_stats_route(_registry(), _FakeBackend([]), {"d": _FakeLoopSup(0)}, session_registry=sreg)
+	body = json.loads((await route(_make_request())).body)
+	assert body["needs_you"] == {}

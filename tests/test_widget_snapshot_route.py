@@ -5,7 +5,6 @@ import json
 import pytest
 
 from server.main import _build_widget_snapshot_route
-from server.session_registry import SessionRegistry
 from server.widget_snapshot import WidgetSnapshotStore
 
 
@@ -103,50 +102,3 @@ async def test_rings_not_a_list_returns_400():
 	route = _build_widget_snapshot_route(store, backend, _FakeLogger())
 	resp = await route(_request({"rings": {"bad": 1}, "quota": None, "pushed_at": "t"}))
 	assert resp.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_an_unknown_ring_no_longer_creates_a_session():
-	store, backend = WidgetSnapshotStore(), _FakeBackend()
-	session_registry = SessionRegistry()
-	route = _build_widget_snapshot_route(store, backend, _FakeLogger(), session_registry)
-	body = {"rings": [{"session_id": "unseen-session", "pct": 0.3, "model": "sonnet"}], "quota": None, "pushed_at": "t"}
-	resp = await route(_request(body))
-	assert resp.status_code == 200
-	assert session_registry.get("unseen-session") is None
-	assert "unseen-session" in backend.rings  # widget/rings still carries it for consumers not yet moved
-
-
-@pytest.mark.asyncio
-async def test_only_the_tab_title_marker_flows_into_a_known_session():
-	store, backend = WidgetSnapshotStore(), _FakeBackend()
-	session_registry = SessionRegistry()
-	session_registry.record_session_start("sid-1", cwd="C:/Work/X")
-	route = _build_widget_snapshot_route(store, backend, _FakeLogger(), session_registry)
-	body = {
-		"rings": [{"session_id": "sid-1", "pct": 0.3, "model": "sonnet",
-				   "name": "Fixing tests", "name_source": "ai-title", "title_state": "star"}],
-		"quota": None,
-		"pushed_at": "2026-06-25T00:00:00+00:00",
-	}
-	resp = await route(_request(body))
-	assert resp.status_code == 200
-	rec = session_registry.get("sid-1")
-	assert (rec.name, rec.model, rec.title_state) == (None, None, "star")
-
-
-@pytest.mark.asyncio
-async def test_ring_effort_no_longer_reaches_the_session_record():
-	store, backend = WidgetSnapshotStore(), _FakeBackend()
-	session_registry = SessionRegistry()
-	session_registry.record_session_start("sid-1", cwd="C:/Work/X")
-	route = _build_widget_snapshot_route(store, backend, _FakeLogger(), session_registry)
-	body = {
-		"rings": [{"session_id": "sid-1", "pct": 0.3, "model": "claude-opus-5-5", "effort": "xhigh"}],
-		"quota": None,
-		"pushed_at": "2026-06-25T00:00:00+00:00",
-	}
-	resp = await route(_request(body))
-	assert resp.status_code == 200
-	assert session_registry.get("sid-1").effort is None
-	assert backend.rings["sid-1"]["effort"] == "xhigh"

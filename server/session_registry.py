@@ -2,8 +2,8 @@
 
 Sessions are first-class entities keyed by cli_session_id (== Claude Code
 session_id == transcript stem == the id `claude --resume` takes). The registry
-is push-fed only: plugin hooks, Watchtower ring snapshots, and switchboard MCP
-calls. The server runs as LocalSystem and cannot scan transcripts itself, so
+is push-fed only: the Claude Code mod's posts (session start and end, status,
+telemetry, inbox polls) and switchboard MCP calls. The server runs as LocalSystem and cannot scan transcripts itself, so
 nothing here reads the filesystem.
 
 Same single-event-loop access model as Registry: no locking. RTDB mirroring
@@ -93,9 +93,7 @@ class SessionRecord:
 	name: str | None = None
 	name_source: str | None = None
 	last_transition_source: str | None = None
-	title_state: str | None = None
 	in_tool: bool = False
-	blocked_on_approval: bool = False
 	pending_notices: list = field(default_factory=list)
 
 	def to_payload(self) -> dict:
@@ -230,12 +228,8 @@ class SessionRegistry:
 			rec.end_reason = None
 		if in_tool is not None:
 			rec.in_tool = in_tool
-		self._recompute_blocked(rec)
 		self._fire_mirror(rec)
 		return rec
-
-	def _recompute_blocked(self, rec: SessionRecord) -> None:
-		rec.blocked_on_approval = bool(rec.in_tool and rec.title_state == "star")
 
 	def touch_mcp(self, cli_session_id: str, *, cwd: str, sender: str | None = None) -> SessionRecord:
 		rec = self._ensure(cli_session_id, source="mcp")
@@ -258,7 +252,6 @@ class SessionRegistry:
 		rec.last_event_at = ended_at or self._now()
 		rec.last_transition_source = "session_end"
 		rec.in_tool = False
-		self._recompute_blocked(rec)
 		self._fire_mirror(rec)
 		return rec
 
@@ -308,23 +301,6 @@ class SessionRegistry:
 		rec.last_event_at = self._now()
 		self._fire_mirror(rec)
 		return rec
-
-	def apply_rings(self, rings: dict) -> None:
-		"""Take the tab-title marker from a Watchtower snapshot, the one session
-		field Watchtower still owns until it retires. Model, effort, context and
-		title come from the session's mod (apply_telemetry) and liveness from its
-		inbox poll, so a ring writes none of those, never bumps last_event_at and
-		never creates a record. Terminal records are skipped (REV-114)."""
-		for session_id, ring in (rings or {}).items():
-			if not isinstance(ring, dict) or "title_state" not in ring:
-				continue
-			rec = self._records.get(session_id)
-			if rec is None or rec.state in TERMINAL_STATES:
-				continue
-			ts = ring.get("title_state")
-			rec.title_state = ts if isinstance(ts, str) and ts in ("working", "star") else None
-			self._recompute_blocked(rec)
-			self._fire_mirror(rec)
 
 	def set_binding(self, cli_session_id: str, conversation_id: str | None) -> None:
 		"""Reflect Registry.bind_session/unbind_session onto the record. Unknown
@@ -455,9 +431,7 @@ class SessionRegistry:
 			name=data.get("name"),
 			name_source=data.get("name_source"),
 			last_transition_source=data.get("last_transition_source"),
-			title_state=data.get("title_state"),
 			in_tool=bool(data.get("in_tool", False)),
-			blocked_on_approval=bool(data.get("blocked_on_approval", False)),
 			pending_notices=list(data.get("pending_notices") or []),
 		)
 		self._records[sid] = rec
@@ -513,7 +487,6 @@ class SessionRegistry:
 			rec.end_reason = "presumed-dead"
 			self.presumed_dead_total += 1
 			rec.in_tool = False
-			self._recompute_blocked(rec)
 			self._fire_mirror(rec)
 		return pruned
 

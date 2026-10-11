@@ -302,19 +302,10 @@ def _compute_healthy(listeners, loop_failures) -> bool:
 	return not listener_unhealthy and not loop_unhealthy
 
 
-def _iso_age_seconds(iso: str, now: datetime) -> float:
-	try:
-		return max(0.0, (now - datetime.fromisoformat(iso)).total_seconds())
-	except (ValueError, TypeError):
-		return 0.0
-
-
-def _compute_needs_you(registry: Registry, session_registry) -> dict:
+def _compute_needs_you(registry: Registry) -> dict:
 	"""Sessions blocked on John, for Watchtower's per-session dot: every pending
-	ask (live or parked - parked pendings can outlive their session record) plus
-	non-terminal records blocked on a terminal permission prompt. ask wins when
-	both apply (the phone-answerable fact is the more actionable one); a session
-	pending in several conversations reports its oldest age."""
+	ask, live or parked (parked pendings can outlive their session record). A
+	session pending in several conversations reports its oldest age."""
 	now = datetime.now(timezone.utc)
 	needs_you: dict[str, dict] = {}
 	for p in registry.all_pending():
@@ -322,10 +313,6 @@ def _compute_needs_you(registry: Registry, session_registry) -> dict:
 		prev = needs_you.get(p.cli_session_id)
 		if prev is None or age > prev["age_seconds"]:
 			needs_you[p.cli_session_id] = {"reason": "ask", "age_seconds": age}
-	if session_registry is not None:
-		for rec in session_registry.snapshot():
-			if rec.blocked_on_approval and rec.state not in TERMINAL_STATES and rec.cli_session_id not in needs_you:
-				needs_you[rec.cli_session_id] = {"reason": "approval", "age_seconds": _iso_age_seconds(rec.last_event_at, now)}
 	return needs_you
 
 
@@ -378,7 +365,7 @@ def _build_stats_route(registry: Registry, backend, loop_sups: dict, session_reg
 				"by_state": session_registry.counts_by_state() if session_registry is not None else {},
 				"items": _session_items(session_registry) if session_registry is not None else [],
 			},
-			"needs_you": _compute_needs_you(registry, session_registry),
+			"needs_you": _compute_needs_you(registry),
 			"quota": quota_store.snapshot() if quota_store is not None else None,
 		})
 	return stats
@@ -429,13 +416,12 @@ class _CachePolicyStaticFiles(StaticFiles):
 		return response
 
 
-def _build_widget_snapshot_route(store, backend, logger, session_registry=None):
+def _build_widget_snapshot_route(store, backend, logger):
 	"""POST /widget-snapshot - Watchtower pushes its rings + quota snapshot here
 	(localhost trust, same model as /stats and /agent_status). The store diffs
 	against the last push so RTDB is written only on change; pushed_at is always
-	written so readers can show staleness. Session records take only the
-	tab-title marker from it: model, effort, context and title come from each
-	session's mod, and liveness from its inbox poll."""
+	written so readers can show staleness. Session records take nothing from it:
+	each session's mod reports its own telemetry."""
 	_RING_FIELDS = ("pct", "model", "status", "context_tokens", "window", "is_error", "name", "name_source", "title_state", "effort")
 
 	async def widget_snapshot(request: Request):
@@ -457,8 +443,6 @@ def _build_widget_snapshot_route(store, backend, logger, session_registry=None):
 				rings_map[r["session_id"]] = {k: r.get(k) for k in _RING_FIELDS}
 
 		rings_changed, quota_changed = store.apply(rings_map, quota, pushed_at)
-		if session_registry is not None:
-			session_registry.apply_rings(rings_map)
 		try:
 			if rings_changed:
 				await backend.write_widget_rings(rings_map)
@@ -1091,7 +1075,7 @@ async def _run(config: Config) -> None:
 	app.add_route(
 		"/widget-snapshot",
 		_with_route_limit(
-			_build_widget_snapshot_route(widget_store, backend, logger, session_registry),
+			_build_widget_snapshot_route(widget_store, backend, logger),
 			route_limiter, "/widget-snapshot", logger,
 		),
 		methods=["POST"],

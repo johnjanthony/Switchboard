@@ -65,28 +65,6 @@ def test_session_end_marks_ended():
 	assert rec.end_reason == "logout"
 	assert reg.record_session_end("sess-GONE", reason="logout", ended_at="x") is None
 
-def test_rings_no_longer_write_session_fields_or_discover_sessions():
-	# The mod reports model, effort, context and title now; a Watchtower ring
-	# keeps only the tab-title marker until Watchtower retires.
-	reg = _reg()
-	reg.record_session_start("sess-A", cwd="C:/Work/X")
-	reg.apply_rings({
-		"sess-A": {"pct": 0.4, "model": "opus", "effort": "high", "name": "T", "name_source": "ai-title"},
-		"sess-NEW": {"pct": 0.1, "model": "sonnet", "title_state": "star"},
-	})
-	rec = reg.get("sess-A")
-	assert (rec.context_pct, rec.model, rec.effort, rec.name) == (None, None, None, None)
-	assert reg.get("sess-NEW") is None
-
-
-def test_a_ring_never_bumps_last_event_at():
-	clock = ["2026-07-06T12:00:00+00:00"]
-	reg = SessionRegistry(now=lambda: clock[0])
-	reg.record_session_start("sess-A", cwd="C:/Work/X")
-	clock[0] = "2026-07-06T13:00:00+00:00"
-	reg.apply_rings({"sess-A": {"title_state": "working"}})
-	assert reg.get("sess-A").last_event_at == "2026-07-06T12:00:00+00:00"
-
 def test_binding_and_sender_setters():
 	reg = _reg()
 	reg.record_session_start("sess-A", cwd="C:/Work/X")
@@ -208,76 +186,6 @@ def test_resume_sentinel_expires_and_ignores_other_cwds():
 	clock[0] += 200.0  # past the 180s TTL
 	assert reg.check_resume_id_change("sess-NEW", "C:/Work/X") is None
 
-def test_in_tool_and_star_derive_blocked_on_approval():
-	reg = _reg()
-	reg.record_session_start("sess-A", cwd="C:/Work/X")
-	reg.upsert_from_hook("sess-A", state="active", detail="Bash: git status", event="PreToolUse", in_tool=True)
-	assert reg.get("sess-A").in_tool is True
-	assert reg.get("sess-A").blocked_on_approval is False
-	reg.apply_rings({"sess-A": {"pct": 0.1, "model": "m", "status": "ok", "title_state": "star"}})
-	rec = reg.get("sess-A")
-	assert rec.title_state == "star"
-	assert rec.blocked_on_approval is True
-	assert rec.state == "active"  # apply_rings never changes state
-
-def test_post_tool_use_clears_blocked_on_approval():
-	reg = _reg()
-	reg.record_session_start("sess-A", cwd="C:/Work/X")
-	reg.upsert_from_hook("sess-A", state="active", detail="Bash: x", event="PreToolUse", in_tool=True)
-	reg.apply_rings({"sess-A": {"pct": 0.1, "title_state": "star"}})
-	assert reg.get("sess-A").blocked_on_approval is True
-	reg.upsert_from_hook("sess-A", state="active", detail=None, event="PostToolUse", in_tool=False)
-	assert reg.get("sess-A").in_tool is False
-	assert reg.get("sess-A").blocked_on_approval is False
-
-def test_working_ring_clears_blocked_on_approval():
-	reg = _reg()
-	reg.record_session_start("sess-A", cwd="C:/Work/X")
-	reg.upsert_from_hook("sess-A", state="active", detail="Bash: x", event="PreToolUse", in_tool=True)
-	reg.apply_rings({"sess-A": {"pct": 0.1, "title_state": "star"}})
-	reg.apply_rings({"sess-A": {"pct": 0.1, "title_state": "working"}})
-	rec = reg.get("sess-A")
-	assert rec.title_state == "working"
-	assert rec.blocked_on_approval is False
-
-def test_sensing_fields_hydrate():
-	reg = _reg()
-	reg.record_session_start("sess-A", cwd="C:/Work/X")
-	reg.upsert_from_hook("sess-A", state="active", detail="Bash: x", event="PreToolUse", in_tool=True)
-	reg.apply_rings({"sess-A": {"pct": 0.1, "title_state": "star"}})
-	payload = reg.get("sess-A").to_payload()
-	reg2 = _reg()
-	reg2.hydrate_record(payload)
-	rec = reg2.get("sess-A")
-	assert rec.title_state == "star" and rec.in_tool is True and rec.blocked_on_approval is True
-
-def test_record_session_end_clears_blocked_on_approval():
-	reg = _reg()
-	reg.record_session_start("s1", cwd="C:/Work/X")
-	reg.upsert_from_hook("s1", state="active", detail="Bash: x", event="PreToolUse", in_tool=True)
-	reg.apply_rings({"s1": {"pct": 0.1, "title_state": "star"}})
-	assert reg.get("s1").blocked_on_approval is True
-	reg.record_session_end("s1", reason="exit", ended_at="2026-07-06T12:00:00+00:00")
-	rec = reg.get("s1")
-	assert rec.state == "ended"
-	assert rec.in_tool is False
-	assert rec.blocked_on_approval is False
-
-def test_sweep_lost_clears_blocked_on_approval():
-	reg = _reg()
-	reg.record_session_start("s1", cwd="C:/Work/X")
-	reg.upsert_from_hook("s1", state="active", detail="Bash: x", event="PreToolUse", in_tool=True)
-	reg.apply_rings({"s1": {"pct": 0.1, "title_state": "star"}})
-	assert reg.get("s1").blocked_on_approval is True
-	import datetime as _dt
-	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
-	reg.sweep(now_ts=last + 1000, lost_after_seconds=900, retention_seconds=72 * 3600,
-		poll_lost_after_seconds=90)
-	rec = reg.get("s1")
-	assert rec.state == "lost"
-	assert rec.in_tool is False
-	assert rec.blocked_on_approval is False
-
 def _sweep(reg, **overrides):
 	import datetime as _dt
 	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
@@ -340,34 +248,6 @@ def test_hook_event_still_revives_lost_record():
 	out = reg.upsert_from_hook("sess-A", state="active")
 	assert out.state == "active"
 	assert out.end_reason is None
-
-
-def test_ring_sighting_leaves_terminal_record_untouched():
-	# REV-114: a transcript ring is a file sighting, not proof of life - it
-	# must not refresh last_event_at (which would defer pruning) nor enrich.
-	reg = _reg()
-	reg.record_session_start("sess-A", cwd="C:/Work/X")
-	reg.record_session_end("sess-A", reason="logout", ended_at="2026-07-06T10:00:00+00:00")
-	reg.apply_rings({"sess-A": {"pct": 50.0, "model": "opus"}})
-	rec = reg.get("sess-A")
-	assert rec.last_event_at == "2026-07-06T10:00:00+00:00"
-	assert rec.model is None
-	assert rec.state == "ended"
-
-
-def test_ringed_terminal_record_still_prunes_at_retention():
-	# The full REV-114(b) scenario: end -> ring sightings -> sweep past the
-	# retention horizon must prune anyway.
-	reg = SessionRegistry(now=lambda: "2026-07-06T12:00:00+00:00")
-	reg.record_session_start("sess-A", cwd="C:/Work/X")
-	reg.record_session_end("sess-A", reason="logout", ended_at="2026-07-06T12:00:00+00:00")
-	reg.apply_rings({"sess-A": {"pct": 10.0}})
-	import datetime as _dt
-	last = _dt.datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
-	pruned = reg.sweep(now_ts=last + 73 * 3600, lost_after_seconds=900,
-		retention_seconds=72 * 3600, poll_lost_after_seconds=90)
-	assert pruned == ["sess-A"]
-	assert reg.get("sess-A") is None
 
 
 def test_sweep_presumed_dead_increments_counter():
@@ -519,3 +399,16 @@ def test_hydrate_record_restores_effort_and_recomputes_label():
 	payload = rec.to_payload()
 	assert payload["model_label"] == "Opus 5.5 · high"
 	assert payload["model_source"] == "observed"
+
+
+def test_an_old_record_hydrates_without_the_approval_marker():
+	# Records mirrored before the marker was retired still carry title_state and
+	# blocked_on_approval; hydration drops both and the next write omits them.
+	reg = _reg()
+	reg.hydrate_record({
+		"cli_session_id": "sess-A", "cwd": "C:/Work/X", "state": "active",
+		"in_tool": True, "title_state": "star", "blocked_on_approval": True,
+	})
+	payload = reg.get("sess-A").to_payload()
+	assert payload["in_tool"] is True
+	assert "title_state" not in payload and "blocked_on_approval" not in payload
