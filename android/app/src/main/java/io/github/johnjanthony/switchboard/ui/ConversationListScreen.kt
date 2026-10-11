@@ -28,9 +28,11 @@ import androidx.compose.material3.Text
 import androidx.compose.foundation.layout.Row
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -42,6 +44,7 @@ import io.github.johnjanthony.switchboard.network.ConversationRow
 import io.github.johnjanthony.switchboard.network.WidgetQuota
 import io.github.johnjanthony.switchboard.network.WidgetRing
 import io.github.johnjanthony.switchboard.network.WidgetStatus
+import kotlinx.coroutines.delay
 import io.github.johnjanthony.switchboard.ui.theme.Jade
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -77,6 +80,18 @@ fun ConversationListScreen(
 ) {
 	var menuExpanded by remember { mutableStateOf(false) }
 	var showQuotaPopup by remember { mutableStateOf(false) }
+
+	// With the server down no new heartbeat arrives to recompose this screen, so the stale pill
+	// and the header's greyed bars would never appear. Wake once, at the moment the latest
+	// heartbeat crosses the stale threshold; a new heartbeat restarts the wait.
+	var staleClockMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+	LaunchedEffect(serverSeenAt) {
+		staleClockMs = System.currentTimeMillis()
+		val wait = io.github.johnjanthony.switchboard.msUntilStale(staleClockMs, serverSeenAt) ?: return@LaunchedEffect
+		delay(wait)
+		staleClockMs = System.currentTimeMillis()
+	}
+	val nowMs = maxOf(staleClockMs, System.currentTimeMillis())
 
 	// A keyed LazyColumn keeps the first visible item's key in view when rows are inserted
 	// above it, so a new newest row (a fresh conversation, one bumped by activity, the Admin
@@ -124,7 +139,7 @@ fun ConversationListScreen(
 				},
 				title = {},
 				actions = {
-					val stale = serverSeenAt != null && io.github.johnjanthony.switchboard.widgetStale(System.currentTimeMillis(), serverSeenAt)
+					val stale = serverSeenAt != null && io.github.johnjanthony.switchboard.widgetStale(nowMs, serverSeenAt)
 					io.github.johnjanthony.switchboard.SwitchboardStalePillChip(stale = stale)
 					io.github.johnjanthony.switchboard.AntigravityStatusPillChip(status = antigravityStatus)
 					io.github.johnjanthony.switchboard.OnlineOfflinePillChip(status = claudeStatus)
@@ -140,6 +155,7 @@ fun ConversationListScreen(
 		WidgetStatusHeader(
 			quota = quota,
 			serverSeenAt = serverSeenAt,
+			nowMs = nowMs,
 			onClick = { if (quota != null) showQuotaPopup = true }
 		)
 		val hasContent = rows.isNotEmpty() || hiddenRows.isNotEmpty() || adminRow != null

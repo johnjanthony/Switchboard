@@ -41,6 +41,17 @@ fun widgetStale(nowMs: Long, heartbeatIso: String?, thresholdMs: Long = 5L * 60L
 }
 
 /**
+ * Milliseconds until widgetStale first turns true for this heartbeat; null when it already is,
+ * or the timestamp is absent/unparseable. Lets a screen re-check at that moment: with the server
+ * down nothing else arrives to recompose it, so the stale pill would otherwise never appear.
+ */
+fun msUntilStale(nowMs: Long, heartbeatIso: String?, thresholdMs: Long = 5L * 60L * 1000L): Long? {
+	val ms = parseIsoMs(heartbeatIso) ?: return null
+	val remaining = ms + thresholdMs - nowMs
+	return if (remaining >= 0) remaining + 1 else null
+}
+
+/**
  * "as of 5m ago" for a reading's timestamp (minutes, hours, then days); "as of just now" under a
  * minute; "" when absent or unparseable. The quota reading changes only when a session's turn
  * reports one, so its age tells John how current the bars are.

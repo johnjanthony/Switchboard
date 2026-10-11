@@ -2,6 +2,7 @@ package io.github.johnjanthony.switchboard
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -55,5 +56,25 @@ class WidgetFormatTest {
 	fun `formatAsOf is empty for absent or unparseable input`() {
 		assertEquals("", formatAsOf(now, null))
 		assertEquals("", formatAsOf(now, "not-a-date"))
+	}
+
+	@Test
+	fun `msUntilStale counts down to the first moment widgetStale turns true`() {
+		val wait = msUntilStale(now, "2026-06-26T11:58:00Z")!!
+		assertEquals(180_001L, wait)
+		assertFalse(widgetStale(now + wait - 1, "2026-06-26T11:58:00Z"))
+		assertTrue(widgetStale(now + wait, "2026-06-26T11:58:00Z"))
+	}
+
+	@Test
+	fun `msUntilStale is one millisecond at exactly the threshold`() {
+		assertEquals(1L, msUntilStale(now, "2026-06-26T11:55:00Z"))
+	}
+
+	@Test
+	fun `msUntilStale is null once stale and for absent or unparseable input`() {
+		assertNull(msUntilStale(now, "2026-06-26T11:50:00Z"))
+		assertNull(msUntilStale(now, null))
+		assertNull(msUntilStale(now, "not-a-date"))
 	}
 }

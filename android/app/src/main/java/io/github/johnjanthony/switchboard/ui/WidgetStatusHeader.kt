@@ -45,9 +45,10 @@ private val CtxRed = Color(0xFFE05555)
 fun WidgetStatusHeader(
 	quota: WidgetQuota?,
 	serverSeenAt: String?,
+	nowMs: Long,
 	onClick: () -> Unit,
 ) {
-	val stale = widgetStale(System.currentTimeMillis(), serverSeenAt)
+	val stale = widgetStale(nowMs, serverSeenAt)
 	val rawAgy = quota?.antigravity ?: emptyList()
 	val visibleAgy = rawAgy
 		.filter { isAgyGroupVisible(it) }
