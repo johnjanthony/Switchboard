@@ -63,3 +63,23 @@ async def test_tool_side_away_exit_with_no_pendings_is_plain(tmp_path):
 	result = await handlers.set_away_mode(False, cli_session_id="s-x2", cwd="C:/Work/X")
 	assert result == "ok. away_mode=False"
 	assert registry.global_away_mode is False
+
+
+@pytest.mark.asyncio
+async def test_away_exit_reply_is_attached_to_its_question(tmp_path):
+	"""The bulk reply carries the question's msg_id: FirebaseBackend clears the
+	question's phone notification on exactly that attached reply."""
+	registry = Registry()
+	registry.global_away_mode = True
+	conv = make_active_conversation(conversation_id="conv-x3", member_session_id="s-x3", sender="Claude")
+	registry.conversations["conv-x3"] = conv
+	registry.bind_session("s-x3", "conv-x3")
+	backend = RecordingBackend()
+	handlers = _handlers(tmp_path, registry, backend)
+
+	registry.add("conv-x3", "s-x3", "Claude", request_id="req-3", msg_id="msg-3")
+
+	await handlers.set_away_mode(False, cli_session_id="s-x3", cwd="C:/Work/X")
+
+	replies = [m for m in backend.channel_messages if m["message_type"] == "human"]
+	assert [m["attached_to_msg_id"] for m in replies] == ["msg-3"]

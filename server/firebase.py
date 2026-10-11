@@ -177,6 +177,7 @@ class FirebaseBackend(
 			await asyncio.to_thread(
 				lambda: msgs_ref.child(msg_id).child("cancelled").set(True)
 			)
+			self._dismiss_question_notification(conv_id, msg_id)
 		# Cancellation is a resolution — clear the pending_questions record too.
 		try:
 			await self.remove_pending_question_record(conv_id, request_id)
@@ -424,6 +425,28 @@ class FirebaseBackend(
 		msg = messaging.Message(topic=topic, data=fcm_data, android=android_cfg)
 
 		await asyncio.to_thread(lambda: messaging.send(msg))
+
+	def _dismiss_question_notification(self, conv_id: str, msg_id: str) -> None:
+		"""Clear a question's notification on the phone once the question has
+		ended; Wear OS bridging clears the watch's copy. Backgrounded so no
+		terminal path waits on FCM."""
+		_spawn_bg(self._send_question_dismissal(conv_id, msg_id), label=f"fcm_dismiss:{conv_id}:{msg_id}")
+
+	async def _send_question_dismissal(self, conv_id: str, msg_id: str) -> None:
+		# Normal priority: FCM may demote an app's high-priority messages when
+		# they show no notification, and question pushes depend on high
+		# priority. A dismiss can wait for the phone to wake. No body, so a
+		# phone build without the dismiss handler drops it unseen.
+		msg = messaging.Message(
+			topic="questions",
+			data={"conv_id": conv_id, "sb_message_type": "dismiss", "message_id": msg_id},
+			android=messaging.AndroidConfig(priority="normal"),
+		)
+		try:
+			await asyncio.to_thread(lambda: messaging.send(msg))
+		except Exception as exc:
+			if self._logger:
+				await self._logger.surface_error(f"firebase_fcm_dismiss_error: conv={conv_id} msg={msg_id} {exc}")
 
 	async def fetch_database_rules(self) -> str:
 		"""Read the DEPLOYED RTDB rules via the REST management endpoint
@@ -841,6 +864,11 @@ class FirebaseBackend(
 		ref = db.reference(f"messages/{conv_id}").push()
 		await asyncio.to_thread(ref.set, payload)
 		msg_id = ref.key
+
+		# John's reply attached to a question ends it, whichever surface sent the
+		# answer. Cancel-side endings dismiss in mark_question_cancelled instead.
+		if message_type == "human" and attached_to_msg_id is not None:
+			self._dismiss_question_notification(conv_id, attached_to_msg_id)
 
 		# Atomically increment unread_count for every non-human message so the
 		# Android badge reflects unread activity on all device surfaces.
