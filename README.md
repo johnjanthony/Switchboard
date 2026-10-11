@@ -32,11 +32,11 @@ Switchboard is a local MCP gateway with cloud-synchronized state (Firebase) that
 
 Switchboard is one Python process fronting a single Firebase Realtime Database, with four surfaces reading and writing that shared hub. Agents speak MCP to the server; the server is the only writer of authoritative state; the human-facing clients render and command it.
 
-![Switchboard system architecture: agents speak MCP to the local Python server; state syncs through Firebase RTDB, Storage, and FCM; Android + Wear, Operator, and Watchtower are the human surfaces](docs/media/switchboard-architecture.svg)
+![Switchboard system architecture: agents speak MCP to the local Python server; state syncs through Firebase RTDB, Storage, and FCM; Android (its notifications bridged to a Wear OS watch), Operator, and Watchtower are the human surfaces](docs/media/switchboard-architecture.svg)
 
 The model is built around **away mode** (a single global flag: when set, agents route every prompt to the phone instead of the terminal) and **conversations** (the persistence + routing unit; multiple agents can share one conversation, and while pending in-flight questions do not survive a restart, conversation state itself rehydrates from Firebase).
 
-**Built with:** Python (asyncio), the [Model Context Protocol](https://modelcontextprotocol.io), Firebase (Realtime Database + Cloud Messaging), Kotlin / Jetpack Compose (Android + Wear OS), Preact (web), and .NET 9 / WinForms (Windows).
+**Built with:** Python (asyncio), the [Model Context Protocol](https://modelcontextprotocol.io), Firebase (Realtime Database + Cloud Messaging), Kotlin / Jetpack Compose (Android), Preact (web), and .NET 9 / WinForms (Windows).
 
 Switchboard was architected and built by John Anthony, directing a multi-agent workflow of off-the-shelf coding agents (Claude Code among them) coordinated, fittingly, through Switchboard itself.
 
@@ -259,4 +259,4 @@ All unit tests are offline; no credentials required.
 
 See [`CLAUDE.md`](CLAUDE.md) for the agent-oriented project tour and the canonical layout tree.
 
-The repo is a monorepo of components: `server/` (the Python MCP gateway), `android/` (the Android + Wear client), `dashboard/` (Switchboard Operator, the zero-build Preact web cockpit served at `/dashboard`), and `watchtower/` (the Windows client — Switchboard Watchtower, a .NET 9 taskbar widget).
+The repo is a monorepo of components: `server/` (the Python MCP gateway), `android/` (the Android client, whose notifications reach a paired Wear OS watch through notification bridging), `dashboard/` (Switchboard Operator, the zero-build Preact web cockpit served at `/dashboard`), and `watchtower/` (the Windows client — Switchboard Watchtower, a .NET 9 taskbar widget).

@@ -77,18 +77,17 @@ hooks/
   tests/               claude plugin test suites + harness.ts (the fake engine beneath the mod)
 types/
   index.d.ts           The mod's $.state contract
-android/                     Three Gradle modules: app (phone UI), shared (library used by app + wear), wear (watch)
+android/                     Two Gradle modules: app (phone UI), shared (library used by app). A paired Wear OS watch shows the phone's notifications through Wear OS bridging; there is no watch app
   shared/src/main/java/io/github/johnjanthony/switchboard/
-    MainViewModel.kt         ALL Firebase RTDB listeners + command writers (StateFlow state; shared by app and wear)
+    MainViewModel.kt         ALL Firebase RTDB listeners + command writers (StateFlow state)
     SessionBoardPolicy.kt    Pure sessions-board derivations (label chain, needs-attention, partition/sort, badge count)
-    ConversationPolicy.kt    Pure conversation derivations (context rings, watch partition)
+    ConversationPolicy.kt    Pure conversation derivations (context rings, admin row, unread zeroing, picker targets)
     network/Models.kt        Data classes (@PropertyName annotated): ConversationSummary/Member/Row, RegistrySession, widget DTOs
   app/src/main/java/io/github/johnjanthony/switchboard/
     MainActivity.kt          NavHost (conversation list / chat / sessions board / markdown viewer) + dialog hoisting
-    fcm/SwitchboardFirebaseMessagingService.kt  Push notifications (three channels, tap-to-conversation)
+    fcm/SwitchboardFirebaseMessagingService.kt  Push notifications (three channels, tap-to-conversation; a question's notification clears when the question ends)
     ui/                      Compose screens + composables (ConversationListScreen, SessionsBoardScreen, sheets, row composables)
     ui/theme/                Material3 dark "console" theme (Brass/Jade/Coral palette)
-  wear/                      Wear OS companion (own Compose UI; consumes the shared MainViewModel and models)
   app/build.gradle           Markwon, Firebase, Compose dependencies
 watchtower/                  Windows client (.NET 9 / WinForms taskbar widget) — "Switchboard Watchtower"
   Switchboard.Watchtower.sln

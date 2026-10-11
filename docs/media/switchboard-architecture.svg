@@ -192,10 +192,10 @@
 	</g>
 
 	<rect x="1190" y="482" width="210" height="120" rx="7" fill="#1e2833" stroke="#3b4c5e" stroke-width="1.2"/>
-	<text x="1202" y="506" font-size="15" font-weight="600" fill="#e8eef4">Wear OS companion</text>
-	<text x="1202" y="528" font-size="11.5" fill="#9fb0c0">own Compose UI; consumes the</text>
-	<text x="1202" y="544" font-size="11.5" fill="#9fb0c0">shared MainViewModel module</text>
-	<text x="1202" y="560" font-size="11.5" fill="#9fb0c0">(same RTDB listeners)</text>
+	<text x="1202" y="506" font-size="15" font-weight="600" fill="#e8eef4">Wear OS watch</text>
+	<text x="1202" y="528" font-size="11.5" fill="#9fb0c0">no app; shows the phone's</text>
+	<text x="1202" y="544" font-size="11.5" fill="#9fb0c0">notifications via Wear OS</text>
+	<text x="1202" y="560" font-size="11.5" fill="#9fb0c0">bridging (open on phone)</text>
 
 	<line x1="1295" y1="452" x2="1295" y2="480" stroke="#3b4c5e" stroke-width="1.6"/>
 

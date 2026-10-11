@@ -8,14 +8,14 @@ This doc is the single design reference for the running system. Implementation f
 
 ## 1. Architecture
 
-![Switchboard system architecture: agents speak MCP to the local Python server; state syncs through Firebase RTDB, Storage, and FCM; Android + Wear, Operator, and Watchtower are the human surfaces](media/switchboard-architecture.svg)
+![Switchboard system architecture: agents speak MCP to the local Python server; state syncs through Firebase RTDB, Storage, and FCM; Android (its notifications bridged to a Wear OS watch), Operator, and Watchtower are the human surfaces](media/switchboard-architecture.svg)
 
 **Components.**
 
 - **MCP server** (Python 3.11+, FastMCP with `stateless_http=False`). Serves the `/mcp` streamable HTTP transport on `127.0.0.1:9876` by default (`SWITCHBOARD_HOST` defaults to `127.0.0.1`; set to `0.0.0.0` for WSL-reachable; `SWITCHBOARD_PORT` defaults to `9876`). Plus twelve added HTTP endpoints (§5): health, the Claude Code mod's routes (inbox poll, stop, telemetry, session start and end, agent status), agy's away-mode check, the `/stats` roll-up and status-watch control that Watchtower and Operator use, the session roster, and a document proxy; and a `/dashboard` static mount, all behind a shared Bearer-token gate.
 - **Firebase Realtime Database** — the persistence and phone-side synchronization surface. The server writes; the Android app reads + writes replies.
-- **Firebase Cloud Messaging (FCM)** — delivers push notifications. Three channels (Questions / Updates / Documents), but only two distinct notification priorities — Updates and Documents share the default importance/priority (§12.6).
-- **Android app** (`android/app/`), Wear OS app (`android/wear/`), and a shared library module (`android/shared/` — Firebase listeners, command writers, and pure policy consumed by both) — the human surface. Kotlin/Compose. Notifications, conversation list, sessions board, conversation view, reply input, spawn/resume/combine dialogs, away pill (§12).
+- **Firebase Cloud Messaging (FCM)** — delivers push notifications. Three channels (Questions / Updates / Documents), but only two distinct notification priorities — Updates and Documents share the default importance/priority (§12.6). A question's notification clears when the question ends (§12.6).
+- **Android app** (`android/app/`) and a shared library module (`android/shared/` — Firebase listeners, command writers, and pure policy) — the human surface. Kotlin/Compose. Notifications, conversation list, sessions board, conversation view, reply input, spawn/resume/combine dialogs, away pill (§12). A paired Wear OS watch shows the app's notifications through Wear OS bridging (§12.7).
 - **Operator** (`dashboard/`) — a zero-build Preact+htm web cockpit the server mounts at `/dashboard` and serves alongside the MCP/HTTP surface; talks to Firebase RTDB directly.
 - **Watchtower** (`watchtower/`) — a Windows taskbar widget (.NET) that renders what `GET /stats` reports: the live sessions with their context, and the account's plan usage, as each session's Claude Code mod reported them. It reads no transcripts or credentials and never touches Firebase.
 - **Claude Code mod** (`hooks/`) — TypeScript function hooks that run inside each Claude Code process (Claude Code 2.1.287 or later). They inject routing data into switchboard tool calls, post session start, end, status and telemetry, poll the session's inbox every 2 s (phone messages, stops and the liveness heartbeat), run the away-mode turn-end check, and answer AskUserQuestion from the phone while away (§6). Antigravity (agy) sessions use a separate pair of Python hook scripts, wired by the repo-root `hooks.json` (§6).
@@ -125,7 +125,7 @@ The agent-supplied `cwd` is **informational** — used for display (Android conv
 - `_session_to_conversation_id: dict[cli_session_id, conversation_id]` — the primary routing lookup.
 - `_session_home_conversation_id: dict[cli_session_id, conversation_id]` — the session-fallback target per §2.3.
 
-`bind_session` also mirrors into the `SessionRegistry` (`sessions.set_binding(...)`), which is the session-roster surface Operator, Android, and Wear actually read.
+`bind_session` also mirrors into the `SessionRegistry` (`sessions.set_binding(...)`), which is the session-roster surface Operator and Android actually read.
 
 ---
 
@@ -591,7 +591,7 @@ widget/
     type                        "check" | "stop" | "check_all" | "stop_all"
     issued_at                   (iso-8601)
 
-sessions/<cli_session_id>/      # the SessionRegistry roster; source for Android/Wear/Operator's session surfaces
+sessions/<cli_session_id>/      # the SessionRegistry roster; source for Android's and Operator's session surfaces
   cli_session_id
   cwd
   surface
@@ -773,9 +773,11 @@ Three notification channels, but only two distinct `IMPORTANCE` levels — Docum
 
 FCM tap deep-links to Page B for the referenced conversation and scrolls to the specific message.
 
+**A question's notification clears when the question ends.** Every ending sends a data-only FCM message to the `questions` topic, `{conv_id, sb_message_type: "dismiss", message_id}` at normal priority, from `FirebaseBackend._dismiss_question_notification` (backgrounded; a failure is logged). The phone cancels the notification it posted under that `message_id` (`dismissalNotificationId`). Cancel-side endings (cancelled, superseded, timed out, force-ended, combined, session ended, spawn cleanup, the parked TTL sweep, an inbound phone message resolving the ask, hydration's cancel of an unparkable record) send it from `mark_question_cancelled` once it finds the card. Answers send it from `write_conversation_message` when John's reply carries `attached_to_msg_id`, which covers the phone, Operator and the away-exit bulk reply. A parked question kept by a resumable session end stays answerable and keeps its notification. Normal priority because FCM may demote an app's high-priority messages that show no notification; in deep Doze the dismiss waits for the phone's next maintenance window. The message has no body, so a phone build without the handler drops it.
+
 ### 12.7 Wear OS surface
 
-Companion Wear app shows a conversation list (filtered to non-hidden) and supports voice-dictation replies. It does NOT read agent-status. It reads the same conversation-id model as the phone (shared `MainViewModel.conversationRows`), partitioned pending-first via `partitionConversationsForWatch` (conversations needing a reply surface before the rest, not merely a non-hidden filter).
+There is no watch app. A paired Wear OS watch shows the phone's notifications through Wear OS notification bridging. Each carries Wear's built-in **Open on phone** action, which runs the phone notification's own tap intent (so it deep-links to the conversation), and a dismissal on either device clears the other; so does the phone cancelling one, which is how a question's notification leaves the watch when the question ends (§12.6). Three or more Switchboard notifications are bundled on the phone; the bundle's summary is not bridged, and swiping the bundle clears every one on both devices. The watch app (a conversation list with voice replies over the shared view model) was removed on 2026-10-11; it had set `NO_BRIDGING` and posted its own local-only notifications from its own FCM subscriptions.
 
 ### 12.8 Sessions board
 
