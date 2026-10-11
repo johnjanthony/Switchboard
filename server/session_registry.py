@@ -36,12 +36,6 @@ SWEEP_EXEMPT_STATES = ("awaiting_human", "awaiting_agent")
 # never cancel a turn that started after John pressed it.
 STOP_FRESH_SECONDS = 30.0
 
-# Marker-health detector: warn once when this many sessions have been
-# presumed dead while zero SessionEnd markers were applied since startup -
-# the signature of a client host whose marker dir is never swept (env var
-# unset, hook falling back to the plugin cache).
-MARKER_HEALTH_PRESUMED_DEAD_THRESHOLD = 3
-
 
 def map_hook_event_to_state(event: str, state: str) -> str | None:
 	"""Translate an agent-status hook (event, display-state) pair into a registry
@@ -76,11 +70,11 @@ class SessionRecord:
 	conversation_id: str | None = None
 	sender: str | None = None
 	model: str | None = None
-	# Ring-OBSERVED effort, read from the same transcript turn as `model` and
-	# replaced together with it. Distinct from `spawn_effort`, the commanded pick.
+	# OBSERVED effort, reported by the session's mod together with `model` and
+	# replaced with it. Distinct from `spawn_effort`, the commanded pick.
 	effort: str | None = None
 	# Commanded at spawn time (phone/Operator pick). Distinct from `model`,
-	# which is the ring-OBSERVED value Watchtower sightings overwrite.
+	# which is the OBSERVED value the session's mod reports.
 	spawn_model: str | None = None
 	spawn_effort: str | None = None
 	context_pct: float | None = None
@@ -113,9 +107,6 @@ class SessionRegistry:
 		self._mirror: Callable[[str, dict | None], None] | None = None
 		self._mirror_canon: dict[str, str] = {}
 		self._recent_resumes: list = []
-		self.markers_applied_total: int = 0
-		self.presumed_dead_total: int = 0
-		self._marker_health_warned: bool = False
 		# Stop requests by session, stamped with the monotonic clock. Kept apart
 		# from SessionRecord so a stop is never mirrored to Firebase or hydrated.
 		self._stops: dict[str, float] = {}
@@ -485,21 +476,9 @@ class SessionRegistry:
 					continue
 			rec.state = "lost"
 			rec.end_reason = "presumed-dead"
-			self.presumed_dead_total += 1
 			rec.in_tool = False
 			self._fire_mirror(rec)
 		return pruned
-
-	def marker_health_check(self) -> bool:
-		"""True exactly once, when presumed-dead transitions reach the threshold
-		while zero SessionEnd markers have been applied this process. The caller
-		owns the warning side effect; this method owns the trigger + one-shot."""
-		if self._marker_health_warned:
-			return False
-		if self.markers_applied_total == 0 and self.presumed_dead_total >= MARKER_HEALTH_PRESUMED_DEAD_THRESHOLD:
-			self._marker_health_warned = True
-			return True
-		return False
 
 
 def _age_seconds(iso: str, now_ts: float) -> float | None:
@@ -543,15 +522,3 @@ class LivenessGrace:
 			self._grace_until = now_ts + self._grace_seconds
 		self._last_tick = now_ts
 		return now_ts < self._grace_until
-
-
-WATCHTOWER_FRESH_SECONDS = 120
-
-
-def rings_are_fresh(pushed_at_iso: str | None, now_ts: float) -> bool:
-	"""A Watchtower snapshot counts as fresh sensor data only within this window;
-	beyond it (or with no push at all) lost-marking is suspended, never guessed."""
-	if not pushed_at_iso:
-		return False
-	age = _age_seconds(pushed_at_iso, now_ts)
-	return age is not None and 0 <= age <= WATCHTOWER_FRESH_SECONDS

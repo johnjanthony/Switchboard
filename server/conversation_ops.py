@@ -65,14 +65,16 @@ def effective_title_source(conv) -> str:
 	return "explicit"
 
 
-async def sync_session_titles(registry: Registry, backend, rings_map: dict) -> list[str]:
+async def sync_session_titles(registry: Registry, backend, titles: dict) -> list[str]:
 	"""Adopt Claude Code session titles as conversation titles.
 
-	Watchtower parses each transcript's title records and reports the newest as
-	ring `name` (a custom /title wins over the AI-generated summary; both arrive
-	here identically). For every sighted session bound to a SINGLE-member Active
-	conversation whose title is not explicit, that name becomes the conversation
-	title, persisted so it survives the session's death and the 72h roster prune.
+	`titles` maps a session id to {"name": ...}: the title the session's mod
+	reported (a /rename's custom title wins over the AI-generated summary; both
+	arrive here identically), passed by the telemetry route when it changes and
+	by the sweep's re-offer each minute. For every such session bound to a
+	SINGLE-member Active conversation whose title is not explicit, that name
+	becomes the conversation title, persisted so it survives the session's
+	death and the 72h roster prune.
 
 	Single-member is the gate for ADOPTING a title, not for keeping one: a title
 	synced while a conversation was solo stays put if a second agent later joins
@@ -80,10 +82,10 @@ async def sync_session_titles(registry: Registry, backend, rings_map: dict) -> l
 	overrides it). Returns the conversation ids actually updated.
 	"""
 	updated: list[str] = []
-	for session_id, ring in (rings_map or {}).items():
-		if not isinstance(ring, dict):
+	for session_id, entry in (titles or {}).items():
+		if not isinstance(entry, dict):
 			continue
-		name = ring.get("name")
+		name = entry.get("name")
 		if not isinstance(name, str) or not name.strip():
 			continue
 		conv_id = registry.session_to_conversation_id.get(session_id)

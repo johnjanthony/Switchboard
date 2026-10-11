@@ -81,7 +81,6 @@ def test_a_polled_session_is_lost_only_after_the_poll_threshold():
 	_sweep(reg, now_ts=LAST + 10_000)
 	rec = reg.get("s1")
 	assert (rec.state, rec.end_reason) == ("lost", "presumed-dead")
-	assert reg.presumed_dead_total == 1
 
 
 def test_a_never_polled_session_keeps_the_silence_rule():

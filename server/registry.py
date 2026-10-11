@@ -80,7 +80,7 @@ class ConversationMember:
 class Conversation:
 	id: str
 	title: str
-	# Provenance of `title`, and the guard the Watchtower session-title sync reads
+	# Provenance of `title`, and the guard the session-title sync reads
 	# (conversation_ops.sync_session_titles): "default" = the creation-time
 	# "sender · cwd" placeholder, "session" = a synced Claude Code session title,
 	# "explicit" = agent-supplied or convene-supplied and never overwritten again.

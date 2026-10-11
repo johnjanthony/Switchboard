@@ -349,7 +349,7 @@ class SpawnHandler:
 		else:
 			conv_id = "conv-" + uuid.uuid4().hex
 			# Generated placeholder, not a chosen title: the spawned agent's own
-			# session title supersedes it once Watchtower reports one.
+			# session title supersedes it once its mod reports one.
 			conv = Conversation(id=conv_id, title=f"{project} ({surface})", title_source="default", origin="spawn")
 			agent_label = "Antigravity" if agent == "antigravity" else "Claude"
 			spawn_msg = {

@@ -672,7 +672,7 @@ def build_tool_handlers(
 			caller_member.last_spoke_at = now_ts
 			if title is not None:
 				# An agent-supplied title is a choice, not a placeholder: mark it
-				# explicit so the Watchtower session-title sync stops overwriting.
+				# explicit so the session-title sync stops overwriting.
 				conv.title = title
 				conv.title_source = "explicit"
 				_spawn_bg(
@@ -807,7 +807,7 @@ def build_tool_handlers(
 			caller_member.last_spoke_at = now_ts
 			if title is not None:
 				# An agent-supplied title is a choice, not a placeholder: mark it
-				# explicit so the Watchtower session-title sync stops overwriting.
+				# explicit so the session-title sync stops overwriting.
 				conv.title = title
 				conv.title_source = "explicit"
 				_spawn_bg(

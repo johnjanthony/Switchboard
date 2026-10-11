@@ -155,20 +155,3 @@ async def test_dispatch_loop_processes_then_can_be_cancelled(tmp_path):
 		await task
 	except asyncio.CancelledError:
 		pass
-
-
-@_pytest.mark.asyncio
-async def test_sweep_bumps_markers_applied_counter(tmp_path):
-	"""An applied marker increments SessionRegistry.markers_applied_total via
-	the session_registry kwarg (the marker-health detector's healthy signal)."""
-	from server.gateway.dispatch import _sweep_session_end_markers
-	from server.registry import Registry
-	from server.session_registry import SessionRegistry
-	sreg = SessionRegistry()
-	(tmp_path / "sess-c1.json").write_text(
-		json.dumps({"session_id": "sess-c1", "reason": "other", "ended_at": "2026-07-14T12:00:00+00:00"}),
-		encoding="utf-8",
-	)
-	count = await _sweep_session_end_markers(Registry(), tmp_path, session_registry=sreg)
-	assert count == 1
-	assert sreg.markers_applied_total == 1

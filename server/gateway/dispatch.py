@@ -63,8 +63,6 @@ async def _sweep_session_end_markers(registry, marker_dir, backend=None, logger=
 				marker_path.unlink()
 			except OSError:
 				pass
-	if session_registry is not None and count:
-		session_registry.markers_applied_total += count
 	return count
 
 
@@ -696,10 +694,10 @@ async def _propagate_agy_lost_to_members(session_registry, registry, backend, lo
 
 
 async def _reoffer_session_titles(session_registry, registry, backend, logger) -> None:
-	"""Offer every live session's title to its conversation, as Watchtower's
-	push did each minute: a session that joins a conversation after its title
-	arrived still gets the title adopted. sync_session_titles writes only on a
-	change. A failed write is logged, never a sweep crash."""
+	"""Offer every live session's title to its conversation each sweep tick, so
+	a session that joins a conversation after its title arrived still gets the
+	title adopted. sync_session_titles writes only on a change. A failed write
+	is logged, never a sweep crash."""
 	from server.conversation_ops import sync_session_titles
 	from server.session_registry import TERMINAL_STATES
 	names = {
@@ -757,22 +755,10 @@ async def _session_sweep_once(
 	return pruned
 
 
-async def _maybe_warn_marker_health(session_registry, logger, marker_dir) -> None:
-	"""One-shot loud warning when sessions keep going presumed-dead while no
-	SessionEnd marker has ever been applied - markers are landing somewhere
-	the server does not sweep."""
-	if session_registry.marker_health_check():
-		await logger.surface_error(
-			f"session_end_markers_missing: {session_registry.presumed_dead_total} session(s) presumed "
-			f"dead with zero SessionEnd markers applied since startup - client hosts are likely writing "
-			f"markers to an unswept fallback dir (SWITCHBOARD_MARKER_DIR unset). Server sweep dir: {marker_dir}"
-		)
-
-
 async def dispatch_session_sweep(
 	session_registry, logger, supervisor, *,
 	lost_after_seconds, poll_lost_after_seconds, retention_hours, interval: float = 60.0,
-	grace_seconds: float | None = None, registry=None, backend=None, marker_dir=None, quota_store=None,
+	grace_seconds: float | None = None, registry=None, backend=None, quota_store=None,
 ):
 	"""Periodic staleness judge for the session roster. Pure rules live in
 	SessionRegistry.sweep; this loop supplies the clock, the grace period after
@@ -796,7 +782,6 @@ async def dispatch_session_sweep(
 			)
 			if pruned:
 				await logger.info(f"session_sweep_pruned: {len(pruned)}")
-			await _maybe_warn_marker_health(session_registry, logger, marker_dir)
 			if registry is not None and backend is not None:
 				await _parked_sweep_once(registry, backend, logger, max_age_hours=retention_hours)
 			supervisor.record_success()

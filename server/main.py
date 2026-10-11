@@ -1156,7 +1156,7 @@ async def _run(config: Config) -> None:
 			lost_after_seconds=config.session_lost_after_seconds,
 			poll_lost_after_seconds=config.session_poll_lost_after_seconds,
 			retention_hours=config.session_retention_hours,
-			registry=registry, backend=backend, marker_dir=session_end_marker_dir,
+			registry=registry, backend=backend,
 			quota_store=quota_store,
 		)
 	)

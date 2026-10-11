@@ -169,22 +169,6 @@ async def test_sweep_once_derives_liveness_from_registry():
 	assert reg.get("s-wait").state == "awaiting_agent"
 
 
-@pytest.mark.asyncio
-async def test_marker_health_warning_emitted_once(tmp_path):
-	import json as _json
-	from server.gateway.dispatch import _maybe_warn_marker_health
-	from server.logging_jsonl import JsonlLogger
-	reg = _reg()
-	reg.presumed_dead_total = 3
-	log_path = tmp_path / "log.jsonl"
-	logger = JsonlLogger(str(log_path))
-	await _maybe_warn_marker_health(reg, logger, tmp_path / "session-end")
-	await _maybe_warn_marker_health(reg, logger, tmp_path / "session-end")
-	lines = [_json.loads(l) for l in log_path.read_text(encoding="utf-8").splitlines()]
-	warnings = [l for l in lines if l.get("event") == "surface_error" and "session_end_markers_missing" in (l.get("detail") or "")]
-	assert len(warnings) == 1
-
-
 class _TitleBackend:
 	def __init__(self) -> None:
 		self.titles: list = []
@@ -209,7 +193,7 @@ async def test_sweep_zeroes_an_expired_quota_window_and_publishes_it():
 @pytest.mark.asyncio
 async def test_sweep_reoffers_live_session_titles_to_their_conversations():
 	"""A session that joins a conversation after its title arrived still gets
-	the title adopted, as Watchtower's minute-by-minute push did."""
+	the title adopted at the sweep's next tick."""
 	from tests.conftest import make_active_conversation
 
 	reg = _reg()
