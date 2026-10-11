@@ -127,17 +127,41 @@ def test_grace_holds_from_start_for_the_grace_seconds():
 
 def test_a_gap_of_more_than_three_intervals_restarts_grace():
 	grace = LivenessGrace(grace_seconds=90, interval=60, start_ts=1000.0)
-	grace.tick(1100.0)
-	assert grace.tick(1160.0) is False
-	assert grace.tick(1341.0) is True   # 181 s since the last tick: the machine slept
-	assert grace.tick(1401.0) is True
-	assert grace.tick(1432.0) is False
+	grace.tick(1060.0)
+	assert grace.tick(1120.0) is False
+	assert grace.tick(1301.0) is True   # 181 s since the last tick: the machine slept
+	assert grace.tick(1361.0) is True
+	assert grace.tick(1392.0) is False
 
 
-def test_a_gap_of_exactly_three_intervals_is_not_a_sleep():
+def test_a_short_sleep_past_the_poll_threshold_restarts_grace():
+	# A two-minute lid close: every poll stamp is over 90 s old on wake through
+	# the sleep alone, so the first tick must not judge them.
 	grace = LivenessGrace(grace_seconds=90, interval=60, start_ts=1000.0)
-	grace.tick(1100.0)
-	assert grace.tick(1280.0) is False
+	grace.tick(1060.0)
+	assert grace.tick(1120.0) is False
+	assert grace.tick(1222.0) is True   # 102 s since the last tick
+
+
+def test_a_tick_up_to_a_quarter_interval_late_is_not_a_sleep():
+	grace = LivenessGrace(grace_seconds=90, interval=60, start_ts=1000.0)
+	grace.tick(1060.0)
+	assert grace.tick(1120.0) is False
+	assert grace.tick(1195.0) is False  # 75 s: a slow tick, not a sleep
+
+
+def test_a_resumed_session_is_not_judged_by_its_last_lifes_poll():
+	# claude --resume keeps the session id; until its first poll the new life
+	# must fall under the silence rule, not an hour-old stamp.
+	mono = _Mono()
+	reg = _reg(mono)
+	reg.record_session_start("s1", cwd="C:/Work/X")
+	reg.note_poll("s1")
+	reg.record_session_end("s1", reason="exit", ended_at=T0)
+	mono.t += 3600
+	reg.record_session_start("s1", cwd="C:/Work/X")
+	_sweep(reg)
+	assert reg.get("s1").state == "idle"
 
 
 def test_the_inbox_route_counts_as_a_poll():

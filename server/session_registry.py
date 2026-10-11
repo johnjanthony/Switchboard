@@ -183,6 +183,9 @@ class SessionRegistry:
 	) -> SessionRecord:
 		from server.conversation_ops import _infer_surface
 		rec = self._ensure(cli_session_id, source="hook")
+		# A resumed id starts a new life that has not polled yet; its last
+		# life's stamp would mark it lost before its first poll.
+		self._polls.pop(cli_session_id, None)
 		now = self._now()
 		rec.cwd = cwd or rec.cwd
 		rec.surface = _infer_surface(rec.cwd) if rec.cwd else rec.surface
@@ -547,13 +550,17 @@ def _exemption_live(state: str, sid: str, live_ask_ids: set | None, live_wait_id
 
 class LivenessGrace:
 	"""Holds back lost-marking for grace_seconds after the sweep loop starts,
-	and again whenever it sees more than three intervals pass between its own
-	ticks (the machine slept, or the loop stalled), so sessions have time to
-	resume polling before anyone is judged. Wall-clock seconds."""
+	and again whenever a tick arrives more than a quarter interval late (the
+	machine slept, or the loop stalled), so sessions have time to resume
+	polling before anyone is judged. Wall-clock seconds.
+
+	A poll stamp is at most one tick gap plus one 2 s poll old, so with a tick
+	never more than 75 s apart outside grace, a sleep alone cannot age a stamp
+	past the 90 s default poll threshold."""
 
 	def __init__(self, grace_seconds: float, interval: float, start_ts: float) -> None:
 		self._grace_seconds = grace_seconds
-		self._max_gap = 3 * interval
+		self._max_gap = 1.25 * interval
 		self._grace_until = start_ts + grace_seconds
 		self._last_tick = start_ts
 
