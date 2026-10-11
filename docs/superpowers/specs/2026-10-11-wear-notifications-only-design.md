@@ -1,7 +1,7 @@
 # Wear: notifications only, bridged from the phone; questions clear when they end (design)
 
 **Date:** 2026-10-11
-**Status:** design approved by John 2026-10-11 (approach A, all endings dismiss, normal priority); written spec awaiting review.
+**Status:** approved by John 2026-10-11 (design and written spec). The answered-side hook was revised at planning (marked "revised at planning" below). Plan: `docs/superpowers/plans/2026-10-11-wear-notifications-only.md` (disk-only, gitignored).
 **Backlog:** T-285 (cut the Wear app down to notifications with "open on phone", dismissed in sync with the phone). Discharges T-262 (the `:wear:lintDebug` failure) by deleting the module it fails in.
 **Evidence:** an emulator probe on 2026-10-11 (below), and the code paths cited in each section.
 
@@ -61,7 +61,7 @@ Also seen: three or more Switchboard notifications are bundled on the phone, and
 
 - **A new backend method sends the dismiss**: a data-only FCM message to the `questions` topic, `data = {conv_id, sb_message_type: "dismiss", message_id}`, `AndroidConfig(priority="normal")`, no title or body. It is fire-and-forget, so it adds no latency to a terminal path, and a failed send is logged with `surface_error` (a lingering notification is a nuisance, not a fault). It does not draw from the rate limiter and ignores away mode, since the question's push was not gated by away mode either.
 - **Cancel-side endings** all reach `FirebaseBackend.mark_question_cancelled`: `terminate_pending` (by default), `_safe_mark_cancelled` (supersession and the fallback arms in `ask_human`; a live ask whose session ends is cancelled by `cli_session_end` and reaches it through the asker's own cancel arm), the two inbound paths in `server/inbound.py`, and hydration's cancel of unparkable records. That method already walks `messages/<conv_id>` to find the card by `request_id`; once it finds the card it sends the dismiss for that `msg_id`. A call that finds no card sends nothing.
-- **Answered endings** are the two `registry.resolve` sites: `dispatch_responses` (live, parked and background asks answered from the phone or Operator) and `_apply_bulk_respond_decision`'s send-default fan-out. Each sends the dismiss with the record's `msg_id`. When `msg_id` is still unset (an answer that landed before `ask_human` patched it after the write), the method finds the card by `request_id` the way `mark_question_cancelled` does; factor that walk into one helper both use.
+- **Answered endings** write John's reply with `attached_to_msg_id` naming the question card. The only two writers of that field are the two `registry.resolve` sites: `dispatch_responses` (live, parked and background asks answered from the phone or Operator) and `_apply_bulk_respond_decision`'s send-default fan-out. `FirebaseBackend.write_conversation_message` sends the dismiss for a `human` message that carries `attached_to_msg_id`. *Revised at planning:* this spec first had both sites call the new method with the record's `msg_id`, falling back to a lookup by `request_id` when `msg_id` was unset. Hooking the backend's write needs no new call sites (several test fakes on the answer path implement only the methods they use) and drops only that fallback (see Risks).
 - A second dismiss for the same card (a cancel after a resolve, a replay) cancels nothing on the phone and is harmless.
 
 ### Phone
@@ -71,12 +71,12 @@ Also seen: three or more Switchboard notifications are bundled on the phone, and
 
 ## Testing and live verification
 
-- **Server (pytest):** the dismiss message's shape (topic, data keys, normal priority, no title or body); one test per ending showing the dismiss carries the right `msg_id` (answered via `dispatch_responses`, bulk respond, `mark_question_cancelled` from a terminal path, supersession); the `msg_id`-unset fallback; a failed send logged and not raised; a cancel that finds no card sends nothing.
+- **Server (pytest):** the dismiss message's shape (topic, data keys, normal priority, no title or body); the cancel hook (a found card is dismissed; a cancel that finds no card sends nothing); the reply hook (an attached `human` reply is dismissed, an unattached one is not); a failed send logged and not raised; and a pin that the away-exit bulk reply carries the question's `msg_id` (the dispatch paths' attached replies are already pinned by `test_gateway_ask_human.py` and `test_dispatch_background_answer.py`).
 - **Phone (JVM unit tests):** the helper returns the id for a dismiss with a `message_id`, and nothing for other types or a missing id. `:shared:testDebugUnitTest`, `:app:assembleDebug`, `:app:lintDebug` and `:shared:lintDebug` pass; with the watch module gone, the full `./gradlew build` should pass too, which retires the per-module substitute T-262 forced.
 - **Live, on the paired emulators**, after the service restart and a debug install of the new phone build:
   - a real question from a smoke-style flow bridges to the watch;
   - answering it from Operator clears it on the phone and the watch;
-  - a second question cancelled from its asker clears on both;
+  - a second ask from the same session supersedes the first, and the first clears on both (the cancel-side hook);
   - "Open on phone" and the swipe checks still pass with the real build.
 
   Questions push to the `questions` topic, so John's real phone (and his real watch app, until he removes it) also receive each test question. His installed app ignores the dismiss and leaves the notification. That is the cost of a topic-addressed check; the plan states how many such pushes the run makes.
@@ -98,5 +98,6 @@ Also seen: three or more Switchboard notifications are bundled on the phone, and
 ## Risks
 
 - **A dismiss can overtake its question.** FCM does not order a normal-priority message behind a high-priority one. A question that ends within about a second of being asked could get its dismiss first; the cancel then finds nothing and the question's notification stays. Rare for a human-answered question; accepted.
+- **An answer that lands before `msg_id` is set** (revised at planning). `ask_human` sets the record's `msg_id` only after the question write returns, a few hundred ms. An answer inside that window is written without `attached_to_msg_id`, so it already loses its RESPONDED splice, and now its notification stays too. A typed answer cannot land that fast; the away-exit bulk reply can, if John exits away mode in the same moment a question is being written. Accepted.
 - **Doze delay.** In deep Doze a normal-priority dismiss waits for the phone's next maintenance window, so a stale copy can sit on the watch for a while (decision 3).
 - **A force-stopped phone app receives no FCM**, dismiss included. That is Android's rule, and it already applies to questions.
