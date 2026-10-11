@@ -1,7 +1,7 @@
 # Session telemetry from the Claude Code mod; Watchtower as a display client (design)
 
 **Date:** 2026-10-10
-**Status:** approved by John 2026-10-10 (design and written spec); chunk 1 plan `docs/superpowers/plans/2026-10-10-mod-session-telemetry-chunk1.md` (disk-only, gitignored). Two details were revised at planning after a probe, each marked "revised at planning" below.
+**Status:** approved by John 2026-10-10 (design and written spec); chunk 1 plan `docs/superpowers/plans/2026-10-10-mod-session-telemetry-chunk1.md` (disk-only, gitignored). Two details were revised at planning after a probe, each marked "revised at planning" below; the sleep rule was revised at execution after the final review (marked "revised at execution").
 **Backlog:** T-279 (session telemetry from `session.measure`), with T-282 (inbox poll as a liveness heartbeat) rolled in and T-015's remaining stale-pill gap folded in. Follow-ups filed during the brainstorm: T-284 (approval prompts through the mod), T-285 (cut the Wear app down to notifications).
 **Evidence:** Claude Code 2.1.293 mod declarations (`plugin-authoring/types/claude-code.d.ts`, written by the plugin-authoring skill under `%LOCALAPPDATA%\Temp\claude\bundled-skills\`), vault note `Reference/Claude Code Mods`, local transcripts under `~/.claude/projects/C--Work-Switchboard/`, and the code paths cited below.
 
@@ -118,7 +118,7 @@ From the 2.1.293 declarations unless stated:
 - **Polled sessions.** A non-terminal session that has polled since the server started is marked `lost` (`end_reason="presumed-dead"`) after 90 s without a poll. The threshold is configurable as `SWITCHBOARD_SESSION_POLL_LOST_AFTER_SECONDS`; it must stay above the poll's 30 s backoff cap, or a brief server hiccup marks live sessions lost.
 - **Never-polled sessions** (`-p` runs, Antigravity, records hydrated after a restart whose session has not polled yet) are judged by the existing silence rule: 900 s since `last_event_at`.
 - **Revival.** A poll from a `lost` session puts it back to `idle` and clears `end_reason`. `ended` stays final: it means `session.end` arrived.
-- **Sleep and stalls.** If the sweep sees more than three intervals pass between its own ticks (the machine slept, or the loop stalled), it restarts the grace period before judging, instead of marking every session lost on wake and reviving them 2 s later.
+- **Sleep and stalls** (revised at execution, 2026-10-11). If a sweep tick arrives more than a quarter interval late (75 s after the last, the machine slept or the loop stalled), the sweep restarts the grace period before judging, instead of marking every session lost on wake and reviving them 2 s later. A poll stamp is at most one tick gap plus one 2 s poll old, so outside grace it stays under the 90 s threshold and no sleep can mark a polling session lost. The first draft's "more than three intervals" (180 s) left sleeps of 90-180 s unguarded; the final review found it.
 - **Removed from the sweep:** the `rings_fresh` gate and the ring exemption. The awaiting-human and awaiting-agent exemptions stay.
 - **Unchanged:** a `lost` Claude session's conversation member stays as it is today. Propagating lost to member-dormant for Claude sessions is T-249, and would now also need un-dormant on revival.
 
