@@ -1,6 +1,7 @@
-"""REV-109: the unauthenticated POST routes (/widget-snapshot, /session_start,
-/agent_status) get a coarse per-route token bucket. Hooks fail open on
-non-200, so 429 is safe for every legitimate caller."""
+"""REV-109: the unauthenticated POST routes (/session_start, /session_end,
+/agent_status, /sessions/{sid}/stop, /sessions/{sid}/telemetry) get a coarse
+per-route token bucket. Their callers fail open on non-200, so 429 is safe for
+every legitimate caller."""
 
 from __future__ import annotations
 

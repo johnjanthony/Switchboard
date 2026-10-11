@@ -52,7 +52,6 @@ from server.rate_limiter import RateLimiter
 from server.firebase import FirebaseBackend
 from server.firebase_supervisor import LoopSupervisor
 from server.rules_audit import audit_rtdb_rules
-from server.widget_snapshot import WidgetSnapshotStore
 from server.quota_store import QuotaStore
 from server.telemetry import parse_telemetry
 from server.claude_status import ClaudeStatusService
@@ -385,11 +384,11 @@ def _build_stats_route(registry: Registry, backend, loop_sups: dict, session_reg
 
 def _with_route_limit(handler, limiter, path: str, logger):
 	"""Coarse per-route token bucket for the unauthenticated POST routes
-	(REV-109). Legitimate traffic is at most a few events per second (hooks +
-	Watchtower), so the generous default (SWITCHBOARD_ROUTE_RATE_LIMIT, 600/min
-	per route) never throttles it - this only stops a runaway or abusive flood
-	from becoming unbounded RTDB writes. 429 is safe: all three HTTP hooks and
-	Watchtower fail open on non-200."""
+	(REV-109). Legitimate traffic is at most a few events per second (the
+	Claude Code mod's and the agy hooks' posts), so the generous default
+	(SWITCHBOARD_ROUTE_RATE_LIMIT, 600/min per route) never throttles it - this
+	only stops a runaway or abusive flood from becoming unbounded RTDB writes.
+	429 is safe: every caller fails open on non-200."""
 	async def limited(request: Request):
 		if not limiter.consume(path):
 			await logger.rate_limited(path, "http_route")
@@ -428,52 +427,11 @@ class _CachePolicyStaticFiles(StaticFiles):
 		return response
 
 
-def _build_widget_snapshot_route(store, backend, logger):
-	"""POST /widget-snapshot - Watchtower pushes its rings + quota snapshot here
-	(localhost trust, same model as /stats and /agent_status). The store diffs
-	against the last push so RTDB is written only on change; pushed_at is always
-	written so readers can show staleness. Session records take nothing from it:
-	each session's mod reports its own telemetry."""
-	_RING_FIELDS = ("pct", "model", "status", "context_tokens", "window", "is_error", "name", "name_source", "title_state", "effort")
-
-	async def widget_snapshot(request: Request):
-		try:
-			body = await request.json()
-		except Exception:
-			return JSONResponse({"error": "invalid json"}, status_code=400)
-		if not isinstance(body, dict):
-			return JSONResponse({"error": "expected object"}, status_code=400)
-		rings_list = body.get("rings")
-		if not isinstance(rings_list, list):
-			return JSONResponse({"error": "rings must be a list"}, status_code=400)
-		quota = body.get("quota")
-		pushed_at = body.get("pushed_at") or ""
-
-		rings_map: dict = {}
-		for r in rings_list:
-			if isinstance(r, dict) and isinstance(r.get("session_id"), str):
-				rings_map[r["session_id"]] = {k: r.get(k) for k in _RING_FIELDS}
-
-		rings_changed, quota_changed = store.apply(rings_map, quota, pushed_at)
-		try:
-			if rings_changed:
-				await backend.write_widget_rings(rings_map)
-			if quota_changed:
-				await backend.write_widget_quota(quota)
-			await backend.write_widget_pushed_at(pushed_at)
-		except Exception as exc:
-			await logger.surface_error(f"widget_snapshot_write_error: {exc}")
-			return JSONResponse({"error": "write failed"}, status_code=502)
-		return JSONResponse({"ok": True, "rings_changed": rings_changed, "quota_changed": quota_changed})
-
-	return widget_snapshot
-
-
 def _build_widget_status_route(claude_service, antigravity_service=None):
 	"""POST /widget-status {action: check|stop} - the same-origin control surface
 	Operator and Watchtower use to drive the server-owned status watch.
 	Supports target=claude (default) or target=antigravity.
-	Localhost trust, like /widget-snapshot. Returns the current view."""
+	Localhost trust, like /stats. Returns the current view."""
 	async def widget_status(request: Request):
 		target = request.query_params.get("target", "claude")
 		service = (
@@ -935,7 +893,6 @@ async def _run(config: Config) -> None:
 	registry = Registry()
 	session_registry = SessionRegistry()
 	registry.sessions = session_registry
-	widget_store = WidgetSnapshotStore()
 	quota_store = QuotaStore()
 
 	def _session_mirror(sid: str, payload: dict | None) -> None:
@@ -1084,14 +1041,6 @@ async def _run(config: Config) -> None:
 	claude_status_service = ClaudeStatusService(publish=backend.write_widget_status)
 	antigravity_status_service = AntigravityStatusService(publish=backend.write_widget_antigravity_status)
 	app.add_route("/healthz", healthz, methods=["GET"])
-	app.add_route(
-		"/widget-snapshot",
-		_with_route_limit(
-			_build_widget_snapshot_route(widget_store, backend, logger),
-			route_limiter, "/widget-snapshot", logger,
-		),
-		methods=["POST"],
-	)
 	app.add_route("/widget-status", _build_widget_status_route(claude_status_service, antigravity_status_service), methods=["GET", "POST"])
 	app.add_route("/away-mode", _build_away_mode_route(registry, session_registry, backend, logger), methods=["GET", "POST"])
 	app.add_route(

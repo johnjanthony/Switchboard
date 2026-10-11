@@ -44,7 +44,6 @@ server/
   session_fallback.py  Session-to-conversation fallback resolution (home-conversation rebind / unbind)
   command_freshness.py Staleness gate for queued Firebase command entries (COMMAND_TTL_SECONDS)
   claude_status.py     Claude service-status watch (poll loop + status parse published to widget/status)
-  widget_snapshot.py   WidgetSnapshotStore for the /widget-snapshot POST payload (canonical de-dup)
   build_info.py        Running-service identity for /healthz (start time, server/ source fingerprint, git HEAD); the smoke harness keeps a pinned copy of the fingerprint
   gateway/             Tool handlers + dispatch loops
     handlers.py          ask_human, notify_human, send_document_human, message_and_await_agent, post_agent_message, join_conversation, combine_conversations, lookup_conversation_ids, leave_conversation, set_away_mode tool closures; JSON status envelopes (_envelope/_terminal_envelope/_wrap_wait_result)

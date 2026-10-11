@@ -591,20 +591,6 @@ class FirebaseBackend(
 		ref = db.reference("spawn_options")
 		await asyncio.to_thread(ref.set, payload)
 
-	async def write_widget_rings(self, rings: dict) -> None:
-		"""Publish the per-session context rings map (keyed by Claude Code session_id).
-		Always fanned out; an empty map clears the node."""
-		await asyncio.to_thread(lambda: db.reference("widget/rings").set(rings or {}))
-
-	async def write_widget_quota(self, quota: dict | None) -> None:
-		"""Publish plan quota. firebase_admin rejects set(None), so a None quota
-		clears the node via delete()."""
-		ref = db.reference("widget/quota")
-		if quota is None:
-			await asyncio.to_thread(ref.delete)
-		else:
-			await asyncio.to_thread(lambda: ref.set(quota))
-
 	async def write_quota(self, quota: dict | None) -> None:
 		"""Publish the account's plan usage as the sessions' mods report it.
 		firebase_admin rejects set(None), so None deletes the node."""
@@ -623,10 +609,6 @@ class FirebaseBackend(
 		"""Publish the server's heartbeat: the phone's and Operator's sign that
 		the server is up and reaching Firebase."""
 		await asyncio.to_thread(lambda: db.reference("presence/server_at").set(server_at))
-
-	async def write_widget_pushed_at(self, ts: str) -> None:
-		"""Publish the last-push timestamp (staleness signal for readers)."""
-		await asyncio.to_thread(lambda: db.reference("widget/pushed_at").set(ts))
 
 	async def write_widget_status(self, status: dict) -> None:
 		"""Publish the Claude service-status view (level, description, incidents,
