@@ -117,18 +117,30 @@ class _Clock:
 		return self.t
 
 
-def test_a_context_report_confirms_the_quota_reading():
-	# A post-turn report without rate limits means they had not moved a whole
-	# point, so the stored reading is current as of that report.
+def test_an_unchanged_rate_limit_report_confirms_the_quota_reading():
+	# The mod sends rate limits only after a fresh API response, so an unchanged
+	# reading is current as of that report.
 	sessions, quota, backend, clock = SessionRegistry(), QuotaStore(), _Backend(), _Clock()
 	with TestClient(_app(sessions, quota, backend, _Logger(), clock=clock)) as client:
 		client.post("/sessions/s1/telemetry", json=FULL)
 		first = backend.quota_writes[-1]["received_at"]
 		clock.t += 61
-		client.post("/sessions/s1/telemetry", json={"context": {"tokens": 5, "window": 100}})
+		client.post("/sessions/s1/telemetry", json={"context": {"tokens": 5, "window": 100}, "rate_limits": FULL["rate_limits"]})
 	assert len(backend.quota_writes) == 2
 	assert backend.quota_writes[-1]["received_at"] != first
 	assert backend.quota_writes[-1]["five_hour"] == backend.quota_writes[0]["five_hour"]
+
+
+def test_a_context_only_report_does_not_confirm():
+	# A measurement with no API response behind it (a session at its prompt
+	# before its first request, or just after /clear) says nothing about the quota.
+	sessions, quota, backend, clock = SessionRegistry(), QuotaStore(), _Backend(), _Clock()
+	with TestClient(_app(sessions, quota, backend, _Logger(), clock=clock)) as client:
+		client.post("/sessions/s1/telemetry", json=FULL)
+		clock.t += 120
+		client.post("/sessions/s2/telemetry", json={"context": {"tokens": 5, "window": 1000000}})
+	assert len(backend.quota_writes) == 1
+	assert quota.snapshot()["received_at"] == backend.quota_writes[0]["received_at"]
 
 
 def test_confirmations_publish_at_most_once_a_minute():
@@ -136,7 +148,7 @@ def test_confirmations_publish_at_most_once_a_minute():
 	with TestClient(_app(sessions, quota, backend, _Logger(), clock=clock)) as client:
 		client.post("/sessions/s1/telemetry", json=FULL)
 		clock.t += 30
-		client.post("/sessions/s1/telemetry", json={"context": {"tokens": 5, "window": 100}})
+		client.post("/sessions/s1/telemetry", json={"rate_limits": FULL["rate_limits"]})
 	assert len(backend.quota_writes) == 1
 
 

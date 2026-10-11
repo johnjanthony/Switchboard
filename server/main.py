@@ -134,10 +134,11 @@ def _build_telemetry_route(session_registry, quota_store, backend, logger, regis
 	quota reading, and offers a reported title to the session's conversation at
 	once. Always 200, like the other hook routes.
 
-	A post-turn report carrying context but no rate limits confirms the stored
-	quota reading (the windows had not moved a whole point), so the quota's
+	A report carrying rate limits confirms the stored quota reading even when
+	they have not moved: the mod sends them only after a fresh API response, so
 	received_at means "last confirmed by a session", published at most once a
-	minute."""
+	minute. A report without them (a session at its prompt before its first
+	request, or just after /clear) confirms nothing."""
 	now = clock or time.time
 
 	async def telemetry(request: Request):
@@ -153,7 +154,7 @@ def _build_telemetry_route(session_registry, quota_store, backend, logger, regis
 		rate_limits = report.get("rate_limits")
 		received_at = now_iso()
 		changed = bool(rate_limits) and quota_store.apply(rate_limits, received_at)
-		due = ("context" in report or bool(rate_limits)) and quota_store.confirm(received_at, now())
+		due = bool(rate_limits) and quota_store.confirm(received_at, now())
 		if changed or due:
 			try:
 				await backend.write_quota(quota_store.snapshot())
