@@ -39,16 +39,12 @@ export function adminNotifications() {
 	return 'admin_notifications';
 }
 
-export function widgetRings() {
-	return 'widget/rings';
+export function quota() {
+	return 'quota';
 }
 
-export function widgetQuota() {
-	return 'widget/quota';
-}
-
-export function widgetPushedAt() {
-	return 'widget/pushed_at';
+export function serverPresence() {
+	return 'presence/server_at';
 }
 
 export function widgetStatus() {

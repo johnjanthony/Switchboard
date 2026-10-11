@@ -13,7 +13,7 @@ import {
 	spawnFreshCmd, awayOnCmd, awayOffCmd, setHiddenCmd,
 	conveneCmd, ackSessionCmd, messageCmd, deleteMessageCmd, dismissAdminNotificationCmd,
 } from './commands.js';
-import { updateSeenSends, pruneDeliveredSends, commandIdsIn } from './derive.js';
+import { updateSeenSends, pruneDeliveredSends, commandIdsIn, ringsFromSessions, quotaFromNode } from './derive.js';
 
 export function createStore(deps) {
 	const { fb, paths, storage, nowMs, requestStatus } = deps;
@@ -98,11 +98,6 @@ export function createStore(deps) {
 		notify();
 	}
 
-	function setWidgetRings(map) {
-		state.widget = { ...state.widget, rings: map || {} };
-		notify();
-	}
-
 	function setWidgetQuota(quota) {
 		state.widget = { ...state.widget, quota: quota || null };
 		notify();
@@ -118,13 +113,14 @@ export function createStore(deps) {
 		notify();
 	}
 
-	function setWidgetPushedAt(ts) {
-		state.widget = { ...state.widget, pushedAt: ts || null };
+	function setServerAt(ts) {
+		state.widget = { ...state.widget, serverAt: ts || null };
 		notify();
 	}
 
 	function setSessions(map) {
 		state.sessions = map || {};
+		state.widget = { ...state.widget, rings: ringsFromSessions(state.sessions) };
 		notify();
 	}
 
@@ -381,11 +377,10 @@ export function createStore(deps) {
 		globalUnsubs.push(fb.onValue(paths.globalAway(), (val) => setGlobalAway(!!val), onReadError));
 		globalUnsubs.push(fb.onValue(paths.wslAvailable(), (val) => setWslAvailable(!!val), onReadError));
 		globalUnsubs.push(fb.onValue(paths.spawnOptions(), (val) => setSpawnOptions(val || null), onReadError));
-		globalUnsubs.push(fb.onValue(paths.widgetRings(), (val) => setWidgetRings(val || {}), onReadError));
-		globalUnsubs.push(fb.onValue(paths.widgetQuota(), (val) => setWidgetQuota(val || null), onReadError));
+		globalUnsubs.push(fb.onValue(paths.quota(), (val) => setWidgetQuota(quotaFromNode(val)), onReadError));
 		globalUnsubs.push(fb.onValue(paths.widgetStatus(), (val) => setWidgetStatus(val || null), onReadError));
 		globalUnsubs.push(fb.onValue(paths.widgetAntigravityStatus(), (val) => setWidgetAntigravityStatus(val || null), onReadError));
-		globalUnsubs.push(fb.onValue(paths.widgetPushedAt(), (val) => setWidgetPushedAt(val || null), onReadError));
+		globalUnsubs.push(fb.onValue(paths.serverPresence(), (val) => setServerAt(val || null), onReadError));
 		globalUnsubs.push(fb.onValue(paths.sessions(), (val) => setSessions(val || {}), onReadError));
 		globalUnsubs.push(fb.onValue(paths.sessionAcks(), (val) => setSessionAcks(val || {}), onReadError));
 		globalUnsubs.push(fb.onValue(paths.messageCommands(), (val) => setMessageCommands(val || {}), onReadError));
@@ -594,11 +589,10 @@ export function createStore(deps) {
 		setGlobalAway,
 		setWslAvailable,
 		setSpawnOptions,
-		setWidgetRings,
 		setWidgetQuota,
 		setWidgetStatus,
 		setWidgetAntigravityStatus,
-		setWidgetPushedAt,
+		setServerAt,
 		setSessions,
 		setSessionAcks,
 		setMessageCommands,
@@ -679,7 +673,7 @@ function initialState(storage) {
 		messageCommands: {},
 		seenSends: {},
 		connected: true,
-		widget: { rings: {}, quota: null, status: null, antigravityStatus: null, pushedAt: null },
+		widget: { rings: {}, quota: null, status: null, antigravityStatus: null, serverAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
 		health: { reachable: false, healthy: false, totalAnswered: null },

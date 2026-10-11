@@ -67,7 +67,7 @@ test('initialState shape is exactly the contract', () => {
 		messageCommands: {},
 		seenSends: {},
 		connected: true,
-		widget: { rings: {}, quota: null, status: null, antigravityStatus: null, pushedAt: null },
+		widget: { rings: {}, quota: null, status: null, antigravityStatus: null, serverAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
 		health: { reachable: false, healthy: false, totalAnswered: null },
@@ -80,15 +80,35 @@ test('initialState shape is exactly the contract', () => {
 	});
 });
 
-test('widget rings listener updates state.widget.rings', () => {
+test('the sessions listener derives state.widget.rings', () => {
 	const { store, fb } = makeStore();
 	store.startGlobalListeners();
-	const entry = fb.calls.onValue.find((e) => e.path === paths.widgetRings());
-	assert.ok(entry, 'widget/rings listener attached');
-	entry.cb({ s1: { pct: 0.4 } });
-	assert.deepEqual(store.getState().widget.rings, { s1: { pct: 0.4 } });
+	const entry = fb.calls.onValue.find((e) => e.path === paths.sessions());
+	assert.ok(entry, 'sessions listener attached');
+	entry.cb({ s1: { state: 'active', context_pct: 0.4 } });
+	assert.equal(store.getState().widget.rings.s1.pct, 0.4);
 	entry.cb(null);
 	assert.deepEqual(store.getState().widget.rings, {});
+});
+
+test('the quota listener converts the quota node', () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const entry = fb.calls.onValue.find((e) => e.path === paths.quota());
+	assert.ok(entry, 'quota listener attached');
+	entry.cb({ five_hour: { percent_used: 50, resets_at: null }, received_at: 't' });
+	assert.deepEqual(store.getState().widget.quota, { session: { pct: 0.5, resets_at: null }, weekly: null, polled_at: 't' });
+	entry.cb(null);
+	assert.equal(store.getState().widget.quota, null);
+});
+
+test('the presence listener updates state.widget.serverAt', () => {
+	const { store, fb } = makeStore();
+	store.startGlobalListeners();
+	const entry = fb.calls.onValue.find((e) => e.path === paths.serverPresence());
+	assert.ok(entry, 'presence listener attached');
+	entry.cb('2026-10-10T12:00:00+00:00');
+	assert.equal(store.getState().widget.serverAt, '2026-10-10T12:00:00+00:00');
 });
 
 test('widget status listener updates state.widget.status', () => {
@@ -574,7 +594,7 @@ test('startGlobalListeners is idempotent: a second call detaches the first set',
 	const detached = fb.calls.unsubs.slice(unsubsBefore).map((u) => u.path);
 	assert.ok(detached.includes('conversations'), 'prior conversations listener detached before re-attach');
 	assert.ok(detached.includes('global_settings/away_mode'), 'prior away-mode listener detached');
-	assert.equal(detached.length, 18, 'all 18 global listeners detached before re-attach - update this count when adding a listener');
+	assert.equal(detached.length, 17, 'all 17 global listeners detached before re-attach - update this count when adding a listener');
 });
 
 test('sendAnswer writes answerCmd and returns true on success', async () => {

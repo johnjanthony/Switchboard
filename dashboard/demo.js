@@ -3,6 +3,8 @@
 // All write actions (answer, spawn, away toggle, etc.) are no-ops that
 // resolve true so the UI feels responsive without touching any backend.
 
+import { quotaFromNode } from './derive.js';
+
 export function isDemoMode() {
 	const params = new URLSearchParams(window.location.search);
 	return params.has('demo');
@@ -462,39 +464,12 @@ function buildSessions() {
 // Widget data (rings, quota)
 // ---------------------------------------------------------------------------
 
-function buildWidgetRings() {
-	return {
-		'demo-1': { pct: 0.56, tokens: 112000, limit: 200000 },
-		'demo-2': { pct: 0.47, tokens: 94000, limit: 200000 },
-		'demo-3': { pct: 0.38, tokens: 380000, limit: 1000000 },
-		'demo-4': { pct: 0.22, tokens: 44000, limit: 200000 },
-		'demo-5': { pct: 0.12, tokens: 24000, limit: 200000 },
-	};
-}
-
-function buildWidgetQuota() {
+function buildQuotaNode() {
 	const now = Date.now();
 	return {
-		session: {
-			pct: 0.84,
-			resets_at: new Date(now + 1.5 * 3600_000).toISOString(),
-		},
-		weekly: {
-			pct: 0.85,
-			resets_at: new Date(now + 15.12 * 3600_000).toISOString(),
-		},
-		antigravity: [
-			{
-				display_name: 'Gemini 2.5 Pro',
-				session: { pct: 0.45, resets_at: new Date(now + 1.9 * 3600_000).toISOString() },
-				weekly: { pct: 0.72, resets_at: new Date(now + 35.3 * 3600_000).toISOString() },
-			},
-			{
-				display_name: 'Claude 3.7 Sonnet',
-				session: { pct: 0.76, resets_at: new Date(now + 2.1 * 3600_000).toISOString() },
-				weekly: { pct: 0.88, resets_at: new Date(now + 10.1 * 3600_000).toISOString() },
-			},
-		],
+		five_hour: { percent_used: 84, resets_at: new Date(now + 1.5 * 3600_000).toISOString() },
+		seven_day: { percent_used: 85, resets_at: new Date(now + 15.12 * 3600_000).toISOString() },
+		received_at: new Date(now - 4 * 60_000).toISOString(),
 	};
 }
 
@@ -562,9 +537,8 @@ export function applyDemoData(store) {
 	store.setSessions(buildSessions());
 
 	// Widget data
-	store.setWidgetRings(buildWidgetRings());
-	store.setWidgetQuota(buildWidgetQuota());
-	store.setWidgetPushedAt(new Date().toISOString());
+	store.setWidgetQuota(quotaFromNode(buildQuotaNode()));
+	store.setServerAt(new Date().toISOString());
 
 	// Auto-select conversation #1
 	store.selectConversation(CONV_IDS[0]);

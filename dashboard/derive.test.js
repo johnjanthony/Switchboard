@@ -166,13 +166,6 @@ test('sessionChip maps states to labels and classes', () => {
 	assert.deepEqual(derive.sessionChip({ state: 'weird' }), { label: 'weird', cls: 'chip-idle' });
 });
 
-test('sessionChip: blocked_on_approval overrides state to the needs-approval chip', () => {
-	assert.deepEqual(
-		derive.sessionChip({ state: 'active', blocked_on_approval: true }),
-		{ label: 'needs approval', cls: 'chip-needs-approval' },
-	);
-});
-
 test('projectTail takes the last segment of either slash style', () => {
 	assert.equal(derive.projectTail('C:\\Work\\Switchboard'), 'Switchboard');
 	assert.equal(derive.projectTail('/home/john/work/x'), 'x');
@@ -208,13 +201,6 @@ test('sortSessionEntries orders newest-first by last_event_at', () => {
 		b: { last_event_at: '2026-07-06T12:00:00+00:00' },
 	});
 	assert.deepEqual(entries.map((e) => e.id), ['b', 'a']);
-});
-
-test('sensorOffline is true when pushed_at is absent or stale', () => {
-	const nowMs = Date.parse('2026-07-06T12:10:00Z');
-	assert.equal(derive.sensorOffline(null, nowMs), true);
-	assert.equal(derive.sensorOffline('2026-07-06T12:09:30Z', nowMs), false);
-	assert.equal(derive.sensorOffline('2026-07-06T11:00:00Z', nowMs), true);
 });
 
 test('sessionLabel: name wins regardless of name_source', () => {
@@ -269,23 +255,6 @@ test('needsAttention: unparseable last_event_at is false', () => {
 	assert.equal(derive.needsAttention({ state: 'idle', last_event_at: 'garbage' }, null), false);
 });
 
-test('needsAttention: blocked_on_approval is true before the idle-state guard', () => {
-	assert.equal(
-		derive.needsAttention({ state: 'active', blocked_on_approval: true, last_event_at: '2026-07-06T12:00:00Z' }, null),
-		true,
-	);
-});
-
-test('needsAttention: blocked_on_approval stays true even with a recent ack', () => {
-	assert.equal(
-		derive.needsAttention(
-			{ state: 'active', blocked_on_approval: true, last_event_at: '2026-07-06T12:00:00Z' },
-			'2026-07-06T12:00:00Z',
-		),
-		true,
-	);
-});
-
 test('wakePathHint maps each state to its hint text', () => {
 	assert.equal(derive.wakePathHint({ state: 'awaiting_agent' }), 'wakes instantly');
 	assert.equal(derive.wakePathHint({ state: 'awaiting_human' }), 'on next phone answer');
@@ -293,38 +262,6 @@ test('wakePathHint maps each state to its hint text', () => {
 	assert.equal(derive.wakePathHint({ state: 'idle' }), "on John's next prompt");
 	assert.equal(derive.wakePathHint({ state: 'ended' }), 'Resume into conversation');
 	assert.equal(derive.wakePathHint({ state: 'lost' }), 'Resume into conversation');
-});
-
-test('approvalHint: in-tool, old, and no verdict yields the weak hint', () => {
-	const nowMs = Date.parse('2026-07-06T12:00:00Z');
-	const record = { in_tool: true, last_event_at: '2026-07-06T11:54:00Z', title_state: null };
-	assert.equal(derive.approvalHint(record, nowMs), 'possibly waiting on approval');
-});
-
-test('approvalHint: a title_state verdict suppresses the hint', () => {
-	const nowMs = Date.parse('2026-07-06T12:00:00Z');
-	const record = { in_tool: true, last_event_at: '2026-07-06T11:54:00Z', title_state: 'working' };
-	assert.equal(derive.approvalHint(record, nowMs), '');
-});
-
-test('approvalHint: blocked_on_approval suppresses the hint', () => {
-	const nowMs = Date.parse('2026-07-06T12:00:00Z');
-	const record = {
-		in_tool: true, last_event_at: '2026-07-06T11:54:00Z', title_state: null, blocked_on_approval: true,
-	};
-	assert.equal(derive.approvalHint(record, nowMs), '');
-});
-
-test('approvalHint: fresh session (under 5 minutes) yields no hint', () => {
-	const nowMs = Date.parse('2026-07-06T12:00:00Z');
-	const record = { in_tool: true, last_event_at: '2026-07-06T11:59:00Z', title_state: null };
-	assert.equal(derive.approvalHint(record, nowMs), '');
-});
-
-test('approvalHint: not in a tool yields no hint', () => {
-	const nowMs = Date.parse('2026-07-06T12:00:00Z');
-	const record = { in_tool: false, last_event_at: '2026-07-06T11:54:00Z', title_state: null };
-	assert.equal(derive.approvalHint(record, nowMs), '');
 });
 
 test('isConvenable: true for active, idle, awaiting_human, awaiting_agent', () => {
@@ -548,4 +485,56 @@ test('sessionModelChip is null without a label', () => {
 	assert.equal(derive.sessionModelChip({ model: 'claude-opus-5-5' }), null);
 	assert.equal(derive.sessionModelChip({ model_label: null, model_source: null }), null);
 	assert.equal(derive.sessionModelChip(null), null);
+});
+
+test('a stale blocked flag no longer needs attention or changes the chip', () => {
+	const record = { state: 'active', blocked_on_approval: true, last_event_at: '2026-07-06T12:00:00Z' };
+	assert.deepEqual(derive.sessionChip(record), { label: 'active', cls: 'chip-active' });
+	assert.equal(derive.needsAttention(record, null), false);
+});
+
+test('ringsFromSessions: one ring per live session that has reported its context', () => {
+	const rings = derive.ringsFromSessions({
+		a: { state: 'active', context_pct: 0.41, context_tokens: 410000, context_window: 1000000, model: 'claude-opus-5-5' },
+		b: { state: 'idle', context_pct: 0.1 },
+		c: { state: 'ended', context_pct: 0.9 },
+		d: { state: 'active' },
+	});
+	assert.deepEqual(rings, {
+		a: { pct: 0.41, model: 'claude-opus-5-5', status: 'live', context_tokens: 410000, window: 1000000, is_error: false },
+		b: { pct: 0.1, model: '', status: 'idle', context_tokens: 0, window: 0, is_error: false },
+	});
+});
+
+test('ringsFromSessions: waiting states count as live; nothing in, nothing out', () => {
+	const rings = derive.ringsFromSessions({ h: { state: 'awaiting_human', context_pct: 0.2 }, w: { state: 'awaiting_agent', context_pct: 0.2 } });
+	assert.deepEqual([rings.h.status, rings.w.status], ['live', 'live']);
+	assert.deepEqual(derive.ringsFromSessions(null), {});
+});
+
+test('quotaFromNode: percent_used becomes the 0-1 pct, received_at the polled_at', () => {
+	assert.deepEqual(
+		derive.quotaFromNode({
+			five_hour: { percent_used: 23.5, resets_at: '2026-10-10T18:00:00Z' },
+			seven_day: { percent_used: 0 },
+			received_at: '2026-10-10T17:02:11+00:00',
+		}),
+		{
+			session: { pct: 0.235, resets_at: '2026-10-10T18:00:00Z' },
+			weekly: { pct: 0, resets_at: null },
+			polled_at: '2026-10-10T17:02:11+00:00',
+		},
+	);
+});
+
+test('quotaFromNode: no node or no windows is no quota', () => {
+	assert.equal(derive.quotaFromNode(null), null);
+	assert.equal(derive.quotaFromNode({ received_at: 't' }), null);
+});
+
+test('serverOffline is true when presence is absent or older than 120 s', () => {
+	const nowMs = Date.parse('2026-07-06T12:10:00Z');
+	assert.equal(derive.serverOffline(null, nowMs), true);
+	assert.equal(derive.serverOffline('2026-07-06T12:09:00Z', nowMs), false);
+	assert.equal(derive.serverOffline('2026-07-06T12:07:59Z', nowMs), true);
 });

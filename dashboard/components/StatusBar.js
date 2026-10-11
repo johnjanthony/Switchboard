@@ -221,40 +221,20 @@ function QuotaWindowGraph({ label, window, durationMs }) {
 	`;
 }
 
-function groupSortKey(displayName) {
-	const d = (displayName || "").toLowerCase();
-	if (d.includes("claude")) return 0;
-	if (d.includes("gemini")) return 1;
-	return 2;
-}
-
-function formatAgyGroupName(displayName) {
-	const d = (displayName || "").toLowerCase();
-	if (d.includes("claude")) return "Antigravity w/ Claude";
-	if (d.includes("gemini")) return "Antigravity w/ Gemini";
-	return displayName || "Antigravity";
-}
-
-function isAgyGroupVisible(group) {
-	if (!group) return false;
-	const sPct = group.session ? Number(group.session.pct) : 0;
-	const wPct = group.weekly ? Number(group.weekly.pct) : 0;
-	return sPct > 0 || wPct > 0;
-}
-
-function buildPairTooltip(groupName, sessionWindow, weeklyWindow) {
+function buildPairTooltip(groupName, sessionWindow, weeklyWindow, asOf) {
 	const SESSION_5H = 5 * 3600 * 1000;
 	const WEEKLY_7D = 7 * 86400 * 1000;
 	const t5h = buildWindowTooltip("5h", sessionWindow, SESSION_5H);
 	const t7d = buildWindowTooltip("7d", weeklyWindow, WEEKLY_7D);
-	const lines = [groupName, t5h, t7d].filter(Boolean);
+	const asOfStr = formatResetAt(asOf);
+	const lines = [groupName, t5h, t7d, asOfStr ? `Reading from: ${asOfStr}` : null].filter(Boolean);
 	return lines.length > 0 ? lines.join("\n") : null;
 }
 
-function QuotaPairGraph({ groupName, sessionWindow, weeklyWindow }) {
+function QuotaPairGraph({ groupName, sessionWindow, weeklyWindow, asOf }) {
 	const SESSION_5H = 5 * 3600 * 1000;
 	const WEEKLY_7D = 7 * 86400 * 1000;
-	const tooltip = buildPairTooltip(groupName, sessionWindow, weeklyWindow);
+	const tooltip = buildPairTooltip(groupName, sessionWindow, weeklyWindow, asOf);
 
 	return html`
 		<div class="quota-graph" title=${tooltip}>
@@ -265,29 +245,10 @@ function QuotaPairGraph({ groupName, sessionWindow, weeklyWindow }) {
 }
 
 function QuotaReadout({ quota }) {
-	if (!quota) return null;
-
-	const rawAgy = quota.antigravity || [];
-	const visibleAgy = rawAgy
-		.filter((g) => isAgyGroupVisible(g))
-		.sort((a, b) => groupSortKey(a.display_name) - groupSortKey(b.display_name));
-
-	const agyPairs = visibleAgy.map((g) => {
-		const name = formatAgyGroupName(g.display_name);
-		return html`<${QuotaPairGraph} key=${g.display_name} groupName=${name} sessionWindow=${g.session} weeklyWindow=${g.weekly} />`;
-	});
-
-	const claudeVisible = quota.session || quota.weekly;
-	const claudePair = claudeVisible
-		? html`<${QuotaPairGraph} key="claude" groupName="Claude Code" sessionWindow=${quota.session} weeklyWindow=${quota.weekly} />`
-		: null;
-
-	if (agyPairs.length === 0 && !claudePair) return null;
-
+	if (!quota || (!quota.session && !quota.weekly)) return null;
 	return html`
 		<div class="quota-readout">
-			${agyPairs}
-			${claudePair}
+			<${QuotaPairGraph} key="claude" groupName="Claude Code" sessionWindow=${quota.session} weeklyWindow=${quota.weekly} asOf=${quota.polled_at} />
 		</div>
 	`;
 }

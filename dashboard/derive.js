@@ -162,6 +162,41 @@ export function ringSeverity(pct) {
 	return 'green';
 }
 
+// Context rings from the session records the server mirrors (each session's mod reports its
+// context): one per live session that has reported, keyed by session id, in the shape
+// Watchtower's widget/rings push used, so ringForMember and the roster are unchanged. A session
+// that has not reported yet gets no ring.
+const RING_LIVE_STATES = new Set(['active', 'awaiting_human', 'awaiting_agent']);
+const RING_TERMINAL_STATES = new Set(['ended', 'lost']);
+
+export function ringsFromSessions(sessions) {
+	const rings = {};
+	for (const [id, record] of Object.entries(sessions || {})) {
+		if (!record || RING_TERMINAL_STATES.has(record.state) || record.context_pct == null) {
+			continue;
+		}
+		rings[id] = {
+			pct: record.context_pct,
+			model: record.model || '',
+			status: RING_LIVE_STATES.has(record.state) ? 'live' : 'idle',
+			context_tokens: record.context_tokens || 0,
+			window: record.context_window || 0,
+			is_error: false,
+		};
+	}
+	return rings;
+}
+
+// Plan usage from the server's quota node, in the shape the status bar draws: percent_used
+// (0-100) becomes the 0-1 pct, received_at becomes polled_at.
+export function quotaFromNode(node) {
+	if (!node || (!node.five_hour && !node.seven_day)) {
+		return null;
+	}
+	const win = (w) => (w ? { pct: Number(w.percent_used || 0) / 100, resets_at: w.resets_at || null } : null);
+	return { session: win(node.five_hour), weekly: win(node.seven_day), polled_at: node.received_at || null };
+}
+
 const SESSION_CHIPS = {
 	active: { label: 'active', cls: 'chip-active' },
 	idle: { label: 'idle', cls: 'chip-idle' },
@@ -172,9 +207,6 @@ const SESSION_CHIPS = {
 };
 
 export function sessionChip(record) {
-	if (record && record.blocked_on_approval) {
-		return { label: 'needs approval', cls: 'chip-needs-approval' };
-	}
 	const state = record && record.state ? record.state : 'idle';
 	return SESSION_CHIPS[state] || { label: state, cls: 'chip-idle' };
 }
@@ -238,17 +270,19 @@ export function sortSessionEntries(sessionsMap) {
 		.sort((a, b) => String(b.record.last_event_at || '').localeCompare(String(a.record.last_event_at || '')));
 }
 
-const SENSOR_FRESH_SECONDS = 120;
+// The server rewrites presence/server_at every 60 s; two missed writes mean it (or the
+// network) is down, and the roster may be stale.
+const SERVER_FRESH_SECONDS = 120;
 
-export function sensorOffline(pushedAtIso, nowMs) {
-	if (!pushedAtIso) {
+export function serverOffline(serverAtIso, nowMs) {
+	if (!serverAtIso) {
 		return true;
 	}
-	const t = Date.parse(pushedAtIso);
+	const t = Date.parse(serverAtIso);
 	if (Number.isNaN(t)) {
 		return true;
 	}
-	return (nowMs - t) / 1000 > SENSOR_FRESH_SECONDS;
+	return (nowMs - t) / 1000 > SERVER_FRESH_SECONDS;
 }
 
 // Display name for a session row: custom/ai name wins regardless of name_source
@@ -304,9 +338,6 @@ export function needsAttention(record, ackIso) {
 	if (!record) {
 		return false;
 	}
-	if (record.blocked_on_approval) {
-		return true;
-	}
 	if (record.state !== 'idle') {
 		return false;
 	}
@@ -332,27 +363,6 @@ const WAKE_PATH_HINTS = {
 export function wakePathHint(record) {
 	const state = record ? record.state : undefined;
 	return WAKE_PATH_HINTS[state] || '';
-}
-
-// Weak, tooltip-only hint: a session that has been sitting inside a tool call
-// for a while with no title-bar verdict yet (no "working"/"star" heartbeat) may
-// be stuck on an approval prompt Switchboard can't see directly. Any non-null
-// title_state is the heartbeat winning, so it suppresses the hint; the
-// blocked_on_approval flag (a hard signal) also suppresses it since that case
-// already has its own chip and needsAttention badge. Never counts toward
-// needsAttention - this is tooltip text only.
-export function approvalHint(record, nowMs) {
-	if (!record || !record.in_tool || record.blocked_on_approval) {
-		return '';
-	}
-	if (record.title_state != null) {
-		return '';
-	}
-	const ageSeconds = sessionAgeSeconds(record, nowMs);
-	if (ageSeconds == null || ageSeconds <= 300) {
-		return '';
-	}
-	return 'possibly waiting on approval';
 }
 
 const CONVENABLE_STATES = new Set(['active', 'idle', 'awaiting_human', 'awaiting_agent']);

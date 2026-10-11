@@ -5,11 +5,10 @@ import {
 	sessionAgeSeconds,
 	formatAge,
 	sortSessionEntries,
-	sensorOffline,
+	serverOffline,
 	sessionLabel,
 	needsAttention,
 	wakePathHint,
-	approvalHint,
 	isConvenable,
 	isActive,
 } from "../derive.js";
@@ -25,7 +24,7 @@ export function SessionsRail({ store, collapsed }) {
 	const activeEntries = allEntries.filter(({ record }) => record.state !== 'ended' && record.state !== 'lost');
 	const endedEntries = allEntries.filter(({ record }) => record.state === 'ended' || record.state === 'lost');
 	const entries = showEnded ? allEntries : activeEntries;
-	const offline = sensorOffline(state.widget.pushedAt, Date.now());
+	const offline = serverOffline(state.widget.serverAt, Date.now());
 	const selectedIds = state.ui.selectedSessionIds;
 	const [conveneTarget, setConveneTarget] = useState("new");
 	const [conveneTitle, setConveneTitle] = useState("");
@@ -75,7 +74,7 @@ export function SessionsRail({ store, collapsed }) {
 		const convenable = isConvenable(record);
 		const attn = needsAttention(record, state.sessionAcks[id]);
 		const tooltipParts = [
-			record.cwd, record.last_transition_source, wakePathHint(record), approvalHint(record, Date.now()),
+			record.cwd, record.last_transition_source, wakePathHint(record),
 		].filter(Boolean);
 		return html`
 			<li class="session-row" key=${id}
@@ -104,7 +103,7 @@ export function SessionsRail({ store, collapsed }) {
 
 	return html`
 		<section class="sessions-rail">
-			${offline ? html`<div class="sessions-sensor-offline">sensor offline - staleness unknown</div>` : null}
+			${offline ? html`<div class="sessions-sensor-offline">server offline - sessions may be stale</div>` : null}
 				<ul class="sessions-list">
 					${activeEntries.map(renderSessionRow)}
 					${endedEntries.length > 0 ? html`
