@@ -56,6 +56,13 @@ abstract class BaseSwitchboardMessagingService : FirebaseMessagingService() {
 	protected abstract val mainActivityClass: Class<*>
 
 	override fun onMessageReceived(remoteMessage: RemoteMessage) {
+		// A question that ended, however it ended: cancel its notification. Wear OS
+		// bridging clears the watch's copy.
+		val dismissId = dismissalNotificationId(remoteMessage.data)
+		if (dismissId != null) {
+			(getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(dismissId)
+			return
+		}
 		// Server sends data-only messages so this runs in foreground, background,
 		// and killed states. Title/body live in the data dict, not remoteMessage.notification.
 		val title = remoteMessage.data["title"] ?: "Switchboard"
