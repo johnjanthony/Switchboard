@@ -328,14 +328,6 @@
 		"note": "MainViewModel.kt L1090: val intent = Intent(Intent.ACTION_VIEW).apply {...} inside openFile, direct Intent instantiation."
 	},
 	{
-		"source": "android_wear_src_main_java_io_github_johnjanthony_switchboard_mainactivity_markdowntext",
-		"target": "textview",
-		"relation": "calls",
-		"verdict": "confirmed",
-		"date": "2026-07-29",
-		"note": "wear/MainActivity.kt: MarkdownText fun starts L438; L464 TextView(ctx).apply {...} instantiated inside the AndroidView factory lambda within its body."
-	},
-	{
 		"source": "claude_stateful_http",
 		"target": "claude_live_smoke_harness",
 		"relation": "conceptually_related_to",

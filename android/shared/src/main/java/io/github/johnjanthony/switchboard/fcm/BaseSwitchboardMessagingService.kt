@@ -11,9 +11,9 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
 /**
- * Shared FCM handling for the phone and wear apps. Subclasses supply the
- * activity a notification tap opens and any surface-specific notification
- * decoration (the wear app adds a WearableExtender).
+ * FCM handling for the phone app; the subclass supplies the activity a
+ * notification tap opens. A paired Wear OS watch shows these notifications
+ * through Wear OS bridging, so the watch runs no app of its own.
  */
 abstract class BaseSwitchboardMessagingService : FirebaseMessagingService() {
 
@@ -52,11 +52,8 @@ abstract class BaseSwitchboardMessagingService : FirebaseMessagingService() {
 		}
 	}
 
-	/** The activity a notification tap opens (each module's MainActivity). */
+	/** The activity a notification tap opens (the app's MainActivity). */
 	protected abstract val mainActivityClass: Class<*>
-
-	/** Surface-specific builder decoration; the wear service adds its extender here. */
-	protected open fun decorate(builder: NotificationCompat.Builder, messageId: String?) {}
 
 	override fun onMessageReceived(remoteMessage: RemoteMessage) {
 		// Server sends data-only messages so this runs in foreground, background,
@@ -111,7 +108,6 @@ abstract class BaseSwitchboardMessagingService : FirebaseMessagingService() {
 			.setAutoCancel(true)
 			.setPriority(priority)
 			.setContentIntent(pendingIntent)
-		decorate(builder, messageId)
 		val notification = builder.build()
 
 		val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

@@ -139,9 +139,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _firebaseConnected = MutableStateFlow(true)
 	val firebaseConnected: StateFlow<Boolean> = _firebaseConnected.asStateFlow()
 
-	private val _pendingDeepLinkMessageId = MutableStateFlow<String?>(null)
-	val pendingDeepLinkMessageId: StateFlow<String?> = _pendingDeepLinkMessageId.asStateFlow()
-
 	private val database = FirebaseDatabase.getInstance()
 	private val awayCommandsRef = database.getReference("away_mode_commands")
 	private val globalAwayRef = database.getReference("global_settings/away_mode")
@@ -794,14 +791,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 	fun clearSelectedChannel() {
 		_selectedConversationId.value = null
-	}
-
-	fun setPendingDeepLinkMessageId(messageId: String?) {
-		_pendingDeepLinkMessageId.value = messageId
-	}
-
-	fun clearPendingDeepLinkMessageId() {
-		_pendingDeepLinkMessageId.value = null
 	}
 
 	fun closeMarkdownViewer() {

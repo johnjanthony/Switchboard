@@ -92,7 +92,7 @@ fun ConversationViewScreen(
 	var messageDraft by rememberSaveable(row.id) { mutableStateOf("") }
 
 	// Consume the shared VM's authoritative answered set directly; no local
-	// re-derivation (matches wear).
+	// re-derivation.
 	val answeredSet: Set<String> = row.answeredQuestionMsgIds
 
 	val context = androidx.compose.ui.platform.LocalContext.current

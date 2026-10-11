@@ -8,7 +8,7 @@ import io.github.johnjanthony.switchboard.network.Pending
  * attached_to_msg_id names another message present in the list marks that target as
  * answered. Derived from the arrival-ordered raw list; splicing reorders but never adds or
  * removes ids, so the set matches the display list. This is the single source
- * for the checkmark set on both phone and wear (REV-205). Pending state itself is NOT
+ * for the checkmark set (REV-205). Pending state itself is NOT
  * derived here — it comes from the authoritative pending_questions node (REV-203).
  */
 fun answeredQuestionMsgIds(messages: List<Pair<String, ChannelMessage>>): Set<String> {

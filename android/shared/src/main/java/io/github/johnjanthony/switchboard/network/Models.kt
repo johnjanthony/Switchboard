@@ -64,7 +64,7 @@ data class PendingExitToggle(
 )
 
 // --- Conversation model (post T-027 / 2026-05-19 conversations redesign) ---
-// ConversationSummary / ConversationRow are the primary data model on the phone and Wear.
+// ConversationSummary / ConversationRow are the phone's primary data model.
 // Real conversations are read from /conversations/<id>/...
 
 data class ConversationMember(
@@ -91,7 +91,7 @@ data class ConversationSummary(
 }
 
 /**
- * View-model composite for both phone and Wear. Wraps a [ConversationSummary]
+ * View-model composite for the phone. Wraps a [ConversationSummary]
  * (Firebase-mirrored conversation state) with per-conversation runtime state:
  * messages, pending questions, and the answered-question set.
  */
