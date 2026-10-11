@@ -1,7 +1,7 @@
 # Session telemetry from the Claude Code mod; Watchtower as a display client (design)
 
 **Date:** 2026-10-10
-**Status:** approved by John 2026-10-10 (design and written spec); chunk 1 plan `docs/superpowers/plans/2026-10-10-mod-session-telemetry-chunk1.md` (disk-only, gitignored). Two details were revised at planning after a probe, each marked "revised at planning" below; the sleep rule was revised at execution after the final review (marked "revised at execution").
+**Status:** approved by John 2026-10-10 (design and written spec); chunk 1 plan `docs/superpowers/plans/2026-10-10-mod-session-telemetry-chunk1.md` (disk-only, gitignored). Two details were revised at planning after a probe, each marked "revised at planning" below; the sleep rule was revised at execution after the final review (marked "revised at execution"). Chunk 1 landed 2026-10-11 (`dbba6a9..17f047f`, deployed, all eight live checks passed); its as-built deviations are in the chunk 1 plan's Deviations section.
 **Backlog:** T-279 (session telemetry from `session.measure`), with T-282 (inbox poll as a liveness heartbeat) rolled in and T-015's remaining stale-pill gap folded in. Follow-ups filed during the brainstorm: T-284 (approval prompts through the mod), T-285 (cut the Wear app down to notifications).
 **Evidence:** Claude Code 2.1.293 mod declarations (`plugin-authoring/types/claude-code.d.ts`, written by the plugin-authoring skill under `%LOCALAPPDATA%\Temp\claude\bundled-skills\`), vault note `Reference/Claude Code Mods`, local transcripts under `~/.claude/projects/C--Work-Switchboard/`, and the code paths cited below.
 
