@@ -12,12 +12,12 @@ This doc is the single design reference for the running system. Implementation f
 
 **Components.**
 
-- **MCP server** (Python 3.11+, FastMCP with `stateless_http=False`). Serves the `/mcp` streamable HTTP transport on `127.0.0.1:9876` by default (`SWITCHBOARD_HOST` defaults to `127.0.0.1`; set to `0.0.0.0` for WSL-reachable; `SWITCHBOARD_PORT` defaults to `9876`). Plus nine added HTTP endpoints — health, hook callbacks, the widget/status feeds Watchtower and the phone read, the session roster, and a document proxy (§5) — and a `/dashboard` static mount, all behind a shared Bearer-token gate.
+- **MCP server** (Python 3.11+, FastMCP with `stateless_http=False`). Serves the `/mcp` streamable HTTP transport on `127.0.0.1:9876` by default (`SWITCHBOARD_HOST` defaults to `127.0.0.1`; set to `0.0.0.0` for WSL-reachable; `SWITCHBOARD_PORT` defaults to `9876`). Plus twelve added HTTP endpoints (§5): health, the Claude Code mod's routes (inbox poll, stop, telemetry, session start and end, agent status), agy's away-mode check, the `/stats` roll-up and status-watch control that Watchtower and Operator use, the session roster, and a document proxy; and a `/dashboard` static mount, all behind a shared Bearer-token gate.
 - **Firebase Realtime Database** — the persistence and phone-side synchronization surface. The server writes; the Android app reads + writes replies.
 - **Firebase Cloud Messaging (FCM)** — delivers push notifications. Three channels (Questions / Updates / Documents), but only two distinct notification priorities — Updates and Documents share the default importance/priority (§12.6).
 - **Android app** (`android/app/`), Wear OS app (`android/wear/`), and a shared library module (`android/shared/` — Firebase listeners, command writers, and pure policy consumed by both) — the human surface. Kotlin/Compose. Notifications, conversation list, sessions board, conversation view, reply input, spawn/resume/combine dialogs, away pill (§12).
 - **Operator** (`dashboard/`) — a zero-build Preact+htm web cockpit the server mounts at `/dashboard` and serves alongside the MCP/HTTP surface; talks to Firebase RTDB directly.
-- **Watchtower** (`watchtower/`) — a Windows taskbar widget (.NET) that pushes context-ring and quota telemetry to `POST /widget-snapshot` and renders the same data locally.
+- **Watchtower** (`watchtower/`) — a Windows taskbar widget (.NET) that renders what `GET /stats` reports: the live sessions with their context, and the account's plan usage, as each session's Claude Code mod reported them. It reads no transcripts or credentials and never touches Firebase.
 - **Claude Code mod** (`hooks/`) — TypeScript function hooks that run inside each Claude Code process (Claude Code 2.1.287 or later). They inject routing data into switchboard tool calls, post session start, end, status and telemetry, poll the session's inbox every 2 s (phone messages, stops and the liveness heartbeat), run the away-mode turn-end check, and answer AskUserQuestion from the phone while away (§6). Antigravity (agy) sessions use a separate pair of Python hook scripts, wired by the repo-root `hooks.json` (§6).
 - **NSSM Windows service** — wraps the Python server as a persistent background process. Runs as **LocalSystem** by default (`scripts/install-service.ps1`); the interactive-window need for spawn is met by the separate SwitchboardSpawn scheduled task, not by the service's own account.
 - **SwitchboardSpawn scheduled task** — launches `wt.exe` (Windows Terminal) tabs running `claude` or Antigravity (`agy`) on either the Windows surface (PowerShell, base64-encoded command) or WSL (a versioned static launch script, §9.2). Registered with an interactive logon type so it can open visible windows regardless of which account the service runs under.
@@ -235,25 +235,28 @@ No "cannot leave in away mode" guard — the session-fallback rule covers the or
 
 ## 5. HTTP endpoints
 
-Nine added routes, plus the `/mcp` transport and a static mount, all wrapped once by `TokenAuthMiddleware` (`server/main.py`):
+Twelve added routes, plus the `/mcp` transport and a static mount, all wrapped once by `TokenAuthMiddleware` (`server/main.py`):
 
 | Route | Method(s) | Purpose | Token gate |
 |---|---|---|---|
 | `/mcp` | POST/GET (streamable HTTP + SSE) | The MCP tool surface (§4). Stateful sessions (`stateless_http=False`). | Gated (loopback exempt) |
 | `/healthz` | GET | Liveness + per-loop supervisor status; pending-question counts; `service{started_at, source_fingerprint, git_head}`, captured once at startup (`server/build_info.py`), which the smoke preflight compares against the working tree. | **EXEMPT** — the sole path-based exemption |
-| `/widget-snapshot` | POST | Watchtower pushes context rings + Antigravity quota; store diffs and writes RTDB only on change, and feeds the SessionRegistry. | Gated; rate-limited |
 | `/widget-status` | GET, POST | Drives the server-owned Claude/Antigravity status watch (`?target=`, `?action=check\|stop`). | Gated |
-| `/away-mode` | GET, POST | GET returns `{"active", "notices", "pending_ask"}` — a `session_id` query param **pops** that session's queued wake notices as a side effect, and sets `pending_ask` true when the session's conversation holds a live blocking ask (`Registry.live_blocking_pending`; parked and background pendings excluded). POST (body `active`/`away`, default `True`) turns away mode **on** and mirrors to Firebase; there is no HTTP way to turn it off (only `set_away_mode(False)` or the phone). | Gated |
-| `/stats` | GET | Widget/Watchtower roll-up: `active_conversations`, `pending_count`, `oldest_pending_age_seconds`, `away_mode`, `healthy`, `sessions{total,by_state}`, `needs_you{}`. | Gated |
+| `/away-mode` | GET, POST | agy's turn-end check (§8.2). GET returns `{"active", "notices", "pending_ask"}`: a `session_id` query param **pops** that session's queued notices as a side effect, and `pending_ask` is true when the session's conversation holds a live blocking ask (`Registry.live_blocking_pending`; parked and background pendings excluded). POST (body `active`/`away`, default `True`) turns away mode **on** and mirrors to Firebase; there is no HTTP way to turn it off (only `set_away_mode(False)` or the phone). | Gated |
+| `/stats` | GET | Watchtower's roll-up: `active_conversations`, `pending_count`, `oldest_pending_age_seconds`, `away_mode`, `healthy`, `sessions{total, by_state, items}` (each live session's `session_id`, `name`, `cwd`, `surface`, `state`, `model_label`, `effort`, `context_pct`, `context_tokens`, `context_window`), `needs_you{}` (every pending ask, by session) and `quota` (the `quota` node's reading, or `null`; §10.5). | Gated |
 | `/document` | GET | Same-origin blob proxy for the Operator document preview (`?conv=&msg=[&download=1]`); forces `application/octet-stream` for HTML/SVG/XML and sets `X-Content-Type-Options: nosniff`. | Gated |
-| `/session_start` | POST | SessionStart hook ingest (`session_id`, `cwd`, `source`); records the session birth; always returns 200 (hook contract). | Gated; rate-limited |
+| `/session_start` | POST | The mod's `session.start`: `{session_id, cwd}`; records the session's birth. Always 200 (hook contract). | Gated; rate-limited |
+| `/session_end` | POST | The mod's `session.end`: `{session_id, reason}`; runs `handle_session_end`, which marks the member dormant (§2.2). Always 200. | Gated; rate-limited |
 | `/sessions` | GET | The session roster as JSON, with `cli_session_id` redacted to an 8-char prefix. | Gated |
-| `/agent_status` | POST | Hook status ingest: `{session_id, state, event, cwd?, detail?}`. Upserts the SessionRegistry **before** the away-mode gate (so the roster updates at-desk too), then writes/deletes `conversations/<id>/agent_status/<sender>` — gated on away mode, except `state == "clear"` always deletes. Returns `{"notices": [...]}` on `UserPromptSubmit`, and also on `PostToolUse` **except from an Antigravity caller** (`cli == "antigravity"`), which is what makes mid-turn notice delivery possible for Claude Code without destroying it for agy: the pop is destructive and at-most-once, and agy's own `PostToolUse` hook discards the response body, so popping for agy would bin the notice with no error and no log. The pop sits after the status handler, outside the away-mode gate. | Gated; rate-limited |
+| `/sessions/{sid}/inbox` | GET | The mod's 2 s poll and the session's liveness heartbeat (§6, §10.6): `{notices, stop, away, pending_ask}`, popping the queued notices and a stop under 30 s old, with `away` and `pending_ask` read fresh. An unknown session gets no notices and no stop. Its access-log lines are filtered out. | Gated |
+| `/sessions/{sid}/stop` | POST | Queues a stop for the session's running turn, delivered by its next inbox poll. No phone or Operator button calls it yet. | Gated; rate-limited |
+| `/sessions/{sid}/telemetry` | POST | The mod's telemetry report (§10.5): context, rate limits, model, effort and title, validated field by field. Always 200. | Gated; rate-limited |
+| `/agent_status` | POST | Status ingest from the mod and agy's hooks: `{session_id, state, event, cwd?, detail?}`. Upserts the SessionRegistry **before** the away-mode gate (so the roster updates at the desk too), then writes or deletes `conversations/<id>/agent_status/<sender>`, gated on away mode except that `state == "clear"` always deletes. Returns `{"notices": [...]}`, popped, only on `UserPromptSubmit` from an Antigravity caller (`cli == "antigravity"`): Claude Code sessions take their notices from the inbox, and agy's `PostToolUse` hook discards the response body, so popping anywhere else would destroy a notice with nothing to deliver it. | Gated; rate-limited |
 | `/dashboard` (mount) | GET (StaticFiles, `html=True`) | Serves the Operator cockpit (`dashboard/`). | Gated |
 
 **Auth model.** `/healthz` is the only path exemption; loopback peers (`127.0.0.1`, `::1`) are exempt on every path regardless of bind; a `401 {"error": "unauthorized"}` covers everything else. A non-loopback bind without `SWITCHBOARD_TOKEN` is a hard startup failure (`ConfigError`, fail-closed), so the ungated configuration cannot reach uvicorn.
 
-**Rate limiting.** `/widget-snapshot`, `/session_start`, and `/agent_status` share a coarse per-route token bucket (`SWITCHBOARD_ROUTE_RATE_LIMIT`, default 600/min per route) returning `429` when exceeded — separate from the per-conversation tool limiter in §4/§15.3.
+**Rate limiting.** `/session_start`, `/session_end`, `/sessions/{sid}/stop`, `/sessions/{sid}/telemetry` and `/agent_status` each get a coarse per-route token bucket (`SWITCHBOARD_ROUTE_RATE_LIMIT`, default 600/min per route) returning `429` when exceeded — separate from the per-conversation tool limiter in §4/§15.3.
 
 ---
 
@@ -422,7 +425,7 @@ Claude Code prunes its own session transcript files — `~/.claude/projects/<dir
 `server/spawn_catalog.py` is the single source of truth for both the pick lists the dialogs render and the allowlist the server validates against, so display and validation cannot drift apart.
 
 - **Catalog construction.** Claude Code's list is a curated constant (`fable`, `opus`, `sonnet`, `haiku` in display order; the first three carry the effort tiers `low, medium, high, xhigh, max`, `haiku` carries none because the flag is inapplicable to it). Antigravity's list is probed at startup with `agy models` and taken verbatim, one id per line, each with no effort tiers — agy bakes effort into the id (`gemini-3.6-flash-low`), so offering the suffixed ids sidesteps base-name plus `--effort` composition entirely. Any probe failure (missing binary, nonzero exit, timeout, empty output) logs loudly via `surface_error` and falls back to a curated snapshot. The result is published to `spawn_options/` (§10) and kept on `Registry.spawn_catalog`.
-- **As-built limitation, verified live 2026-07-30.** Under the NSSM service the server runs as `LocalSystem` (§1's D6 constraint: the server cannot see the user's profile world), and `agy` is not on that account's `PATH`. The probe therefore fails at **every** startup with `spawn_catalog_agy_probe_failed: [WinError 2] The system cannot find the file specified`, and the published Antigravity list is **permanently the fallback snapshot** on this deployment. Spawning is unaffected and the failure is loud in `logs/switchboard.jsonl`, but the list will go **silently stale** whenever Antigravity changes its line-up, which is the exact drift the probe was meant to prevent. Fixing it means either resolving `agy`'s absolute path from config or pushing the list from a user session the way Watchtower pushes telemetry; that architecture choice is open.
+- **As-built limitation, verified live 2026-07-30.** Under the NSSM service the server runs as `LocalSystem` (§1's D6 constraint: the server cannot see the user's profile world), and `agy` is not on that account's `PATH`. The probe therefore fails at **every** startup with `spawn_catalog_agy_probe_failed: [WinError 2] The system cannot find the file specified`, and the published Antigravity list is **permanently the fallback snapshot** on this deployment. Spawning is unaffected and the failure is loud in `logs/switchboard.jsonl`, but the list will go **silently stale** whenever Antigravity changes its line-up, which is the exact drift the probe was meant to prevent. Fixing it means either resolving `agy`'s absolute path from config or pushing the list from a user session, the way each session's mod pushes its telemetry; that architecture choice is open.
 - **Dispatch validation.** `handle_fresh` validates the pair before **any** side effect — before the `quser` gate, the away-mode flip, the conversation mint, and the pending-file write. Rejection is a `send_text` to the phone naming the bad value and the valid options, plus an audit entry, and no tab opens. This is mandatory rather than defensive: Claude Code silently warn-ignores an invalid `--effort` and runs at its default, and both CLIs' invalid-model errors die inside the spawned `wt` tab where the phone never sees them.
 - **Recording and resume re-pass.** A pick is recorded via `SessionRegistry.record_spawn_choice` onto `SessionRecord.spawn_model` / `spawn_effort` (§10) only when at least one of the two was chosen; a default-everything spawn records nothing and resumes exactly as before. All three resume builders re-pass the recorded pair: `handle_resume` per member, `launch_resume_agent` (which `handle_resume_session` delegates to, so the board-resume path is covered by the same code), and `_spawn_pending_for_combine_resume` in `server/conversation_ops.py`. Re-passing is required because `claude --resume` preserves the model but resets effort to the settings default. Re-validation at resume is **fail-soft**: a recorded value that no longer validates is dropped, a notice is logged and sent to the phone, and the launch proceeds with CLI defaults, because a retired model must never make a session unresumable. Those phone notices are themselves wrapped so a failing `send_text` cannot defeat the fail-soft guarantee it exists to report.
 - **Launcher threading.** Pending-file agent entries carry optional `model` / `effort` (absent when unset). The Windows branch appends `--model '<m>'` / `--effort '<e>'` to the command string; the WSL branch passes them as positional args 5 and 6 using the literal sentinel `-` for unset, never an empty string, because empty tokens do not survive `wt`'s tokenization. Mixed versions degrade both ways: an old pending file yields the sentinel and no flags, and a new pending file hit by an old launcher has its extra fields ignored.
@@ -436,7 +439,7 @@ Claude Code prunes its own session transcript files — `~/.claude/projects/<dir
 conversations/<conversation_id>/
   meta/
     title                       (str)
-    title_source                "default" | "session" | "explicit" | absent   # provenance guard for the Watchtower session-title sync (§10.3); absent = pre-title_source record, inferred at sync time
+    title_source                "default" | "session" | "explicit" | absent   # provenance guard for the session-title sync (§10.3); absent = pre-title_source record, inferred at sync time
     state                       "active" | "ended"
     continued_from              (conversation_id | null)
     origin                      "join" | "spawn" | "resume" | "convene" | "fallback" | absent   # gates the ref-less-join candidate rule (§2.4); absent = pre-origin record, never a candidate
@@ -563,10 +566,17 @@ admin_notifications/<push_id>/
   format                        "markdown"
   timestamp
 
+quota/                          # server → clients: the account's plan usage as the sessions' mods last reported it (§10.5); absent before the first reading
+  five_hour/
+    percent_used                (number, 0-100)
+    resets_at                   (iso-8601; absent once the server has zeroed the window after its reset)
+  seven_day/                    # same fields as five_hour
+  received_at                   (iso-8601, server clock: when a session last confirmed the reading)
+
+presence/
+  server_at                     (iso-8601, server clock; rewritten every 60 s; the phone's and Operator's staleness signal)
+
 widget/
-  rings                         # per-session context-ring state (keyed by cli_session_id), pushed by Watchtower and projected onto a fixed field allowlist — not verbatim; usage-window quota lives separately below
-  quota                         (absent when cleared — a null quota clears the node via ref.delete(), §10.1)
-  pushed_at                     (iso-8601 — timestamp of the last Watchtower snapshot push)
   status/                       # Claude service-status watch, published by ClaudeStatusService
     watch_state
     dot_visible
@@ -592,31 +602,31 @@ sessions/<cli_session_id>/      # the SessionRegistry roster; source for Android
   state_detail
   conversation_id
   sender
-  model                        # ring-OBSERVED, overwritten by Watchtower sightings
-  effort                       # ring-OBSERVED alongside `model`, from the same transcript turn; cleared when that turn has none
-  spawn_model                  # COMMANDED at spawn time; deliberately distinct from `model` so a sighting cannot clobber the pick
+  model                        # OBSERVED: reported by the session's mod (main-thread turn.step, §10.5)
+  effort                       # OBSERVED alongside `model`; null for a model without effort tiers
+  spawn_model                  # COMMANDED at spawn time; deliberately distinct from `model` so a report cannot clobber the pick
   spawn_effort                 # COMMANDED at spawn time; re-passed on resume because `claude --resume` resets effort
   model_label                  # DERIVED for display by server/model_label.py ("Opus 5.5 · xhigh"); never read back by hydration
   model_source                 # "observed" | "spawn"; absent when there is no label
-  context_pct
+  context_pct                  # tokens / window, a 0-1 fraction (§10.5)
+  context_tokens               # as the session's mod reports them (session.measure)
+  context_window
   end_reason
   source
-  name
-  name_source
+  name                         # the session's title, from its transcript (§10.3)
+  name_source                  # "custom-title" | "ai-title"
   last_transition_source
-  title_state
   in_tool
-  blocked_on_approval
   pending_notices
 
 session_acks/<cli_session_id>   (iso-8601 — deleted alongside the session record on prune)
 ```
 
-Once a conversation is Ended, its `conversations/<id>/` index card plus its companion `/messages/<id>` and `/answers/<id>` nodes — and any Storage blobs its messages referenced — are deleted by an hourly sweep after `SWITCHBOARD_CONVERSATION_RETENTION_HOURS` (default 72). A second, independent horizon on the same hourly sweep prunes `admin_notifications` entries after `SWITCHBOARD_ADMIN_NOTIFICATION_RETENTION_HOURS` (default 168). A third, separate sweep prunes terminal (`ended`/`lost`) `sessions/<id>` records — and their paired `session_acks/<id>` — after `SWITCHBOARD_SESSION_RETENTION_HOURS` (default 72); a session is marked `lost` after `SWITCHBOARD_SESSION_LOST_AFTER_SECONDS` (default 900) of silence, a check that is suspended entirely while the Watchtower snapshot itself is stale.
+Once a conversation is Ended, its `conversations/<id>/` index card plus its companion `/messages/<id>` and `/answers/<id>` nodes — and any Storage blobs its messages referenced — are deleted by an hourly sweep after `SWITCHBOARD_CONVERSATION_RETENTION_HOURS` (default 72). A second, independent horizon on the same hourly sweep prunes `admin_notifications` entries after `SWITCHBOARD_ADMIN_NOTIFICATION_RETENTION_HOURS` (default 168). A third, separate sweep prunes terminal (`ended`/`lost`) `sessions/<id>` records — and their paired `session_acks/<id>` — after `SWITCHBOARD_SESSION_RETENTION_HOURS` (default 72); §10.6 covers when a live session is marked `lost`.
 
 ### 10.1 Clear-write convention
 
-Setting a Firebase node to `None` via `ref.set(None)` is rejected by `firebase_admin`. Every Switchboard setter that accepts a nullable value (e.g., `set_session_home`, `write_widget_quota`) routes the `None` case through `ref.delete()`, or passes it inside a multi-location `update()` (e.g. `write_conversation_meta`, `move_conversation_member`), which RTDB deletes the key just the same. The node is **absent** after a clear, not `null`-valued.
+Setting a Firebase node to `None` via `ref.set(None)` is rejected by `firebase_admin`. Every Switchboard setter that accepts a nullable value (e.g., `set_session_home`, `write_quota`) routes the `None` case through `ref.delete()`, or passes it inside a multi-location `update()` (e.g. `write_conversation_meta`, `move_conversation_member`), which RTDB deletes the key just the same. The node is **absent** after a clear, not `null`-valued.
 
 ### 10.2 Message type reference
 
@@ -632,7 +642,7 @@ Setting a Firebase node to `None` via `ref.set(None)` is rejected by `firebase_a
 
 ### 10.3 Session-title sync
 
-Claude Code names each session in its transcript (an AI-generated summary, or a custom `/title`). Watchtower parses the newest such record and reports it as ring `name` with a `name_source` of `custom-title` or `ai-title`. `conversation_ops.sync_session_titles`, called from the `/widget-snapshot` route on every push, adopts that name as the conversation title so a Conversations row reads "Fix undo in grouped steps" instead of the creation placeholder "`sender · cwd`". Persisting it (rather than joining client-side) is what makes the title outlive the session, the 72h roster prune, and a restart, and what gets it onto the phone's Page A for free.
+Claude Code names each session in its transcript: an AI-generated summary (`ai-title` rows), or a custom name from `/rename` (`custom-title` rows). The session's mod reads the newest such row, a custom title winning, at session start and after each turn until it finds one, and again after `/rename`; `$.fs.read` refuses a transcript over 4 MiB, which ends the search, and a `/rename` on such a transcript falls back to the command's own argument. The mod reports the title (`name`, with a `name_source` of `custom-title` or `ai-title`) to the telemetry route (§10.5), which hands a changed title to `conversation_ops.sync_session_titles`; the session sweep also re-offers every live session's title each minute, so a session that joins a conversation after its title arrived still gets it adopted. The sync adopts that name as the conversation title so a Conversations row reads "Fix undo in grouped steps" instead of the creation placeholder "`sender · cwd`". Persisting it (rather than joining client-side) is what makes the title outlive the session, the 72h roster prune, and a restart, and what gets it onto the phone's Page A for free.
 
 A conversation qualifies only when the sighted session is bound to it, it is Active, it has exactly one member, and its `meta/title_source` is not `explicit`:
 
@@ -643,15 +653,36 @@ A conversation qualifies only when the sighted session is bound to it, it is Act
 | `explicit` | `title=` on `message_and_await_agent` / `post_agent_message` / `join_conversation`, convene | Never touched again |
 | absent | Any conversation written before this field existed | Inferred: `default` if the title still equals its member's `sender · cwd` placeholder, else `explicit` |
 
-The single-member rule gates ADOPTING a title, not keeping one: a title synced while a conversation was solo survives a later join, since it remains the room's best description and an explicit title still overrides it. `title_source` travels in the same RTDB `update()` as the title it describes, so a crash cannot leave provenance disagreeing with the title the guard reads. An unchanged title short-circuits before the write, because rings arrive every few seconds. Title-write failures are caught and logged inside the route rather than surfaced, so a Firebase hiccup cannot make Watchtower's whole snapshot push look rejected.
+The single-member rule gates ADOPTING a title, not keeping one: a title synced while a conversation was solo survives a later join, since it remains the room's best description and an explicit title still overrides it. `title_source` travels in the same RTDB `update()` as the title it describes, so a crash cannot leave provenance disagreeing with the title the guard reads. An unchanged title short-circuits before the write, because the sweep re-offers every title each minute. Title-write failures are logged (`session_title_sync_error`, `session_title_reoffer_error`) rather than surfaced, so a Firebase hiccup never fails a telemetry report or a sweep tick.
 
 Reach is limited by binding: a session is bound only once it has made a Switchboard MCP call, and the binding is cleared when it ends. Conversations whose agents are already dormant therefore keep their placeholder titles permanently; the list improves as new and resumed work flows through it. Resume inherits both `title` and `title_source` from its source conversation.
 
 ### 10.4 Session model chip
 
-Every session surface (the phone's sessions board row, Page B member popover and session detail sheet; Operator's sessions rail) shows the session's model and effort as a chip such as `Opus 5.5 · xhigh`. The server resolves it in `SessionRecord.to_payload` via `server/model_label.py`, so both clients render the same string: an observed model (Watchtower's ring) brings the observed effort, possibly none; otherwise the spawn pick (`spawn_model` / `spawn_effort`) shows, rendered muted, labelled `Default` when only an effort was picked. Claude ids read as family plus version (`claude-haiku-4-5-20251001` is `Haiku 4.5`), bare aliases as the family, `gemini-*` ids title-cased, names that already contain a space pass through, and anything else shows raw.
+Every session surface (the phone's sessions board row, Page B member popover and session detail sheet; Operator's sessions rail) shows the session's model and effort as a chip such as `Opus 5.5 · xhigh`. The server resolves it in `SessionRecord.to_payload` via `server/model_label.py`, so both clients render the same string: an observed model (reported by the session's mod) brings the observed effort, possibly none; otherwise the spawn pick (`spawn_model` / `spawn_effort`) shows, rendered muted, labelled `Default` when only an effort was picked. Claude ids read as family plus version (`claude-haiku-4-5-20251001` is `Haiku 4.5`), bare aliases as the family, `gemini-*` ids title-cased, names that already contain a space pass through, and anything else shows raw.
 
-Effort reaches the server as ring field `effort`, which Watchtower reads from the top level of each assistant transcript line. The `/widget-snapshot` route's `_RING_FIELDS` whitelist carries it, and since that whitelist fills every listed key, an older Watchtower's ring arrives with `effort: None` and clears a stored value. Watchtower skips Claude Code's `<synthetic>` assistant lines ("No response requested.", zero usage), which would otherwise replace the real model and zero the context %, and reports no model for an Antigravity session whose transcript never names one (the `Gemini 3.1 Pro` default only sizes the window).
+Model and effort reach the server from the mod's main-thread `turn.step` (§10.5): they post together whenever either changes, a model without effort tiers sends `effort: null` (clearing a stored value), and a numeric effort is sent as `null`, since the label logic knows only the level names. Subagent steps are ignored, since a subagent may run another model. Antigravity sessions report nothing, so their chip shows only a spawn pick.
+
+### 10.5 Session telemetry and plan usage
+
+Each session's mod reports its own telemetry to `POST /sessions/{sid}/telemetry` (§6): a partial update in which a missing field means unchanged and `null` clears. `server/telemetry.py` validates each field (`context.window` a positive integer, `context.tokens` a non-negative integer, each rate limit's `percent_used` from 0 to 100 and `resets_at` an ISO time, `model` a non-empty string, `effort` a level name or `null`, `title.source` `custom-title` or `ai-title`) and drops one that fails while the rest applies; unknown keys are ignored, and the route always answers 200. A report for an unknown session creates its record, since `session.measure` can arrive before `session.start`.
+
+- **Session records** take `context_tokens` and `context_window`, with `context_pct` computed as `tokens / window` (a 0-1 fraction), plus `model`, `effort`, `name` and `name_source`. Once a session reports, only its mod writes them.
+- **Plan usage** is account-wide (one Claude account across Windows and WSL is assumed). `QuotaStore` (`server/quota_store.py`) keeps the `five_hour` and `seven_day` windows, each replaced when a report carries it (other kinds are ignored), and mirrors them to the `quota` node. `received_at` is the server's clock, never the client's, and means "last confirmed by a session": the mod sends rate limits on a measurement only when a model request has run since it last sent them, moved or not, and every report carrying them confirms the reading, published at most once a minute. A measurement before a session's first request, or after `/clear`, carries none and confirms nothing. Each sweep tick zeroes a window whose reset time has passed with no newer reading (`percent_used` 0, `resets_at` removed). The store is read back from the node at startup (§11).
+- **Server heartbeat.** A supervised loop (`dispatch_presence`) writes `presence/server_at` at startup and every 60 s. The phone's stale pill (5 minutes) and Operator's rail flag (120 s) read it, so staleness means the server or the network is down.
+- **Consumers.** The phone and Operator build their context rings from the `sessions/` records (one ring per live session that has reported its context) and their quota bars from the `quota` node; Watchtower reads both through `/stats` (§5). Cost is not reported: no surface shows it.
+
+### 10.6 Session liveness
+
+The session sweep (`dispatch_session_sweep`, every 60 s) judges each non-terminal record:
+
+- **Polled sessions.** Each inbox poll (§6) stamps the session in memory (`SessionRegistry.note_poll`; never mirrored). A session that has polled since the server started goes `lost` (`end_reason` `presumed-dead`) after `SWITCHBOARD_SESSION_POLL_LOST_AFTER_SECONDS` (default 90) without a poll, so 90 to 150 s after its last one. The threshold must stay above the poll's 30 s backoff cap.
+- **Never-polled sessions** (`claude -p` runs, Antigravity, and hydrated records whose session has not polled yet) keep the silence rule: `lost` after `SWITCHBOARD_SESSION_LOST_AFTER_SECONDS` (default 900) since `last_event_at`.
+- **Grace.** Nothing is marked lost for a grace period as long as the poll threshold after the loop starts, or after a sweep tick arrives more than a quarter interval late (the machine slept, or the loop stalled), so sessions can resume polling first (`LivenessGrace`).
+- **Revival.** A poll from a `lost` session returns it to `idle`. `ended` stays final: the session's end arrived.
+- **Exemptions.** An `awaiting_human` or `awaiting_agent` session backed by a live ask or wait is not marked lost.
+
+Marking a Claude Code session lost leaves its conversation member as it is (§15.1).
 
 ---
 
@@ -666,6 +697,7 @@ On startup, `server/hydration.py:hydrate_from_firebase` rebuilds the in-memory r
 5. **Session home pointers** — `cli_sessions/<session_id>/home_conversation_id`, skipping any pointer whose home isn't in the hydrated set (avoids re-binding to Ended homes).
 6. **Duplicate-alive-member reconciliation** — if one `cli_session_id` turns up alive in two hydrated Active conversations, the later `joined_at` wins (ties broken by the larger conversation id string); the loser is demoted to `members_history`, both in memory and back to Firebase, and the demotion is logged loudly.
 7. **Session-to-conversation bindings** — derived from each Active conversation's members: only ALIVE members are re-bound. Dormant members are deliberately left unbound (the steady-state invariant is "dormant = unbound"); resume re-binds and flips a member alive only when it actually relaunches. Re-binding dormant members at hydration previously broke phone Resume permanently after a restart.
+8. **Plan usage** — the `quota` node is read back into `QuotaStore` (§10.5), so the reading and its `received_at` survive a restart.
 
 Two more startup actions run unconditionally, before hydration, deleting retired schema nodes rather than rebuilding anything: `delete_legacy_away_mode_node()` removes the retired top-level `away_mode` node (superseded by `global_settings/away_mode`), and `delete_open_conversation_node()` removes `global_settings/open_conversation_id` (the retired open-marker singleton, §16). Both are migration residue, not architecture, and neither touches the away flag itself.
 
@@ -686,9 +718,9 @@ Five nav destinations (conversation list, sessions board, conversation view, adm
 
 ### 12.1 Page A — conversation list
 
-Top app bar carries the **away pill** (long-press to toggle in either direction; tapping it does nothing), plus a row of status pills — Watchtower snapshot staleness, Antigravity/GCP status, Anthropic status. Immediately below the top bar, in the screen body, a `WidgetStatusHeader` shows Claude 5h/7d and per-Antigravity-group quota bars, tappable to a quota detail dialog. Turning away off raises a bulk-respond modal only when pending `ask_human` questions exist; with none pending it turns off immediately. Body is a vertical list of conversation rows — Active by default, plus Ended rows so the history is visible — topped by a synthetic, non-interactive admin row and followed by an inline collapsible "HIDDEN (n)" section rather than a separate toggle. Ended conversations' long-press menu **omits** the Combine and End items entirely (not merely greyed); only Resume is greyed, and its enablement is registry-state based, independent of conversation state.
+Top app bar carries the **away pill** (long-press to toggle in either direction; tapping it does nothing), plus a row of status pills — server staleness (`presence/server_at` over 5 minutes old; the pill turns on by itself the moment the heartbeat crosses that line, §10.5), Antigravity/GCP status, Anthropic status. Immediately below the top bar, in the screen body, a `WidgetStatusHeader` shows the Claude 5h and 7d quota bars from the `quota` node, greyed while the server is stale, tappable to a quota detail dialog that shows the reading's age. Turning away off raises a bulk-respond modal only when pending `ask_human` questions exist; with none pending it turns off immediately. Body is a vertical list of conversation rows — Active by default, plus Ended rows so the history is visible — topped by a synthetic, non-interactive admin row and followed by an inline collapsible "HIDDEN (n)" section rather than a separate toggle. Ended conversations' long-press menu **omits** the Combine and End items entirely (not merely greyed); only Resume is greyed, and its enablement is registry-state based, independent of conversation state.
 
-Each row shows: title with the comma-joined member roster appended, a line-2 priority chain (pending question text, else agent-status text, else the latest-message preview), last-activity timestamp, a single `CountChip` badge (`max(unreadCount, pendingResponses)`, not two separate badges), a per-row context-window-fill badge, and a 4-state status lamp (Calling / Thinking / Active / Idle) that replaces a separate agent-status indicator. There is no "open" marker on the row (§16), and no session-file-aging warning glyph (§9.6 is unimplemented).
+Each row shows: title with the comma-joined member roster appended, a line-2 priority chain (pending question text, else agent-status text, else the latest-message preview), last-activity timestamp, a single `CountChip` badge (`max(unreadCount, pendingResponses)`, not two separate badges), a per-row context-window-fill badge (from the session records' `context_pct`), and a 4-state status lamp (Calling / Thinking / Active / Idle) that replaces a separate agent-status indicator. There is no "open" marker on the row (§16), and no session-file-aging warning glyph (§9.6 is unimplemented).
 
 When `admin_notifications` holds entries, a synthetic **Admin** row (`_admin`, no Firebase conversation behind it) sits above the conversations. Its preview is the newest notice, derived client-side, and tapping it opens a read-only notices list with no composer; notices removed from RTDB (Operator dismissal, the retention prune) leave the phone too, and the row goes with the last one. While the list is scrolled to the very top it stays there as rows arrive above (`requestScrollToItem(0)`); a keyed `LazyColumn` would otherwise keep the old first row in view and leave the new newest row just off-screen.
 
@@ -813,13 +845,14 @@ Every variable below is read by `server/config.py` unless noted otherwise.
 | `SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT` | No | `work` | Segment appended to resolved WSL home for WSL project paths. |
 | `SWITCHBOARD_RATE_LIMIT` | No | `30` | Per-conversation rate limit for `ask_human` + `notify_human` + `send_document_human` + `message_and_await_agent` + `post_agent_message` (tokens/min; the last two degrade to FCM suppression instead of rejecting). |
 | `SWITCHBOARD_TOKEN` | For non-loopback | — | Shared-secret for the Bearer gate; required when `SWITCHBOARD_HOST` is non-loopback (server refuses to start without it). Loopback callers and `/healthz` are exempt. |
-| `SWITCHBOARD_ROUTE_RATE_LIMIT` | No | `600` | Coarse per-route rate limit for `/widget-snapshot`, `/session_start`, `/agent_status` (tokens/min per route; `0` disables). |
-| `SWITCHBOARD_SESSION_LOST_AFTER_SECONDS` | No | `900` | Silence threshold: after this long with no hook/MCP activity, the session sweep marks a session lost; for Antigravity (no `SessionEnd` hook) this also propagates the conversation member to dormant — for Claude, member dormancy still needs `SessionEnd` or force-end (§6, §15.1). |
+| `SWITCHBOARD_ROUTE_RATE_LIMIT` | No | `600` | Coarse per-route rate limit for `/session_start`, `/session_end`, `/agent_status`, `/sessions/{sid}/stop` and `/sessions/{sid}/telemetry` (tokens/min per route; `0` disables). |
+| `SWITCHBOARD_SESSION_LOST_AFTER_SECONDS` | No | `900` | Silence threshold for sessions that have never polled (`claude -p` runs, Antigravity, records hydrated after a restart until they poll): after this long with no hook or MCP activity the sweep marks the session lost; for Antigravity this also propagates the conversation member to dormant (§10.6, §15.1). |
+| `SWITCHBOARD_SESSION_POLL_LOST_AFTER_SECONDS` | No | `90` | Poll threshold: a session that has polled its inbox since the server started is marked lost after this long without a poll (§10.6). Keep it above the mod's 30 s poll backoff cap. |
 | `SWITCHBOARD_SESSION_RETENTION_HOURS` | No | `72` | How long a terminal (ended/lost) session record, and a parked pending question (§7), survive before the sweeper prunes them. |
 | `SWITCHBOARD_CONVERSATION_RETENTION_HOURS` | No | `72` | How long an Ended conversation (index card, messages, answers, Storage blobs) survives before the conversation sweep deletes it. |
 | `SWITCHBOARD_ADMIN_NOTIFICATION_RETENTION_HOURS` | No | `168` | How long an `admin_notifications` entry survives the hourly sweep. |
 
-**Not a `config.py` field, but named here for completeness:** `SWITCHBOARD_WSL_HOME` (read directly by `server/main.py`'s `resolve_wsl_home`, not by `Config`) short-circuits the WSL-home probe — first-priority source, used when the NSSM service runs in Session 0 where the `wsl.exe` probe fails (§9.2). Two more are client-side only, read by the hook scripts rather than the server: `SWITCHBOARD_BASE_URL` and `SWITCHBOARD_MARKER_DIR` (§13.3).
+**Not a `config.py` field, but named here for completeness:** `SWITCHBOARD_WSL_HOME` (read directly by `server/main.py`'s `resolve_wsl_home`, not by `Config`) short-circuits the WSL-home probe — first-priority source, used when the NSSM service runs in Session 0 where the `wsl.exe` probe fails (§9.2). One more is client-side only, read by the mod and the agy hooks rather than the server: `SWITCHBOARD_BASE_URL` (§13.3).
 
 ---
 
@@ -828,8 +861,8 @@ Every variable below is read by `server/config.py` unless noted otherwise.
 ### 15.1 Reliability
 
 - **Restart loses in-flight wait queues, but not the questions.** A `wait_queue` entry (`message_and_await_agent`'s only — `post_agent_message` never enqueues one) does not survive restart — the caller times out on its next call or is cancelled. An outstanding `ask_human` question is different: hydration rebuilds it as a parked pending (§11), so John's eventual reply still resolves it after a restart.
-- **Stale-alive members are time-bounded, not permanent — for Antigravity.** Antigravity has no `SessionEnd` hook (§2.2, §6), so an unresponsive agy session is caught only by the session sweep (`SWITCHBOARD_SESSION_LOST_AFTER_SECONDS`, default 900s, §14), which marks it lost and propagates its conversation member to dormant. For Claude, the same sweep marks an abruptly-dead session (SIGKILL, BSOD, network loss) lost in the roster, but does not itself flip the conversation member dormant — force-ending the conversation is still the only way to clear one.
-- **Best-effort `SessionEnd`** — orderly exits fire; abrupt deaths don't (caught instead by the sweep above).
+- **Dead sessions leave the roster within minutes.** A Claude Code session that stops polling (hard kill, crash, network loss) is marked `lost` 90 to 150 s after its last poll (§10.6), and a later poll revives it. Its conversation member is left alone: for Claude Code, member dormancy still needs the `session.end` POST or a force-end. Antigravity has no session-end hook, so its sessions are caught by the 900 s silence rule, which also propagates the member to dormant (§2.2).
+- **Best-effort session end.** The mod's `session.end` POST is awaited inside Claude Code's 1.5 s exit bound, so orderly exits land; abrupt deaths are caught by the poll rule above.
 
 ### 15.2 Scope
 
@@ -858,6 +891,6 @@ Every variable below is read by `server/config.py` unless noted otherwise.
 - `CLAUDE.md` (project root) — agent orientation and project tour for working in this repo.
 - `README.md` — the full env-var reference, Antigravity CLI wiring, Android build/pairing, and RTDB-rules setup; several details this doc only summarizes live there in full.
 - `dashboard/` — Operator, the browser cockpit served at `/dashboard` (§1, §5).
-- `watchtower/` (with its own `README.md`) — the Windows taskbar widget that pushes snapshot/quota telemetry (§1, §5).
+- `watchtower/` (with its own `README.md`) — the Windows taskbar widget that renders what `/stats` reports (§1, §5).
 - `database.rules.json` — the RTDB security rules, a required deploy artifact; the server audits the deployed rules loudly at startup for placeholder/test-mode configuration.
 - `docs/superpowers/specs/` — dated design history. Not authoritative for current behavior; preserved for the reasoning trail. The retired open-conversation model — the `open_conversation` and `enter_conversation` tools, the `open_conversation_id` singleton pointer, and the lobby-hold / lobby-timeout branches — appears only in these dated specs and nowhere in the current code. It was replaced by `join_conversation` plus the ref-less join candidate rule (§2.4) during 2026-07 work. A reader who encounters that vocabulary in a dated spec should treat it as historical, not current.

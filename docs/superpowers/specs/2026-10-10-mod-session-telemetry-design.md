@@ -55,9 +55,11 @@ From the 2.1.293 declarations unless stated:
 12. **Antigravity drops out of Watchtower** (its rings and quota display), consistent with T-283.
 13. **One Claude account across Windows and WSL** is assumed: the quota record is account-wide.
 14. **The approval marker is retired in chunk 2** (decided 2026-10-11, after chunk 1 landed; moved from chunk 3). Its "star" tab marker also means idle, so once Watchtower stops pushing, every idle session's frozen "star" would turn its next tool call into a false "needs approval". Chunk 2's first task drops `title_state`, `blocked_on_approval`, `apply_rings` and `needs_you`'s approval reason. Rejected: moving only the `needs_you` reason.
-15. **The quota's `received_at` means "last confirmed by a session"** (decided 2026-10-11). A post-turn report carrying context but no rate limits confirms the stored reading, since the windows had not moved a whole point; the server stamps `received_at` from it and publishes at most once a minute. Rejected: the time of the last value change; dropping the "as of" display.
+15. **The quota's `received_at` means "last confirmed by a session"** (decided 2026-10-11). A post-turn report carrying context but no rate limits confirms the stored reading, since the windows had not moved a whole point; the server stamps `received_at` from it and publishes at most once a minute. Rejected: the time of the last value change; dropping the "as of" display. Revised by decision 19.
 16. **The daily anchor stays, checking the server's quota** (decided 2026-10-11). It skips when `quota.five_hour` shows a future reset with usage on it, and fires with no reading. Rejected: keeping a credential read for the anchor alone.
 17. **Chunk 2 planning findings, accepted 2026-10-11:** quota fractions are divided by 100 on the phone and Operator; Watchtower keeps its last view while the server is down (no greyed-out styling exists); the "possibly waiting on approval" hint goes with the marker; Watchtower's empty state reads "no live sessions"; its `/stats` poll runs regardless of `Switchboard.Enabled`, which gates only the stats line, launcher and badge; "as of" times show on the phone's quota dialog, in Operator's quota tooltip and in Watchtower's popup (after 30 minutes); the tray's poll-interval submenu goes.
+18. **Chunk 3 scope** (decided 2026-10-11, at chunk 3 planning). Three T-287 items ride along: the quota confirmation fix (decision 19), Watchtower's redraw guard (it re-laid itself out on every 4 s poll) and the dead approval-chip style; `docs/switchboard-design-spec-comprehensive.md` is brought fully up to date, including the 2026-10-03 mod it never caught up with. Closed won't-fix: Watchtower's "0 / 0" rows for sessions that never reported their context (they fade as old-mod sessions relaunch, and hiding them would not match the phone's stale values either) and Operator's "Reading from:" as an age (the tooltip is computed at render, so an age would freeze on an idle page).
+19. **Only a fresh rate-limit report confirms the quota** (decided 2026-10-11, revising decision 15 after a probe). The mod sends `rate_limits` on a measurement only when a model request (`turn.step`, any agent) has run since it last sent them, moved or not; the server confirms only a report that carries them. A measurement before a session's first request, or after `/clear`, confirms nothing. The probe (Claude Code 2.1.296) showed `e.rateLimits` populated on every measurement once a response has arrived, with `changed` naming them only when they moved, so a measurement carrying rate limits says nothing about their age. Rejected: sending them on every measurement that carries them.
 
 ## Design
 
@@ -81,7 +83,7 @@ From the 2.1.293 declarations unless stated:
 | Field | Source | Sent when |
 |---|---|---|
 | `context` | `session.measure` `e.context` (`tokens`, `window`) | `e.changed` includes `context` |
-| `rate_limits` | `e.rateLimits`, the full list | `e.changed` includes `rateLimits` |
+| `rate_limits` | `e.rateLimits`, the full list | a model request (`turn.step`, any agent) has run since they were last sent, moved or not (decision 19) |
 | `model`, `effort` | main-thread `turn.step` (`agentId` absent) | either differs from the last value posted |
 | `title` | the session's own transcript | differs from the last value posted |
 
@@ -110,7 +112,7 @@ From the 2.1.293 declarations unless stated:
 ```
 
 - A report replaces each window it carries; a window it does not carry is left as it was. Other kinds (`spend_limit`) are ignored.
-- `received_at` is the server's receive time, never the mod's clock, so Windows and WSL clock skew cannot reorder readings. As built in chunk 2 (decision 15), it is when a session last confirmed the reading.
+- `received_at` is the server's receive time, never the mod's clock, so Windows and WSL clock skew cannot reorder readings. As built in chunk 2 (decision 15), it is when a session last confirmed the reading. Since chunk 3 (decision 19), only a report carrying rate limits confirms it.
 - The store mirrors to RTDB `quota` on change.
 - On each sweep tick, a window whose `resets_at` has passed gets `percent_used` 0 and `resets_at` cleared, until a newer reading fills it. Every consumer shows the same thing without its own reset logic.
 - Before the first reading the node is absent.
@@ -185,6 +187,7 @@ The plan enumerates the files.
 - a one-time delete of the RTDB `widget/rings`, `widget/quota` and `widget/pushed_at` nodes;
 - `rings_are_fresh` and `WATCHTOWER_FRESH_SECONDS`;
 - the marker-health one-shot, which now fires routinely (T-286).
+- riding along (decision 18): T-287's quota confirmation fix, Watchtower's redraw guard, the dead approval-chip style, and the comprehensive design spec brought up to date.
 
 Stays: `widget/status`, the Claude status watch and `/widget-status`. The Antigravity status watch is left for T-283.
 
@@ -224,7 +227,7 @@ Each chunk leaves the system working.
   - A WSL session reports through its clone.
   - `smoke.py --preflight-only` passes after each deploy.
 - **Live checks, chunk 2:** the phone side on the `Pixel_10_Pro` emulator (context badges, quota header and dialog, stale pill driven by stopping the service); Operator in the browser; Watchtower against the live server, then with the service stopped (greyed last-known view).
-- **Live check, chunk 3:** the three `widget/*` nodes are gone from RTDB and nothing logs a write error.
+- **Live check, chunk 3:** the three `widget/*` nodes are gone from RTDB and nothing logs a write error. A fresh interactive session leaves `quota.received_at` alone until its first model request.
 
 ## Out of scope
 
