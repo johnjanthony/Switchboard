@@ -13,7 +13,7 @@ internal sealed class DetailPanel : Form
 	const int RowH = 42;
 	const int Pad = 12;
 	const int QuotaWindowRowH = 42;
-	const int QuotaPausedRowH = 18;
+	const int QuotaNoteRowH = 18;
 	const int GroupVPad = 8;     // inner top/bottom padding inside a group panel
 	const int GroupGap = 10;     // vertical gap between the two group panels
 	const int PanelMargin = 6;   // horizontal inset of a group panel from the popup edge
@@ -123,9 +123,10 @@ internal sealed class DetailPanel : Form
 	IReadOnlyList<SessionModel> _sessions = Array.Empty<SessionModel>();
 	Palette _palette = new(light: false);
 	QuotaUsage? _quota;   // latest Claude plan usage (5h/7d); null until first successful poll -> section hidden
-	bool _quotaAuthPaused;
+	DateTimeOffset? _quotaReceivedAt;   // when the server received the quota reading
+	bool _quotaAsOfShown;               // the reading is older than QuotaAsOfAfter, so an "as of" line shows
+	static readonly TimeSpan QuotaAsOfAfter = TimeSpan.FromMinutes(30);
 	IReadOnlyList<AntigravityQuotaGroup> _agyGroups = Array.Empty<AntigravityQuotaGroup>();   // touched agy groups only
-	DateTime? _lastActivityUtc;   // newest transcript mtime when no session is active; null if never seen
 
 	bool _switchboardEnabled;
 	SwitchboardStats? _switchboardStats;   // latest /stats; null means unavailable when enabled
@@ -349,11 +350,10 @@ internal sealed class DetailPanel : Form
 		get { var cp = base.CreateParams; cp.ExStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE; return cp; }
 	}
 
-	public void UpdateSessions(IReadOnlyList<SessionModel> sessions, bool lightTheme, DateTime? lastActivityUtc)
+	public void UpdateSessions(IReadOnlyList<SessionModel> sessions, bool lightTheme)
 	{
 		_sessions = sessions;
 		_palette = new Palette(lightTheme);
-		_lastActivityUtc = lastActivityUtc;
 		_claudePillButton.SurfaceColor = _palette.Surface;
 		_switchboardPillButton.SurfaceColor = _palette.Surface;
 		_awayPillButton.SurfaceColor = _palette.Surface;
@@ -369,11 +369,16 @@ internal sealed class DetailPanel : Form
 		Invalidate();
 	}
 
-	// Auth-failure banner for the quota section: shown while the quota poll is backed off.
-	public void SetQuotaAuthPaused(bool paused)
+	// A quota reading only changes when a session reports one, so a reading older than QuotaAsOfAfter
+	// gets an "as of" line under the Claude Code rows. Called on every /stats poll; re-lays out only
+	// when the line appears or goes.
+	public void SetQuotaReceivedAt(DateTimeOffset? receivedAt)
 	{
-		if (_quotaAuthPaused == paused) return;
-		_quotaAuthPaused = paused;
+		bool show = receivedAt is DateTimeOffset r && DateTimeOffset.UtcNow - r > QuotaAsOfAfter;
+		bool changed = show != _quotaAsOfShown || (show && receivedAt != _quotaReceivedAt);
+		_quotaReceivedAt = receivedAt;
+		_quotaAsOfShown = show;
+		if (!changed) return;
 		RecomputeHeight();
 		Invalidate();
 	}
@@ -526,7 +531,7 @@ internal sealed class DetailPanel : Form
 
 	void RecomputeHeight()
 	{
-		int quotaContentH = (_quota.HasValue ? 2 * QuotaWindowRowH : 0) + (_quotaAuthPaused ? QuotaPausedRowH : 0);
+		int quotaContentH = (_quota.HasValue ? 2 * QuotaWindowRowH : 0) + (_quotaAsOfShown ? QuotaNoteRowH : 0);
 		int quotaH = quotaContentH > 0 ? quotaContentH + 2 * GroupVPad + GroupGap : 0;
 		int agyH = _agyGroups.Count * (2 * QuotaWindowRowH + 2 * GroupVPad + GroupGap);
 		int ctxH = Math.Max(1, _sessions.Count) * RowH + 2 * GroupVPad;
@@ -667,23 +672,16 @@ internal sealed class DetailPanel : Form
 			y += groupH + GroupGap;
 		}
 
-		// Claude Code plan-usage (5h / 7d) below the Antigravity pills, plus the auth-paused banner when polling is backed off.
-		if (_quota.HasValue || _quotaAuthPaused)
+		// Claude Code plan-usage (5h / 7d) below the Antigravity pills, with an "as of" line once the reading is old.
+		if (_quota is QuotaUsage q)
 		{
-			int groupH = (_quota.HasValue ? 2 * QuotaWindowRowH : 0) + (_quotaAuthPaused ? QuotaPausedRowH : 0) + 2 * GroupVPad;
+			int groupH = 2 * QuotaWindowRowH + (_quotaAsOfShown ? QuotaNoteRowH : 0) + 2 * GroupVPad;
 			DrawGroupPanel(g, y, groupH);
 			int inner = y + GroupVPad;
-			if (_quotaAuthPaused)
-			{
-				using var warn = new SolidBrush(_palette.Warning);
-				g.DrawString("quota paused - Claude login required", small, warn, Pad, inner);
-				inner += QuotaPausedRowH;
-			}
-			if (_quota is QuotaUsage q)
-			{
-				inner = DrawQuotaWindow(g, inner, "5h - Claude Code", q.Session, QuotaPacing.SessionDuration, label, small);
-				DrawQuotaWindow(g, inner, "7d - Claude Code", q.Weekly, QuotaPacing.WeeklyDuration, label, small);
-			}
+			inner = DrawQuotaWindow(g, inner, "5h - Claude Code", q.Session, QuotaPacing.SessionDuration, label, small);
+			inner = DrawQuotaWindow(g, inner, "7d - Claude Code", q.Weekly, QuotaPacing.WeeklyDuration, label, small);
+			if (_quotaAsOfShown && _quotaReceivedAt is DateTimeOffset received)
+				g.DrawString($"as of {RelativeTime.Ago(received.UtcDateTime, DateTime.UtcNow)}", small, mutedBrush, Pad, inner);
 			y += groupH + GroupGap;
 		}
 
@@ -693,10 +691,8 @@ internal sealed class DetailPanel : Form
 		DrawGroupPanel(g, ctxTop, ctxH);
 		if (_sessions.Count == 0)
 		{
-			// All agents have aged out of the active window; report when the most recent one was last seen.
-			string msg = _lastActivityUtc is DateTime last
-				? $"last active agent {RelativeTime.Ago(last, DateTime.UtcNow)}"
-				: "no recent agent activity";
+			// No session is live on the server.
+			string msg = "no live sessions";
 			var ms = g.MeasureString(msg, small);
 			g.DrawString(msg, small, mutedBrush, (Width - ms.Width) / 2, ctxTop + (ctxH - ms.Height) / 2);
 		}
