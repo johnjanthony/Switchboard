@@ -117,3 +117,26 @@ async def test_firebase_read_quota_returns_a_dict_or_none(monkeypatch):
 	assert await be.read_quota() == {"received_at": "t"}
 	mock_db.reference.return_value.get.return_value = "junk"
 	assert await be.read_quota() is None
+
+
+def test_confirm_moves_received_at_without_changing_the_windows():
+	store = QuotaStore()
+	store.apply([FIVE], "t1")
+	assert store.confirm("t2", 1000.0) is True
+	snap = store.snapshot()
+	assert (snap["received_at"], snap["five_hour"]["percent_used"]) == ("t2", 10)
+
+
+def test_confirm_asks_for_a_publish_at_most_once_a_minute():
+	store = QuotaStore()
+	store.apply([FIVE], "t1")
+	store.mark_published(1000.0)
+	assert store.confirm("t2", 1059.0) is False
+	assert store.confirm("t3", 1060.0) is True
+	assert store.snapshot()["received_at"] == "t3"
+
+
+def test_confirm_before_any_reading_does_nothing():
+	store = QuotaStore()
+	assert store.confirm("t1", 1000.0) is False
+	assert store.snapshot() is None

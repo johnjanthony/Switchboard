@@ -32,12 +32,12 @@ class _Logger:
 		self.errors.append(msg)
 
 
-def _app(sessions, quota, backend, logger, registry=None):
+def _app(sessions, quota, backend, logger, registry=None, clock=None):
 	from server.main import _build_telemetry_route
 	app = Starlette()
 	app.add_route(
 		"/sessions/{sid}/telemetry",
-		_build_telemetry_route(sessions, quota, backend, logger, registry),
+		_build_telemetry_route(sessions, quota, backend, logger, registry, clock=clock),
 		methods=["POST"],
 	)
 	return app
@@ -107,3 +107,43 @@ def test_a_failed_quota_write_is_logged_and_the_record_still_lands():
 		assert client.post("/sessions/s1/telemetry", json=FULL).status_code == 200
 	assert sessions.get("s1").model == "claude-opus-5-5"
 	assert any("quota_write_error" in e for e in logger.errors)
+
+
+class _Clock:
+	def __init__(self) -> None:
+		self.t = 1000.0
+
+	def __call__(self) -> float:
+		return self.t
+
+
+def test_a_context_report_confirms_the_quota_reading():
+	# A post-turn report without rate limits means they had not moved a whole
+	# point, so the stored reading is current as of that report.
+	sessions, quota, backend, clock = SessionRegistry(), QuotaStore(), _Backend(), _Clock()
+	with TestClient(_app(sessions, quota, backend, _Logger(), clock=clock)) as client:
+		client.post("/sessions/s1/telemetry", json=FULL)
+		first = backend.quota_writes[-1]["received_at"]
+		clock.t += 61
+		client.post("/sessions/s1/telemetry", json={"context": {"tokens": 5, "window": 100}})
+	assert len(backend.quota_writes) == 2
+	assert backend.quota_writes[-1]["received_at"] != first
+	assert backend.quota_writes[-1]["five_hour"] == backend.quota_writes[0]["five_hour"]
+
+
+def test_confirmations_publish_at_most_once_a_minute():
+	sessions, quota, backend, clock = SessionRegistry(), QuotaStore(), _Backend(), _Clock()
+	with TestClient(_app(sessions, quota, backend, _Logger(), clock=clock)) as client:
+		client.post("/sessions/s1/telemetry", json=FULL)
+		clock.t += 30
+		client.post("/sessions/s1/telemetry", json={"context": {"tokens": 5, "window": 100}})
+	assert len(backend.quota_writes) == 1
+
+
+def test_a_report_without_context_or_rate_limits_does_not_confirm():
+	sessions, quota, backend, clock = SessionRegistry(), QuotaStore(), _Backend(), _Clock()
+	with TestClient(_app(sessions, quota, backend, _Logger(), clock=clock)) as client:
+		client.post("/sessions/s1/telemetry", json=FULL)
+		clock.t += 120
+		client.post("/sessions/s1/telemetry", json={"model": "claude-opus-5-5", "effort": "high"})
+	assert len(backend.quota_writes) == 1

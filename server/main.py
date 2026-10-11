@@ -8,6 +8,7 @@ import json as _json
 import logging
 import os
 import signal
+import time
 from datetime import datetime, timezone
 from pathlib import Path as _Path
 
@@ -127,12 +128,19 @@ def _build_stop_route(session_registry):
 	return stop
 
 
-def _build_telemetry_route(session_registry, quota_store, backend, logger, registry=None):
+def _build_telemetry_route(session_registry, quota_store, backend, logger, registry=None, clock=None):
 	"""POST /sessions/{sid}/telemetry - the Claude Code mod's report of the
 	session's context, rate limits, model, effort and title, validated field by
 	field (server/telemetry.py). Writes the session record and the account's
 	quota reading, and offers a reported title to the session's conversation at
-	once. Always 200, like the other hook routes."""
+	once. Always 200, like the other hook routes.
+
+	A post-turn report carrying context but no rate limits confirms the stored
+	quota reading (the windows had not moved a whole point), so the quota's
+	received_at means "last confirmed by a session", published at most once a
+	minute."""
+	now = clock or time.time
+
 	async def telemetry(request: Request):
 		session_id = request.path_params["sid"]
 		try:
@@ -144,9 +152,13 @@ def _build_telemetry_route(session_registry, quota_store, backend, logger, regis
 			return JSONResponse({}, status_code=200)
 		rec = session_registry.apply_telemetry(session_id, report)
 		rate_limits = report.get("rate_limits")
-		if rate_limits and quota_store.apply(rate_limits, now_iso()):
+		received_at = now_iso()
+		changed = bool(rate_limits) and quota_store.apply(rate_limits, received_at)
+		due = ("context" in report or bool(rate_limits)) and quota_store.confirm(received_at, now())
+		if changed or due:
 			try:
 				await backend.write_quota(quota_store.snapshot())
+				quota_store.mark_published(now())
 			except Exception as exc:
 				await logger.surface_error(f"quota_write_error: {exc}")
 		if rec is not None and "title" in report and registry is not None:

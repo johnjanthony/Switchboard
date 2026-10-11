@@ -9,11 +9,19 @@ from datetime import datetime
 
 from server.telemetry import QUOTA_KINDS
 
+# A session's post-turn report confirms the stored reading; publishing that
+# confirmation at most once a minute keeps an active session to one write.
+CONFIRM_PUBLISH_SECONDS = 60.0
+
 
 class QuotaStore:
+	"""received_at is when a session last confirmed the reading: a value change,
+	or a post-turn report whose rate limits had not moved a whole point."""
+
 	def __init__(self) -> None:
 		self._windows: dict[str, dict] = {}
 		self._received_at: str | None = None
+		self._published_ts = 0.0
 
 	def apply(self, rate_limits: list[dict], received_at: str) -> bool:
 		"""Replace each window the report carries and leave the others. Returns
@@ -28,6 +36,19 @@ class QuotaStore:
 		if changed:
 			self._received_at = received_at
 		return changed
+
+	def confirm(self, received_at: str, now_ts: float) -> bool:
+		"""Record that a session's measurement confirmed the stored reading, so
+		received_at means "last confirmed". Returns whether to publish now: at
+		most once per CONFIRM_PUBLISH_SECONDS. Before any reading there is
+		nothing to confirm."""
+		if not self._windows:
+			return False
+		self._received_at = received_at
+		return now_ts - self._published_ts >= CONFIRM_PUBLISH_SECONDS
+
+	def mark_published(self, now_ts: float) -> None:
+		self._published_ts = now_ts
 
 	def expire(self, now_ts: float) -> bool:
 		"""Zero each window whose reset time has passed with no newer reading, so
