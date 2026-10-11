@@ -69,7 +69,7 @@ fun ConversationListScreen(
 	quota: WidgetQuota? = null,
 	claudeStatus: WidgetStatus? = null,
 	antigravityStatus: WidgetStatus? = null,
-	pushedAt: String? = null,
+	serverSeenAt: String? = null,
 	onCheckStatus: () -> Unit = {},
 	onStopStatus: () -> Unit = {},
 	authState: io.github.johnjanthony.switchboard.AuthUiState = io.github.johnjanthony.switchboard.AuthUiState.SIGNED_IN,
@@ -124,7 +124,7 @@ fun ConversationListScreen(
 				},
 				title = {},
 				actions = {
-					val stale = pushedAt != null && io.github.johnjanthony.switchboard.widgetStale(System.currentTimeMillis(), pushedAt)
+					val stale = serverSeenAt != null && io.github.johnjanthony.switchboard.widgetStale(System.currentTimeMillis(), serverSeenAt)
 					io.github.johnjanthony.switchboard.SwitchboardStalePillChip(stale = stale)
 					io.github.johnjanthony.switchboard.AntigravityStatusPillChip(status = antigravityStatus)
 					io.github.johnjanthony.switchboard.OnlineOfflinePillChip(status = claudeStatus)
@@ -139,7 +139,7 @@ fun ConversationListScreen(
 		Column(modifier = Modifier.fillMaxSize().padding(padding)) {
 		WidgetStatusHeader(
 			quota = quota,
-			pushedAt = pushedAt,
+			serverSeenAt = serverSeenAt,
 			onClick = { if (quota != null) showQuotaPopup = true }
 		)
 		val hasContent = rows.isNotEmpty() || hiddenRows.isNotEmpty() || adminRow != null

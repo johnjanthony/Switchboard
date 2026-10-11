@@ -28,6 +28,7 @@ import io.github.johnjanthony.switchboard.network.ConversationRow
 import io.github.johnjanthony.switchboard.network.ConversationSummary
 import io.github.johnjanthony.switchboard.network.Pending
 import io.github.johnjanthony.switchboard.network.PendingExitToggle
+import io.github.johnjanthony.switchboard.network.QuotaNode
 import io.github.johnjanthony.switchboard.network.AgentStatus
 import io.github.johnjanthony.switchboard.network.RegistrySession
 import io.github.johnjanthony.switchboard.network.SpawnOptions
@@ -116,8 +117,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _widgetAntigravityStatus = MutableStateFlow<WidgetStatus?>(null)
 	val widgetAntigravityStatus: StateFlow<WidgetStatus?> = _widgetAntigravityStatus.asStateFlow()
 
-	private val _widgetPushedAt = MutableStateFlow<String?>(null)
-	val widgetPushedAt: StateFlow<String?> = _widgetPushedAt.asStateFlow()
+	// When the server last wrote presence/server_at (every 60 s): the stale pill's signal.
+	private val _serverSeenAt = MutableStateFlow<String?>(null)
+	val serverSeenAt: StateFlow<String?> = _serverSeenAt.asStateFlow()
 
 	// Session registry board (convening chunk 4): mirrors server sessions/* and session_acks/*.
 	private val _registrySessions = MutableStateFlow<Map<String, RegistrySession>>(emptyMap())
@@ -423,45 +425,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		_conversationRows.value.values.flatMapTo(mutableSetOf()) { row -> PendingSendPolicy.commandIdsIn(row.messages) }
 
 	/**
-	 * Listen to the widget hub the server fans out from Watchtower: per-session context
-	 * rings, plan quota, Anthropic service status, and the push-staleness timestamp. Rings
-	 * are a map keyed by Claude Code session_id; a per-child parse failure is logged and
-	 * skipped rather than dropping the whole map.
+	 * Listen to the widget data the server publishes: plan quota (quota/), the Anthropic and
+	 * Antigravity service status (widget/status, widget/antigravity_status) and the server
+	 * heartbeat (presence/server_at). Context rings are built from the sessions/ records in
+	 * startSessionRegistryListeners.
 	 */
 	private fun startWidgetListeners() {
-		val ringsRef = database.getReference("widget/rings")
-		val ringsListener = object : ValueEventListener {
-			override fun onDataChange(snapshot: DataSnapshot) {
-				val map = mutableMapOf<String, WidgetRing>()
-				for (child in snapshot.children) {
-					val sessionId = child.key ?: continue
-					try {
-						child.getValue(WidgetRing::class.java)?.let { map[sessionId] = it }
-					} catch (e: Exception) {
-						android.util.Log.w("MainViewModel", "widget ring parse failed: $sessionId", e)
-					}
-				}
-				_widgetRings.value = map
-			}
-			override fun onCancelled(error: DatabaseError) {
-				android.util.Log.w("MainViewModel", "widget/rings listener cancelled: $error")
-			}
-		}
-		ringsRef.addValueEventListener(ringsListener)
-		subscriptions.add { ringsRef.removeEventListener(ringsListener) }
-
-		val quotaRef = database.getReference("widget/quota")
+		val quotaRef = database.getReference("quota")
 		val quotaListener = object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
 				_widgetQuota.value = try {
-					snapshot.getValue(WidgetQuota::class.java)
+					quotaFromNode(snapshot.getValue(QuotaNode::class.java))
 				} catch (e: Exception) {
-					android.util.Log.w("MainViewModel", "widget/quota parse failed", e)
+					android.util.Log.w("MainViewModel", "quota parse failed", e)
 					null
 				}
 			}
 			override fun onCancelled(error: DatabaseError) {
-				android.util.Log.w("MainViewModel", "widget/quota listener cancelled: $error")
+				android.util.Log.w("MainViewModel", "quota listener cancelled: $error")
 			}
 		}
 		quotaRef.addValueEventListener(quotaListener)
@@ -501,24 +482,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		antigravityStatusRef.addValueEventListener(antigravityStatusListener)
 		subscriptions.add { antigravityStatusRef.removeEventListener(antigravityStatusListener) }
 
-		val pushedAtRef = database.getReference("widget/pushed_at")
-		val pushedAtListener = object : ValueEventListener {
+		val presenceRef = database.getReference("presence/server_at")
+		val presenceListener = object : ValueEventListener {
 			override fun onDataChange(snapshot: DataSnapshot) {
-				_widgetPushedAt.value = snapshot.getValue(String::class.java)
+				_serverSeenAt.value = snapshot.getValue(String::class.java)
 			}
 			override fun onCancelled(error: DatabaseError) {
-				android.util.Log.w("MainViewModel", "widget/pushed_at listener cancelled: $error")
+				android.util.Log.w("MainViewModel", "presence/server_at listener cancelled: $error")
 			}
 		}
-		pushedAtRef.addValueEventListener(pushedAtListener)
-		subscriptions.add { pushedAtRef.removeEventListener(pushedAtListener) }
+		presenceRef.addValueEventListener(presenceListener)
+		subscriptions.add { presenceRef.removeEventListener(presenceListener) }
 	}
 
 	/**
 	 * Listen to the session registry the server mirrors from its in-memory SessionRegistry:
 	 * every Claude Code session birth-to-death, keyed by cli_session_id, plus the human-ack
 	 * timestamps keyed the same way. A per-child parse failure is logged and skipped rather
-	 * than dropping the whole map, matching the widget/rings pattern.
+	 * than dropping the whole map.
 	 */
 	private fun startSessionRegistryListeners() {
 		val sessionsRef = database.getReference("sessions")
@@ -534,6 +515,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 					}
 				}
 				_registrySessions.value = map
+				_widgetRings.value = ringsFromSessions(map)
 			}
 			override fun onCancelled(error: DatabaseError) {
 				android.util.Log.w("MainViewModel", "sessions listener cancelled: $error")

@@ -30,10 +30,10 @@ fun formatResetCountdown(nowMs: Long, resetsAtIso: String?): String {
  * Whether a heartbeat timestamp is stale: older than thresholdMs, or absent/unparseable. The
  * stale pill reads the server's presence/server_at, rewritten every 60 s.
  */
-fun widgetStale(nowMs: Long, pushedAtIso: String?, thresholdMs: Long = 5L * 60L * 1000L): Boolean {
-	if (pushedAtIso.isNullOrBlank()) return true
+fun widgetStale(nowMs: Long, heartbeatIso: String?, thresholdMs: Long = 5L * 60L * 1000L): Boolean {
+	if (heartbeatIso.isNullOrBlank()) return true
 	val ms = try {
-		OffsetDateTime.parse(pushedAtIso).toInstant().toEpochMilli()
+		OffsetDateTime.parse(heartbeatIso).toInstant().toEpochMilli()
 	} catch (_: Exception) {
 		return true
 	}

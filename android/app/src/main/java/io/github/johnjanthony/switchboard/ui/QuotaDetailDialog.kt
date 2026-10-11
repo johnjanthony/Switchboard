@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import io.github.johnjanthony.switchboard.formatAgyGroupName
+import io.github.johnjanthony.switchboard.formatAsOf
 import io.github.johnjanthony.switchboard.formatTimeElapsedPercentage
 import io.github.johnjanthony.switchboard.groupSortKey
 import io.github.johnjanthony.switchboard.isAgyGroupVisible
@@ -56,6 +57,10 @@ fun QuotaDetailDialog(
 						sessionWindow = quota.session,
 						weeklyWindow = quota.weekly,
 					)
+				}
+				val asOf = formatAsOf(System.currentTimeMillis(), quota.polledAt)
+				if (asOf.isNotEmpty()) {
+					Text(asOf, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 				}
 			}
 		},

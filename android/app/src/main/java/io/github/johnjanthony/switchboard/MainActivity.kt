@@ -142,7 +142,7 @@ private fun SwitchboardNavHost(
 	val widgetQuota by viewModel.widgetQuota.collectAsState()
 	val widgetStatus by viewModel.widgetStatus.collectAsState()
 	val widgetAntigravityStatus by viewModel.widgetAntigravityStatus.collectAsState()
-	val widgetPushedAt by viewModel.widgetPushedAt.collectAsState()
+	val serverSeenAt by viewModel.serverSeenAt.collectAsState()
 	val registrySessions by viewModel.registrySessions.collectAsState()
 	val sessionAcks by viewModel.sessionAcks.collectAsState()
 	var showHidden by remember { mutableStateOf(false) }
@@ -235,7 +235,7 @@ private fun SwitchboardNavHost(
 				quota = widgetQuota,
 				claudeStatus = widgetStatus,
 				antigravityStatus = widgetAntigravityStatus,
-				pushedAt = widgetPushedAt,
+				serverSeenAt = serverSeenAt,
 				onCheckStatus = { viewModel.requestStatusCheckAll() },
 				onStopStatus = { viewModel.stopAllStatusWatches() },
 				authState = authState,
