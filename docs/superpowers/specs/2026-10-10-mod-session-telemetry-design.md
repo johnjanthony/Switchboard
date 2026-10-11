@@ -54,6 +54,10 @@ From the 2.1.293 declarations unless stated:
 11. **T-015's stale-pill gap folds in.** The pill moves from Watchtower's push stamp to a server heartbeat.
 12. **Antigravity drops out of Watchtower** (its rings and quota display), consistent with T-283.
 13. **One Claude account across Windows and WSL** is assumed: the quota record is account-wide.
+14. **The approval marker is retired in chunk 2** (decided 2026-10-11, after chunk 1 landed; moved from chunk 3). Its "star" tab marker also means idle, so once Watchtower stops pushing, every idle session's frozen "star" would turn its next tool call into a false "needs approval". Chunk 2's first task drops `title_state`, `blocked_on_approval`, `apply_rings` and `needs_you`'s approval reason. Rejected: moving only the `needs_you` reason.
+15. **The quota's `received_at` means "last confirmed by a session"** (decided 2026-10-11). A post-turn report carrying context but no rate limits confirms the stored reading, since the windows had not moved a whole point; the server stamps `received_at` from it and publishes at most once a minute. Rejected: the time of the last value change; dropping the "as of" display.
+16. **The daily anchor stays, checking the server's quota** (decided 2026-10-11). It skips when `quota.five_hour` shows a future reset with usage on it, and fires with no reading. Rejected: keeping a credential read for the anchor alone.
+17. **Chunk 2 planning findings, accepted 2026-10-11:** quota fractions are divided by 100 on the phone and Operator; Watchtower keeps its last view while the server is down (no greyed-out styling exists); the "possibly waiting on approval" hint goes with the marker; Watchtower's empty state reads "no live sessions"; its `/stats` poll runs regardless of `Switchboard.Enabled`, which gates only the stats line, launcher and badge; "as of" times show on the phone's quota dialog, in Operator's quota tooltip and in Watchtower's popup (after 30 minutes); the tray's poll-interval submenu goes.
 
 ## Design
 
@@ -106,7 +110,7 @@ From the 2.1.293 declarations unless stated:
 ```
 
 - A report replaces each window it carries; a window it does not carry is left as it was. Other kinds (`spend_limit`) are ignored.
-- `received_at` is the server's receive time, never the mod's clock, so Windows and WSL clock skew cannot reorder readings.
+- `received_at` is the server's receive time, never the mod's clock, so Windows and WSL clock skew cannot reorder readings. As built in chunk 2 (decision 15), it is when a session last confirmed the reading.
 - The store mirrors to RTDB `quota` on change.
 - On each sweep tick, a window whose `resets_at` has passed gets `percent_used` 0 and `resets_at` cleared, until a newer reading fills it. Every consumer shows the same thing without its own reset logic.
 - Before the first reading the node is absent.
@@ -157,11 +161,13 @@ A small supervised loop writes `presence/server_at` (ISO, server clock) every 60
 - `items` lists every non-terminal session; `quota` is `null` before the first reading. Full ids add no exposure: `needs_you` in the same response already carries them.
 - **Which sessions show changes**, from transcripts modified in the last `ActiveWindowMinutes` to sessions the server considers alive: an open idle session stays visible while it polls, and a closed one disappears when `session.end` arrives. Live and idle follow the state mapping above.
 - The widget, hover popup, detail panel and tray gauge render from `items` and `quota`. The needs-you retention (`ActiveClassifier.IsRetained`) goes, since the server already lists every live session.
-- `LastKnown` keeps caching the last answer, so while the server is down the widget draws its last view greyed out, as it already does for quota.
+- `LastKnown` keeps caching the last answer. While the server is down the widget keeps its last view and the popup's Switchboard pill reads unavailable (corrected at planning: no greyed-out styling exists).
 
 ### 6. Retirement
 
 **Chunk 1, the handover.** The mod becomes the only writer of a record's `model`, `effort`, `context_*`, `name` and `name_source`. `apply_rings` stops writing those for every session, not only sessions that have reported, stops bumping `last_event_at` and stops creating records; `sync_session_titles` stops running from rings. Watchtower's push keeps feeding only `widget/*` (for consumers not yet moved) and `title_state` until it retires. A session still running the old mod keeps polling, so its liveness is fine, but its context and model freeze until it is relaunched.
+
+**Chunk 2, the approval marker** (decision 14): `title_state`, `blocked_on_approval`, `apply_rings` and `needs_you`'s `approval` reason, removed and deployed before Watchtower's deploy.
 
 **Chunk 2, Watchtower's readers** (deleted once Watchtower renders from `/stats`, and deployed last in the chunk, after the server, Operator and phone, so `/widget-snapshot` stops only once nothing depends on it):
 - transcript parsing, tailing and titles, and the 1M-window inference (`ModelWindowMap`);
@@ -177,8 +183,8 @@ The plan enumerates the files.
 **Chunk 3, the server and Firebase:**
 - the `/widget-snapshot` route, `WidgetSnapshotStore` (`server/widget_snapshot.py`) and the backend's `write_widget_rings` / `write_widget_quota` / `write_widget_pushed_at`;
 - a one-time delete of the RTDB `widget/rings`, `widget/quota` and `widget/pushed_at` nodes;
-- `apply_rings`, `rings_are_fresh` and `WATCHTOWER_FRESH_SECONDS`;
-- `title_state`, `blocked_on_approval` and `needs_you`'s `approval` reason.
+- `rings_are_fresh` and `WATCHTOWER_FRESH_SECONDS`;
+- the marker-health one-shot, which now fires routinely (T-286).
 
 Stays: `widget/status`, the Claude status watch and `/widget-status`. The Antigravity status watch is left for T-283.
 

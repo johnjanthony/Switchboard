@@ -94,8 +94,8 @@ android/                     Three Gradle modules: app (phone UI), shared (libra
 watchtower/                  Windows client (.NET 9 / WinForms taskbar widget) — "Switchboard Watchtower"
   Switchboard.Watchtower.sln
   deploy-widget.ps1                  Rebuild + relaunch the widget: stop the running instance -> publish single-file EXE -> relaunch (-NoLaunch to skip relaunch). Full build/publish detail in README.md.
-  src/Switchboard.Watchtower/        WinForms app (widget, hover popup, tray, Win32 taskbar placement, Claude status indicator, Antigravity quota poller)
-  src/Switchboard.Watchtower.Core/   Pure logic (transcript parsing, session scanners, Claude + Antigravity quota parsing, window math, config, Claude status parse; the status watch state machine lives server-side)
+  src/Switchboard.Watchtower/        WinForms app (widget, hover popup, tray, Win32 taskbar placement, Claude status indicator, daily anchor); renders what GET /stats reports
+  src/Switchboard.Watchtower.Core/   Pure logic (/stats parsing and the session adapter, quota pacing and format, window math, config, Claude status parse, the anchor's window check)
   tests/Switchboard.Watchtower.Core.Tests/   xUnit tests for the Core library
   tools/IconGen/                     One-off WinForms tool that renders the app icon (build helper)
 dashboard/                  Switchboard Operator: zero-build Preact+htm web cockpit, served by the Python server at /dashboard
@@ -177,7 +177,7 @@ Conversations are the persistence + routing unit. States: `Active` / `Ended`. A 
 ## Architectural constraints (decided)
 
 - **Local gateway, cloud-synchronized state.** The compute is local; conversation/session/telemetry state persists and transits through Firebase (RTDB + FCM), which is a hard startup dependency. The founding "localhost only" principle was retired deliberately (2026-07-01 architecture review, D1); there is no Firebase-less run mode.
-- **The service runs as LocalSystem** (NSSM; the installer's explicit default since the ops-hardening chunk - the earlier interactive-user intent never took effect and was removed; -ServiceUser overrides deliberately, verified post-set). It therefore cannot read `~/.claude/projects`, cannot reach WSL, and receives all session/telemetry data by push: plugin hooks, Watchtower snapshots, MCP calls. Do not design features that assume the server can see John's files (D6).
+- **The service runs as LocalSystem** (NSSM; the installer's explicit default since the ops-hardening chunk - the earlier interactive-user intent never took effect and was removed; -ServiceUser overrides deliberately, verified post-set). It therefore cannot read `~/.claude/projects`, cannot reach WSL, and receives all session/telemetry data by push: the Claude Code mod's posts and MCP calls. Do not design features that assume the server can see John's files (D6).
 - **Sessions are first-class** (2026-07-06): `server/session_registry.py` tracks every Claude Code session birth-to-death via the mod's session start, status, telemetry and session end posts, its 2 s inbox poll (the liveness heartbeat), and MCP calls, mirrored to RTDB `sessions/` for the roster surfaces. Identity is `cli_session_id` everywhere; `sender` is a display attribute (D4).
 
 ## Setup
