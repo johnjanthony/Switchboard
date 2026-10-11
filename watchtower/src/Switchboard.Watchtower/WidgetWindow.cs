@@ -36,7 +36,6 @@ internal sealed class WidgetWindow : Form
 	bool _light;
 	bool _clearType = true;   // true = opaque theme bg + ClearType text (monitor style, default); false = true per-pixel-alpha transparency
 	QuotaUsage? _quota;       // latest Claude plan usage (5h/7d); null until first successful poll
-	IReadOnlyList<AntigravityQuotaGroup> _agyGroups = Array.Empty<AntigravityQuotaGroup>();
 	bool _showQuota = true;   // user preference; the block also requires _quota to have a value
 	bool _showBadge;          // Switchboard ShowBadge preference
 	bool _hasPending;         // Switchboard has unanswered questions -> draw the amber badge
@@ -60,8 +59,8 @@ internal sealed class WidgetWindow : Form
 	bool QuotaVisible => _showQuota && _quota.HasValue;
 	public QuotaUsage? Quota => _quota;
 
-	// One quota "set" per visible source: the Claude set (when shown) + each touched agy group.
-	int VisibleSetCount => (QuotaVisible ? 1 : 0) + _agyGroups.Count;
+	// One quota "set" when the Claude set is shown.
+	int VisibleSetCount => QuotaVisible ? 1 : 0;
 
 	Point _dragStart;
 	bool _pressed;
@@ -283,16 +282,6 @@ internal sealed class WidgetWindow : Form
 		PositionOverTaskbar();
 	}
 
-	// Store only the touched groups (untouched agy groups are hidden per the visibility rule).
-	public void UpdateAntigravityQuota(AntigravityQuotaSummary? summary)
-	{
-		_agyGroups = summary is null
-			? Array.Empty<AntigravityQuotaGroup>()
-			: summary.Groups.Where(AntigravityQuota.IsGroupVisible).ToList();
-		RecomputeSize();
-		PositionOverTaskbar();
-	}
-
 	// Show/clear the Switchboard pending badge (an amber dot), mirroring the tray icon.
 	// No size change, so this only repaints.
 	public void SetPending(bool showBadge, bool hasPending)
@@ -347,7 +336,7 @@ internal sealed class WidgetWindow : Form
 	// paint time, so the host can tick this faster than the poll without refetching.
 	public void RefreshQuotaCountdown()
 	{
-		if (QuotaVisible || _agyGroups.Count > 0) Render();
+		if (QuotaVisible) Render();
 	}
 
 	void RecomputeSize()
@@ -623,19 +612,11 @@ internal sealed class WidgetWindow : Form
 	}
 
 
-	// Draw the Claude set (if shown) then each touched agy group, side by side. Each set = 2 rows.
+	// Draw the Claude set (if shown). Each set = 2 rows.
 	void DrawAllQuotaSets(Graphics g)
 	{
 		int rowH = Height / 2;
 		int set = 0;
-		// Antigravity groups first (left-to-right: w/ Claude, then w/ Gemini), matching the popup's top-down order.
-		foreach (var group in _agyGroups.OrderBy(AntigravityQuota.GroupSortKey))
-		{
-			int x = GrabW + set * QuotaBlockW;
-			DrawQuotaRow(g, x, rowH / 2, AntigravityQuota.ToUsedWindow(group, "5h"), QuotaPacing.SessionDuration);
-			DrawQuotaRow(g, x, rowH + rowH / 2, AntigravityQuota.ToUsedWindow(group, "weekly"), QuotaPacing.WeeklyDuration);
-			set++;
-		}
 		// Claude Code set last (rightmost), matching the popup's bottom position.
 		if (QuotaVisible)
 		{

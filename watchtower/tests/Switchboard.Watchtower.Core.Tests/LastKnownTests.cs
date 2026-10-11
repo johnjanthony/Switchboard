@@ -20,7 +20,7 @@ public class LastKnownTests
 		try
 		{
 			var state = LastKnownStore.From(
-				new[] { Session() }, Now.AddMinutes(-5),
+				new[] { Session() },
 				new QuotaUsage(new QuotaWindow(42.5, Now.AddHours(2)), new QuotaWindow(80.0, null)),
 				new SwitchboardStats(3, 1, 247.0, true, true), Now);
 			Assert.True(LastKnownStore.SaveTo(state, path));
@@ -28,7 +28,6 @@ public class LastKnownTests
 			var loaded = LastKnownStore.LoadFrom(path);
 			Assert.NotNull(loaded);
 			Assert.Equal(Now, loaded!.SavedAtUtc);
-			Assert.Equal(Now.AddMinutes(-5), loaded.LastActivityUtc);
 
 			var sessions = LastKnownStore.ToSessionModels(loaded);
 			Assert.Equal(new[] { Session() }, sessions);
@@ -48,7 +47,7 @@ public class LastKnownTests
 		var path = TempPath();
 		try
 		{
-			var state = LastKnownStore.From(Array.Empty<SessionModel>(), null, null, null, Now);
+			var state = LastKnownStore.From(Array.Empty<SessionModel>(), null, null, Now);
 			Assert.True(LastKnownStore.SaveTo(state, path));
 			var loaded = LastKnownStore.LoadFrom(path);
 			Assert.NotNull(loaded);
@@ -83,7 +82,7 @@ public class LastKnownTests
 		var path = TempPath();
 		try
 		{
-			Assert.True(LastKnownStore.SaveTo(LastKnownStore.From(Array.Empty<SessionModel>(), null, null, null, Now), path));
+			Assert.True(LastKnownStore.SaveTo(LastKnownStore.From(Array.Empty<SessionModel>(), null, null, Now), path));
 			Assert.True(File.Exists(path));
 			Assert.False(File.Exists(path + ".tmp"));
 		}
@@ -101,7 +100,7 @@ public class LastKnownTests
 	[Fact]
 	public void Unknown_status_string_degrades_to_idle()
 	{
-		var state = LastKnownStore.From(new[] { Session() }, null, null, null, Now);
+		var state = LastKnownStore.From(new[] { Session() }, null, null, Now);
 		state.Sessions[0].Status = "SomethingFutur";
 		var models = LastKnownStore.ToSessionModels(state);
 		Assert.Equal(SessionStatus.Idle, models[0].Status);
@@ -115,7 +114,7 @@ public class LastKnownTests
 		{
 			NeedsYou = new Dictionary<string, NeedsYouEntry> { ["sid-1"] = new("ask", 512.0) },
 		};
-		var state = LastKnownStore.From(Array.Empty<SessionModel>(), null, null, stats, Now);
+		var state = LastKnownStore.From(Array.Empty<SessionModel>(), null, stats, Now);
 		try
 		{
 			Assert.True(LastKnownStore.SaveTo(state, path));
@@ -131,7 +130,7 @@ public class LastKnownTests
 	public void ToStats_empty_needs_you_uses_shared_empty_instance()
 	{
 		// Preserves record value-equality for stats without needs-you entries.
-		var state = LastKnownStore.From(Array.Empty<SessionModel>(), null, null, new SwitchboardStats(3, 1, 247.0, true, true), Now);
+		var state = LastKnownStore.From(Array.Empty<SessionModel>(), null, new SwitchboardStats(3, 1, 247.0, true, true), Now);
 		Assert.Same(SwitchboardStats.EmptyNeedsYou, LastKnownStore.ToStats(state)!.NeedsYou);
 	}
 
@@ -156,7 +155,7 @@ public class LastKnownTests
 	[Fact]
 	public void RenderableSessions_fresh_cache_returns_everything()
 	{
-		var state = LastKnownStore.From(new[] { CachedSession("sid-1"), CachedSession("sid-2") }, null, null, null, Now);
+		var state = LastKnownStore.From(new[] { CachedSession("sid-1"), CachedSession("sid-2") }, null, null, Now);
 		var rendered = LastKnownStore.RenderableSessions(state, Now.AddMinutes(30));
 		Assert.Equal(2, rendered.Count);
 	}
@@ -168,7 +167,7 @@ public class LastKnownTests
 		{
 			NeedsYou = new Dictionary<string, NeedsYouEntry> { ["sid-2"] = new("ask", 512.0) },
 		};
-		var state = LastKnownStore.From(new[] { CachedSession("sid-1"), CachedSession("sid-2") }, null, null, stats, Now);
+		var state = LastKnownStore.From(new[] { CachedSession("sid-1"), CachedSession("sid-2") }, null, stats, Now);
 		var rendered = LastKnownStore.RenderableSessions(state, Now.AddHours(2));
 		Assert.Single(rendered);
 		Assert.Equal("sid-2", rendered[0].SessionId);
@@ -177,7 +176,7 @@ public class LastKnownTests
 	[Fact]
 	public void RenderableSessions_stale_cache_without_needs_you_returns_nothing()
 	{
-		var state = LastKnownStore.From(new[] { CachedSession("sid-1") }, null, null, null, Now);
+		var state = LastKnownStore.From(new[] { CachedSession("sid-1") }, null, null, Now);
 		Assert.Empty(LastKnownStore.RenderableSessions(state, Now.AddHours(2)));
 	}
 }

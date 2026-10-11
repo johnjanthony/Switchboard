@@ -12,20 +12,12 @@ public sealed class AppConfig
 	const int MaxReadRetries = 3;
 	const int ReadRetryDelayMs = 100;
 
-	public int PollIntervalSeconds { get; set; } = 60;
-	public int ActiveWindowMinutes { get; set; } = 5;
-	public int LiveThresholdSeconds { get; set; } = 90;
-	public bool ScanWsl { get; set; } = true;
-	public bool ScanAntigravity { get; set; } = true;
 	public bool Autostart { get; set; } = true;
 	public int? WidgetX { get; set; } = null;
 	public bool? LightThemeOverride { get; set; } = null;
 	public bool ShowQuota { get; set; } = true;
-	public int QuotaPollMinutes { get; set; } = 5;   // plan-usage poll cadence; 1, 5, 15, or 60
 	public bool DailyAnchorEnabled { get; set; } = true;
 	public string DailyAnchorTime { get; set; } = "07:00";   // local "HH:mm"; the daily session-anchor fire time
-	public bool PollAntigravityQuota { get; set; } = true;
-	public int AntigravityQuotaPollIntervalSeconds { get; set; } = 60;
 
 	// Parsed anchor time; falls back to 07:00 on a malformed value WITHOUT flagging degraded,
 	// so a bad time string can never block config saves (LoadDegraded gates SaveTo).
@@ -95,14 +87,11 @@ public sealed class AppConfig
 /// <summary>Watchtower's Switchboard integration: the stats line, dashboard launcher, and optional tray badge.</summary>
 public sealed class SwitchboardConfig
 {
-	/// <summary>Gates the entire Switchboard UI (stats line, launcher, badge). When false the block is hidden.</summary>
+	/// <summary>Gates the Switchboard UI (stats line, dashboard launcher, badge). The /stats poll that feeds sessions and quota runs regardless.</summary>
 	public bool Enabled { get; set; }
 
 	/// <summary>Localhost stats endpoint the widget polls. Point at the Windows host IP for a WSL-hosted server.</summary>
 	public string StatsUrl { get; set; } = "http://localhost:9876/stats";
-
-	/// <summary>Localhost ingest endpoint Watchtower POSTs its rings + quota snapshot to. Point at the Windows host IP for a WSL-hosted server.</summary>
-	public string SnapshotUrl { get; set; } = "http://localhost:9876/widget-snapshot";
 
 	/// <summary>Operator dashboard URL the launcher opens; may have #conv=&lt;id&gt; appended to deep-link.</summary>
 	public string DashboardUrl { get; set; } = "http://localhost:9876/dashboard";
@@ -110,7 +99,7 @@ public sealed class SwitchboardConfig
 	/// <summary>When true and pending_count is greater than zero, the tray icon shows a pending badge.</summary>
 	public bool ShowBadge { get; set; }
 
-	/// <summary>How often (seconds) to poll /stats. Decoupled from the 60s session-scan cadence so the pending badge updates near-instantly. Floored at 2s.</summary>
+	/// <summary>How often (seconds) to poll /stats, the source of sessions, quota and the pending badge. Floored at 2s.</summary>
 	public int PollSeconds { get; set; } = 4;
 }
 

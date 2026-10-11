@@ -126,7 +126,6 @@ internal sealed class DetailPanel : Form
 	DateTimeOffset? _quotaReceivedAt;   // when the server received the quota reading
 	bool _quotaAsOfShown;               // the reading is older than QuotaAsOfAfter, so an "as of" line shows
 	static readonly TimeSpan QuotaAsOfAfter = TimeSpan.FromMinutes(30);
-	IReadOnlyList<AntigravityQuotaGroup> _agyGroups = Array.Empty<AntigravityQuotaGroup>();   // touched agy groups only
 
 	bool _switchboardEnabled;
 	SwitchboardStats? _switchboardStats;   // latest /stats; null means unavailable when enabled
@@ -383,16 +382,6 @@ internal sealed class DetailPanel : Form
 		Invalidate();
 	}
 
-	// Store the touched agy groups (empty when null/no usage); the popup grows a titled panel per group.
-	public void UpdateAntigravityQuota(AntigravityQuotaSummary? summary)
-	{
-		_agyGroups = summary is null
-			? Array.Empty<AntigravityQuotaGroup>()
-			: summary.Groups.Where(AntigravityQuota.IsGroupVisible).ToList();
-		RecomputeHeight();
-		Invalidate();
-	}
-
 	// Latest Switchboard /stats (null == unavailable).
 	public void UpdateSwitchboard(bool enabled, SwitchboardStats? stats)
 	{
@@ -533,10 +522,9 @@ internal sealed class DetailPanel : Form
 	{
 		int quotaContentH = (_quota.HasValue ? 2 * QuotaWindowRowH : 0) + (_quotaAsOfShown ? QuotaNoteRowH : 0);
 		int quotaH = quotaContentH > 0 ? quotaContentH + 2 * GroupVPad + GroupGap : 0;
-		int agyH = _agyGroups.Count * (2 * QuotaWindowRowH + 2 * GroupVPad + GroupGap);
 		int ctxH = Math.Max(1, _sessions.Count) * RowH + 2 * GroupVPad;
 		int group3H = BottomPillRowH + 2 * GroupVPad;
-		Height = Pad + quotaH + agyH + ctxH + GroupGap + group3H + Pad;
+		Height = Pad + quotaH + ctxH + GroupGap + group3H + Pad;
 	}
 
 	public void ShowAbove(Rectangle widgetScreenBounds)
@@ -624,15 +612,6 @@ internal sealed class DetailPanel : Form
 		BringToFront();
 	}
 
-	// Friendly popup label for an Antigravity group, keyed off the server's group name.
-	static string AgyLabel(AntigravityQuotaGroup g)
-	{
-		string d = g.DisplayName ?? "";
-		if (d.Contains("Gemini", StringComparison.OrdinalIgnoreCase)) return "Antigravity w/ Gemini";
-		if (d.Contains("Claude", StringComparison.OrdinalIgnoreCase)) return "Antigravity w/ Claude";
-		return "Antigravity - " + d;
-	}
-
 	static string Human(long n) =>
 		n >= 1_000_000 ? $"{n / 1_000_000.0:0.0}M" :
 		n >= 1_000 ? $"{n / 1_000}K" : n.ToString();
@@ -660,19 +639,7 @@ internal sealed class DetailPanel : Form
 
 		int y = Pad;
 
-		// Antigravity groups first (order: w/ Claude, then w/ Gemini), each a header-less pill with fully-labelled 5h / 7d rows.
-		foreach (var group in _agyGroups.OrderBy(AntigravityQuota.GroupSortKey))
-		{
-			int groupH = 2 * QuotaWindowRowH + 2 * GroupVPad;
-			DrawGroupPanel(g, y, groupH);
-			int inner = y + GroupVPad;
-			string name = AgyLabel(group);
-			inner = DrawQuotaWindow(g, inner, "5h - " + name, AntigravityQuota.ToUsedWindow(group, "5h"), QuotaPacing.SessionDuration, label, small);
-			DrawQuotaWindow(g, inner, "7d - " + name, AntigravityQuota.ToUsedWindow(group, "weekly"), QuotaPacing.WeeklyDuration, label, small);
-			y += groupH + GroupGap;
-		}
-
-		// Claude Code plan-usage (5h / 7d) below the Antigravity pills, with an "as of" line once the reading is old.
+		// Claude Code plan-usage (5h / 7d), with an "as of" line once the reading is old.
 		if (_quota is QuotaUsage q)
 		{
 			int groupH = 2 * QuotaWindowRowH + (_quotaAsOfShown ? QuotaNoteRowH : 0) + 2 * GroupVPad;

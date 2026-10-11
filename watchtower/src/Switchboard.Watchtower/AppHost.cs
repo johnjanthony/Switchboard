@@ -44,7 +44,7 @@ internal sealed class AppHost : IDisposable
 		_isDemo = isDemo;
 		_logPath = Path.Combine(Path.GetDirectoryName(AppConfig.DefaultPath)!, "log.txt");
 		_anchor = new DailyAnchor(m => LogInfo("anchor", m), LogError);
-		_tray = new TrayIcon(_config.Autostart, _config.ShowQuota, _config.QuotaPollMinutes);
+		_tray = new TrayIcon(_config.Autostart, _config.ShowQuota);
 
 		// Polled whether or not the Switchboard UI is enabled: it is where sessions and quota come from.
 		_switchboardReader = new SwitchboardStatsReader(_config.Switchboard.StatsUrl, LogError);
@@ -305,7 +305,7 @@ internal sealed class AppHost : IDisposable
 		var now = DateTime.UtcNow;
 		if (now - _lastSavedUtc < TimeSpan.FromMinutes(1)) return;
 		_lastSavedUtc = now;
-		var state = LastKnownStore.From(_lastSessions, null, _lastQuota, _lastSwitchboardStats, now);
+		var state = LastKnownStore.From(_lastSessions, _lastQuota, _lastSwitchboardStats, now);
 		if (!LastKnownStore.SaveTo(state, LastKnownStore.DefaultPath))
 			LogInfo("last-known", "save failed; startup render will use the previous cache");
 	}

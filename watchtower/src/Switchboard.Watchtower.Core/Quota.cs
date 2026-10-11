@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text.Json;
 
 namespace Switchboard.Watchtower.Core;
 
@@ -40,59 +39,6 @@ public static class QuotaPacing
 			: PaceVerdict.OnPace;
 		return new PaceInfo(elapsed, v);
 	}
-}
-
-public static class QuotaParser
-{
-	/// <summary>
-	/// Parse the response of GET /api/oauth/usage:
-	/// { "five_hour": { "utilization": 50, "resets_at": "..." }, "seven_day": { ... } }.
-	/// Returns null if the JSON is malformed. utilization is already a percentage (0-100).
-	/// </summary>
-	public static QuotaUsage? ParseUsage(string json)
-	{
-		try
-		{
-			using var doc = JsonDocument.Parse(json);
-			var root = doc.RootElement;
-			return new QuotaUsage(ReadWindow(root, "five_hour"), ReadWindow(root, "seven_day"));
-		}
-		catch (JsonException) { return null; }
-	}
-
-	static QuotaWindow ReadWindow(JsonElement root, string name)
-	{
-		if (!root.TryGetProperty(name, out var w) || w.ValueKind != JsonValueKind.Object)
-			return default;
-		double pct = w.TryGetProperty("utilization", out var u) && u.TryGetDouble(out var d) ? d : 0;
-		DateTimeOffset? reset = null;
-		if (w.TryGetProperty("resets_at", out var r) && r.ValueKind == JsonValueKind.String
-			&& DateTimeOffset.TryParse(r.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var dto))
-			reset = dto;
-		return new QuotaWindow(pct, reset);
-	}
-
-	/// <summary>Parse ~/.claude/.credentials.json: claudeAiOauth.accessToken + expiresAt (ms epoch).</summary>
-	public static (string Token, long? ExpiresAtMs)? ParseCredentials(string json)
-	{
-		try
-		{
-			using var doc = JsonDocument.Parse(json);
-			if (!doc.RootElement.TryGetProperty("claudeAiOauth", out var oauth) || oauth.ValueKind != JsonValueKind.Object)
-				return null;
-			if (!oauth.TryGetProperty("accessToken", out var t) || t.ValueKind != JsonValueKind.String)
-				return null;
-			string? token = t.GetString();
-			if (string.IsNullOrEmpty(token)) return null;
-			long? exp = oauth.TryGetProperty("expiresAt", out var e) && e.TryGetInt64(out var ms) ? ms : null;
-			return (token, exp);
-		}
-		catch (JsonException) { return null; }
-	}
-
-	/// <summary>True if the OAuth token's expiry (ms epoch) is at or before <paramref name="now"/>.</summary>
-	public static bool IsExpired(long? expiresAtMs, DateTimeOffset now)
-		=> expiresAtMs is long exp && now.ToUnixTimeMilliseconds() >= exp;
 }
 
 public static class QuotaFormat

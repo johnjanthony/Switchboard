@@ -19,13 +19,13 @@ public class LegacyConfigMigrationTests
 		var legacy = Path.Combine(root, "ClaudeContextWidget", "config.json");
 		var current = Path.Combine(root, "Switchboard", "Watchtower", "config.json");
 		Directory.CreateDirectory(Path.GetDirectoryName(legacy)!);
-		File.WriteAllText(legacy, "{\"PollIntervalSeconds\":42}");
+		File.WriteAllText(legacy, "{\"DailyAnchorTime\":\"06:42\"}");
 
 		var migrated = AppConfig.MigrateLegacyConfig(legacy, current);
 
 		Assert.True(migrated);
 		Assert.True(File.Exists(current));
-		Assert.Equal(42, AppConfig.LoadFrom(current).PollIntervalSeconds);
+		Assert.Equal("06:42", AppConfig.LoadFrom(current).DailyAnchorTime);
 	}
 
 	[Fact]
@@ -36,13 +36,13 @@ public class LegacyConfigMigrationTests
 		var current = Path.Combine(root, "Switchboard", "Watchtower", "config.json");
 		Directory.CreateDirectory(Path.GetDirectoryName(legacy)!);
 		Directory.CreateDirectory(Path.GetDirectoryName(current)!);
-		File.WriteAllText(legacy, "{\"PollIntervalSeconds\":42}");
-		File.WriteAllText(current, "{\"PollIntervalSeconds\":7}");
+		File.WriteAllText(legacy, "{\"DailyAnchorTime\":\"06:42\"}");
+		File.WriteAllText(current, "{\"DailyAnchorTime\":\"06:07\"}");
 
 		var migrated = AppConfig.MigrateLegacyConfig(legacy, current);
 
 		Assert.False(migrated);
-		Assert.Equal(7, AppConfig.LoadFrom(current).PollIntervalSeconds);
+		Assert.Equal("06:07", AppConfig.LoadFrom(current).DailyAnchorTime);
 	}
 
 	[Fact]

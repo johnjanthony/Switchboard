@@ -13,4 +13,15 @@ public class SeverityGradientTests
 	{
 		Assert.Equal(Color.FromArgb(r, g, b), SeverityGradient.For(pct));
 	}
+
+	[Theory]
+	[InlineData(0.10, Severity.Green)]
+	[InlineData(0.49, Severity.Green)]
+	[InlineData(0.50, Severity.Amber)]
+	[InlineData(0.80, Severity.Amber)]
+	[InlineData(0.81, Severity.Red)]
+	public void SeverityClassifier_uses_50_and_80_bands(double pct, Severity expected)
+	{
+		Assert.Equal(expected, SeverityClassifier.For(pct));
+	}
 }

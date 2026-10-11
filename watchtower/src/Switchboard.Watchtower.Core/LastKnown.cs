@@ -3,15 +3,13 @@ using System.Text.Json;
 namespace Switchboard.Watchtower.Core;
 
 // Local render cache: the last data each surface displayed, reloaded at startup so the widget
-// and popup render instantly instead of blank until the first scan/poll lands. Deliberately
-// named OUTSIDE the WidgetSnapshot vocabulary - that family is the outbound server push; this
-// is a private disk cache with a round-trippable, versioned shape.
+// and popup render instantly instead of blank until the first /stats poll lands. A private disk
+// cache with a round-trippable, versioned shape.
 public sealed class LastKnownState
 {
 	public int Version { get; set; } = 1;
 	public DateTime SavedAtUtc { get; set; }
 	public List<LastKnownSession> Sessions { get; set; } = new();
-	public DateTime? LastActivityUtc { get; set; }
 	public LastKnownQuota? Quota { get; set; }
 	public LastKnownStats? Stats { get; set; }
 }
@@ -95,13 +93,12 @@ public static class LastKnownStore
 		nowUtc - savedAtUtc <= SessionFreshness;
 
 	public static LastKnownState From(
-		IReadOnlyList<SessionModel> sessions, DateTime? lastActivityUtc,
+		IReadOnlyList<SessionModel> sessions,
 		QuotaUsage? quota, SwitchboardStats? stats, DateTime savedAtUtc)
 	{
 		return new LastKnownState
 		{
 			SavedAtUtc = savedAtUtc,
-			LastActivityUtc = lastActivityUtc,
 			Sessions = sessions.Select(s => new LastKnownSession
 			{
 				Label = s.Label,

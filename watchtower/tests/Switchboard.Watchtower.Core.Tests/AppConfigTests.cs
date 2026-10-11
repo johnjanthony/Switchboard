@@ -7,10 +7,8 @@ public class AppConfigTests
 	public void Defaults_match_spec()
 	{
 		var c = new AppConfig();
-		Assert.Equal(60, c.PollIntervalSeconds);
-		Assert.Equal(5, c.ActiveWindowMinutes);
-		Assert.Equal(90, c.LiveThresholdSeconds);
-		Assert.True(c.ScanWsl);
+		Assert.True(c.ShowQuota);
+		Assert.Equal("07:00", c.DailyAnchorTime);
 		Assert.True(c.Autostart);
 		Assert.Null(c.WidgetX);
 	}
@@ -20,7 +18,7 @@ public class AppConfigTests
 	{
 		var path = Path.Combine(Path.GetTempPath(), "cccfg-missing-" + Guid.NewGuid().ToString("N") + ".json");
 		var c = AppConfig.LoadFrom(path);
-		Assert.Equal(60, c.PollIntervalSeconds);
+		Assert.Equal("07:00", c.DailyAnchorTime);
 	}
 
 	[Fact]
@@ -29,10 +27,10 @@ public class AppConfigTests
 		var path = Path.Combine(Path.GetTempPath(), "cccfg-" + Guid.NewGuid().ToString("N") + ".json");
 		try
 		{
-			var c = new AppConfig { PollIntervalSeconds = 30, WidgetX = 1234, Autostart = false };
+			var c = new AppConfig { DailyAnchorTime = "06:30", WidgetX = 1234, Autostart = false };
 			c.SaveTo(path);
 			var loaded = AppConfig.LoadFrom(path);
-			Assert.Equal(30, loaded.PollIntervalSeconds);
+			Assert.Equal("06:30", loaded.DailyAnchorTime);
 			Assert.Equal(1234, loaded.WidgetX);
 			Assert.False(loaded.Autostart);
 		}
@@ -86,7 +84,7 @@ public class AppConfigTests
 		var path = Path.Combine(Path.GetTempPath(), "wt-claudestatus-" + Guid.NewGuid().ToString("N") + ".json");
 		try
 		{
-			File.WriteAllText(path, "{\"PollIntervalSeconds\":60}");
+			File.WriteAllText(path, "{\"ShowQuota\":true}");
 			var cfg = AppConfig.LoadFrom(path);
 			Assert.Equal("http://localhost:9876/widget-status", cfg.ClaudeStatus.StatusUrl);
 			Assert.Equal(5, cfg.ClaudeStatus.PollSeconds);

@@ -7,8 +7,6 @@ namespace Switchboard.Watchtower;
 
 internal sealed class TrayIcon : IDisposable
 {
-	static readonly int[] PollMinuteChoices = { 1, 5, 15, 60 };
-
 	readonly NotifyIcon _icon;
 	readonly ToolStripMenuItem _autostartItem;
 	readonly ToolStripMenuItem _clearTypeItem;
@@ -16,7 +14,6 @@ internal sealed class TrayIcon : IDisposable
 	readonly ToolStripMenuItem _claudeStatusItem;
 	readonly ToolStripMenuItem _agyStatusItem;
 	readonly ToolStripMenuItem _wakeTimeItem;
-	readonly List<ToolStripMenuItem> _intervalItems = new();
 	IntPtr _hicon;
 	Icon? _ownedIcon;
 	bool _showBadge;
@@ -33,11 +30,10 @@ internal sealed class TrayIcon : IDisposable
 	public event Action<bool>? AutostartToggled;
 	public event Action<bool>? RenderModeToggled;    // true = opaque ClearType, false = true transparency
 	public event Action<bool>? QuotaShowToggled;     // show/hide the plan-usage block
-	public event Action<int>? QuotaIntervalChanged;  // new poll cadence in minutes
 	public event Action? QuitRequested;
 	public event Action? OpenDashboardRequested;
 
-	public TrayIcon(bool autostartOn, bool showQuota, int quotaPollMinutes)
+	public TrayIcon(bool autostartOn, bool showQuota)
 	{
 		var menu = new ContextMenuStrip();
 		menu.Items.Add("Refresh now", null, (_, _) => RefreshRequested?.Invoke());
@@ -68,17 +64,6 @@ internal sealed class TrayIcon : IDisposable
 		})
 		{ Checked = showQuota, CheckOnClick = false };
 		menu.Items.Add(_showQuotaItem);
-
-		var intervalMenu = new ToolStripMenuItem("Usage poll interval");
-		foreach (int minutes in PollMinuteChoices)
-		{
-			int choice = minutes;
-			var item = new ToolStripMenuItem(IntervalLabel(choice), null, (_, _) => SelectInterval(choice))
-			{ Checked = choice == quotaPollMinutes, CheckOnClick = false };
-			_intervalItems.Add(item);
-			intervalMenu.DropDownItems.Add(item);
-		}
-		menu.Items.Add(intervalMenu);
 
 		_wakeTimeItem = new ToolStripMenuItem("Daily wake time", null, (_, _) => WakeTimeRequested?.Invoke());
 		menu.Items.Add(_wakeTimeItem);
@@ -162,15 +147,6 @@ internal sealed class TrayIcon : IDisposable
 		}
 
 		return bmp;
-	}
-
-	static string IntervalLabel(int minutes) => minutes == 60 ? "1 hour" : minutes == 1 ? "1 minute" : $"{minutes} minutes";
-
-	void SelectInterval(int minutes)
-	{
-		foreach (var item in _intervalItems)
-			item.Checked = item.Text == IntervalLabel(minutes);
-		QuotaIntervalChanged?.Invoke(minutes);
 	}
 
 	// Configure the optional pending badge. The dot is overlaid on the gauge when showBadge && pending > 0.
