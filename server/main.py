@@ -121,7 +121,7 @@ def _build_inbox_route(registry: Registry, session_registry):
 
 def _build_stop_route(session_registry):
 	"""POST /sessions/{sid}/stop - queue a stop for the session's running turn,
-	delivered by its next inbox poll. The phone and Operator Stop buttons call it."""
+	delivered by its next inbox poll. No phone or Operator button calls it yet."""
 	async def stop(request: Request):
 		return JSONResponse({"queued": session_registry.request_stop(request.path_params["sid"])})
 	return stop

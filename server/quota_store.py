@@ -9,14 +9,16 @@ from datetime import datetime
 
 from server.telemetry import QUOTA_KINDS
 
-# A session's post-turn report confirms the stored reading; publishing that
-# confirmation at most once a minute keeps an active session to one write.
+# A report carrying rate limits, which the mod sends only after a model
+# request, confirms the stored reading even when they have not moved; publishing
+# that confirmation at most once a minute keeps an active session to one write.
 CONFIRM_PUBLISH_SECONDS = 60.0
 
 
 class QuotaStore:
 	"""received_at is when a session last confirmed the reading: a value change,
-	or a post-turn report whose rate limits had not moved a whole point."""
+	or a report carrying rate limits that had not moved (the mod sends them only
+	after a model request)."""
 
 	def __init__(self) -> None:
 		self._windows: dict[str, dict] = {}
