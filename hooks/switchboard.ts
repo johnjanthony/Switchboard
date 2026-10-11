@@ -100,6 +100,9 @@ type Telemetry = {
 	title?: string
 	// No more reads after turns: a title was found, or the transcript could not be read.
 	titleDone: boolean
+	// A model request has run since the rate limits were last sent, so the next
+	// measurement's rate limits come from a fresh API response.
+	freshLimits: boolean
 	transcript?: string
 }
 
@@ -108,7 +111,7 @@ let telemetryFailing = false
 
 async function telemetryFor($: EngineInterface): Promise<Telemetry> {
 	const sessionId = await $.session.id()
-	if (telemetry?.sessionId !== sessionId) telemetry = { sessionId, titleDone: false }
+	if (telemetry?.sessionId !== sessionId) telemetry = { sessionId, titleDone: false, freshLimits: false }
 	return telemetry
 }
 
@@ -433,15 +436,24 @@ export const register: Register = on => {
 	})
 
 	// After each main-thread turn, and when a rate-limit window moves a point.
-	// It can fire before session.start; the server creates the record.
+	// It can fire before session.start; the server creates the record. The rate
+	// limits go only when a model request has run since they last went: the
+	// server takes every report carrying them as confirming the quota reading.
 	on('session.measure', async ($, e, next) => {
-		postTelemetry($, await $.session.id(), measureReport(e))
+		const t = await telemetryFor($)
+		const report = measureReport(e, t.freshLimits)
+		if ('rate_limits' in report) t.freshLimits = false
+		postTelemetry($, t.sessionId, report)
 		return next(e)
 	})
 
-	// Observe only: every chunk streams through untouched. Subagent steps are
-	// skipped, since a subagent may run on another model.
+	// Observe only: every chunk streams through untouched. Any step, a
+	// subagent's included, means a fresh API response is coming, so the next
+	// measurement's rate limits are current. Only the main thread's model and
+	// effort are reported, since a subagent may run on another model.
 	on('turn.step', async function* ($, e, next) {
+		const t = await telemetryFor($)
+		t.freshLimits = true
 		if (e.agentId === undefined) await noteModel($, e.model, effortLevel(e.effort))
 		return yield* next(e)
 	})

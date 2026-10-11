@@ -6,6 +6,8 @@ import { postsTo, runCommand, startSession, step, world } from './harness'
 const HOME = { HOME: 'C:/Users/J' }
 const PATH = 'C:/Users/J/.claude/projects/C--Work-X/S1.jsonl'
 const REFUSED = 'refused: the file is over the 4194304-byte limit'
+const LIMITS = [{ kind: 'five_hour', percentUsed: 10, resetsAt: '2026-10-10T23:20:00.000Z' }]
+const REPORTED = [{ kind: 'five_hour', percent_used: 10, resets_at: '2026-10-10T23:20:00.000Z' }]
 const ai = (name: string) => `${JSON.stringify({ type: 'ai-title', aiTitle: name, sessionId: 'S1' })}\n`
 const custom = (name: string) => `${JSON.stringify({ type: 'custom-title', customTitle: name, sessionId: 'S1' })}\n`
 
@@ -19,18 +21,43 @@ async function turn($: Parameters<typeof startSession>[0], w: World, id: string)
 	await w.clock.settle()
 }
 
-test('a measurement posts the context and rate limits that moved', async ($, on) => {
+test('a measurement after a model request posts the context and the rate limits', async ($, on) => {
 	const w = world(on)
-	await $.session.measure({
-		context: { tokens: 65416, window: 1000000, percent: 7 },
-		rateLimits: [{ kind: 'five_hour', percentUsed: 10, resetsAt: '2026-10-10T23:20:00.000Z' }],
-		changed: ['context', 'rateLimits'],
-	})
+	await step($, { model: 'claude-opus-5-5', effort: 'high' })
+	await $.session.measure({ context: { tokens: 65416, window: 1000000, percent: 7 }, rateLimits: LIMITS, changed: ['context'] })
 	await w.clock.settle()
-	expect(telemetry(w)).toEqual([{
-		context: { tokens: 65416, window: 1000000 },
-		rate_limits: [{ kind: 'five_hour', percent_used: 10, resets_at: '2026-10-10T23:20:00.000Z' }],
-	}])
+	expect(telemetry(w)).toEqual([
+		{ model: 'claude-opus-5-5', effort: 'high' },
+		{ context: { tokens: 65416, window: 1000000 }, rate_limits: REPORTED },
+	])
+})
+
+test('a measurement before any model request, as at startup, leaves the rate limits out', async ($, on) => {
+	const w = world(on)
+	await $.session.measure({ context: { window: 1000000 }, rateLimits: LIMITS, changed: ['context', 'rateLimits'] })
+	await w.clock.settle()
+	expect(telemetry(w)).toEqual([{ context: { window: 1000000 } }])
+})
+
+test('the rate limits go once per model request, a subagent request included', async ($, on) => {
+	const w = world(on)
+	await step($, { model: 'claude-haiku-5-5', agentId: 'A1' })
+	await $.session.measure({ context: { tokens: 1, window: 100 }, rateLimits: LIMITS, changed: ['context'] })
+	await $.session.measure({ context: { tokens: 2, window: 100 }, rateLimits: LIMITS, changed: ['context'] })
+	await w.clock.settle()
+	expect(telemetry(w)).toEqual([
+		{ context: { tokens: 1, window: 100 }, rate_limits: REPORTED },
+		{ context: { tokens: 2, window: 100 } },
+	])
+})
+
+test('after /clear the new session id sends no rate limits until its own model request', async ($, on) => {
+	const w = world(on)
+	await step($, { model: 'claude-haiku-5-5', agentId: 'A1' })
+	w.sessionId = 'S2'
+	await $.session.measure({ context: { tokens: 1, window: 100 }, rateLimits: LIMITS, changed: ['context', 'rateLimits'] })
+	await w.clock.settle()
+	expect(telemetry(w, 'S2')).toEqual([{ context: { tokens: 1, window: 100 } }])
 })
 
 test('a measurement that moved only cost posts nothing', async ($, on) => {

@@ -2,39 +2,41 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { claudeConfigDir, effortLevel, latestTitle, measureReport } from '../telemetry'
 
+const LIMITS = [
+	{ kind: 'five_hour', percentUsed: 10, resetsAt: '2026-10-10T23:20:00.000Z' },
+	{ kind: 'seven_day', percentUsed: 73, resetsAt: '2026-10-13T19:00:00.000Z' },
+]
+const REPORTED = [
+	{ kind: 'five_hour', percent_used: 10, resets_at: '2026-10-10T23:20:00.000Z' },
+	{ kind: 'seven_day', percent_used: 73, resets_at: '2026-10-13T19:00:00.000Z' },
+]
+
 describe('measureReport', () => {
-	test('a first measurement reports the context and both rate-limit windows', () => {
-		expect(measureReport({
-			context: { tokens: 65416, window: 1000000, percent: 7 },
-			rateLimits: [
-				{ kind: 'five_hour', percentUsed: 10, resetsAt: '2026-10-10T23:20:00.000Z' },
-				{ kind: 'seven_day', percentUsed: 73, resetsAt: '2026-10-13T19:00:00.000Z' },
-			],
-			changed: ['context', 'rateLimits', 'cost'],
-		})).toEqual({
-			context: { tokens: 65416, window: 1000000 },
-			rate_limits: [
-				{ kind: 'five_hour', percent_used: 10, resets_at: '2026-10-10T23:20:00.000Z' },
-				{ kind: 'seven_day', percent_used: 73, resets_at: '2026-10-13T19:00:00.000Z' },
-			],
-		})
+	test('a first measurement after a response reports the context and both rate-limit windows', () => {
+		expect(measureReport({ context: { tokens: 65416, window: 1000000, percent: 7 }, rateLimits: LIMITS, changed: ['context', 'rateLimits', 'cost'] }, true))
+			.toEqual({ context: { tokens: 65416, window: 1000000 }, rate_limits: REPORTED })
 	})
 
-	test('only the units that moved are reported', () => {
-		expect(measureReport({ context: { tokens: 10, window: 100 }, rateLimits: [{ kind: 'five_hour', percentUsed: 1 }], changed: ['context'] }))
+	test('after a response the rate limits go even when they have not moved', () => {
+		expect(measureReport({ context: { tokens: 10, window: 100 }, rateLimits: LIMITS, changed: ['context'] }, true))
+			.toEqual({ context: { tokens: 10, window: 100 }, rate_limits: REPORTED })
+	})
+
+	test('with no response since they last went, the rate limits stay out even when listed as moved', () => {
+		expect(measureReport({ context: { tokens: 10, window: 100 }, rateLimits: LIMITS, changed: ['context', 'rateLimits'] }, false))
 			.toEqual({ context: { tokens: 10, window: 100 } })
 	})
 
 	test('a cost-only change reports nothing', () => {
-		expect(measureReport({ context: { window: 100 }, rateLimits: [], changed: ['cost'] })).toEqual({})
+		expect(measureReport({ context: { window: 100 }, rateLimits: [], changed: ['cost'] }, false)).toEqual({})
 	})
 
 	test('a window without a fill reports the window alone', () => {
-		expect(measureReport({ context: { window: 200000 }, rateLimits: [], changed: ['context'] })).toEqual({ context: { window: 200000 } })
+		expect(measureReport({ context: { window: 200000 }, rateLimits: [], changed: ['context'] }, false)).toEqual({ context: { window: 200000 } })
 	})
 
 	test('an empty rate-limit list, as off a subscription, is not reported', () => {
-		expect(measureReport({ context: { window: 1 }, rateLimits: [], changed: ['rateLimits'] })).toEqual({})
+		expect(measureReport({ context: { window: 1 }, rateLimits: [], changed: ['rateLimits'] }, true)).toEqual({})
 	})
 })
 

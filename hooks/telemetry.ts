@@ -13,14 +13,18 @@ export type MeasureLike = {
 	changed: readonly string[]
 }
 
-// The telemetry body for one session.measure: only the units it says moved.
-// The whole-number percent is left out; the server computes its own fraction.
-export function measureReport(e: MeasureLike): Record<string, unknown> {
+// The telemetry body for one session.measure: the context when it moved, and
+// the rate limits whenever an API response has arrived since they last went
+// (`fresh`), moved or not, so the server can stamp the quota as confirmed. A
+// measurement with no response behind it (before the first request, or after
+// /clear) leaves them out: its figures may be hours old. The whole-number
+// percent is left out; the server computes its own fraction.
+export function measureReport(e: MeasureLike, fresh: boolean): Record<string, unknown> {
 	const report: Record<string, unknown> = {}
 	if (e.changed.includes('context')) {
 		report.context = { ...(e.context.tokens === undefined ? {} : { tokens: e.context.tokens }), window: e.context.window }
 	}
-	if (e.changed.includes('rateLimits') && e.rateLimits.length > 0) {
+	if (fresh && e.rateLimits.length > 0) {
 		report.rate_limits = e.rateLimits.map(r => ({
 			kind: r.kind,
 			percent_used: r.percentUsed,
