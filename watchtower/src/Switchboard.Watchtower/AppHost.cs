@@ -20,7 +20,7 @@ internal sealed class AppHost : IDisposable
 	readonly System.Windows.Forms.Timer _switchboardTimer = new();
 	readonly SwitchboardStatsReader _switchboardReader;
 	volatile bool _switchboardScanning;
-	IReadOnlyList<SessionModel> _lastSessions = Array.Empty<SessionModel>();
+	readonly SessionsView _sessionsView = new();      // the newest poll, and what the widget, popup and tray last drew
 	QuotaUsage? _lastQuota;
 	SwitchboardStats? _lastSwitchboardStats;         // last successful /stats read (survives unavailable ticks)
 	DateTime _lastSavedUtc = DateTime.MinValue;       // the render cache is written at most once a minute
@@ -163,7 +163,7 @@ internal sealed class AppHost : IDisposable
 			Healthy: true
 		) { NeedsYou = needsYou };
 
-		_lastSessions = sessions;
+		_sessionsView.Update(sessions, light);
 		_lastQuota = quota;
 
 		_widget.UpdateQuota(quota);
@@ -281,12 +281,13 @@ internal sealed class AppHost : IDisposable
 	void ApplySessions(IReadOnlyList<SessionModel> sessions)
 	{
 		bool light = _config.LightThemeOverride ?? ThemeReader.IsLightTaskbar();
+		// The /stats poll runs every few seconds; lay out only when the view changes.
+		if (!_sessionsView.Update(sessions, light)) return;
 		_widget.UpdateSessions(sessions, light);
 		_panel.UpdateSessions(sessions, light);
 		// Tray ring gauge mirrors the busiest session (same rule the widget's % label uses).
 		var gauge = TrayGauge.From(sessions);
 		_tray.SetGauge(gauge.Max, gauge.AnyError, gauge.MaxSeverity, light);
-		_lastSessions = sessions;
 	}
 
 	void ApplyQuota(QuotaUsage quota, DateTimeOffset? receivedAt)
@@ -305,7 +306,7 @@ internal sealed class AppHost : IDisposable
 		var now = DateTime.UtcNow;
 		if (now - _lastSavedUtc < TimeSpan.FromMinutes(1)) return;
 		_lastSavedUtc = now;
-		var state = LastKnownStore.From(_lastSessions, _lastQuota, _lastSwitchboardStats, now);
+		var state = LastKnownStore.From(_sessionsView.Latest, _lastQuota, _lastSwitchboardStats, now);
 		if (!LastKnownStore.SaveTo(state, LastKnownStore.DefaultPath))
 			LogInfo("last-known", "save failed; startup render will use the previous cache");
 	}
