@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 
 namespace Switchboard.Watchtower.Core;
@@ -5,11 +6,24 @@ namespace Switchboard.Watchtower.Core;
 /// <summary>One needs-you entry from /stats: why the session is blocked on the human and for how long.</summary>
 public sealed record NeedsYouEntry(string Reason, double AgeSeconds);
 
+/// <summary>One live session from /stats sessions.items: the server's session record, as the session's mod reports it.</summary>
+public sealed record StatsSession(
+	string SessionId,
+	string? Name,
+	string Cwd,
+	string Surface,
+	string State,
+	string? ModelLabel,
+	string? Effort,
+	long? ContextTokens,
+	long? ContextWindow);
+
 /// <summary>
 /// The Switchboard server's GET /stats roll-up, as read by the widget. Shape:
 /// { "active_conversations": int, "pending_count": int, "oldest_pending_age_seconds": number|null,
 ///   "away_mode": bool, "healthy": bool,
-///   "needs_you": { "<session-id>": { "reason": string, "age_seconds": number } } (optional) }.
+///   "needs_you": { "<session-id>": { "reason": string, "age_seconds": number } } (optional),
+///   "sessions": { ..., "items": [ StatsSession ] } (optional), "quota": { "five_hour": { "percent_used", "resets_at" }, "seven_day": {...}, "received_at" } | null (optional) }.
 /// </summary>
 public sealed record SwitchboardStats(
 	int ActiveConversations,
@@ -27,6 +41,17 @@ public sealed record SwitchboardStats(
 
 	/// <summary>Sessions blocked on the human, keyed by cli_session_id. Empty when the server predates the field.</summary>
 	public IReadOnlyDictionary<string, NeedsYouEntry> NeedsYou { get; init; } = EmptyNeedsYou;
+
+	public static readonly IReadOnlyList<StatsSession> EmptySessions = Array.Empty<StatsSession>();
+
+	/// <summary>Live sessions, newest first. Empty when the server predates the field.</summary>
+	public IReadOnlyList<StatsSession> Sessions { get; init; } = EmptySessions;
+
+	/// <summary>The account's plan usage as the server last heard it; null before any reading or on an older server.</summary>
+	public QuotaUsage? Quota { get; init; }
+
+	/// <summary>When the server received the quota reading.</summary>
+	public DateTimeOffset? QuotaReceivedAt { get; init; }
 
 	/// <summary>
 	/// Parse the /stats JSON. Returns null on malformed JSON or when any required field is missing or
@@ -69,7 +94,33 @@ public sealed record SwitchboardStats(
 				if (map.Count > 0) needsYou = map;
 			}
 
-			return new SwitchboardStats(active, pending, oldestAge, away, healthy) { NeedsYou = needsYou };
+			// sessions.items is optional (absent on older servers -> empty); a present-but-malformed item fails the parse.
+			var sessions = EmptySessions;
+			if (root.TryGetProperty("sessions", out var sEl) && sEl.ValueKind == JsonValueKind.Object
+				&& sEl.TryGetProperty("items", out var itemsEl))
+			{
+				if (itemsEl.ValueKind != JsonValueKind.Array) return null;
+				var list = new List<StatsSession>();
+				foreach (var item in itemsEl.EnumerateArray())
+				{
+					var parsed = ParseSession(item);
+					if (parsed is null) return null;
+					list.Add(parsed);
+				}
+				if (list.Count > 0) sessions = list;
+			}
+
+			// quota is optional and may be null (no reading yet).
+			QuotaUsage? quota = null;
+			DateTimeOffset? quotaReceivedAt = null;
+			if (root.TryGetProperty("quota", out var qEl) && qEl.ValueKind != JsonValueKind.Null)
+			{
+				if (qEl.ValueKind != JsonValueKind.Object) return null;
+				quota = new QuotaUsage(ReadQuotaWindow(qEl, "five_hour"), ReadQuotaWindow(qEl, "seven_day"));
+				quotaReceivedAt = ReadTime(qEl, "received_at");
+			}
+
+			return new SwitchboardStats(active, pending, oldestAge, away, healthy) { NeedsYou = needsYou, Sessions = sessions, Quota = quota, QuotaReceivedAt = quotaReceivedAt };
 		}
 		catch (JsonException) { return null; }
 	}
@@ -90,4 +141,31 @@ public sealed record SwitchboardStats(
 		if (el.ValueKind == JsonValueKind.False) { value = false; return true; }
 		return false;
 	}
+
+	static StatsSession? ParseSession(JsonElement el)
+	{
+		if (el.ValueKind != JsonValueKind.Object) return null;
+		var id = ReadString(el, "session_id");
+		var state = ReadString(el, "state");
+		if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(state)) return null;
+		return new StatsSession(id, ReadString(el, "name"), ReadString(el, "cwd") ?? "", ReadString(el, "surface") ?? "windows",
+			state, ReadString(el, "model_label"), ReadString(el, "effort"), ReadLong(el, "context_tokens"), ReadLong(el, "context_window"));
+	}
+
+	// A missing window reads as 0% with no reset, the same as one the server zeroed after its reset.
+	static QuotaWindow ReadQuotaWindow(JsonElement quota, string name)
+	{
+		if (!quota.TryGetProperty(name, out var w) || w.ValueKind != JsonValueKind.Object) return new QuotaWindow(0, null);
+		double pct = w.TryGetProperty("percent_used", out var p) && p.ValueKind == JsonValueKind.Number && p.TryGetDouble(out var d) ? d : 0;
+		return new QuotaWindow(pct, ReadTime(w, "resets_at"));
+	}
+
+	static string? ReadString(JsonElement el, string name) =>
+		el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+	static long? ReadLong(JsonElement el, string name) =>
+		el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n) ? n : null;
+
+	static DateTimeOffset? ReadTime(JsonElement el, string name) =>
+		ReadString(el, name) is string s && DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var t) ? t : null;
 }

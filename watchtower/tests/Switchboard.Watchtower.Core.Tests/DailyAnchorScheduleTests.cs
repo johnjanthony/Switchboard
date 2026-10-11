@@ -63,4 +63,27 @@ public class DailyAnchorScheduleTests
 	{
 		Assert.Equal(TimeSpan.FromMinutes(3), DailyAnchorSchedule.Grace);
 	}
+
+	static readonly DateTimeOffset AnchorNow = new(2026, 10, 10, 7, 0, 0, TimeSpan.Zero);
+
+	static QuotaUsage Session(double pct, DateTimeOffset? resetsAt) => new(new QuotaWindow(pct, resetsAt), new QuotaWindow(0, null));
+
+	[Fact]
+	public void A_future_reset_with_usage_is_an_open_window() =>
+		Assert.True(DailyAnchorSchedule.WindowAlreadyOpen(Session(12, AnchorNow.AddHours(3)), AnchorNow));
+
+	[Fact]
+	public void A_future_reset_with_no_usage_is_not_an_open_window() =>
+		Assert.False(DailyAnchorSchedule.WindowAlreadyOpen(Session(0, AnchorNow.AddHours(3)), AnchorNow));
+
+	[Fact]
+	public void A_passed_reset_is_not_an_open_window() =>
+		Assert.False(DailyAnchorSchedule.WindowAlreadyOpen(Session(12, AnchorNow.AddHours(-1)), AnchorNow));
+
+	[Fact]
+	public void No_reading_or_no_reset_means_fire()
+	{
+		Assert.False(DailyAnchorSchedule.WindowAlreadyOpen(null, AnchorNow));
+		Assert.False(DailyAnchorSchedule.WindowAlreadyOpen(Session(12, null), AnchorNow));
+	}
 }

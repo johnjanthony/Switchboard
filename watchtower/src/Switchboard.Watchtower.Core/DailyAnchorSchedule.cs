@@ -16,4 +16,10 @@ public static class DailyAnchorSchedule
 		var start = anchorTime.ToTimeSpan();
 		return nowTod >= start && nowTod < start + grace;
 	}
+
+	/// A 5-hour window counts as open when the server's quota reading shows a future reset with usage
+	/// on it, the test the anchor used to make against the usage endpoint. No reading (the server down,
+	/// or no session has reported since the last reset) means fire, as an expired token used to.
+	public static bool WindowAlreadyOpen(QuotaUsage? quota, DateTimeOffset now) =>
+		quota is QuotaUsage q && q.Session.ResetsAt is DateTimeOffset reset && reset > now && q.Session.Percentage > 0;
 }
