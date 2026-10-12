@@ -29,7 +29,9 @@ TERMINAL_STATES = ("ended", "lost")
 # actual in-memory blocking structure exists (a future-bearing pending for
 # awaiting_human, a live wait-queue entry for awaiting_agent). The exemption is
 # conditional (T-001): a hydrated awaiting_* record with no live structure is
-# lost-markable on the normal silence threshold.
+# lost-markable on the normal silence threshold. It covers only sessions that
+# have not polled since the server started: a blocked tool call does not pause
+# the mod's inbox poll, so a polling session is judged by its poll alone.
 SWEEP_EXEMPT_STATES = ("awaiting_human", "awaiting_agent")
 
 # A stop from the phone is honoured only while this fresh: a stale one must
@@ -400,6 +402,11 @@ class SessionRegistry:
 			rec.last_event_at = self._now()
 			self._fire_mirror(rec)
 
+	def has_polled(self, cli_session_id: str) -> bool:
+		"""True once the session has polled its inbox since the server started
+		(and since its latest session start)."""
+		return cli_session_id in self._polls
+
 	def mark_wait_cancelled(self, cli_session_id: str) -> None:
 		"""John cancelled the blocking tool call from the CLI; without this the
 		roster shows a stale awaiting_* chip until the next hook event."""
@@ -490,7 +497,7 @@ class SessionRegistry:
 		server started is lost after poll_lost_after_seconds without a poll, and
 		one that never polled (a -p run, a record hydrated after a
 		restart that has not polled yet) after lost_after_seconds of silence.
-		Awaiting human/agent sessions backed by a live structure are exempt."""
+		A never-polled session awaiting a human or an agent with a live structure behind it is exempt; a polling session is not, since its poll runs through a blocked tool call."""
 		pruned: list[str] = []
 		mono_now = self._mono()
 		for sid, rec in list(self._records.items()):
@@ -504,9 +511,13 @@ class SessionRegistry:
 				continue
 			if in_grace:
 				continue
-			if rec.state in SWEEP_EXEMPT_STATES and _exemption_live(rec.state, sid, live_ask_ids, live_wait_ids):
-				continue
 			polled_at = self._polls.get(sid)
+			if (
+				polled_at is None
+				and rec.state in SWEEP_EXEMPT_STATES
+				and _exemption_live(rec.state, sid, live_ask_ids, live_wait_ids)
+			):
+				continue
 			if polled_at is not None:
 				if mono_now - polled_at <= poll_lost_after_seconds:
 					continue

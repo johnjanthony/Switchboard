@@ -10,7 +10,7 @@ from server.messenger import (
 )
 from server.gateway.bg_tasks import _spawn_bg
 from server.gateway.parked import finish_parked_resolve
-from server.gateway.pending_lifecycle import terminate_pending
+from server.gateway.pending_lifecycle import park_pending, terminate_pending
 from server.firebase_supervisor import LoopSupervisor
 from server.command_freshness import COMMAND_TTL_SECONDS, command_age_seconds
 
@@ -609,14 +609,31 @@ async def _reoffer_session_titles(session_registry, registry, backend, logger) -
 			await logger.surface_error(f"session_title_reoffer_error: {exc}")
 
 
+async def _park_lost_sessions_asks(registry, session_registry, logger) -> None:
+	"""Park each live blocking ask whose session the sweep judges lost by its
+	poll: the session stopped polling (killed, or out of reach), so a reply
+	sent down the live call would never arrive. A session lost by the silence
+	rule never polled, so nothing proves it gone and its ask is left alone. An
+	ask whose question write has not returned (msg_id still None) waits for the
+	next tick: its pending_questions record is not written yet, and parking it
+	now would leave nothing for a restart to re-park."""
+	for pending in registry.all_pending():
+		if pending.future is None or pending.background or pending.msg_id is None:
+			continue
+		rec = session_registry.get(pending.cli_session_id)
+		if rec is not None and rec.state == "lost" and session_registry.has_polled(pending.cli_session_id):
+			await park_pending(registry, logger, pending)
+
+
 async def _session_sweep_once(
 	session_registry, *, lost_after_seconds, poll_lost_after_seconds, retention_hours, in_grace=False,
 	now_ts=None, registry=None, backend=None, logger=None, quota_store=None, mod_fingerprint=None,
 ):
 	"""One tick of the staleness sweep, factored out so tests can drive it
-	directly instead of running the infinite loop. Also zeroes expired quota
-	windows and re-offers session titles to their conversations. Also re-reads
-	the repo's mod fingerprint, so each session's mod_stale follows plugin/hooks."""
+	directly instead of running the infinite loop. Also parks the live asks of
+	sessions it judges lost by their poll, zeroes expired quota windows and
+	re-offers session titles to their conversations. Also re-reads the repo's
+	mod fingerprint, so each session's mod_stale follows plugin/hooks."""
 	import time as _time
 	now = now_ts if now_ts is not None else _time.time()
 	live_ask_ids = live_wait_ids = None
@@ -640,6 +657,8 @@ async def _session_sweep_once(
 		live_ask_ids=live_ask_ids,
 		live_wait_ids=live_wait_ids,
 	)
+	if registry is not None:
+		await _park_lost_sessions_asks(registry, session_registry, logger)
 	if quota_store is not None and backend is not None and quota_store.expire(now):
 		try:
 			await backend.write_quota(quota_store.snapshot())

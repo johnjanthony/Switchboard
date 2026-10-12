@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from server.registry import Conversation, ConversationMember, Registry
+from server.registry import PARKED_SENTINEL, Conversation, ConversationMember, Registry
 from server.session_registry import SessionRegistry
 
 LAST = datetime.fromisoformat("2026-07-06T12:00:00+00:00").timestamp()
@@ -189,3 +189,100 @@ async def test_sweep_once_sets_the_repo_mod_fingerprint():
 	reg = _reg()
 	await _sweep_once(reg, mod_fingerprint=lambda: "f" * 64)
 	assert reg.mod_health()["repo_fingerprint"] == "f" * 64
+
+
+class _Mono:
+	def __init__(self) -> None:
+		self.t = 1000.0
+
+	def __call__(self) -> float:
+		return self.t
+
+
+def _killed_session(mono):
+	"""A polling session blocked in ask_human whose poll then stopped for 91 s,
+	holding a live ask and a background ask."""
+	reg = SessionRegistry(now=lambda: "2026-07-06T12:00:00+00:00", mono=mono)
+	reg.record_session_start("s-killed", cwd="C:/Work/X")
+	reg.upsert_from_hook("s-killed", state="awaiting_human", detail=None, event="PreToolUse")
+	reg.note_poll("s-killed")
+	registry = Registry()
+	fut = registry.add("conv-1", "s-killed", "Claude", "req-k", msg_id="m-k", question="Ship it?")
+	registry.add_background("conv-1", "s-killed", "Claude", "req-b", question="Also?")
+	mono.t += 91
+	return reg, registry, fut
+
+
+@pytest.mark.asyncio
+async def test_sweep_parks_the_live_ask_of_a_session_whose_polls_stopped():
+	reg, registry, fut = _killed_session(_Mono())
+
+	await _sweep_once(reg, registry=registry)
+
+	assert reg.get("s-killed").state == "lost"
+	assert fut.result() == PARKED_SENTINEL
+	parked = registry.find_by_request_id("conv-1", "req-k")
+	assert parked.future is None and parked.question == "Ship it?"
+	assert registry.find_by_request_id("conv-1", "req-b").background is True
+
+
+@pytest.mark.asyncio
+async def test_an_answer_to_a_parked_ask_queues_a_notice_for_the_killed_session(tmp_path):
+	from server.gateway.parked import finish_parked_resolve
+	from server.logging_jsonl import JsonlLogger
+
+	class _Backend:
+		def __init__(self) -> None:
+			self.removed: list = []
+
+		async def remove_pending_question_record(self, conversation_id, request_id):
+			self.removed.append((conversation_id, request_id))
+
+	reg, registry, _ = _killed_session(_Mono())
+	await _sweep_once(reg, registry=registry)
+	parked = registry.find_by_request_id("conv-1", "req-k")
+	assert parked.future is None
+	assert registry.resolve("conv-1", "req-k", "yes") == "req-k"
+	backend = _Backend()
+
+	await finish_parked_resolve(backend, reg, JsonlLogger(str(tmp_path / "log.jsonl")), parked, "yes")
+
+	assert backend.removed == [("conv-1", "req-k")]
+	assert reg.get("s-killed").pending_notices == ["John answered your earlier question 'Ship it?': yes"]
+
+
+@pytest.mark.asyncio
+async def test_sweep_leaves_the_live_ask_of_a_lost_session_that_never_polled():
+	"""Guard-rail: a session lost by the silence rule never polled, so nothing
+	proves it gone; parking an ask it made while marked lost would repeat on
+	every tick."""
+	reg = _reg()
+	reg.record_session_start("s-silent", cwd="C:/Work/X")
+	reg.get("s-silent").state = "lost"
+	registry = Registry()
+	fut = registry.add("conv-1", "s-silent", "Claude", "req-s", msg_id="m-s")
+
+	await _sweep_once(reg, registry=registry)
+
+	assert not fut.done()
+	assert registry.find_by_request_id("conv-1", "req-s").future is fut
+
+
+@pytest.mark.asyncio
+async def test_sweep_leaves_a_live_ask_whose_question_write_has_not_returned():
+	"""Guard-rail: until the question write returns (msg_id still None), the
+	ask's pending_questions record has not been spawned, so a park would leave
+	nothing for a restart to re-park; the sweep waits for the next tick."""
+	mono = _Mono()
+	reg = SessionRegistry(now=lambda: "2026-07-06T12:00:00+00:00", mono=mono)
+	reg.record_session_start("s-writing", cwd="C:/Work/X")
+	reg.upsert_from_hook("s-writing", state="awaiting_human", detail=None, event="PreToolUse")
+	reg.note_poll("s-writing")
+	registry = Registry()
+	fut = registry.add("conv-1", "s-writing", "Claude", "req-w", question="Ship it?")
+	mono.t += 91
+
+	await _sweep_once(reg, registry=registry)
+
+	assert reg.get("s-writing").state == "lost"
+	assert not fut.done()

@@ -106,15 +106,35 @@ def test_the_grace_period_marks_nothing_lost_but_still_prunes():
 	assert pruned == ["s-old"]
 
 
-def test_a_live_ask_exempts_a_session_whose_polls_stopped():
+def test_a_live_ask_does_not_exempt_a_session_whose_polls_stopped():
+	# The mod's poll runs through a blocked tool call, so a silent poll means
+	# the session is gone even while it holds a live ask.
 	mono = _Mono()
 	reg = _reg(mono)
 	reg.record_session_start("s1", cwd="C:/Work/X")
 	reg.upsert_from_hook("s1", state="awaiting_human", event="PreToolUse")
 	reg.note_poll("s1")
-	mono.t += 500
+	mono.t += 91
 	_sweep(reg, live_ask_ids={"s1"}, live_wait_ids=set())
-	assert reg.get("s1").state == "awaiting_human"
+	assert reg.get("s1").state == "lost"
+
+
+def test_a_live_ask_still_exempts_a_session_that_never_polled():
+	reg = _reg(_Mono())
+	reg.record_session_start("s-p", cwd="C:/Work/X")
+	reg.upsert_from_hook("s-p", state="awaiting_human", event="PreToolUse")
+	_sweep(reg, now_ts=LAST + 10_000, live_ask_ids={"s-p"}, live_wait_ids=set())
+	assert reg.get("s-p").state == "awaiting_human"
+
+
+def test_has_polled_follows_the_poll_stamp():
+	reg = _reg(_Mono())
+	reg.record_session_start("s1", cwd="C:/Work/X")
+	assert reg.has_polled("s1") is False
+	reg.note_poll("s1")
+	assert reg.has_polled("s1") is True
+	reg.record_session_start("s1", cwd="C:/Work/X")  # a resumed life starts unpolled
+	assert reg.has_polled("s1") is False
 
 
 def test_grace_holds_from_start_for_the_grace_seconds():
