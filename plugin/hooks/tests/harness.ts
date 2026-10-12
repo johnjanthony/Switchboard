@@ -31,6 +31,8 @@ export type World = {
 	modFiles: Record<string, string>
 	readError: string | null
 	reads: string[]
+	sessionIdReads: number
+	readGate: Promise<void> | null
 }
 
 export function world(on: On, env: Record<string, string> = {}): World {
@@ -58,9 +60,14 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		modFiles: {},
 		readError: null,
 		reads: [],
+		sessionIdReads: 0,
+		readGate: null,
 	}
 	mock.env(on, env)
-	on('session.id', () => ({ value: w.sessionId }))
+	on('session.id', () => {
+		w.sessionIdReads += 1
+		return { value: w.sessionId }
+	})
 	on('session.cwd', () => ({ value: 'C:/Work/X' }))
 	on('session.surfaces', () => ({ value: w.surfaces }))
 	on('session.attach', (_$, e) => ({ clientId: e.clientId }))
@@ -125,12 +132,16 @@ export function world(on: On, env: Record<string, string> = {}): World {
 	on('fs.read', (_$, e) => {
 		const path = slashed(e.path)
 		w.reads.push(path)
-		if (w.readError !== null) return { deny: w.readError }
-		const name = path.slice(path.lastIndexOf('/') + 1)
-		const mod = w.modFiles[name]
-		if (e.as === 'bytes' && path.endsWith(`/hooks/${name}`) && mod !== undefined) return { value: { base64: btoa(mod) } }
-		const text = w.files[path]
-		return text === undefined ? { deny: `no such file: ${path}` } : { value: text }
+		const answer = () => {
+			if (w.readError !== null) return { deny: w.readError }
+			const name = path.slice(path.lastIndexOf('/') + 1)
+			const mod = w.modFiles[name]
+			if (e.as === 'bytes' && path.endsWith(`/hooks/${name}`) && mod !== undefined) return { value: { base64: btoa(mod) } }
+			const text = w.files[path]
+			return text === undefined ? { deny: `no such file: ${path}` } : { value: text }
+		}
+		// A gated read waits for the test to open the gate, holding a scan mid-read.
+		return w.readGate === null ? answer() : w.readGate.then(answer)
 	})
 	return w
 }

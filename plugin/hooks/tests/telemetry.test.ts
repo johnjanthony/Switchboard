@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { claudeConfigDir, effortLevel, latestTitle, measureReport } from '../telemetry'
+import { claudeConfigRoots, effortLevel, latestTitle, measureReport } from '../telemetry'
 
 const LIMITS = [
 	{ kind: 'five_hour', percentUsed: 10, resetsAt: '2026-10-10T23:20:00.000Z' },
@@ -88,17 +88,22 @@ describe('latestTitle', () => {
 	})
 })
 
-describe('claudeConfigDir', () => {
-	test('CLAUDE_CONFIG_DIR wins', () => {
-		expect(claudeConfigDir('D:/cc', 'C:/Users/J', 'C:/Users/J')).toBe('D:/cc')
+describe('claudeConfigRoots', () => {
+	test('CLAUDE_CONFIG_DIR alone when set', () => {
+		expect(claudeConfigRoots('D:/cc', 'C:/Users/J', 'C:/Users/J')).toEqual(['D:/cc'])
 	})
 
-	test('else HOME, else USERPROFILE, plus /.claude', () => {
-		expect(claudeConfigDir(undefined, '/home/j', undefined)).toBe('/home/j/.claude')
-		expect(claudeConfigDir(undefined, undefined, 'C:\\Users\\J')).toBe('C:\\Users\\J/.claude')
+	test('else HOME then USERPROFILE, each plus /.claude', () => {
+		expect(claudeConfigRoots(undefined, 'C:/Users/H', 'C:/Users/J')).toEqual(['C:/Users/H/.claude', 'C:/Users/J/.claude'])
 	})
 
-	test('nothing set means no directory', () => {
-		expect(claudeConfigDir(undefined, undefined, undefined)).toBeUndefined()
+	test('a root named twice is tried once', () => {
+		expect(claudeConfigRoots(undefined, 'C:/Users/J', 'C:/Users/J')).toEqual(['C:/Users/J/.claude'])
+	})
+
+	test('only one set, or none', () => {
+		expect(claudeConfigRoots(undefined, '/home/j', undefined)).toEqual(['/home/j/.claude'])
+		expect(claudeConfigRoots(undefined, undefined, 'C:\\Users\\J')).toEqual(['C:\\Users\\J/.claude'])
+		expect(claudeConfigRoots(undefined, undefined, undefined)).toEqual([])
 	})
 })

@@ -10,7 +10,7 @@ import { fromBase64, modFingerprint } from './fingerprint'
 import { backoffMs, POLL_MS } from './inbox'
 import { preToolState } from './status'
 import type { Title } from './telemetry'
-import { claudeConfigDir, effortLevel, latestTitle, measureReport } from './telemetry'
+import { claudeConfigRoots, effortLevel, latestTitle, measureReport } from './telemetry'
 import { turnEndBlock } from './turn-end'
 
 const SWITCHBOARD_TOOL = /^mcp__switchboard__/
@@ -102,6 +102,8 @@ type Telemetry = {
 	title?: string
 	// No more reads after turns: a title was found, or the transcript could not be read.
 	titleDone: boolean
+	// A scan is reading the transcript now; a second plain scan would only repeat it.
+	titleScanning: boolean
 	// A model request has run since the rate limits were last sent, so the next
 	// measurement's rate limits come from a fresh API response.
 	freshLimits: boolean
@@ -114,7 +116,7 @@ let telemetryFailing = false
 async function telemetryFor($: EngineInterface): Promise<Telemetry> {
 	const sessionId = await $.session.id()
 	if (telemetry?.sessionId !== sessionId) {
-		telemetry = { sessionId, titleDone: false, freshLimits: false }
+		telemetry = { sessionId, titleDone: false, titleScanning: false, freshLimits: false }
 		void reportFingerprint($, sessionId)
 	}
 	return telemetry
@@ -161,8 +163,7 @@ async function reportFingerprint($: EngineInterface, sessionId: string): Promise
 	}
 }
 
-async function noteModel($: EngineInterface, model: string, effort: string | null): Promise<void> {
-	const t = await telemetryFor($)
+function noteModel($: EngineInterface, t: Telemetry, model: string, effort: string | null): void {
 	if (t.model === model && t.effort === effort) return
 	t.model = model
 	t.effort = effort
@@ -170,31 +171,43 @@ async function noteModel($: EngineInterface, model: string, effort: string | nul
 }
 
 async function findTranscript($: EngineInterface, sessionId: string): Promise<string | undefined> {
-	const base = claudeConfigDir(await $.env.get('CLAUDE_CONFIG_DIR'), await $.env.get('HOME'), await $.env.get('USERPROFILE'))
-	if (base === undefined) return undefined
-	for (const entry of await $.fs.list(`${base}/projects`)) {
-		if (entry.kind !== 'dir') continue
-		const path = `${base}/projects/${entry.name}/${sessionId}.jsonl`
-		if (await $.fs.exists(path)) return path
+	const roots = claudeConfigRoots(await $.env.get('CLAUDE_CONFIG_DIR'), await $.env.get('HOME'), await $.env.get('USERPROFILE'))
+	for (const base of roots) {
+		const entries = await $.fs.list(`${base}/projects`).catch((error: unknown) => {
+			$.ui.log(`switchboard: could not list ${base}/projects: ${String(error)}`, { to: 'debug' })
+			return []
+		})
+		for (const entry of entries) {
+			if (entry.kind !== 'dir') continue
+			const path = `${base}/projects/${entry.name}/${sessionId}.jsonl`
+			if (await $.fs.exists(path)) return path
+		}
 	}
 	return undefined
 }
 
 // Reads the transcript for the session's latest title. $.fs.read refuses a file
 // over 4 MiB, which ends the search for this session (the server keeps the name
-// a resumed session already had); a /rename then falls back to its own args.
+// a resumed session already had). A /rename falls back to its own args when the
+// transcript cannot be found or read. Only one plain scan runs at a time
+// (session.start and the first turn end can both ask); a /rename always scans,
+// since it must read the row it just wrote.
 async function refreshTitle($: EngineInterface, renamedTo = ''): Promise<void> {
 	const t = await telemetryFor($)
+	const renamed = renamedTo.trim()
+	if (renamed === '' && t.titleScanning) return
+	t.titleScanning = true
 	let title: Title | undefined
 	try {
 		t.transcript ??= await findTranscript($, t.sessionId)
-		if (t.transcript === undefined) return
-		title = latestTitle(await $.fs.read(t.transcript))
+		if (t.transcript !== undefined) title = latestTitle(await $.fs.read(t.transcript))
 	} catch (error) {
 		t.titleDone = true
 		$.ui.log(`switchboard: could not read the transcript for its title: ${String(error)}`, { to: 'debug' })
-		if (renamedTo.trim() !== '') title = { name: renamedTo.trim(), source: 'custom-title' }
+	} finally {
+		t.titleScanning = false
 	}
+	if (title === undefined && renamed !== '') title = { name: renamed, source: 'custom-title' }
 	if (title === undefined) return
 	t.titleDone = true
 	const key = `${title.source}\n${title.name}`
@@ -497,7 +510,7 @@ export const register: Register = on => {
 	on('turn.step', async function* ($, e, next) {
 		const t = await telemetryFor($)
 		t.freshLimits = true
-		if (e.agentId === undefined) await noteModel($, e.model, effortLevel(e.effort))
+		if (e.agentId === undefined) noteModel($, t, e.model, effortLevel(e.effort))
 		return yield* next(e)
 	})
 

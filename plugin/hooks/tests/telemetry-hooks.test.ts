@@ -146,6 +146,66 @@ test('/rename on a transcript over 4 MiB falls back to its args', async ($, on) 
 	expect(telemetry(w)).toEqual([{ title: { name: 'From args', source: 'custom-title' } }])
 })
 
+test('/rename falls back to its args when no transcript is found', async ($, on) => {
+	const w = world(on, HOME)
+	w.dirs = ['C--Work-X']
+	await runCommand($, 'rename', 'From args')
+	await w.clock.settle()
+	expect(telemetry(w)).toEqual([{ title: { name: 'From args', source: 'custom-title' } }])
+})
+
+test('the transcript is found under USERPROFILE when HOME holds none', async ($, on) => {
+	const w = world(on, { HOME: 'C:/Users/H', USERPROFILE: 'C:/Users/J' })
+	w.dirs = ['C--Work-X']
+	w.files[PATH] = ai('Fix undo')
+	await turn($, w, 'T1')
+	expect(telemetry(w)).toEqual([{ title: { name: 'Fix undo', source: 'ai-title' } }])
+})
+
+test('a title scan already running is not started again by the first turn end', async ($, on) => {
+	const w = world(on, HOME)
+	w.dirs = ['C--Work-X']
+	w.files[PATH] = ai('Fix undo')
+	let open: () => void = () => {}
+	w.readGate = new Promise<void>(resolve => {
+		open = resolve
+	})
+	await $.session.start({ cwd: 'C:/Work/X', surface: 'terminal', isInteractive: true })
+	await turn($, w, 'T1')
+	expect(w.reads).toEqual([PATH])
+	open()
+	await w.clock.settle()
+	expect(telemetry(w)).toEqual([{ title: { name: 'Fix undo', source: 'ai-title' } }])
+})
+
+test('/rename scans even while another scan is reading', async ($, on) => {
+	const w = world(on, HOME)
+	w.dirs = ['C--Work-X']
+	w.files[PATH] = ai('Generated')
+	let open: () => void = () => {}
+	w.readGate = new Promise<void>(resolve => {
+		open = resolve
+	})
+	await $.session.start({ cwd: 'C:/Work/X', surface: 'terminal', isInteractive: true })
+	await w.clock.settle()
+	await runCommand($, 'rename', 'Mine')
+	await w.clock.settle()
+	expect(w.reads).toEqual([PATH, PATH])
+	w.files[PATH] = ai('Generated') + custom('Mine')
+	open()
+	await w.clock.settle()
+	expect(telemetry(w)).toEqual([{ title: { name: 'Mine', source: 'custom-title' } }])
+})
+
+test('a main-thread model request reads the session id once', async ($, on) => {
+	const w = world(on)
+	await step($, { model: 'claude-opus-5-5', effort: 'high' })
+	await w.clock.settle()
+	const before = w.sessionIdReads
+	await step($, { model: 'claude-opus-5-5', effort: 'xhigh' })
+	expect(w.sessionIdReads - before).toBe(1)
+})
+
 test('another command does not read the transcript', async ($, on) => {
 	const w = world(on, HOME)
 	w.dirs = ['C--Work-X']

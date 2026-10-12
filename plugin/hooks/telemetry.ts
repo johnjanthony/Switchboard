@@ -81,9 +81,17 @@ function rowField(line: string, type: string, field: string): string | undefined
 	}
 }
 
-// Where Claude Code keeps its transcripts: CLAUDE_CONFIG_DIR, else ~/.claude.
-export function claudeConfigDir(configDir: string | undefined, home: string | undefined, userProfile: string | undefined): string | undefined {
-	if (configDir) return configDir
-	const base = home ?? userProfile
-	return base ? `${base}/.claude` : undefined
+// Where Claude Code may keep its transcripts: CLAUDE_CONFIG_DIR alone when set,
+// else ~/.claude under HOME and under USERPROFILE. Node's os.homedir() takes
+// USERPROFILE first on Windows and HOME elsewhere, and the mod cannot tell which
+// platform it runs on, so the caller tries each root in turn.
+export function claudeConfigRoots(configDir: string | undefined, home: string | undefined, userProfile: string | undefined): string[] {
+	if (configDir) return [configDir]
+	const roots: string[] = []
+	for (const base of [home, userProfile]) {
+		if (!base) continue
+		const root = `${base}/.claude`
+		if (!roots.includes(root)) roots.push(root)
+	}
+	return roots
 }
