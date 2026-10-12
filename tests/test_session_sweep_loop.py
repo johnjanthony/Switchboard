@@ -209,3 +209,10 @@ async def test_sweep_reoffers_live_session_titles_to_their_conversations():
 	await _sweep_once(reg, now_ts=LAST + 10, registry=registry, backend=backend)
 	assert conv.title == "Joined late"
 	assert backend.titles == [("conv-1", "Joined late", "session")]
+
+
+@pytest.mark.asyncio
+async def test_sweep_once_sets_the_repo_mod_fingerprint():
+	reg = _reg()
+	await _sweep_once(reg, mod_fingerprint=lambda: "f" * 64)
+	assert reg.mod_health()["repo_fingerprint"] == "f" * 64

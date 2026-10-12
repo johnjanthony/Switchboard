@@ -716,11 +716,12 @@ async def _reoffer_session_titles(session_registry, registry, backend, logger) -
 
 async def _session_sweep_once(
 	session_registry, *, lost_after_seconds, poll_lost_after_seconds, retention_hours, in_grace=False,
-	now_ts=None, registry=None, backend=None, logger=None, quota_store=None,
+	now_ts=None, registry=None, backend=None, logger=None, quota_store=None, mod_fingerprint=None,
 ):
 	"""One tick of the staleness sweep, factored out so tests can drive it
 	directly instead of running the infinite loop. Also zeroes expired quota
-	windows and re-offers session titles to their conversations."""
+	windows and re-offers session titles to their conversations. Also re-reads
+	the repo's mod fingerprint, so each session's mod_stale follows plugin/hooks."""
 	import time as _time
 	now = now_ts if now_ts is not None else _time.time()
 	live_ask_ids = live_wait_ids = None
@@ -733,6 +734,8 @@ async def _session_sweep_once(
 				fut = entry.get("future")
 				if member is not None and fut is not None and not fut.done():
 					live_wait_ids.add(member.cli_session_id)
+	if mod_fingerprint is not None:
+		session_registry.set_repo_mod_fingerprint(mod_fingerprint())
 	pruned = session_registry.sweep(
 		now_ts=now,
 		lost_after_seconds=lost_after_seconds,
@@ -758,7 +761,7 @@ async def _session_sweep_once(
 async def dispatch_session_sweep(
 	session_registry, logger, supervisor, *,
 	lost_after_seconds, poll_lost_after_seconds, retention_hours, interval: float = 60.0,
-	grace_seconds: float | None = None, registry=None, backend=None, quota_store=None,
+	grace_seconds: float | None = None, registry=None, backend=None, quota_store=None, mod_fingerprint=None,
 ):
 	"""Periodic staleness judge for the session roster. Pure rules live in
 	SessionRegistry.sweep; this loop supplies the clock, the grace period after
@@ -779,6 +782,7 @@ async def dispatch_session_sweep(
 				lost_after_seconds=lost_after_seconds, poll_lost_after_seconds=poll_lost_after_seconds,
 				retention_hours=retention_hours, in_grace=grace.tick(now), now_ts=now,
 				registry=registry, backend=backend, logger=logger, quota_store=quota_store,
+				mod_fingerprint=mod_fingerprint,
 			)
 			if pruned:
 				await logger.info(f"session_sweep_pruned: {len(pruned)}")

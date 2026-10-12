@@ -27,6 +27,25 @@ def source_fingerprint(root: Path) -> str:
 	return digest.hexdigest()
 
 
+def mod_fingerprint(hooks_dir: Path) -> str | None:
+	"""sha256 over the mod's top-level *.ts files in hooks_dir, in name order,
+	framed like source_fingerprint. None when there are none or they cannot be
+	read. plugin/hooks/fingerprint.ts computes the same digest inside a session;
+	the two test suites pin one vector."""
+	try:
+		files = sorted((p for p in hooks_dir.glob("*.ts") if p.is_file()), key=lambda p: p.name)
+		if not files:
+			return None
+		digest = hashlib.sha256()
+		for path in files:
+			data = path.read_bytes().replace(b"\r\n", b"\n")
+			digest.update(f"{path.name}\n{len(data)}\n".encode("utf-8"))
+			digest.update(data)
+		return digest.hexdigest()
+	except OSError:
+		return None
+
+
 def read_git_head(repo_root: Path) -> str | None:
 	"""The commit sha HEAD points at, read from .git directly.
 

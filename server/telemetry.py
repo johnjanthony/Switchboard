@@ -5,11 +5,13 @@ is a partial update and the next measurement brings fresh figures anyway."""
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 TITLE_SOURCES = ("custom-title", "ai-title")
 QUOTA_KINDS = ("five_hour", "seven_day")
+_FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 
 
 def _is_int(value) -> bool:
@@ -79,4 +81,7 @@ def parse_telemetry(body) -> dict:
 	title = _title(body.get("title"))
 	if title is not None:
 		report["title"] = title
+	fingerprint = body.get("mod_fingerprint")
+	if isinstance(fingerprint, str) and _FINGERPRINT.fullmatch(fingerprint):
+		report["mod_fingerprint"] = fingerprint
 	return report

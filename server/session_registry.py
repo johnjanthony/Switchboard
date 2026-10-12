@@ -89,6 +89,10 @@ class SessionRecord:
 	last_transition_source: str | None = None
 	in_tool: bool = False
 	pending_notices: list = field(default_factory=list)
+	# The content fingerprint of the session's mod (plugin/hooks/fingerprint.ts),
+	# and whether it differs from the repo's: None until both are known.
+	mod_fingerprint: str | None = None
+	mod_stale: bool | None = None
 
 	def to_payload(self) -> dict:
 		payload = asdict(self)
@@ -114,6 +118,7 @@ class SessionRegistry:
 		# heartbeat. Kept apart from SessionRecord, like stops, so a poll every
 		# 2 s never reaches Firebase.
 		self._polls: dict[str, float] = {}
+		self._repo_mod_fingerprint: str | None = None
 
 	# -- reads ------------------------------------------------------------
 
@@ -289,9 +294,42 @@ class SessionRegistry:
 		if title is not None:
 			rec.name = title["name"]
 			rec.name_source = title["source"]
+		if "mod_fingerprint" in report:
+			rec.mod_fingerprint = report["mod_fingerprint"]
+			self._judge_mod(rec)
 		rec.last_event_at = self._now()
 		self._fire_mirror(rec)
 		return rec
+
+	def _judge_mod(self, rec: SessionRecord) -> None:
+		if rec.mod_fingerprint is None or self._repo_mod_fingerprint is None:
+			rec.mod_stale = None
+		else:
+			rec.mod_stale = rec.mod_fingerprint != self._repo_mod_fingerprint
+
+	def set_repo_mod_fingerprint(self, fingerprint: str | None) -> None:
+		"""The repo's mod fingerprint (server/build_info.py mod_fingerprint), set
+		at every sweep tick so an edit to plugin/hooks without a server restart
+		re-judges every session. A changed verdict is mirrored; ended records
+		are left alone."""
+		self._repo_mod_fingerprint = fingerprint
+		for rec in self._records.values():
+			if rec.state == "ended":
+				continue
+			before = rec.mod_stale
+			self._judge_mod(rec)
+			if rec.mod_stale != before:
+				self._fire_mirror(rec)
+
+	def mod_health(self) -> dict:
+		"""/healthz's mod block: the repo's fingerprint and the sessions not
+		ended whose mod differs from it (a lost desktop session may be alive)."""
+		return {
+			"repo_fingerprint": self._repo_mod_fingerprint,
+			"stale_sessions": sorted(
+				sid for sid, rec in self._records.items() if rec.state != "ended" and rec.mod_stale is True
+			),
+		}
 
 	def set_binding(self, cli_session_id: str, conversation_id: str | None) -> None:
 		"""Reflect Registry.bind_session/unbind_session onto the record. Unknown
@@ -424,7 +462,9 @@ class SessionRegistry:
 			last_transition_source=data.get("last_transition_source"),
 			in_tool=bool(data.get("in_tool", False)),
 			pending_notices=list(data.get("pending_notices") or []),
+			mod_fingerprint=data.get("mod_fingerprint"),
 		)
+		self._judge_mod(rec)
 		self._records[sid] = rec
 		# Seed the canon so hydration does not immediately re-write RTDB with
 		# an identical payload.

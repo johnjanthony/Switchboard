@@ -143,3 +143,69 @@ def test_context_fields_survive_hydration():
 	reg2.hydrate_record(reg.get("s1").to_payload())
 	rec = reg2.get("s1")
 	assert (rec.context_tokens, rec.context_window, rec.context_pct) == (10, 100, 0.1)
+
+
+_FP = "32495c7f04ecccc8c3dddc24cf463335502ae7eb098a8cffce64442bb67c06b5"
+
+
+def test_parse_keeps_a_valid_mod_fingerprint_and_drops_a_bad_one():
+	assert parse_telemetry({"mod_fingerprint": _FP}) == {"mod_fingerprint": _FP}
+	for bad in (_FP.upper(), _FP[:-1], 42, None, _FP + "0"):
+		assert parse_telemetry({"mod_fingerprint": bad}) == {}
+
+
+_OTHER = "0" * 64
+
+
+def test_a_reported_fingerprint_is_judged_against_the_repo():
+	reg = _reg()
+	reg.set_repo_mod_fingerprint(_FP)
+	rec = reg.apply_telemetry("S1", {"mod_fingerprint": _FP})
+	assert (rec.mod_fingerprint, rec.mod_stale) == (_FP, False)
+	rec = reg.apply_telemetry("S2", {"mod_fingerprint": _OTHER})
+	assert rec.mod_stale is True
+	assert reg.apply_telemetry("S3", {"model": "claude-opus-5-5"}).mod_stale is None
+
+
+def test_a_null_repo_fingerprint_judges_nothing():
+	reg = _reg()
+	reg.apply_telemetry("S1", {"mod_fingerprint": _FP})
+	assert reg.get("S1").mod_stale is None
+	reg.set_repo_mod_fingerprint(None)
+	assert reg.get("S1").mod_stale is None
+	assert reg.mod_health() == {"repo_fingerprint": None, "stale_sessions": []}
+
+
+def test_a_repo_change_rejudges_and_mirrors():
+	reg = _reg()
+	mirrored = []
+	reg.set_mirror(lambda sid, payload: mirrored.append((sid, payload and payload["mod_stale"])))
+	reg.set_repo_mod_fingerprint(_FP)
+	reg.apply_telemetry("S1", {"mod_fingerprint": _FP})
+	mirrored.clear()
+	reg.set_repo_mod_fingerprint(_OTHER)
+	assert reg.get("S1").mod_stale is True
+	assert mirrored == [("S1", True)]
+	reg.set_repo_mod_fingerprint(_OTHER)
+	assert mirrored == [("S1", True)]
+
+
+def test_a_record_hydrated_before_the_change_has_no_fingerprint():
+	reg = _reg()
+	reg.set_repo_mod_fingerprint(_FP)
+	reg.hydrate_record({"cli_session_id": "S1", "state": "idle", "last_event_at": "2026-10-10T12:00:00+00:00"})
+	rec = reg.get("S1")
+	assert (rec.mod_fingerprint, rec.mod_stale) == (None, None)
+	reg.apply_telemetry("S1", {"mod_fingerprint": _OTHER})
+	assert rec.mod_stale is True
+
+
+def test_mod_health_lists_live_and_lost_stale_sessions_never_ended_ones():
+	reg = _reg()
+	reg.set_repo_mod_fingerprint(_FP)
+	for sid in ("S1", "S2", "S3", "S4"):
+		reg.apply_telemetry(sid, {"mod_fingerprint": _OTHER})
+	reg.apply_telemetry("S4", {"mod_fingerprint": _FP})
+	reg.get("S2").state = "lost"
+	reg.record_session_end("S3", reason="exit", ended_at="2026-10-10T12:00:00+00:00")
+	assert reg.mod_health() == {"repo_fingerprint": _FP, "stale_sessions": ["S1", "S2"]}

@@ -3,7 +3,7 @@ smoke harness can tell a running service apart from the working tree."""
 
 from datetime import datetime, timezone
 
-from server.build_info import read_git_head, service_identity, source_fingerprint
+from server.build_info import mod_fingerprint, read_git_head, service_identity, source_fingerprint
 
 _SHA = "0123456789abcdef0123456789abcdef01234567"
 
@@ -101,3 +101,26 @@ def test_service_identity_reports_start_fingerprint_and_head(tmp_path):
 		"source_fingerprint": source_fingerprint(tmp_path / "server"),
 		"git_head": _SHA,
 	}
+
+
+# The same vector pins plugin/hooks/fingerprint.ts (plugin/hooks/tests/fingerprint.test.ts).
+_MOD_VECTOR = "32495c7f04ecccc8c3dddc24cf463335502ae7eb098a8cffce64442bb67c06b5"
+
+
+def test_mod_fingerprint_matches_the_vector_the_mod_pins(tmp_path):
+	_write(tmp_path, "a.ts", b"one\r\ntwo\n")
+	_write(tmp_path, "b.ts", b"three")
+	assert mod_fingerprint(tmp_path) == _MOD_VECTOR
+
+
+def test_missing_or_empty_hooks_folder_has_no_fingerprint(tmp_path):
+	assert mod_fingerprint(tmp_path / "absent") is None
+	assert mod_fingerprint(tmp_path) is None
+
+
+def test_mod_fingerprint_reads_only_top_level_ts(tmp_path):
+	_write(tmp_path, "a.ts", b"x")
+	base = mod_fingerprint(tmp_path)
+	_write(tmp_path, "tests/a.test.ts", b"y")
+	_write(tmp_path, "hooks.json", b"{}")
+	assert mod_fingerprint(tmp_path) == base

@@ -21,7 +21,7 @@ from starlette.staticfiles import StaticFiles
 
 import dataclasses
 
-from server.build_info import service_identity
+from server.build_info import mod_fingerprint, service_identity
 from server.cli_session_end import handle_session_end
 from server.clock import now_iso
 from server.config import Config, ConfigError, load_config
@@ -1037,6 +1037,7 @@ async def _run(config: Config) -> None:
 			"listeners": listeners,
 			"dispatch_loops": dispatch_loops,
 			"service": service,
+			"mod": session_registry.mod_health(),
 		})
 
 	claude_status_service = ClaudeStatusService(publish=backend.write_widget_status)
@@ -1159,6 +1160,7 @@ async def _run(config: Config) -> None:
 			retention_hours=config.session_retention_hours,
 			registry=registry, backend=backend,
 			quota_store=quota_store,
+			mod_fingerprint=lambda: mod_fingerprint(source_root.parent / "plugin" / "hooks"),
 		)
 	)
 
