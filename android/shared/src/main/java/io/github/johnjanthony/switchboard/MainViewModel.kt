@@ -419,10 +419,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		_conversationRows.value.values.flatMapTo(mutableSetOf()) { row -> PendingSendPolicy.commandIdsIn(row.messages) }
 
 	/**
-	 * Listen to the widget data the server publishes: plan quota (quota/), the Anthropic and
-	 * service status (widget/status) and the server
-	 * heartbeat (presence/server_at). Context rings are built from the sessions/ records in
-	 * startSessionRegistryListeners.
+	 * Listen to the widget data the server publishes: plan quota (quota/), the Anthropic
+	 * service status (widget/status) and the server heartbeat (presence/server_at). Context
+	 * rings are built from the sessions/ records in startSessionRegistryListeners.
 	 */
 	private fun startWidgetListeners() {
 		val quotaRef = database.getReference("quota")
