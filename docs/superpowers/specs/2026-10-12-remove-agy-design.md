@@ -114,3 +114,43 @@ John-gated where the standing rules say so.
 
 - T-249 (decision 2) and T-277's other bullets.
 - Pruning the stale `.graphify-verdicts.json` entries.
+
+## As built (2026-10-12)
+
+Commits on `develop`, by task:
+
+- Spec and grounding: `1583773`, `242200e`.
+- Task 1 (outside the repo): agy's switchboard plugin and hook config removed on Windows and WSL; no repo commit.
+- Task 2, status lamp and `/widget-status` target: `a7e3d2e`.
+- Task 3, marker sweep, notice pops, agy dormancy, smoke harness: `bb91d97`.
+- Task 4, spawn, resume, combine and convene Claude-only, catalog probe dropped: `d1b5105`.
+- Task 5, hook scripts, root files and tool text: `6552016`.
+- Task 6, Operator: `86a778b`.
+- Task 7, Android: `0f9ade3`, then the KDoc fix round `73f4c3f`.
+- Task 8, Watchtower: `c43f9cb`.
+- Task 9, docs: `ccfdf46`.
+- Tidy, five stale sentences: `4254cdd`.
+- Task 10, live checks: no commit.
+
+Deviations from the plan:
+
+- Work ran in the main checkout on `develop`, with no worktree.
+- `tests/test_stats_endpoint.py` (sender "Gemini") belonged to no task and went to Task 4 (it now says "Claude WSL").
+- Task 7's final review found a KDoc sentence left half-rewritten (`MainViewModel.kt`, "the Anthropic and service status"); one fix round corrected it (`73f4c3f`).
+- A tidy commit (`4254cdd`) took the five one-line inaccuracies the final review turned up: the `queue_notice` docstring, `demo.js` msg-003, a `test_main_routes.py` docstring, a stray space and a "claude only;" row in the comprehensive spec.
+- Outside the repo, the dotfiles repo (`40b1cd2`) dropped the Gemini collab command and made the GEMINI.md line Claude-only; the WSL `collab.toml` was removed by hand. The `link_gemini_switchboard` chezmoi scripts were left in place.
+- Task 11 ran after the final review, so this record includes it.
+
+Final review notes (Ready, no Critical or Important):
+
+- The plan's Review Focus 1, "away mode stays as it was", holds server-side only. An old APK flipped away mode on client-side before the server's rejection, as it does for an invalid pick. That closed when the release APK was installed on John's phone, which it now is.
+- The smoke session now polls the inbox, so a `--keep` run's residue goes lost after about 90 s.
+- An empty `logs/session-end/` was removed by hand.
+
+Live checks passed: preflight, `/widget-status` (400 for an unknown target), `/away-mode` with no notices, Operator, emulator and phone, Watchtower, and `smoke.py --skip-restart` (exit 0). The RTDB node `widget/antigravity_status` was deleted.
+
+Still open:
+
+- T-249's premise was refreshed in the backlog (the marker sweep is gone, so any session killed without a `POST /session_end` leaves its member alive); the fix is not designed.
+- The smoke restart-survival flow was skipped by `--skip-restart`, so its new inbox read is not live-verified.
+- The `link_gemini_switchboard` chezmoi scripts remain, and `C:\Work\Claude-Scratch\T-283-agy-config-backup\` awaits John's call on deletion.
