@@ -204,3 +204,17 @@ async def test_a_human_message_without_an_attached_question_dismisses_nothing(mo
 	await drain_bg_tasks(timeout=2)
 
 	assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_agent_message_attached_to_a_question_dismisses_nothing(monkeypatch):
+	# Only John's reply ends a question; an agent's message that names the card does not.
+	be = _make_backend(monkeypatch, asyncio.get_running_loop())
+	calls = _record_dismissals(be)
+
+	await be.write_conversation_message(
+		"conv-1", "Claude", "notify", "working on it", attached_to_msg_id="-OQcard1", suppress_push=True,
+	)
+	await drain_bg_tasks(timeout=2)
+
+	assert calls == []
