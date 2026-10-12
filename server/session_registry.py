@@ -278,11 +278,15 @@ class SessionRegistry:
 		keeps the 0-1 scale every consumer reads: tokens over window. An ended
 		record is left alone, since its session end is authoritative (REV-114).
 		A report is proof of life, so it bumps last_event_at, but it never
-		changes state: a lost session revives on its next inbox poll."""
+		changes state: a lost session revives on its next inbox poll. Only a
+		report that created the record or changed a field is mirrored: the
+		rate limits go to the quota store, so a rate-limits-only report would
+		otherwise rewrite sessions/<sid> for last_event_at alone."""
 		existing = self._records.get(cli_session_id)
 		if existing is not None and existing.state == "ended":
 			return None
 		rec = self._ensure(cli_session_id, source="telemetry")
+		before = None if existing is None else rec.to_payload()
 		context = report.get("context")
 		if context is not None:
 			rec.context_window = context["window"]
@@ -299,8 +303,10 @@ class SessionRegistry:
 		if "mod_fingerprint" in report:
 			rec.mod_fingerprint = report["mod_fingerprint"]
 			self._judge_mod(rec)
+		changed = before is None or rec.to_payload() != before
 		rec.last_event_at = self._now()
-		self._fire_mirror(rec)
+		if changed:
+			self._fire_mirror(rec)
 		return rec
 
 	def _judge_mod(self, rec: SessionRecord) -> None:

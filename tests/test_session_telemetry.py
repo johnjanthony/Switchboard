@@ -136,6 +136,41 @@ def test_an_identical_report_does_not_rewrite_the_mirror():
 	assert calls[-1]["model_label"] == "Opus 5.5 · high"
 
 
+class _TickingNow:
+	"""now() that moves a second on every call, as the real clock does between reports."""
+
+	def __init__(self) -> None:
+		self.seconds = 0
+
+	def __call__(self) -> str:
+		self.seconds += 1
+		return f"2026-10-10T12:00:{self.seconds:02d}+00:00"
+
+
+def test_an_unchanged_report_bumps_last_event_at_but_writes_no_mirror():
+	calls = []
+	reg = SessionRegistry(now=_TickingNow())
+	reg.set_mirror(lambda sid, payload: calls.append(payload))
+	reg.apply_telemetry("s1", {"model": "claude-opus-5-5", "effort": "high"})
+	n, first = len(calls), reg.get("s1").last_event_at
+	reg.apply_telemetry("s1", {"model": "claude-opus-5-5", "effort": "high"})
+	# Rate limits go to the quota store, so a rate-limits-only report changes nothing here.
+	reg.apply_telemetry("s1", {"rate_limits": [{"kind": "five_hour", "percent_used": 10, "resets_at": None}]})
+	assert len(calls) == n
+	assert reg.get("s1").last_event_at > first
+
+
+def test_a_changed_report_under_a_moving_clock_still_writes_the_mirror():
+	calls = []
+	reg = SessionRegistry(now=_TickingNow())
+	reg.set_mirror(lambda sid, payload: calls.append(payload))
+	reg.apply_telemetry("s1", {"model": "claude-opus-5-5", "effort": "high"})
+	n = len(calls)
+	reg.apply_telemetry("s1", {"effort": "xhigh"})
+	assert len(calls) == n + 1
+	assert calls[-1]["effort"] == "xhigh"
+
+
 def test_context_fields_survive_hydration():
 	reg = _reg()
 	reg.apply_telemetry("s1", {"context": {"tokens": 10, "window": 100}})
