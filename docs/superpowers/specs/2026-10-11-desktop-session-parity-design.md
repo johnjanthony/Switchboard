@@ -87,8 +87,8 @@ Windows only: WSL has no desktop app, and its terminal sessions read its clone l
 
 ## Part 4: the stale-mod alarm
 
-- **Fingerprint.** SHA-256, lowercase hex, over the top-level `*.ts` files of the plugin's `hooks/` folder (not `hooks/tests/`), in file-name order: for each file, the UTF-8 bytes of its name, a NUL byte, its content with CRLF normalized to LF, and a NUL byte. One test vector (a fixed small file set and its expected digest) is pinned in both the mod's tests and pytest.
-- **Mod.** Once per session id (so again after a `/clear`), it reads those files under `$.plugin.root`, computes the fingerprint (`crypto.subtle.digest`, probe P3) and adds `mod_fingerprint` to that session's first telemetry report. If reading or hashing fails it sends none and writes a debug line.
+- **Fingerprint.** SHA-256, lowercase hex, over the top-level `*.ts` files of the plugin's `hooks/` folder (not `hooks/tests/`), in file-name order, framed like `server/build_info.py`'s `source_fingerprint`: for each file, the UTF-8 bytes of `"{name}\n{length}\n"`, then its bytes with CRLF replaced by LF (`length` counts the replaced bytes). Revised at planning: the spec first had a NUL-separated framing; reusing the existing one keeps a single scheme in the repo. Test vector, pinned in both the mod's tests and pytest: `a.ts` = `one\r\ntwo\n` and `b.ts` = `three` give `32495c7f04ecccc8c3dddc24cf463335502ae7eb098a8cffce64442bb67c06b5`.
+- **Mod.** Once per session id (so again after a `/clear`), it lists and reads those files under `$.plugin.root` as bytes (so the digest matches the server's whatever the encoding), computes the fingerprint with `crypto.subtle.digest` and sends `{ "mod_fingerprint": ... }` as a telemetry report of its own. Revised at planning: the spec first added it to the session's first report, but existing tests pin exact report bodies and a separate report leaves them valid. If listing, reading or hashing fails it sends none and writes a debug line.
 - **Server.**
   - `server/telemetry.py` validates `mod_fingerprint` (64 lowercase hex) field by field like the rest; a bad value is dropped.
   - `SessionRecord` gains `mod_fingerprint` and `mod_stale`: null when the session never reported one (agy, or a mod older than this change), else whether it differs from the repo's.
@@ -108,7 +108,9 @@ Windows only: WSL has no desktop app, and its terminal sessions read its clone l
 | P5 | Does a turn the mod starts with `$.prompt.submit` in an idle desktop session show in the app, output included? | Same | Part 2 ships or comes back to John |
 | P6 | Does `$.turn.abort` stop a running turn in a desktop session? | Same | Same |
 
-P4 to P6 need the Part 2 mod deployed to the desktop copy first, so they run after Parts 1 and 3.
+Revised at planning:
+- P3's test-kit half was answered at planning (2026-10-11): `crypto.subtle.digest` SHA-256 and `Uint8Array.fromBase64` work under `claude plugin test`, and a mod's own `$.plugin.root` there is the real plugin folder as a native Windows path. The plugin-authoring declarations type `crypto.subtle`, `TextEncoder`, `btoa` and `atob` for mods. The live half runs with P4.
+- P4 to P6 run before any Part 2 code, on a small throwaway probe plugin installed in a throwaway marketplace and loaded by a fresh desktop session, with evidence sent to the server's access log as 404 paths. The spec first ran them after deploying the Part 2 mod, which would have built on an unverified premise.
 
 ## Testing and live verification
 
@@ -116,17 +118,17 @@ P4 to P6 need the Part 2 mod deployed to the desktop copy first, so they run aft
 - **Server (pytest):** `mod_fingerprint` validation; the record fields and their mirror; `mod_stale` true, false and null; the sweep re-judging after the repo fingerprint changes; the repo fingerprint against the shared vector; the `/healthz` shape.
 - **Operator (`node --test`):** the chip derivation.
 - **Existing suites** pass at the new paths: `tests/test_mod_plugin.py`, `bash scripts/mod-typecheck.sh`.
-- **Live, after deploy, in a fresh desktop session:** attach seen in its debug log; model, effort, context and title on the roster; a phone message to it while idle starts a turn shown in the app; a phone stop ends a running turn; idle for more than two minutes it stays not `lost`; a desktop session started before the deploy appears in `/healthz` `mod.stale_sessions`.
+- **Live, after deploy, in a fresh desktop session:** attach seen in its debug log; model, effort, context and title on the roster; a phone message to it while idle starts a turn shown in the app; a phone stop ends a running turn; idle for more than two minutes it stays not `lost`. For the alarm: an uncommitted comment added to a file in `plugin/hooks` in the main checkout lists the desktop sessions in `/healthz` `mod.stale_sessions` within one sweep tick (terminal sessions re-report after their hot reload and stay current), and reverting it clears the list. Revised at planning: the spec first expected a session started before the deploy to show as stale, but a mod older than this change reports no fingerprint, so it shows null.
 - **Live, packaging:** the new copy under `installPath` holds only `plugin/` files (no `.env`, no `serviceAccountKey.json`) and is under 1 MB.
 
 ## Rollout order
 
-1. Probes P1 to P3.
-2. Part 1, one commit; John relaunches terminal sessions; the WSL clone pulls and relaunches.
-3. Part 3; run it; packaging live checks.
-4. Parts 2 and 4 (mod, server, Operator), one commit per plan task; restart the service; run the deploy script.
-5. Probes P4 to P6 and the desktop live checks.
-6. Docs and tracking.
+Revised at planning (all code lands on this branch first, so the relaunches and the deploy happen at the merge):
+
+1. Probes P1 and P2 (throwaway marketplace), then P3 to P6 (throwaway probe plugin in a fresh desktop session).
+2. Part 1, Part 3, Part 2 and Part 4 (mod, server, Operator), one commit per plan task; then docs.
+3. John merges into `develop`; terminal sessions relaunch (WSL after its pull); the service restarts; the deploy script runs; packaging and desktop live checks.
+4. Tracking.
 
 ## Docs and tracking on land
 
