@@ -145,7 +145,7 @@ Deviations from the plan:
 - `tests/test_stats_endpoint.py` (sender "Gemini") belonged to no task and went to Task 4 (it now says "Claude WSL").
 - Task 7's final review found a KDoc sentence left half-rewritten (`MainViewModel.kt`, "the Anthropic and service status"); one fix round corrected it (`73f4c3f`).
 - A tidy commit (`4254cdd`) took the five one-line inaccuracies the final review turned up: the `queue_notice` docstring, `demo.js` msg-003, a `test_main_routes.py` docstring, a stray space and a "claude only;" row in the comprehensive spec.
-- Outside the repo, the dotfiles repo (`40b1cd2`) dropped the Gemini collab command and made the GEMINI.md line Claude-only; the WSL `collab.toml` was removed by hand. The `link_gemini_switchboard` chezmoi scripts were left in place.
+- Outside the repo, the dotfiles repo (`40b1cd2`) dropped the Gemini collab command and made the GEMINI.md line Claude-only; the WSL `collab.toml` was removed by hand. A second dotfiles commit (`a66ea43`, at John's direction) removed the `link_gemini_switchboard` chezmoi scripts and the `~/.gemini/skills/switchboard` symlinks on both machines. The config backup was deleted.
 - Task 11 ran after the final review, so this record includes it.
 
 Final review notes (Ready, no Critical or Important):
@@ -159,5 +159,4 @@ Live checks passed: preflight, `/widget-status` (400 for an unknown target), `/a
 Still open:
 
 - T-249's premise was refreshed in the backlog (the marker sweep is gone, so any session killed without a `POST /session_end` leaves its member alive); the fix is not designed.
-- The smoke restart-survival flow was skipped by `--skip-restart`, so its new inbox read is not live-verified.
-- The `link_gemini_switchboard` chezmoi scripts remain, and `C:\Work\Claude-Scratch\T-283-agy-config-backup\` awaits John's call on deletion.
+- A full smoke run (with restart) passed every flow but restart survival, which failed before reaching its new inbox read: the restart cancelled the flow's blocking ask instead of parking it. That is a pre-existing regression from `32b6f39` (2026-10-03), not this work; it is backlog T-291. The inbox read itself is therefore still not live-verified.
