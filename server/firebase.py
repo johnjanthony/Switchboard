@@ -164,25 +164,34 @@ class FirebaseBackend(
 		# Messages live at /messages/<conv_id>.
 		conv_id = conversation_id
 		msgs_ref = db.reference(f"messages/{conv_id}")
-		def _walk():
-			snapshot = msgs_ref.get()
-			if not isinstance(snapshot, dict):
-				return None
-			for msg_id, payload in snapshot.items():
-				if isinstance(payload, dict) and payload.get("request_id") == request_id:
-					return msg_id
-			return None
-		msg_id = await asyncio.to_thread(_walk)
-		if msg_id is not None:
+		card_ids = await self._question_card_ids(conv_id, request_id)
+		if card_ids:
+			msg_id = card_ids[0]
 			await asyncio.to_thread(
 				lambda: msgs_ref.child(msg_id).child("cancelled").set(True)
 			)
-			self._dismiss_question_notification(conv_id, msg_id)
+		for card_id in card_ids:
+			self._dismiss_question_notification(conv_id, card_id)
 		# Cancellation is a resolution — clear the pending_questions record too.
 		try:
 			await self.remove_pending_question_record(conv_id, request_id)
 		except Exception:
 			pass  # best-effort cleanup; don't mask the cancel itself
+
+	async def _question_card_ids(self, conv_id: str, request_id: str) -> list[str]:
+		"""Every question card written for request_id, in snapshot order. An
+		appended background ask writes one card per append under the same
+		request_id, and each card posted its own notification."""
+		msgs_ref = db.reference(f"messages/{conv_id}")
+		def _walk():
+			snapshot = msgs_ref.get()
+			if not isinstance(snapshot, dict):
+				return []
+			return [
+				msg_id for msg_id, payload in snapshot.items()
+				if isinstance(payload, dict) and payload.get("request_id") == request_id
+			]
+		return await asyncio.to_thread(_walk)
 
 	async def add_pending_question_record(
 		self,
@@ -431,6 +440,23 @@ class FirebaseBackend(
 		ended; Wear OS bridging clears the watch's copy. Backgrounded so no
 		terminal path waits on FCM."""
 		_spawn_bg(self._send_question_dismissal(conv_id, msg_id), label=f"fcm_dismiss:{conv_id}:{msg_id}")
+
+	async def _dismiss_answered_question(self, conv_id: str, card_id: str) -> None:
+		"""Dismiss every card of the question John's reply answered: the attached
+		card, then any other card under its request_id (an appended background
+		ask). A failed lookup still dismisses the attached card."""
+		card_ids = [card_id]
+		try:
+			request_id = await asyncio.to_thread(
+				lambda: db.reference(f"messages/{conv_id}/{card_id}/request_id").get()
+			)
+			if request_id:
+				card_ids += [c for c in await self._question_card_ids(conv_id, request_id) if c != card_id]
+		except Exception as exc:
+			if self._logger:
+				await self._logger.surface_error(f"firebase_dismiss_lookup_error: conv={conv_id} msg={card_id} {exc}")
+		for c in card_ids:
+			self._dismiss_question_notification(conv_id, c)
 
 	async def _send_question_dismissal(self, conv_id: str, msg_id: str) -> None:
 		# Normal priority: FCM may demote an app's high-priority messages when
@@ -867,8 +893,12 @@ class FirebaseBackend(
 
 		# John's reply attached to a question ends it, whichever surface sent the
 		# answer. Cancel-side endings dismiss in mark_question_cancelled instead.
+		# The card lookup runs in the background so the reply write waits on nothing.
 		if message_type == "human" and attached_to_msg_id is not None:
-			self._dismiss_question_notification(conv_id, attached_to_msg_id)
+			_spawn_bg(
+				self._dismiss_answered_question(conv_id, attached_to_msg_id),
+				label=f"fcm_dismiss_answered:{conv_id}:{attached_to_msg_id}",
+			)
 
 		# Atomically increment unread_count for every non-human message so the
 		# Android badge reflects unread activity on all device surfaces.

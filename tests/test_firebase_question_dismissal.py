@@ -19,6 +19,33 @@ def _record_dismissals(be):
 	return calls
 
 
+def _db_paths(monkeypatch, data):
+	"""Point firebase.db at a fake whose reference(path).get() returns data[path],
+	or raises it when it is an exception."""
+	from server import firebase as fb_module
+
+	def reference(path):
+		ref = MagicMock()
+		value = data.get(path)
+		if isinstance(value, Exception):
+			ref.get.side_effect = value
+		else:
+			ref.get.return_value = value
+		return ref
+	mock_db = MagicMock()
+	mock_db.reference = reference
+	monkeypatch.setattr(fb_module, "db", mock_db)
+
+
+# An appended background ask writes one card per append under the slot's
+# request_id; the record's msg_id stays the first card's.
+_APPENDED_CARDS = {
+	"-OQcard1": {"request_id": "req-1", "type": "question"},
+	"-OQother": {"request_id": "req-0", "type": "question"},
+	"-OQcard2": {"request_id": "req-1", "type": "question"},
+}
+
+
 @pytest.mark.asyncio
 async def test_dismissal_is_a_normal_priority_data_message_to_the_questions_topic(monkeypatch):
 	from server import firebase as fb_module
@@ -80,6 +107,18 @@ async def test_cancelling_a_question_dismisses_its_card(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cancelling_a_question_dismisses_every_card_it_wrote(monkeypatch):
+	from server import firebase as fb_module
+	be = _make_backend(monkeypatch, asyncio.get_running_loop())
+	fb_module.db.reference.return_value.get.return_value = _APPENDED_CARDS
+	calls = _record_dismissals(be)
+
+	await be.mark_question_cancelled("conv-1", "req-1")
+
+	assert calls == [("conv-1", "-OQcard1"), ("conv-1", "-OQcard2")]
+
+
+@pytest.mark.asyncio
 async def test_cancelling_with_no_card_sends_no_dismissal(monkeypatch):
 	from server import firebase as fb_module
 	be = _make_backend(monkeypatch, asyncio.get_running_loop())
@@ -94,11 +133,66 @@ async def test_cancelling_with_no_card_sends_no_dismissal(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_reply_attached_to_a_question_dismisses_it(monkeypatch):
 	be = _make_backend(monkeypatch, asyncio.get_running_loop())
+	_db_paths(monkeypatch, {
+		"messages/conv-1/-OQcard1/request_id": "req-1",
+		"messages/conv-1": {"-OQcard1": {"request_id": "req-1", "type": "question"}},
+	})
 	calls = _record_dismissals(be)
 
 	await be.write_conversation_message("conv-1", "John", "human", "yes", attached_to_msg_id="-OQcard1")
+	await drain_bg_tasks(timeout=2)
 
 	assert calls == [("conv-1", "-OQcard1")]
+
+
+@pytest.mark.asyncio
+async def test_an_answer_to_an_appended_background_question_dismisses_every_card(monkeypatch):
+	be = _make_backend(monkeypatch, asyncio.get_running_loop())
+	_db_paths(monkeypatch, {
+		"messages/conv-1/-OQcard1/request_id": "req-1",
+		"messages/conv-1": _APPENDED_CARDS,
+	})
+	calls = _record_dismissals(be)
+
+	await be.write_conversation_message("conv-1", "John", "human", "yes", attached_to_msg_id="-OQcard1")
+	await drain_bg_tasks(timeout=2)
+
+	assert calls == [("conv-1", "-OQcard1"), ("conv-1", "-OQcard2")]
+
+
+@pytest.mark.asyncio
+async def test_an_answer_whose_card_has_no_request_id_dismisses_only_that_card(monkeypatch):
+	be = _make_backend(monkeypatch, asyncio.get_running_loop())
+	_db_paths(monkeypatch, {
+		"messages/conv-1/-OQcard1/request_id": None,
+		"messages/conv-1": _APPENDED_CARDS,
+	})
+	calls = _record_dismissals(be)
+
+	await be.write_conversation_message("conv-1", "John", "human", "yes", attached_to_msg_id="-OQcard1")
+	await drain_bg_tasks(timeout=2)
+
+	assert calls == [("conv-1", "-OQcard1")]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_card_lookup_still_dismisses_the_attached_card(monkeypatch):
+	be = _make_backend(monkeypatch, asyncio.get_running_loop())
+	be._logger = MagicMock()
+	be._logger.info = AsyncMock()
+	be._logger.surface_error = AsyncMock()
+	_db_paths(monkeypatch, {
+		"messages/conv-1/-OQcard1/request_id": RuntimeError("rtdb down"),
+		"messages/conv-1": _APPENDED_CARDS,
+	})
+	calls = _record_dismissals(be)
+
+	await be.write_conversation_message("conv-1", "John", "human", "yes", attached_to_msg_id="-OQcard1")
+	await drain_bg_tasks(timeout=2)
+
+	assert calls == [("conv-1", "-OQcard1")]
+	be._logger.surface_error.assert_awaited_once()
+	assert "firebase_dismiss_lookup_error" in be._logger.surface_error.await_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -107,5 +201,6 @@ async def test_a_human_message_without_an_attached_question_dismisses_nothing(mo
 	calls = _record_dismissals(be)
 
 	await be.write_conversation_message("conv-1", "John", "human", "stop for now", suppress_push=True)
+	await drain_bg_tasks(timeout=2)
 
 	assert calls == []
