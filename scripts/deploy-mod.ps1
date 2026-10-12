@@ -46,8 +46,11 @@ if ($LASTEXITCODE -ne 0) {
 $installed = Get-Content -Raw (Join-Path $pluginsDir 'installed_plugins.json') | ConvertFrom-Json
 $installPath = @($installed.plugins.'switchboard@switchboard')[0].installPath
 
-# Files the CLI writes into a copy that are not in plugin/ (from the T-288 P1 probe).
-$cliAdded = @()
+# Claude Code's own bookkeeping in a copy, not plugin files: each session that
+# loads the copy leaves .in_use\<pid>, and a superseded copy gets .orphaned_at.
+function Test-CliBookkeeping([string]$rel) {
+	return $rel -eq '.orphaned_at' -or $rel.StartsWith('.in_use\') -or $rel.StartsWith('.in_use/')
+}
 
 function Get-FileHashes([string]$root) {
 	$hashes = @{}
@@ -66,7 +69,7 @@ foreach ($rel in $want.Keys) {
 	elseif ($have[$rel] -ne $want[$rel]) { $problems += "different in the copy: $rel" }
 }
 foreach ($rel in $have.Keys) {
-	if (-not $want.ContainsKey($rel) -and $cliAdded -notcontains $rel) { $problems += "extra in the copy: $rel" }
+	if (-not $want.ContainsKey($rel) -and -not (Test-CliBookkeeping $rel)) { $problems += "extra in the copy: $rel" }
 }
 if ($problems.Count -gt 0) {
 	Write-Error "deploy-mod: the copy at $installPath does not match ${pluginDir}:`n$(($problems | Sort-Object) -join "`n")"

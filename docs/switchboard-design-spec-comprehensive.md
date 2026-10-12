@@ -100,7 +100,7 @@ Two features share one mechanism: John's free-form messages into a live conversa
 
 Dormant and lost members get nothing live; the message is in history and reaches them on resume or re-join. The whole ladder and every conversation mutation run under `conv.lock`, with Firebase cancels issued after the lock is released.
 
-**Idle sessions wake.** Since the Claude Code mod (2026-10-03), an idle interactive session receives a queued notice within about 2 s: its inbox poll submits the notice as the session's next prompt, at the desk or away. At the desk a draft in the prompt box defers delivery, and the notice rides the prompt John is typing. Headless (`claude -p`) runs and Antigravity sessions do not poll, so for them a notice still waits for the session's next prompt.
+**Idle sessions wake.** Since the Claude Code mod (2026-10-03), an idle interactive session (and, since T-288, an idle desktop-app session) receives a queued notice within about 2 s: its inbox poll submits the notice as the session's next prompt, at the desk or away. At the desk a draft in the prompt box defers delivery, and the notice rides the prompt John is typing. Headless (`claude -p`) runs and Antigravity sessions do not poll, so for them a notice still waits for the session's next prompt.
 
 ---
 
@@ -270,13 +270,14 @@ Twelve added routes, plus the `/mcp` transport and a static mount, all wrapped o
 | `turn.start` | Main loop: marks the session busy, records the turn id, posts `thinking`. |
 | `turn.complete` | Main loop: posts `clear`, reads the transcript for a title until one is found (§10.3), and after a turn that ended with an answer runs the turn-end check (§8.2). |
 | `prompt.submit` | A prompt John types while notices are held carries them as context. |
-| `session.start` | POSTs `/session_start` (`session_id`, `cwd`), reads a resumed session's title, and starts the inbox poller in an interactive session. |
+| `session.start` | POSTs `/session_start` (`session_id`, `cwd`), reads a resumed session's title, and starts the inbox poller in an interactive session or one with a surface already attached (a desktop-app session whose mod reloaded). |
+| `session.attach` | Starts the inbox poller when a surface attaches (the desktop app's session, which starts non-interactive with no surface). The poller starts at most once per module load. |
 | `session.end` | POSTs `/session_end` (`session_id`, `reason`) inside Claude Code's 1.5 s exit bound, so the member goes dormant (§2.2). |
 | `session.measure` | Posts the context (`tokens`, `window`) when it moved, and the rate limits when a model request has run since they last went, to `/sessions/{sid}/telemetry` (§10.5). |
 | `turn.step` | Marks the rate limits fresh for the next measurement; on the main thread, posts `model` and `effort` when they change (§10.4). |
 | `command.run` (`rename`) | Re-reads the transcript once `/rename` has run and posts the new title (§10.3). |
 
-**Inbox poll.** Every interactive session polls `GET /sessions/{sid}/inbox` every 2 s, backing off to 30 s while the server fails. It is the only route that pops a Claude Code session's notices (§5). Each answer carries the session's queued notices, a pending stop, the global away flag and whether the session holds a live blocking ask. Idle, held notices are submitted as the session's next prompt, which starts a turn with nobody at the terminal; busy, they ride the next main-loop tool result, a typed prompt or the turn-end prompt; at the desk a draft in the prompt box defers delivery. A stop (`POST /sessions/{sid}/stop`) cancels the running turn; one that finds the session idle is dropped. Each poll is also the session's liveness heartbeat (§10.6). Headless `claude -p` runs do not poll.
+**Inbox poll.** Every interactive session, and every desktop-app session once the app attaches as a surface, polls `GET /sessions/{sid}/inbox` every 2 s, backing off to 30 s while the server fails. It is the only route that pops a Claude Code session's notices (§5). Each answer carries the session's queued notices, a pending stop, the global away flag and whether the session holds a live blocking ask. Idle, held notices are submitted as the session's next prompt, which starts a turn with nobody at the terminal; busy, they ride the next main-loop tool result, a typed prompt or the turn-end prompt; at the desk a draft in the prompt box defers delivery. A stop (`POST /sessions/{sid}/stop`) cancels the running turn; one that finds the session idle is dropped. Each poll is also the session's liveness heartbeat (§10.6). Headless `claude -p` runs do not poll.
 
 **Bounded and fail-open.** `$.http.fetch` has no timeout, so every server call races a 1.5 s timer (`FETCH_TIMEOUT_MS`). Status and telemetry posts are fire-and-forget, and a down server never breaks a session. A 401 (a WSL session with a missing or wrong `SWITCHBOARD_TOKEN`) is written to the transcript once per session. A mod that fails to load shows as every switchboard tool call failing with `cli_session_id required` (§3).
 
