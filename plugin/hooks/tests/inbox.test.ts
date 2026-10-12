@@ -156,3 +156,30 @@ test('a poll the server never answers times out, and the poller recovers', async
 	await w.clock.advance(4000)
 	expect(w.prompts.map(p => p.text)).toEqual(['John (from phone): still there?'])
 })
+
+test('a desktop session polls once the app attaches', async ($, on) => {
+	const w = world(on)
+	await $.session.start({ cwd: 'C:/Work/X', surface: null, isInteractive: false })
+	await w.clock.advance(10_000)
+	expect(inboxPolls(w)).toEqual([])
+	await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+	await w.clock.advance(2000)
+	expect(inboxPolls(w)).toHaveLength(1)
+})
+
+test('a desktop session whose mod reloads after the attach polls from its start', async ($, on) => {
+	const w = world(on)
+	w.surfaces = ['desktop']
+	await $.session.start({ cwd: 'C:/Work/X', surface: null, isInteractive: false })
+	await w.clock.advance(2000)
+	expect(inboxPolls(w)).toHaveLength(1)
+})
+
+test('a second start or an attach adds no second timer', async ($, on) => {
+	const w = world(on)
+	await startSession($, w)
+	await $.session.start({ cwd: 'C:/Work/X', surface: 'terminal', isInteractive: true })
+	await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+	await w.clock.advance(2000)
+	expect(inboxPolls(w)).toHaveLength(1)
+})

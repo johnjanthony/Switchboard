@@ -10,6 +10,7 @@ export type Sent = { url: string; method: string; headers: Record<string, string
 export type World = {
 	clock: ReturnType<typeof mock.clock>
 	sessionId: string
+	surfaces: Array<'terminal' | 'desktop' | 'mobile' | 'vscode'>
 	draft: string
 	inbox: Array<Record<string, unknown>>
 	inboxStatus: number
@@ -36,6 +37,7 @@ export function world(on: On, env: Record<string, string> = {}): World {
 	const w: World = {
 		clock: mock.clock(on),
 		sessionId: 'S1',
+		surfaces: [],
 		draft: '',
 		inbox: [],
 		inboxStatus: 200,
@@ -60,6 +62,8 @@ export function world(on: On, env: Record<string, string> = {}): World {
 	mock.env(on, env)
 	on('session.id', () => ({ value: w.sessionId }))
 	on('session.cwd', () => ({ value: 'C:/Work/X' }))
+	on('session.surfaces', () => ({ value: w.surfaces }))
+	on('session.attach', (_$, e) => ({ clientId: e.clientId }))
 	on('session.start', (_$, e) => ({ cwd: e.cwd }))
 	on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
 	on('classic.SessionStart', () => ({}))

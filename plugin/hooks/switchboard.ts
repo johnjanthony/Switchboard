@@ -209,13 +209,18 @@ async function refreshTitle($: EngineInterface, renamedTo = ''): Promise<void> {
 // turn-end prompt; a stop cancels the running turn.
 
 // The poller's own bookkeeping. Module variables on purpose: a hot reload
-// starts a fresh poller, and the old module's timer is dropped with it.
+// starts a fresh module, and the old module's timer is dropped with it.
+let pollerStarted = false
 let isPolling = false
 let failures = 0
 let resumeAt = 0
 let lastAway = false
 
+// Once per module load, whichever hook gets here first: two timers would
+// double every poll and every delivery.
 function startPoller($: EngineInterface): void {
+	if (pollerStarted) return
+	pollerStarted = true
 	isPolling = false
 	failures = 0
 	resumeAt = 0
@@ -396,8 +401,11 @@ export const register: Register = on => {
 	// session.start, not classic.SessionStart (which would carry `source`): the
 	// org's security plugin bypasses a user mod's classic.* hooks. /clear raises
 	// no session.start, so a cleared session is registered by its first status
-	// post. session.start also fires after a hot reload, which restarts the
-	// poller; a -p run is about to exit, so a notice popped into it would be lost.
+	// post. A terminal polls from the start and the desktop app's session once
+	// the app attaches; a -p run has neither and never polls, since a notice
+	// popped into a run about to exit would be lost. session.start also fires
+	// after a hot reload, when session.attach does not, so a surface already
+	// attached starts the poller here too.
 	on('session.start', async ($, e, next) => {
 		try {
 			await postJson($, '/session_start', { session_id: await $.session.id(), cwd: e.cwd })
@@ -406,7 +414,13 @@ export const register: Register = on => {
 		}
 		// A resumed session's transcript may already hold its title.
 		void refreshTitle($)
-		if (e.isInteractive) startPoller($)
+		if (e.isInteractive || (await $.session.surfaces()).length > 0) startPoller($)
+		return next(e)
+	})
+
+	// The desktop app attaches as a surface after its session starts.
+	on('session.attach', async ($, e, next) => {
+		startPoller($)
 		return next(e)
 	})
 
