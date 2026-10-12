@@ -1,7 +1,7 @@
 """SessionEnd handler: marks a conversation member dormant when its CLI session ends.
 
 Called by:
-- the SessionEnd marker-file sweep (dispatch_session_end_markers in server/gateway/dispatch.py)
+- POST /session_end (_build_session_end_route in server/main.py), the Claude Code mod's session.end hook
 
 reason values:
 - "logout"        — agent typed /exit; member dormant but resumable

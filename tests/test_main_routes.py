@@ -33,12 +33,9 @@ async def test_away_mode_route_returns_global_flag_invariant_of_cwd(tmp_path):
 	of any `?cwd=` query (which is accepted but ignored for back-compat with
 	older hook deployments). No `session_id` is supplied here, so notices is
 	always the empty list."""
-	from server.session_registry import SessionRegistry
-
 	registry = make_registry_with_loopback()
 	registry.update_global_away_cache(True)
-	session_registry = SessionRegistry()
-	route = _build_away_mode_route(registry, session_registry)
+	route = _build_away_mode_route(registry)
 
 	# No cwd → reflects global flag
 	resp = await route(_make_request())
@@ -66,12 +63,10 @@ async def test_away_mode_route_reports_live_blocking_pending():
 	The turn-end hook treats that live ask as the agent's handback: the harness
 	backgrounds MCP calls that outlive ~120s, so a turn can legitimately end
 	while its ask_human is still awaiting John."""
-	from server.session_registry import SessionRegistry
-
 	registry = make_registry_with_loopback()
 	registry.bind_session("sess-live", "conv-1")
 	registry.add("conv-1", "sess-live", "claude", "req-1")
-	route = _build_away_mode_route(registry, SessionRegistry())
+	route = _build_away_mode_route(registry)
 
 	resp = await route(_make_session_request("sess-live"))
 	assert resp.status_code == 200
@@ -84,13 +79,11 @@ async def test_away_mode_route_reports_live_blocking_pending():
 async def test_away_mode_route_parked_pending_is_not_a_handback():
 	"""A parked (future-less) pending means the client-side call is gone - the
 	agent must re-ask, so pending_ask stays false."""
-	from server.session_registry import SessionRegistry
-
 	registry = make_registry_with_loopback()
 	registry.bind_session("sess-parked", "conv-1")
 	registry.add("conv-1", "sess-parked", "claude", "req-1")
 	registry.find_by_request_id("conv-1", "req-1").future = None
-	route = _build_away_mode_route(registry, SessionRegistry())
+	route = _build_away_mode_route(registry)
 
 	resp = await route(_make_session_request("sess-parked"))
 	body = json.loads(resp.body)
@@ -100,12 +93,10 @@ async def test_away_mode_route_parked_pending_is_not_a_handback():
 @pytest.mark.asyncio
 async def test_away_mode_route_background_ask_is_not_a_handback():
 	"""A background ask deliberately does not satisfy the turn-end hook."""
-	from server.session_registry import SessionRegistry
-
 	registry = make_registry_with_loopback()
 	registry.bind_session("sess-bg", "conv-1")
 	registry.add_background("conv-1", "sess-bg", "claude", "req-bg", question="q")
-	route = _build_away_mode_route(registry, SessionRegistry())
+	route = _build_away_mode_route(registry)
 
 	resp = await route(_make_session_request("sess-bg"))
 	body = json.loads(resp.body)
@@ -114,10 +105,8 @@ async def test_away_mode_route_background_ask_is_not_a_handback():
 
 @pytest.mark.asyncio
 async def test_away_mode_route_unbound_session_pending_ask_false():
-	from server.session_registry import SessionRegistry
-
 	registry = make_registry_with_loopback()
-	route = _build_away_mode_route(registry, SessionRegistry())
+	route = _build_away_mode_route(registry)
 
 	resp = await route(_make_session_request("sess-unknown"))
 	body = json.loads(resp.body)

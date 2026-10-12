@@ -3,7 +3,6 @@ the harness exercises the deployed service over its public surfaces only."""
 from __future__ import annotations
 import asyncio, hashlib, json, time, uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib import request as _rq
 
@@ -134,17 +133,6 @@ async def restart_service(ctx) -> None:
 			return None
 		return hz if all(l.get("state") == "live" for l in hz.get("listeners", [])) else None
 	await poll_until("service live after restart", _alive, 90, interval=2.0)
-
-def write_session_end_marker(ctx) -> None:
-	import os
-	marker_dir = ctx.repo_root / "logs" / "session-end"
-	marker_dir.mkdir(parents=True, exist_ok=True)
-	safe = "".join(c for c in ctx.cli_session_id if c.isalnum() or c in "-_")
-	marker = {"session_id": ctx.cli_session_id, "reason": "other",
-		"ended_at": datetime.now(timezone.utc).isoformat()}
-	tmp = marker_dir / f"{safe}.json.tmp"
-	tmp.write_text(json.dumps(marker), encoding="utf-8")
-	os.replace(tmp, marker_dir / f"{safe}.json")
 
 @dataclass
 class RunContext:

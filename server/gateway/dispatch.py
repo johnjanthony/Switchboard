@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json as _json
-from pathlib import Path as _Path
 from server.registry import Registry
 from server.logging_jsonl import JsonlLogger
 from server.messenger import (
@@ -18,76 +16,6 @@ from server.command_freshness import COMMAND_TTL_SECONDS, command_age_seconds
 
 class _DispatchResponsesBackend(ResponsePoller, MessageWriter, ConversationStore):
 	"""Backend surface used by dispatch_responses."""
-
-
-async def _sweep_session_end_markers(registry, marker_dir, backend=None, logger=None, session_registry=None) -> int:
-	"""Process and delete SessionEnd marker files written by the hook.
-
-	Each marker is `<marker_dir>/<session_id>.json` with {session_id, reason,
-	ended_at}. For each, call handle_session_end (using the marker's recorded
-	ended_at as `now`, so session_ended_at reflects when the session actually
-	ended, not sweep time), then delete the marker. Reprocessing is harmless:
-	handle_session_end unbinds first, so a re-run logs session_end_no_binding and
-	no-ops. Returns the number of markers processed."""
-	from server.cli_session_end import handle_session_end
-	from datetime import datetime, timezone
-	d = _Path(marker_dir)
-	if not d.exists():
-		return 0
-	count = 0
-	for marker_path in sorted(d.glob("*.json")):
-		try:
-			data = _json.loads(marker_path.read_text(encoding="utf-8"))
-			session_id = data.get("session_id")
-			reason = data.get("reason", "other")
-			# Use the marker's recorded end time so session_ended_at reflects when
-			# the session actually ended, not sweep time. Markers from the hook
-			# always include ended_at; fall back defensively if one does not.
-			ended_at = data.get("ended_at") or datetime.now(timezone.utc).isoformat()
-			if session_id:
-				await handle_session_end(
-					registry=registry,
-					session_id=session_id,
-					reason=reason if isinstance(reason, str) else "other",
-					now=lambda ts=ended_at: ts,
-					backend=backend,
-					logger=logger,
-					session_registry=session_registry,
-				)
-				count += 1
-		except Exception as exc:
-			if logger is not None:
-				await logger.surface_error(f"session_end_marker_failed: {marker_path.name}: {exc}")
-		finally:
-			try:
-				marker_path.unlink()
-			except OSError:
-				pass
-	return count
-
-
-async def dispatch_session_end_markers(
-	registry, backend, logger, supervisor, marker_dir, interval: float = 5.0, session_registry=None,
-) -> None:
-	"""Periodically sweep SessionEnd marker files and mark members dormant.
-
-	Marker-file delivery (not the racy SessionEnd HTTP POST) is the reliable
-	path: Claude Code SessionEnd hooks are fire-and-forget and do not block
-	process exit, so a synchronous POST gets dropped. The hook writes a marker
-	file (a fast filesystem write that wins the exit race); this loop applies it
-	via handle_session_end. The first tick after a restart drains markers left
-	from sessions that ended while the server was down."""
-	while True:
-		try:
-			await _sweep_session_end_markers(
-				registry, marker_dir, backend=backend, logger=logger, session_registry=session_registry,
-			)
-			supervisor.record_success()
-		except asyncio.CancelledError:
-			raise
-		except Exception as exc:
-			await supervisor.record_crash(exc)
-		await asyncio.sleep(interval)
 
 
 async def dispatch_responses(
@@ -660,31 +588,6 @@ async def _parked_sweep_once(registry, backend, logger, *, max_age_hours, now=No
 	return len(expired)
 
 
-async def _propagate_agy_lost_to_members(session_registry, registry, backend, logger):
-	"""Flip a lost Antigravity session's conversation member dormant (resumable).
-
-	Antigravity has no SessionEnd hook, so a dead agy session never drives the
-	member-dormancy path a Claude SessionEnd marker does - the member stays
-	alive forever and phone/Operator resume finds nothing resumable. When the
-	silence sweep marks an agy session lost, run the same dormancy path
-	(member alive->False, not permanently lost) so it becomes resumable.
-
-	Idempotent: handle_session_end unbinds the session and record_session_end
-	flips the roster record to 'ended', so a later tick finds neither a 'lost'
-	state nor a binding and skips it."""
-	from server.clock import now_iso
-	from server.cli_session_end import handle_session_end
-	for rec in session_registry.snapshot():
-		if rec.state != "lost" or rec.cli != "antigravity":
-			continue
-		if registry.session_to_conversation_id.get(rec.cli_session_id) is None:
-			continue
-		await handle_session_end(
-			registry, rec.cli_session_id, reason="presumed-dead", now=now_iso,
-			backend=backend, logger=logger, session_registry=session_registry,
-		)
-
-
 async def _reoffer_session_titles(session_registry, registry, backend, logger) -> None:
 	"""Offer every live session's title to its conversation each sweep tick, so
 	a session that joins a conversation after its title arrived still gets the
@@ -737,8 +640,6 @@ async def _session_sweep_once(
 		live_ask_ids=live_ask_ids,
 		live_wait_ids=live_wait_ids,
 	)
-	if registry is not None:
-		await _propagate_agy_lost_to_members(session_registry, registry, backend, logger)
 	if quota_store is not None and backend is not None and quota_store.expire(now):
 		try:
 			await backend.write_quota(quota_store.snapshot())

@@ -40,7 +40,7 @@ def _build_app(handlers, session_registry, registry=None, logger=None):
 	app.add_route("/sessions", _build_sessions_route(session_registry), methods=["GET"])
 	app.add_route("/agent_status", _build_agent_status_route(handlers, session_registry), methods=["POST"])
 	if registry is not None:
-		app.add_route("/away-mode", _build_away_mode_route(registry, session_registry), methods=["GET"])
+		app.add_route("/away-mode", _build_away_mode_route(registry), methods=["GET"])
 	return app
 
 
@@ -192,7 +192,9 @@ def test_get_sessions_redacts_long_session_ids(cfg, logger):
 	assert session_registry.get(full_id) is not None
 
 
-def test_away_mode_delivers_and_pops_queued_notice_for_session(cfg, logger):
+def test_away_mode_with_session_id_leaves_notices_queued(cfg, logger):
+	"""/away-mode reports the flag; it never pops a session's notices, which
+	stay queued for the mod's inbox poll."""
 	registry = Registry()
 	registry.global_away_mode = True
 	backend = RecordingBackend()
@@ -205,11 +207,9 @@ def test_away_mode_delivers_and_pops_queued_notice_for_session(cfg, logger):
 	with TestClient(app) as client:
 		resp = client.get("/away-mode", params={"session_id": "s1"})
 		assert resp.status_code == 200
-		assert resp.json() == {"active": True, "notices": ["wake up"], "pending_ask": False}
+		assert resp.json() == {"active": True, "notices": [], "pending_ask": False}
 
-		resp2 = client.get("/away-mode", params={"session_id": "s1"})
-		assert resp2.status_code == 200
-		assert resp2.json() == {"active": True, "notices": [], "pending_ask": False}
+	assert session_registry.pop_notices("s1") == ["wake up"]
 
 
 def test_away_mode_without_session_id_does_not_pop_notice(cfg, logger):
@@ -231,7 +231,7 @@ def test_away_mode_without_session_id_does_not_pop_notice(cfg, logger):
 	assert session_registry.pop_notices("s1") == ["wake up"]
 
 
-def test_agent_status_user_prompt_submit_pops_only_for_antigravity(cfg, logger):
+def test_agent_status_never_pops_notices_whatever_the_cli(cfg, logger):
 	registry = Registry()
 	backend = RecordingBackend()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)
@@ -241,19 +241,14 @@ def test_agent_status_user_prompt_submit_pops_only_for_antigravity(cfg, logger):
 	app = _build_app(handlers, session_registry)
 
 	with TestClient(app) as client:
-		resp = client.post("/agent_status", json={
-			"session_id": "s1",
-			"state": "thinking",
-			"event": "UserPromptSubmit",
-		})
-		assert resp.json() == {"notices": []}
-		resp = client.post("/agent_status", json={
-			"session_id": "s1",
-			"state": "thinking",
-			"event": "UserPromptSubmit",
-			"cli": "antigravity",
-		})
-		assert resp.json() == {"notices": ["wake up"]}
+		for cli in (None, "claude", "retired-cli"):
+			body = {"session_id": "s1", "state": "thinking", "event": "UserPromptSubmit"}
+			if cli is not None:
+				body["cli"] = cli
+			resp = client.post("/agent_status", json=body)
+			assert resp.json() == {"notices": []}
+
+	assert session_registry.pop_notices("s1") == ["wake up"]
 
 
 def test_agent_status_pre_tool_use_does_not_pop_notice(cfg, logger):

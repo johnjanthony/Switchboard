@@ -187,10 +187,10 @@ def test_post_agent_status_records_cli(cfg, logger):
 	app = _build_app_with_sessions(handlers, sessions)
 	with TestClient(app) as client:
 		client.post("/agent_status", json={
-			"session_id": "agy-1", "state": "thinking", "event": "UserPromptSubmit",
-			"cwd": "C:/Work/X", "cli": "antigravity",
+			"session_id": "other-1", "state": "thinking", "event": "UserPromptSubmit",
+			"cwd": "C:/Work/X", "cli": "retired-cli",
 		})
-	assert sessions.get("agy-1").cli == "antigravity"
+	assert sessions.get("other-1").cli == "retired-cli"
 
 
 def test_post_agent_status_without_cli_keeps_default(cfg, logger):
@@ -242,33 +242,8 @@ def test_pre_tool_use_does_not_pop_notices(cfg, logger):
 	assert sessions.pop_notices("c-1") == ["hello"]
 
 
-def test_post_tool_use_from_antigravity_does_not_pop_notices(cfg, logger):
-	"""The agy PostToolUse hook discards the response body, so popping there
-	would destroy the notice with nothing to deliver it. Excluding cli ==
-	'antigravity' leaves the notice for the next UserPromptSubmit POST."""
-	registry = Registry()
-	backend = RecordingBackend()
-	handlers = build_tool_handlers(cfg, registry, backend, logger)
-	sessions = SessionRegistry()
-	sessions.record_session_start("agy-1", cwd="C:/Work/X", cli="antigravity")
-	assert sessions.queue_notice("agy-1", "hello") is True
-	app = _build_app_with_sessions(handlers, sessions)
-	with TestClient(app) as client:
-		resp = client.post("/agent_status", json={
-			"session_id": "agy-1", "state": "thinking", "event": "PostToolUse",
-			"cwd": "C:/Work/X", "cli": "antigravity",
-		})
-		assert resp.json() == {"notices": []}
-		resp2 = client.post("/agent_status", json={
-			"session_id": "agy-1", "state": "thinking", "event": "UserPromptSubmit",
-			"cwd": "C:/Work/X", "cli": "antigravity",
-		})
-		assert resp2.json() == {"notices": ["hello"]}
-
-
 def test_user_prompt_submit_from_claude_code_does_not_pop_notices(cfg, logger):
-	"""Only the agy UserPromptSubmit hook still pops here (until agy is removed);
-	a Claude Code session's notices wait for its inbox poll."""
+	"""/agent_status never pops: a Claude Code session's notices wait for its inbox poll."""
 	registry = Registry()
 	backend = RecordingBackend()
 	handlers = build_tool_handlers(cfg, registry, backend, logger)

@@ -36,7 +36,6 @@ from server.gateway.dispatch import (
 	dispatch_force_end_commands,
 	dispatch_spawn_commands,
 	dispatch_away_mode_commands,
-	dispatch_session_end_markers,
 	dispatch_status_request_commands,
 	dispatch_session_sweep,
 	dispatch_conversation_sweep,
@@ -57,13 +56,11 @@ from server.telemetry import parse_telemetry
 from server.claude_status import ClaudeStatusService
 
 
-def _build_away_mode_route(registry: Registry, session_registry, backend=None, logger=None):
-	"""GET /away-mode - the turn-end hook's single check. With session_id, the
-	response also delivers (and pops) any queued wake notices for that session,
-	and reports pending_ask: whether the session holds a live blocking ask. The
-	harness backgrounds MCP calls that outlive ~120s, so a turn can end while
-	its ask_human is still awaiting John - the hook treats that live pending as
-	the agent's handback and lets the turn end instead of demanding a re-ask.
+def _build_away_mode_route(registry: Registry, backend=None, logger=None):
+	"""GET /away-mode - the global away flag. With session_id, the response also
+	reports pending_ask: whether the session holds a live blocking ask. It never
+	pops the session's notices (they stay queued for the mod's inbox poll);
+	notices is always empty and kept for response-shape stability.
 	POST /away-mode - set away mode ON."""
 	async def away_mode(request: Request):
 		if request.method == "POST":
@@ -82,15 +79,13 @@ def _build_away_mode_route(registry: Registry, session_registry, backend=None, l
 							await logger.surface_error(f"http_away_mode_enter_persist_failed: {exc}")
 				if logger:
 					await logger.info("http_away_mode_enter_global")
-		notices: list = []
 		pending_ask = False
 		session_id = request.query_params.get("session_id")
 		if session_id:
-			notices = session_registry.pop_notices(session_id)
 			conversation_id = registry.session_to_conversation_id.get(session_id)
 			if conversation_id:
 				pending_ask = registry.live_blocking_pending(conversation_id, session_id) is not None
-		return JSONResponse({"active": bool(registry.global_away_mode), "notices": notices, "pending_ask": pending_ask})
+		return JSONResponse({"active": bool(registry.global_away_mode), "notices": [], "pending_ask": pending_ask})
 	return away_mode
 
 
@@ -205,9 +200,8 @@ def _build_session_start_route(session_registry: SessionRegistry, logger):
 
 def _build_session_end_route(registry: Registry, session_registry, backend, logger):
 	"""POST /session_end - the Claude Code mod's session.end hook. A mod's
-	session.end is awaited inside a short bound, so a direct POST lands where a
-	classic SessionEnd hook's POST raced process exit (hence the marker files,
-	still swept for older clients). Always 200, like the other hook routes."""
+	session.end is awaited inside a short bound, so the POST lands before the
+	process exits. Always 200, like the other hook routes."""
 	async def session_end(request: Request):
 		try:
 			body = await request.json()
@@ -248,12 +242,9 @@ def _build_sessions_route(session_registry: SessionRegistry):
 
 def _build_agent_status_route(handlers, session_registry: SessionRegistry):
 	"""POST /agent_status - hook-driven status writes. Returns 200 with an empty
-	body on malformed input, or on success returns {"notices": [...]} - popped
-	only for UserPromptSubmit from cli == "antigravity", the agy hook that
-	surfaces notices to its agent. Claude Code sessions take their notices from
-	the mod's GET /sessions/{sid}/inbox poll instead, and the agy PostToolUse
-	hook discards the response body, so popping anywhere else would destroy a
-	notice with nothing to deliver it. The Firebase
+	body on malformed input, or {"notices": []} on success: it never pops a
+	session's notices, which the Claude Code mod takes from its
+	GET /sessions/{sid}/inbox poll. The Firebase
 	write is awaited directly: it's a ~100ms operation, well inside the hook's
 	1-second timeout, and direct await avoids the test-loop complications of
 	background-spawned tasks.
@@ -290,12 +281,7 @@ def _build_agent_status_route(handlers, session_registry: SessionRegistry):
 		else:
 			session_registry.touch_mcp(session_id, cwd=cwd or "")
 		await handlers.handle_agent_status(session_id, state, detail)
-		notices: list = []
-		# Claude Code sessions take their notices from the mod's inbox poll; only
-		# the agy UserPromptSubmit hook still pops here, until agy is removed.
-		if event == "UserPromptSubmit" and cli == "antigravity":
-			notices = session_registry.pop_notices(session_id)
-		return JSONResponse({"notices": notices}, status_code=200)
+		return JSONResponse({"notices": []}, status_code=200)
 	return agent_status
 
 
@@ -385,7 +371,7 @@ def _build_stats_route(registry: Registry, backend, loop_sups: dict, session_reg
 def _with_route_limit(handler, limiter, path: str, logger):
 	"""Coarse per-route token bucket for the unauthenticated POST routes
 	(REV-109). Legitimate traffic is at most a few events per second (the
-	Claude Code mod's and the agy hooks' posts), so the generous default
+	Claude Code mod's posts), so the generous default
 	(SWITCHBOARD_ROUTE_RATE_LIMIT, 600/min per route) never throttles it - this
 	only stops a runaway or abusive flood from becoming unbounded RTDB writes.
 	429 is safe: every caller fails open on non-200."""
@@ -986,7 +972,6 @@ async def _run(config: Config) -> None:
 		"dispatch_force_end_commands": LoopSupervisor("dispatch_force_end_commands", backend, logger.surface_error),
 		"dispatch_spawn_commands": LoopSupervisor("dispatch_spawn_commands", backend, logger.surface_error),
 		"dispatch_away_mode_commands": LoopSupervisor("dispatch_away_mode_commands", backend, logger.surface_error),
-		"dispatch_session_end_markers": LoopSupervisor("dispatch_session_end_markers", backend, logger.surface_error),
 		"dispatch_status_request_commands": LoopSupervisor("dispatch_status_request_commands", backend, logger.surface_error),
 		"dispatch_session_sweep": LoopSupervisor("dispatch_session_sweep", backend, logger.surface_error),
 		"dispatch_conversation_sweep": LoopSupervisor("dispatch_conversation_sweep", backend, logger.surface_error),
@@ -1039,7 +1024,7 @@ async def _run(config: Config) -> None:
 	claude_status_service = ClaudeStatusService(publish=backend.write_widget_status)
 	app.add_route("/healthz", healthz, methods=["GET"])
 	app.add_route("/widget-status", _build_widget_status_route(claude_status_service), methods=["GET", "POST"])
-	app.add_route("/away-mode", _build_away_mode_route(registry, session_registry, backend, logger), methods=["GET", "POST"])
+	app.add_route("/away-mode", _build_away_mode_route(registry, backend, logger), methods=["GET", "POST"])
 	app.add_route(
 		"/stats",
 		_build_stats_route(registry, backend, loop_sups, session_registry=session_registry, quota_store=quota_store),
@@ -1094,10 +1079,6 @@ async def _run(config: Config) -> None:
 	logging.getLogger("uvicorn.access").addFilter(_DropInboxAccessLines())
 	server = uvicorn.Server(uv_config)
 
-	session_end_marker_dir = _Path(config.log_path).parent / "session-end"
-	session_end_marker_dir.mkdir(parents=True, exist_ok=True)
-	await logger.info(f"session_end_marker_dir: {session_end_marker_dir}")
-
 	dispatch_task = asyncio.create_task(
 		dispatch_responses(registry, backend, logger, loop_sups["dispatch_responses"], session_registry=session_registry)
 	)
@@ -1136,13 +1117,6 @@ async def _run(config: Config) -> None:
 	status_request_task = asyncio.create_task(
 		dispatch_status_request_commands(
 			claude_status_service, backend, logger, loop_sups["dispatch_status_request_commands"],
-		)
-	)
-
-	session_end_markers_task = asyncio.create_task(
-		dispatch_session_end_markers(
-			registry, backend, logger, loop_sups["dispatch_session_end_markers"],
-			session_end_marker_dir, session_registry=session_registry,
 		)
 	)
 
@@ -1191,7 +1165,6 @@ async def _run(config: Config) -> None:
 		force_end_task.cancel()
 		spawn_task.cancel()
 		away_mode_task.cancel()
-		session_end_markers_task.cancel()
 		status_request_task.cancel()
 		session_sweep_task.cancel()
 		conversation_sweep_task.cancel()
@@ -1210,8 +1183,6 @@ async def _run(config: Config) -> None:
 			await spawn_task
 		with contextlib.suppress(asyncio.CancelledError):
 			await away_mode_task
-		with contextlib.suppress(asyncio.CancelledError):
-			await session_end_markers_task
 		with contextlib.suppress(asyncio.CancelledError):
 			await status_request_task
 		with contextlib.suppress(asyncio.CancelledError):

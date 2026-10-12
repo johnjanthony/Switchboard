@@ -201,7 +201,7 @@ class SessionRegistry:
 		rec = self._ensure(cli_session_id, source="hook")
 		if rec.state == "ended":
 			# REV-114: an explicit SessionEnd is authoritative. A straggler
-			# hook POST (Stop hook racing the end-marker sweep at session exit)
+			# hook POST (a Stop status post racing POST /session_end at session exit)
 			# must not resurrect the record - that would hide the phone Resume
 			# affordance until the sweeper falsely re-marks the session lost.
 			# A genuine new life for this id arrives as a SessionStart
@@ -488,7 +488,7 @@ class SessionRegistry:
 		so the caller can delete their RTDB entries. During the grace period no
 		session is marked lost. Otherwise a session that has polled since the
 		server started is lost after poll_lost_after_seconds without a poll, and
-		one that never polled (a -p run, Antigravity, a record hydrated after a
+		one that never polled (a -p run, a record hydrated after a
 		restart that has not polled yet) after lost_after_seconds of silence.
 		Awaiting human/agent sessions backed by a live structure are exempt."""
 		pruned: list[str] = []

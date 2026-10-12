@@ -10,7 +10,7 @@ from pathlib import Path
 from _smoke_lib import (
 	FlowSkip, Reporter, RunContext, SmokeFailure,
 	assert_service_fresh, await_task, crash_counts, http_get_json, http_post_json, init_firebase, load_env, make_context,
-	mcp_call, poll_until, restart_service, rtdb, start_blocking_ask, write_session_end_marker,
+	mcp_call, poll_until, restart_service, rtdb, start_blocking_ask,
 )
 
 
@@ -393,12 +393,12 @@ async def flow_restart_survival(ctx, rep, args):
 	await poll_until("human-type answer message landed after parked resolve", _find_human_message, 15)
 
 	def _find_notice():
-		data = http_get_json(f"{ctx.base_url}/away-mode?session_id={ctx.cli_session_id}")
+		data = http_get_json(f"{ctx.base_url}/sessions/{ctx.cli_session_id}/inbox")
 		for notice in data.get("notices") or []:
 			if "John answered" in notice and expected_reply in notice:
 				return notice
 		return None
-	await poll_until("parked-answer notice delivered via GET /away-mode", _find_notice, 15)
+	await poll_until("parked-answer notice delivered via GET /sessions/{sid}/inbox", _find_notice, 15)
 
 
 FLOWS: list[tuple[str, callable]] = [
@@ -461,15 +461,18 @@ async def cleanup(ctx: RunContext, rep: Reporter, args) -> None:
 
 	if ctx.session_started:
 		try:
-			write_session_end_marker(ctx)
+			status = http_post_json(f"{ctx.base_url}/session_end",
+				{"session_id": ctx.cli_session_id, "reason": "other"})
+			if status != 200:
+				errors.append(f"/session_end returned {status}")
 		except Exception as exc:
-			errors.append(f"write_session_end_marker failed: {exc}")
+			errors.append(f"POST /session_end failed: {exc}")
 
 		def _session_ended():
 			state = rtdb(ctx, f"sessions/{ctx.cli_session_id}/state").get()
 			return True if state == "ended" else None
 		try:
-			await poll_until("session state == ended after marker sweep", _session_ended, 20, interval=5.0)
+			await poll_until("session state == ended after POST /session_end", _session_ended, 15)
 		except Exception as exc:
 			errors.append(str(exc))
 

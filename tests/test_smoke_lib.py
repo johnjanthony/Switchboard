@@ -200,13 +200,13 @@ async def test_cleanup_after_an_early_preflight_failure_touches_nothing(monkeypa
 	def _rtdb(ctx, path):
 		raise AssertionError(f"cleanup touched RTDB at {path}")
 
-	def _marker(ctx):
-		raise AssertionError("cleanup wrote a session-end marker for a session that never started")
+	def _post(url, body):
+		raise AssertionError(f"cleanup POSTed {url} for a session that never started")
 
 	monkeypatch.setattr(smoke, "http_get_json", _get)
 	monkeypatch.setattr(smoke, "mcp_call", _mcp)
 	monkeypatch.setattr(smoke, "rtdb", _rtdb)
-	monkeypatch.setattr(smoke, "write_session_end_marker", _marker)
+	monkeypatch.setattr(smoke, "http_post_json", _post)
 	ctx = smoke_lib.make_context("http://127.0.0.1:9876", tmp_path)
 
 	await smoke.cleanup(ctx, smoke_lib.Reporter(), None)
@@ -245,11 +245,15 @@ class _FakeService:
 				service.store[path] = value
 		return _Ref()
 
+	def http_post_json(self, url, body):
+		self.calls.append(f"POST {url.rsplit('/', 1)[-1]}")
+		return 200
+
 	def install(self, monkeypatch):
 		monkeypatch.setattr(smoke, "http_get_json", self.http_get_json)
 		monkeypatch.setattr(smoke, "mcp_call", self.mcp_call)
 		monkeypatch.setattr(smoke, "rtdb", self.rtdb)
-		monkeypatch.setattr(smoke, "write_session_end_marker", lambda ctx: self.calls.append("marker"))
+		monkeypatch.setattr(smoke, "http_post_json", self.http_post_json)
 
 
 def _started_ctx(tmp_path, prior_away):
@@ -275,6 +279,7 @@ async def test_cleanup_restores_away_mode_before_leaving(monkeypatch, tmp_path):
 	await smoke.cleanup(ctx, smoke_lib.Reporter(), None)
 	assert service.away is False
 	assert service.calls.index("set_away_mode") < service.calls.index("leave_conversation")
+	assert "POST session_end" in service.calls
 
 
 @pytest.mark.asyncio
