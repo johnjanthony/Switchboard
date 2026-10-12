@@ -19,7 +19,7 @@ Severity colors: green below 50%, amber 50 to 80%, red above 80%.
 
 - **Hover** the widget to open the detail popup; move away to dismiss it.
 - **Drag** the small handle on the left (the cursor turns into a resize arrow over it) to reposition the widget along the taskbar. The position is remembered.
-- **Right-click the tray icon** for "Refresh now", "Check Claude status", "Check Antigravity status", "Start with Windows", "Crisp text (ClearType)", "Show plan usage", "Daily wake time", "Open Switchboard dashboard", and "Quit".
+- **Right-click the tray icon** for "Refresh now", "Check Claude status", "Start with Windows", "Crisp text (ClearType)", "Show plan usage", "Daily wake time", "Open Switchboard dashboard", and "Quit".
 - Autostart is on by default, so the widget returns after a reboot.
 
 ## Requirements

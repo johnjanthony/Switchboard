@@ -35,16 +35,11 @@
 		<text x="324" y="168" font-size="12" fill="#9fb0c0">same plugin · bridge network</text>
 		<text x="324" y="184" font-size="12" fill="#9fb0c0">Bearer SWITCHBOARD_TOKEN</text>
 
-		<rect x="576" y="122" width="248" height="96" rx="7" fill="#1e2833" stroke="#c9a557" stroke-width="1.2"/>
-		<text x="588" y="146" font-size="15" font-weight="600" fill="#e8eef4">Antigravity (agy)</text>
-		<text x="588" y="168" font-size="12" fill="#9fb0c0">agy plugin: 4 hook events</text>
-		<text x="588" y="184" font-size="12" fill="#9fb0c0">passes cli_session_id + cwd itself</text>
 	</g>
 
 	<!-- Agents -> server arrows -->
 	<line x1="172" y1="218" x2="172" y2="294" stroke="#c9a557" stroke-width="1.8" marker-end="url(#arrBrass)"/>
 	<line x1="436" y1="218" x2="436" y2="294" stroke="#c9a557" stroke-width="1.8" marker-end="url(#arrBrass)"/>
-	<line x1="700" y1="218" x2="700" y2="294" stroke="#c9a557" stroke-width="1.8" marker-end="url(#arrBrass)"/>
 	<text x="452" y="242" font-size="12" fill="#c9a557">MCP — streamable HTTP (stateful)</text>
 	<text x="452" y="258" font-size="11.5" fill="#8fa1b3">+ HTTP callbacks: inbox poll, status, telemetry, session start/end</text>
 
@@ -72,7 +67,7 @@
 		<rect x="66" y="412" width="238" height="62" rx="5" fill="#243140" stroke="#33465a" stroke-width="1"/>
 		<text x="76" y="431" font-size="12.5" font-weight="600" fill="#d8e0e8">Dispatch loops</text>
 		<text x="76" y="448">command queues · retention +</text>
-		<text x="76" y="463">session sweeps · marker sweep</text>
+		<text x="76" y="463">session sweeps · presence</text>
 
 		<rect x="318" y="412" width="238" height="62" rx="5" fill="#243140" stroke="#33465a" stroke-width="1"/>
 		<text x="328" y="431" font-size="12.5" font-weight="600" fill="#d8e0e8">SpawnHandler</text>
@@ -122,7 +117,7 @@
 		<text x="588" y="666" font-size="15" font-weight="600" fill="#e8eef4">SwitchboardSpawn task</text>
 		<text x="588" y="688" font-size="12" fill="#9fb0c0">scheduled task (interactive logon)</text>
 		<text x="588" y="704" font-size="12" fill="#9fb0c0">→ Windows Terminal tab</text>
-		<text x="588" y="720" font-size="12" fill="#9fb0c0">→ launches claude / agy</text>
+		<text x="588" y="720" font-size="12" fill="#9fb0c0">→ launches claude</text>
 		<text x="588" y="736" font-size="12" fill="#9fb0c0">on Windows or WSL</text>
 		<text x="588" y="766" font-size="11.5" font-style="italic" fill="#7d8fa3">new session joins the agents row ↑</text>
 	</g>

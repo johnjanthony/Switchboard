@@ -24,7 +24,7 @@ Switchboard is a local MCP gateway with cloud-synchronized state (Firebase) that
 - **In-line replies**: View your responses directly in the chat history for full context.
 - **Away mode**: Single server-wide flag. Toggle from the phone's top-bar pill or via the `set_away_mode` MCP tool.
 - **Activity indicators**: Prominent high-visibility indicators for unseen activity or pending questions.
-- **Session spawning**: Launch fresh agent sessions on your desktop directly from your phone — choose agent (Claude Code / Antigravity), surface (Windows / WSL), project, optional prompt, and whether to create a new conversation or add to an existing one.
+- **Session spawning**: Launch fresh Claude Code sessions on your desktop directly from your phone: choose surface (Windows / WSL), project, optional prompt, and whether to create a new conversation or add to an existing one.
 - **Conversation composition**: Join a conversation (by `ref` or ref-less), resume dormant sessions, or combine two conversations into one — resume and combine are also on the phone's long-press menu.
 - **Rich Markdown**: Full support for bold, italic, code blocks, checklists, and tables.
 
@@ -93,18 +93,6 @@ Switchboard ships as a Claude Code plugin. From any Claude Code session:
 The plugin install wires the skill and the Claude Code mod (in-process function hooks, Claude Code 2.1.287 or later): away-mode turn-end enforcement, the agent-status activity indicator, the `cli_session_id` injector, AskUserQuestion answered from the phone in away mode, session start / end tracking, and a 2 s inbox poll that lets a phone message wake an idle session. The MCP server connection is bootstrapped per host by a parallel chezmoi dotfiles effort (Windows uses `localhost:9876`; WSL uses the Windows host IP, resolvable from `/etc/resolv.conf` or `ip route show default | awk '{print $3}'`). If you are not using chezmoi, run `claude mcp add switchboard --scope user --transport http <resolved-url>` per host.
 
 WSL must use bridge networking (NOT mirrored). The Windows server requires `SWITCHBOARD_HOST=0.0.0.0` AND `SWITCHBOARD_TOKEN` set - the server refuses to start non-loopback without a token (fail-closed), and every non-loopback client must send `Authorization: Bearer <token>` on all routes except `/healthz` (loopback callers are exempt). The firewall inbound rule for TCP 9876 from the WSL subnet remains recommended as defense-in-depth; the token is the enforced control.
-
-### Antigravity CLI (agy)
-
-Antigravity CLI sessions are first-class agents (spec: `docs/superpowers/specs/2026-07-14-antigravity-cli-support-design.md`). Requirements: `agy` >= 1.1.2 on PATH. Switchboard is now structured as a native Antigravity plugin repository, sitting directly alongside the Claude plugin.
-
-To install the plugin for Antigravity, run:
-```bash
-agy plugin install C:\Work\switchboard
-```
-This automatically wires the MCP server (via `mcp_config.json`) and the turn-end and identity hooks (via `hooks.json`). The switchboard skill lives in the Claude Code plugin (`plugin/skills/`), so an agy install no longer loads it.
-
-Identity model: agy hooks cannot rewrite tool arguments, so the model passes `cli_session_id` (its conversation UUID) and `cwd` explicitly inside every switchboard call's Arguments; a PreInvocation ephemeral message teaches the values each turn and a PreToolUse hook denies non-compliant calls with the correction. Contrast: Claude Code wires via the `.claude-plugin` manifest and gets silent hook injection.
 
 ## Android App
 
@@ -187,15 +175,15 @@ With a spawn root configured, you can launch a fresh agent session directly from
 - **Surface:** Windows or WSL.
 - **Project:** Pick from projects under your configured spawn root for that surface.
 - **Prompt:** Optional starting prompt for the agent.
-- **Model:** Leave on `Default (CLI)` to pass no flag and let the CLI choose, or pick from the list for the selected agent.
-- **Effort:** Claude Code only, and only for models that have effort tiers. Antigravity has no Effort picker because its effort is part of the model id (`gemini-3.6-flash-low`).
+- **Model:** Leave on `Default (CLI)` to pass no flag and let the CLI choose, or pick from the list.
+- **Effort:** Only for models that have effort tiers.
 - **Conversation:** Create a new conversation, or add the spawned agent into an existing one.
 
-Spawn auto-enables away mode if it is currently off; the phone shows a confirmation toast. Claude Code and Antigravity (`agy`) are both supported spawn targets.
+Spawn auto-enables away mode if it is currently off; the phone shows a confirmation toast.
 
 The Model and Effort lists come from the server, not the app: `server/spawn_catalog.py` builds a catalog at startup and publishes it to Realtime Database `spawn_options/`, which both the phone and Operator render. The same catalog is the allowlist the server validates against at dispatch, so the lists you see and the values the server accepts cannot drift apart, and updating a model list needs no app release. If the catalog is missing (server down, node not yet published) both pickers fall back to `Default (CLI)` only and spawn behaves exactly as it did before. Your choice is recorded on the session and re-passed automatically when you resume it, because `claude --resume` preserves the model but resets effort to your settings default.
 
-The Claude Code model list is curated (the CLI has no enumeration command). The Antigravity list is probed with `agy models` at startup, falling back to a snapshot baked into `spawn_catalog.py`. **Note:** when Switchboard runs as a Windows service under `LocalSystem`, `agy` is typically not on that account's `PATH`, so the probe fails and the fallback snapshot is what gets published; the failure is logged loudly to `logs/switchboard.jsonl` as `spawn_catalog_agy_probe_failed` at every startup. Spawning is unaffected, but the Antigravity list will not track upstream model changes until the snapshot is updated.
+The Claude Code model list is curated (the CLI has no enumeration command).
 
 **Prerequisites:**
 
