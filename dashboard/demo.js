@@ -188,7 +188,7 @@ function buildConversation1Messages() {
 		},
 		'msg-003': {
 			sender: 'Claude 2',
-			text: "That's a solid pick, but I'd argue the **conversation model itself** is the real architectural gem. The `conv-<uuid>` abstraction with its `members_active` roster, pending questions, and message timeline gives you something none of the individual AI coding tools provide on their own: a persistent, multi-agent collaboration surface.\n\nConsider what it enables: two agents from different vendors can work on the same problem, see each other's questions to the human, and coordinate through the shared conversation. The `session_to_conversation_id` routing map means any CLI session can join any conversation, and the hydration layer means conversations survive server restarts. That's a lot of capability from a fairly simple data model.",
+			text: "That's a solid pick, but I'd argue the **conversation model itself** is the real architectural gem. The `conv-<uuid>` abstraction with its `members_active` roster, pending questions, and message timeline gives you something none of the individual AI coding tools provide on their own: a persistent, multi-agent collaboration surface.\n\nConsider what it enables: two agents can work on the same problem, see each other's questions to the human, and coordinate through the shared conversation. The `session_to_conversation_id` routing map means any CLI session can join any conversation, and the hydration layer means conversations survive server restarts. That's a lot of capability from a fairly simple data model.",
 			timestamp: t(75),
 			format: 'markdown',
 		},

@@ -31,7 +31,7 @@ def _make_session_request(session_id: str) -> Request:
 async def test_away_mode_route_returns_global_flag_invariant_of_cwd(tmp_path):
 	"""Post-conversations-redesign the route returns the global flag regardless
 	of any `?cwd=` query (which is accepted but ignored for back-compat with
-	older hook deployments). No `session_id` is supplied here, so notices is
+	older hook deployments). The route never pops notices, so notices is
 	always the empty list."""
 	registry = make_registry_with_loopback()
 	registry.update_global_away_cache(True)

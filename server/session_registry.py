@@ -351,8 +351,8 @@ class SessionRegistry:
 		self._fire_mirror(rec)
 
 	def queue_notice(self, cli_session_id: str, text: str) -> bool:
-		"""Queue a wake notice for hook delivery (turn-end block reason or
-		UserPromptSubmit context). At-most-once: pop_notices clears on read; the
+		"""Queue a wake notice that waits for the session's inbox poll
+		(GET /sessions/{sid}/inbox). At-most-once: pop_notices clears on read; the
 		convene intro message in the conversation is the backstop for a lost one."""
 		rec = self._records.get(cli_session_id)
 		if rec is None or not text:

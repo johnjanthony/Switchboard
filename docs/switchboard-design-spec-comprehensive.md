@@ -129,7 +129,7 @@ The agent-supplied `cwd` is **informational** — used for display (Android conv
 
 ## 4. MCP tool surface
 
-Ten tools, all decorated with `@require_cli_session_id`. Every tool accepts its own agent-facing arguments plus `cli_session_id` and `cwd` , injected by the Claude Code mod (§3). `_touch_sessions` runs underneath every one of the ten: it upserts an unseen `cli_session_id` into the `SessionRegistry` and refreshes that session's `SessionRecord.cwd` (and re-infers `surface`) on every call, self-healing a missed session start — the `ConversationMember.cwd` (§2.2) is untouched here; it's set only at member-add/migrate time. Subsections below are ordered as `server/main.py` registers the tools.
+Ten tools, all decorated with `@require_cli_session_id`. Every tool accepts its own agent-facing arguments plus `cli_session_id` and `cwd`, injected by the Claude Code mod (§3). `_touch_sessions` runs underneath every one of the ten: it upserts an unseen `cli_session_id` into the `SessionRegistry` and refreshes that session's `SessionRecord.cwd` (and re-infers `surface`) on every call, self-healing a missed session start — the `ConversationMember.cwd` (§2.2) is untouched here; it's set only at member-add/migrate time. Subsections below are ordered as `server/main.py` registers the tools.
 
 **Return contract.** The conversation-facing tools return one-line JSON status envelopes built by `_envelope` / `_terminal_envelope` / `_wrap_wait_result` in `server/gateway/handlers.py`. The full set of `status` values the code emits:
 
@@ -537,7 +537,7 @@ spawn_commands/<push_id>/       # phone → server
   surface                       "windows" | "wsl"          (fresh only)
   project                       (str)                      (fresh only)
   model                         (str)                      (fresh only, optional; ABSENT when not picked, never null)
-  effort                        (str)                      (fresh only, optional; claude only; ABSENT when not picked)
+  effort                        (str)                      (fresh only, optional; ABSENT when not picked)
   prompt                        (str | null)
   target_conversation_id        (conversation_id | null)   (fresh: optional join-existing; resume_session: the conversation to resume into)
   source_conversation_id        (conversation_id)          (resume only)
