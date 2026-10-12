@@ -8,6 +8,7 @@ import pytest
 
 from server.config import Config
 from server.gateway import build_tool_handlers, dispatch_responses
+from server.gateway.pending_lifecycle import park_pending
 from server.logging_jsonl import JsonlLogger
 from server.messenger import IncomingResponse
 from server.registry import Registry
@@ -1018,3 +1019,55 @@ async def test_a_stop_during_the_question_write_still_cancels_the_card(cfg, logg
 
 	assert len(backend.cancelled_questions) == 1
 	assert registry.pending_count == 0
+
+
+async def _ask_and_park(handlers, registry, backend, logger, sid):
+	"""Start a blocking ask, wait for its pending_questions record, then park it
+	the way the session sweep does. Returns (task, conversation_id, record)."""
+	task = asyncio.create_task(handlers.ask_human("Proceed?", _SENDER, cli_session_id=sid, cwd=_CWD))
+	for _ in range(6):
+		await asyncio.sleep(0)
+	conv_id = registry.session_to_conversation_id.get(sid)
+	record = registry.find_by_request_id(conv_id, backend.pending_added[0]["request_id"])
+	assert await park_pending(registry, logger, record) is True
+	return task, conv_id, record
+
+
+@pytest.mark.asyncio
+async def test_a_parked_ask_returns_the_parked_envelope_and_keeps_its_question(cfg, logger):
+	backend = PendingQuestionTrackingBackend()
+	registry = make_registry_with_loopback()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+
+	task, conv_id, record = await _ask_and_park(handlers, registry, backend, logger, "s-parked-001")
+	result = await asyncio.wait_for(task, timeout=1.0)
+	for _ in range(6):
+		await asyncio.sleep(0)
+
+	assert json.loads(result) == {"status": "parked"}
+	assert backend.pending_removed == []
+	assert backend.cancelled_questions == []
+	parked = registry.find_by_request_id(conv_id, record.request_id)
+	assert parked is not None and parked.future is None
+	assert parked.question == "Proceed?"
+
+
+@pytest.mark.asyncio
+async def test_a_re_ask_after_parking_replaces_the_parked_card(cfg, logger):
+	"""A falsely lost session re-asks once: the new ask supersedes the parked
+	record and greys out its card, so John never sees two live cards."""
+	backend = PendingQuestionTrackingBackend()
+	registry = make_registry_with_loopback()
+	handlers = build_tool_handlers(cfg, registry, backend, logger)
+	sid = "s-parked-002"
+
+	task, conv_id, record = await _ask_and_park(handlers, registry, backend, logger, sid)
+	await asyncio.wait_for(task, timeout=1.0)
+	second = asyncio.create_task(handlers.ask_human("Proceed?", _SENDER, cli_session_id=sid, cwd=_CWD))
+	for _ in range(6):
+		await asyncio.sleep(0)
+
+	assert (conv_id, record.request_id) in backend.cancelled_questions
+	assert registry.pending_count == 1 and registry.parked_count == 0
+	registry.resolve(conversation_id=conv_id, request_id=backend.pending_added[1]["request_id"], text="yes")
+	assert await asyncio.wait_for(second, timeout=1.0) == "yes"

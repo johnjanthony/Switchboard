@@ -45,6 +45,10 @@ _RECENTLY_RESOLVED_MAX = 512
 # transport error the agent retries (REV-106).
 SUPERSEDED_SENTINEL = "__SUPERSEDED__"
 
+# Resolves a blocking ask whose session the sweep judged gone: its question was
+# parked in place, so the answer arrives later as a session notice.
+PARKED_SENTINEL = "__PARKED__"
+
 
 @dataclass
 class PendingRequest:
@@ -195,6 +199,7 @@ class Registry:
 		sender: str,
 		request_id: str,
 		msg_id: str | None = None,
+		question: str | None = None,
 		return_superseded: bool = False,
 	) -> asyncio.Future | tuple[asyncio.Future, str | None]:
 		"""Add a pending request keyed by (conversation_id, cli_session_id). A second
@@ -218,6 +223,7 @@ class Registry:
 			future=future,
 			cli_session_id=cli_session_id,
 			msg_id=msg_id,
+			question=question,
 		)
 		if existing is not None and existing.notices:
 			# Session-directed notices attached to the superseded ask carry
@@ -292,6 +298,29 @@ class Registry:
 		owning_map.pop(key)
 		self._fire_pending_mirror(record.conversation_id, -1)
 		return True
+
+	def park_live(self, record: "PendingRequest") -> "PendingRequest | None":
+		"""Swap a live blocking record for a future-less copy in the same slot,
+		the form hydration rebuilds after a restart. Identity-checked like
+		pop_record. It never settles the old future (park_pending in
+		gateway/pending_lifecycle.py owns that) and fires no mirror delta, since
+		the slot stays occupied. None when the slot no longer holds this record."""
+		key = (record.conversation_id, record.cli_session_id)
+		if record.background or self._pending.get(key) is not record:
+			return None
+		parked = PendingRequest(
+			conversation_id=record.conversation_id,
+			sender=record.sender,
+			request_id=record.request_id,
+			future=None,
+			cli_session_id=record.cli_session_id,
+			started_at=record.started_at,
+			msg_id=record.msg_id,
+			notices=list(record.notices),
+			question=record.question,
+		)
+		self._pending[key] = parked
+		return parked
 
 	def all_pending(self) -> list["PendingRequest"]:
 		"""Snapshot for bulk-respond on global exit (Slice I)."""

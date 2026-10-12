@@ -13,9 +13,15 @@ transport error, which the agent retries - re-stranding it or minting orphan
 state. A resolved future hands the agent a semantic terminal sentinel it
 returns normally, so it stops. Cancel is reserved for dead awaiters: the
 asker's own already-settled arms and spawn's cleanup of a vanished agent.
+
+park_pending is the one non-terminal transition kept here, because it too
+settles a live future: it swaps the record for a parked one in its slot and
+resolves the future with PARKED_SENTINEL.
 """
 
 from __future__ import annotations
+
+from server.registry import PARKED_SENTINEL
 
 
 async def terminate_pending(
@@ -62,4 +68,24 @@ async def terminate_pending(
 				await logger.surface_error(
 					f"terminate_pending_mark_cancelled_failed: conv={record.conversation_id} req={record.request_id} {exc}"
 				)
+	return True
+
+
+async def park_pending(registry, logger, record) -> bool:
+	"""Park a live blocking ask whose session the sweep judged gone. The record
+	becomes future-less in its slot, exactly as hydration rebuilds one after a
+	restart, and the old future resolves with PARKED_SENTINEL so an asker still
+	connected gets the parked envelope. Firebase is untouched: the card and its
+	pending_questions record stay answerable, and the answer reaches the
+	session as a notice. Returns True if this call parked the record."""
+	if record.future is None or record.future.done():
+		return False
+	if registry.park_live(record) is None:
+		return False
+	record.future.set_result(PARKED_SENTINEL)
+	if logger is not None:
+		await logger.info(
+			f"pending_parked_session_lost: conversation_id={record.conversation_id} "
+			f"request_id={record.request_id} cli_session_id={record.cli_session_id}"
+		)
 	return True

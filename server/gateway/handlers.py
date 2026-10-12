@@ -17,7 +17,7 @@ from server.config import Config
 from server.logging_jsonl import JsonlLogger
 from server.messenger import MessageWriter, ConversationStore
 from server.rate_limiter import RateLimiter
-from server.registry import Registry, SUPERSEDED_SENTINEL
+from server.registry import PARKED_SENTINEL, Registry, SUPERSEDED_SENTINEL
 from server.gateway.document import _validate_path, _sha256_hex
 from server.gateway.bg_tasks import _spawn_bg
 from server.gateway.pending_lifecycle import terminate_pending
@@ -54,6 +54,8 @@ def _terminal_envelope(text: str) -> str | None:
 		return _envelope("timeout")
 	if text == SUPERSEDED_SENTINEL:
 		return _envelope("superseded")
+	if text == PARKED_SENTINEL:
+		return _envelope("parked")
 	if text.startswith("__CONVERSATION_ENDED__"):
 		cause = "ended"
 		lines = text.splitlines()
@@ -406,7 +408,7 @@ def build_tool_handlers(
 		# attached_to_msg_id splice (cosmetic).
 		future, prior_request_id = registry.add(
 			conversation_id=conversation_id, cli_session_id=cli_session_id, sender=sender,
-			request_id=request_id, msg_id=None, return_superseded=True,
+			request_id=request_id, msg_id=None, question=question, return_superseded=True,
 		)
 		try:
 			correlation, msg_id = await backend.write_conversation_message(
@@ -534,12 +536,16 @@ def build_tool_handlers(
 			return f"ERROR: {exc}"
 
 		# Terminal sentinels, not answers: force-end/combine resolve the pending
-		# future with the __CONVERSATION_ENDED__ sentinel (T-145), and a newer
-		# ask from this same session resolves it with __SUPERSEDED__ (REV-106).
-		# Hand the envelope straight back so the agent stops without retrying,
-		# and skip the answered-path side effects - the terminating path (or the
-		# superseding asker's _safe_mark_cancelled) already cleaned up Firebase.
-		if isinstance(result, str) and (result.startswith("__CONVERSATION_ENDED__") or result == SUPERSEDED_SENTINEL):
+		# future with the __CONVERSATION_ENDED__ sentinel (T-145), a newer ask
+		# from this same session resolves it with __SUPERSEDED__ (REV-106), and
+		# the session sweep resolves it with __PARKED__ when the session looks
+		# gone. Hand the envelope straight back and skip the answered-path side
+		# effects: the terminating path (or the superseding asker's
+		# _safe_mark_cancelled) already cleaned up Firebase, and a parked
+		# question's card and pending_questions record must stay answerable.
+		if isinstance(result, str) and (
+			result.startswith("__CONVERSATION_ENDED__") or result in (SUPERSEDED_SENTINEL, PARKED_SENTINEL)
+		):
 			return _terminal_envelope(result)
 
 		# Successful resolution: clear the pending_questions record (read by

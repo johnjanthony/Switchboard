@@ -12,7 +12,7 @@ from server.config import Config
 from server.gateway import build_tool_handlers
 from server.gateway.handlers import _envelope, _terminal_envelope, TIMEOUT_SENTINEL
 from server.logging_jsonl import JsonlLogger
-from server.registry import Conversation, ConversationMember, Registry
+from server.registry import PARKED_SENTINEL, Conversation, ConversationMember, Registry
 from tests.test_gateway_notify_human import RecordingBackend
 from tests.test_message_and_await_agent import (
 	_make_registry_with_one_alive_member,
@@ -229,3 +229,7 @@ async def test_lookup_returns_ok_envelope(tmp_path):
 			"members": [{"sender": "Claude-Look", "state": "alive"}],
 		}],
 	}
+
+
+def test_terminal_envelope_parked():
+	assert json.loads(_terminal_envelope(PARKED_SENTINEL)) == {"status": "parked"}

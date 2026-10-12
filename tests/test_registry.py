@@ -371,3 +371,40 @@ class TestSupersedeResolvesNotCancels:
 			r.add_parked("conv-1", "sess-A", "Claude", "req-2")
 			assert fut1.result() == SUPERSEDED_SENTINEL
 		asyncio.run(run())
+
+
+@pytest.mark.asyncio
+async def test_park_live_swaps_a_live_record_for_a_parked_copy_in_its_slot():
+	r = Registry()
+	fut = r.add("conv-1", "sess-A", "Claude", "req-1", msg_id="m1", question="Ship it?")
+	live = r.find_by_request_id("conv-1", "req-1")
+	live.notices.append("a convene notice")
+	count = r.pending_count
+
+	parked = r.park_live(live)
+
+	assert parked is not None and parked is not live
+	assert parked.future is None
+	assert (parked.sender, parked.request_id, parked.msg_id, parked.question, parked.started_at, parked.notices) == (
+		"Claude", "req-1", "m1", "Ship it?", live.started_at, ["a convene notice"])
+	assert r.find_by_request_id("conv-1", "req-1") is parked
+	assert r.pending_count == count
+	assert r.parked_count == 1
+	assert not fut.done()  # settling the old future is park_pending's job
+
+
+@pytest.mark.asyncio
+async def test_park_live_refuses_a_record_its_slot_no_longer_holds():
+	r = Registry()
+	r.add("conv-1", "sess-A", "Claude", "req-1")
+	old = r.find_by_request_id("conv-1", "req-1")
+	r.add("conv-1", "sess-A", "Claude", "req-2")  # a newer ask supersedes it
+	assert r.park_live(old) is None
+	assert r.find_by_request_id("conv-1", "req-2").future is not None
+
+
+@pytest.mark.asyncio
+async def test_park_live_refuses_a_background_record():
+	r = Registry()
+	r.add_background("conv-1", "sess-A", "Claude", "req-b", question="Also?")
+	assert r.park_live(r.find_by_request_id("conv-1", "req-b")) is None

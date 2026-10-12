@@ -1,8 +1,8 @@
 """Unit tests for terminate_pending, the single terminal-path owner (DT-1)."""
 import asyncio
 
-from server.registry import Registry
-from server.gateway.pending_lifecycle import terminate_pending
+from server.registry import PARKED_SENTINEL, Registry
+from server.gateway.pending_lifecycle import park_pending, terminate_pending
 
 
 class FakeBackend:
@@ -19,9 +19,13 @@ class FakeBackend:
 class FakeLogger:
 	def __init__(self):
 		self.errors = []
+		self.infos = []
 
 	async def surface_error(self, msg, **kw):
 		self.errors.append(msg)
+
+	async def info(self, msg):
+		self.infos.append(msg)
 
 
 def test_cancels_live_future_and_marks_firebase():
@@ -106,4 +110,44 @@ def test_backend_and_logger_may_be_none():
 		r.add_parked("conv-1", "sess-A", "Claude", "req-1")
 		rec = r.find_by_request_id("conv-1", "req-1")
 		assert await terminate_pending(r, None, None, rec) is True
+	asyncio.run(run())
+
+
+def test_park_pending_parks_a_live_ask_and_resolves_it_with_the_parked_sentinel():
+	async def run():
+		r = Registry()
+		logger = FakeLogger()
+		fut = r.add("conv-1", "sess-A", "Claude", "req-1", question="Ship it?")
+		rec = r.find_by_request_id("conv-1", "req-1")
+		# park_pending takes no backend: parking must never write to Firebase,
+		# or a restart could not re-park the question from its records.
+		assert await park_pending(r, logger, rec) is True
+		assert fut.result() == PARKED_SENTINEL
+		parked = r.find_by_request_id("conv-1", "req-1")
+		assert parked.future is None and parked.question == "Ship it?"
+		assert logger.infos == [
+			"pending_parked_session_lost: conversation_id=conv-1 request_id=req-1 cli_session_id=sess-A"
+		]
+	asyncio.run(run())
+
+
+def test_park_pending_leaves_an_ask_whose_answer_already_landed():
+	async def run():
+		r = Registry()
+		logger = FakeLogger()
+		fut = r.add("conv-1", "sess-A", "Claude", "req-1")
+		rec = r.find_by_request_id("conv-1", "req-1")
+		fut.set_result("yes")  # the answer settled the future first
+		assert await park_pending(r, logger, rec) is False
+		assert r.find_by_request_id("conv-1", "req-1") is rec
+		assert logger.infos == []
+	asyncio.run(run())
+
+
+def test_park_pending_without_a_logger_still_parks():
+	async def run():
+		r = Registry()
+		fut = r.add("conv-1", "sess-A", "Claude", "req-1")
+		assert await park_pending(r, None, r.find_by_request_id("conv-1", "req-1")) is True
+		assert fut.result() == PARKED_SENTINEL
 	asyncio.run(run())
