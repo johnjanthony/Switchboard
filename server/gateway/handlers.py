@@ -189,6 +189,7 @@ def build_tool_handlers(
 	logger: JsonlLogger,
 	limiter: RateLimiter | None = None,
 	session_registry=None,
+	stop=None,
 ) -> ToolHandlers:
 	def _validate_sender(sender: str) -> str | None:
 		if "__" in sender:
@@ -507,12 +508,21 @@ def build_tool_handlers(
 		except asyncio.CancelledError:
 			# See note above re: shielding. This is the live cancel-from-MCP
 			# path that the user observes when pressing Esc on the tool call.
+			# A service stop cancels the call the same way; then the question
+			# is left as it stands (its card and pending_questions record), so
+			# hydration parks it after the restart instead of cancelling it.
+			stopping = stop is not None and stop.requested
 			with anyio.CancelScope(shield=True):
-				record = registry.find_by_request_id(conversation_id, request_id)
-				if record is not None:
-					await terminate_pending(registry, backend, logger, record)
-				else:
-					await _safe_mark_cancelled(backend, conversation_id, request_id, logger)
+				if not stopping:
+					record = registry.find_by_request_id(conversation_id, request_id)
+					if record is not None:
+						await terminate_pending(registry, backend, logger, record)
+					else:
+						await _safe_mark_cancelled(backend, conversation_id, request_id, logger)
+				await logger.info(
+					f"ask_human_cancelled: request_id={request_id} conversation_id={conversation_id} "
+					f"stopping={stopping} stop_age_ms={stop.age_ms() if stopping else None}"
+				)
 			if session_registry is not None:
 				session_registry.mark_wait_cancelled(cli_session_id)
 			raise

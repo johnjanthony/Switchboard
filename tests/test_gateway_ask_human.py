@@ -1,6 +1,7 @@
 """Happy-path and edge-case tests for the ask_human tool handler."""
 
 import asyncio
+import json
 
 import anyio
 import pytest
@@ -10,6 +11,8 @@ from server.gateway import build_tool_handlers, dispatch_responses
 from server.logging_jsonl import JsonlLogger
 from server.messenger import IncomingResponse
 from server.registry import Registry
+from server.service_stop import ServiceStop
+from server.session_registry import SessionRegistry
 from tests.conftest import make_registry_with_loopback, _make_loop_supervisor
 from tests.test_gateway_notify_human import RecordingBackend
 
@@ -887,3 +890,131 @@ async def test_ask_human_removes_pending_questions_on_timeout(cfg, logger):
 	assert (conv_id, req_id) in backend.cancelled_questions
 	# answered should NOT have been marked — the question wasn't answered.
 	assert backend.answered_marked == []
+
+
+class _StopTrackingBackend(PendingQuestionTrackingBackend):
+	"""Records every write a cancel could make, each behind a real await
+	checkpoint, so a cleanup that is not shielded is cut short."""
+
+	async def mark_question_cancelled(self, conversation_id: str, request_id: str) -> None:
+		await asyncio.sleep(0)
+		self.cancelled_questions.append((conversation_id, request_id))
+
+	async def remove_pending_question_record(self, conversation_id: str, request_id: str) -> None:
+		await asyncio.sleep(0)
+		self.pending_removed.append((conversation_id, request_id))
+
+
+class _BlockingQuestionWriteBackend(_StopTrackingBackend):
+	"""The question write never finishes, so a cancel lands in ask_human's
+	setup-write arm rather than its wait arm."""
+
+	def __init__(self) -> None:
+		super().__init__()
+		self.question_write_started = asyncio.Event()
+
+	async def write_conversation_message(self, conv_id, sender_or_message, message_type=None, *args, **kwargs):
+		if message_type == "question":
+			self.question_write_started.set()
+			await asyncio.Event().wait()
+		return await super().write_conversation_message(conv_id, sender_or_message, message_type, *args, **kwargs)
+
+
+def _until_recorded(backend):
+	"""Ready once ask_human has written its pending_questions record and then
+	settled into its wait: a cancel after this lands in the wait arm. The record
+	is spawned before two thread-backed log writes, so a short real delay (not
+	loop yields) lets those finish."""
+	async def ready():
+		for _ in range(200):
+			if backend.pending_added:
+				await asyncio.sleep(0.2)
+				return
+			await asyncio.sleep(0)
+		raise AssertionError("ask_human never wrote its pending_questions record")
+	return ready
+
+
+async def _ask_then_cancel_through_a_scope(handlers, sid, ready, before_cancel=None):
+	"""Run ask_human inside an anyio CancelScope, the way the MCP SDK's
+	responder runs a tool call, and cancel that scope once ready() returns."""
+	scopes: list[anyio.CancelScope] = []
+
+	async def runner():
+		with anyio.CancelScope() as scope:
+			scopes.append(scope)
+			await handlers.ask_human("Overwrite foo?", _SENDER, cli_session_id=sid, cwd=_CWD)
+
+	async with anyio.create_task_group() as tg:
+		tg.start_soon(runner)
+		await ready()
+		if before_cancel is not None:
+			before_cancel()
+		scopes[0].cancel()
+
+
+def _cancel_audit_lines(cfg) -> list[str]:
+	with open(cfg.log_path, encoding="utf-8") as f:
+		details = [json.loads(line).get("detail") or "" for line in f if line.strip()]
+	return [d for d in details if d.startswith("ask_human_cancelled:")]
+
+
+@pytest.mark.asyncio
+async def test_a_service_stop_leaves_the_question_for_hydration(cfg, logger):
+	"""A stop cancels the call the way an Esc does, but the question must
+	survive it: no cancelled flag and no pending_questions removal, so
+	hydration parks it after the restart. The wait itself is over, so the
+	session still leaves awaiting_human."""
+	backend = _StopTrackingBackend()
+	registry = make_registry_with_loopback()
+	sessions = SessionRegistry()
+	stop = ServiceStop()
+	handlers = build_tool_handlers(cfg, registry, backend, logger, session_registry=sessions, stop=stop)
+	sid = "s-stop-001"
+	sessions.upsert_from_hook(sid, state="awaiting_human", event="PreToolUse")
+
+	await _ask_then_cancel_through_a_scope(handlers, sid, _until_recorded(backend), before_cancel=stop.raise_)
+	for _ in range(6):
+		await asyncio.sleep(0)
+
+	assert backend.cancelled_questions == []
+	assert backend.pending_removed == []
+	assert registry.pending_count == 1
+	assert sessions.get(sid).state == "active"
+	lines = _cancel_audit_lines(cfg)
+	assert len(lines) == 1 and "stopping=True stop_age_ms=" in lines[0]
+
+
+@pytest.mark.asyncio
+async def test_a_client_cancel_still_cancels_the_question_and_logs_it(cfg, logger):
+	backend = _StopTrackingBackend()
+	registry = make_registry_with_loopback()
+	handlers = build_tool_handlers(cfg, registry, backend, logger, stop=ServiceStop())
+
+	await _ask_then_cancel_through_a_scope(handlers, "s-esc-001", _until_recorded(backend))
+	for _ in range(6):
+		await asyncio.sleep(0)
+
+	assert len(backend.cancelled_questions) == 1
+	assert registry.pending_count == 0
+	lines = _cancel_audit_lines(cfg)
+	assert len(lines) == 1 and "stopping=False stop_age_ms=None" in lines[0]
+
+
+@pytest.mark.asyncio
+async def test_a_stop_during_the_question_write_still_cancels_the_card(cfg, logger):
+	"""Guard-rail: an ask still being written may have no pending_questions
+	record to park, so the setup-write arm keeps cancelling, stop or not."""
+	backend = _BlockingQuestionWriteBackend()
+	registry = make_registry_with_loopback()
+	stop = ServiceStop()
+	handlers = build_tool_handlers(cfg, registry, backend, logger, stop=stop)
+
+	await _ask_then_cancel_through_a_scope(
+		handlers, "s-stop-write-001", backend.question_write_started.wait, before_cancel=stop.raise_,
+	)
+	for _ in range(6):
+		await asyncio.sleep(0)
+
+	assert len(backend.cancelled_questions) == 1
+	assert registry.pending_count == 0

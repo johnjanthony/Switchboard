@@ -47,6 +47,7 @@ from server.hydration import hydrate_from_firebase
 from server.logging_jsonl import JsonlLogger
 from server.registry import Registry
 from server.session_registry import SessionRegistry, TERMINAL_STATES
+from server.service_stop import ServiceStop
 from server.rate_limiter import RateLimiter
 from server.firebase import FirebaseBackend
 from server.firebase_supervisor import LoopSupervisor
@@ -835,6 +836,25 @@ async def resolve_wsl_home(logger=None) -> str | None:
 		return None
 
 
+class SwitchboardServer(uvicorn.Server):
+	"""uvicorn.Server that raises the service's stop flag the moment a stop is
+	asked for, before uvicorn's shutdown cancels the in-flight tool calls.
+	ask_human's cancel arm reads the flag: on a stop it leaves a blocking
+	question for hydration to park, where a client's Esc cancels it."""
+
+	def __init__(self, config: uvicorn.Config, stop: ServiceStop) -> None:
+		super().__init__(config)
+		self._stop = stop
+
+	def handle_exit(self, sig, frame) -> None:
+		self._stop.raise_()
+		super().handle_exit(sig, frame)
+
+	def request_stop(self) -> None:
+		self._stop.raise_()
+		self.should_exit = True
+
+
 async def _run(config: Config) -> None:
 	# Captured first, before anything else loads: /healthz reports what this
 	# process is running so the smoke harness can refuse a stale service.
@@ -939,7 +959,8 @@ async def _run(config: Config) -> None:
 
 	limiter = RateLimiter(config.rate_limit)
 	route_limiter = RateLimiter(config.route_rate_limit)
-	handlers = build_tool_handlers(config, registry, backend, logger, limiter, session_registry=session_registry)
+	stop = ServiceStop()
+	handlers = build_tool_handlers(config, registry, backend, logger, limiter, session_registry=session_registry, stop=stop)
 
 	from server.spawn import SpawnHandler
 	spawn_handler = SpawnHandler(config, backend, logger, registry)
@@ -1057,7 +1078,7 @@ async def _run(config: Config) -> None:
 		log_level="info",
 	)
 	logging.getLogger("uvicorn.access").addFilter(_DropInboxAccessLines())
-	server = uvicorn.Server(uv_config)
+	server = SwitchboardServer(uv_config, stop)
 
 	dispatch_task = asyncio.create_task(
 		dispatch_responses(registry, backend, logger, loop_sups["dispatch_responses"], session_registry=session_registry)
@@ -1124,7 +1145,7 @@ async def _run(config: Config) -> None:
 	loop = asyncio.get_running_loop()
 
 	def _request_stop() -> None:
-		server.should_exit = True
+		server.request_stop()
 
 	# Windows does not support add_signal_handler reliably; swallow the
 	# NotImplementedError and fall back to KeyboardInterrupt in run().
