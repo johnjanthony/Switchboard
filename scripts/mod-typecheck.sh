@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Type-check the switchboard mod (hooks/, types/) against the Claude Code
+# Type-check the switchboard mod (plugin/hooks/, plugin/types/) against the Claude Code
 # function-hook declarations. Claude Code writes those only when it loads a mod
 # from a folder you own or when its plugin-authoring skill loads, so this takes
 # the newest copy it can find and fails loudly when there is none.
@@ -33,7 +33,7 @@ cat > "$work/tsconfig.json" <<EOF
 		"noEmit": true, "skipLibCheck": true,
 		"jsx": "react", "jsxFactory": "h", "jsxFragmentFactory": "Fragment"
 	},
-	"include": ["$(to_win "$declarations")", "$(to_win "$repo_root")/hooks", "$(to_win "$repo_root")/types"]
+	"include": ["$(to_win "$declarations")", "$(to_win "$repo_root")/plugin/hooks", "$(to_win "$repo_root")/plugin/types"]
 }
 EOF
 echo "mod-typecheck: using $declarations"

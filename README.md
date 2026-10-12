@@ -40,7 +40,7 @@ The model is built around **away mode** (a single global flag: when set, agents 
 
 Switchboard was architected and built by John Anthony, directing a multi-agent workflow of off-the-shelf coding agents (Claude Code among them) coordinated, fittingly, through Switchboard itself.
 
-For an agent-oriented project tour, see [`CLAUDE.md`](CLAUDE.md). The end-to-end design is documented in [`docs/switchboard-design-spec-comprehensive.md`](docs/switchboard-design-spec-comprehensive.md) — covers architecture, session-id routing, the conversation model (join candidate rule, convening), the full MCP tool surface, hook plumbing, Firebase schema, spawn (fresh / resume / combine), away mode, hydration, and the Android UI surface, all verified against the code as of 2026-07-29. [`skills/switchboard/SKILL.md`](skills/switchboard/SKILL.md) is the agent-facing reference for the tool surface.
+For an agent-oriented project tour, see [`CLAUDE.md`](CLAUDE.md). The end-to-end design is documented in [`docs/switchboard-design-spec-comprehensive.md`](docs/switchboard-design-spec-comprehensive.md) — covers architecture, session-id routing, the conversation model (join candidate rule, convening), the full MCP tool surface, hook plumbing, Firebase schema, spawn (fresh / resume / combine), away mode, hydration, and the Android UI surface, all verified against the code as of 2026-07-29. [`plugin/skills/switchboard/SKILL.md`](plugin/skills/switchboard/SKILL.md) is the agent-facing reference for the tool surface.
 
 ## Install
 
@@ -102,7 +102,7 @@ To install the plugin for Antigravity, run:
 ```bash
 agy plugin install C:\Work\switchboard
 ```
-This automatically wires the MCP server (via `mcp_config.json`), the turn-end and identity hooks (via `hooks.json`), and the `skills/` directory containing the away-mode protocol rules.
+This automatically wires the MCP server (via `mcp_config.json`) and the turn-end and identity hooks (via `hooks.json`). The switchboard skill lives in the Claude Code plugin (`plugin/skills/`), so an agy install no longer loads it.
 
 Identity model: agy hooks cannot rewrite tool arguments, so the model passes `cli_session_id` (its conversation UUID) and `cwd` explicitly inside every switchboard call's Arguments; a PreInvocation ephemeral message teaches the values each turn and a PreToolUse hook denies non-compliant calls with the correction. Contrast: Claude Code wires via the `.claude-plugin` manifest and gets silent hook injection.
 

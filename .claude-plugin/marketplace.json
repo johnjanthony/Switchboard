@@ -9,7 +9,7 @@
 	"plugins": [
 		{
 			"name": "switchboard",
-			"source": "./",
+			"source": "./plugin",
 			"description": "Local MCP gateway for human-in-the-loop away-mode interaction with John's phone"
 		}
 	]

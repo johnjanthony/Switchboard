@@ -63,21 +63,24 @@ scripts/
   agy-identity-hook.py       Antigravity (agy) hooks: PreInvocation identity teaching + status, PreToolUse identity corrector, PostToolUse status
   mod-typecheck.sh           Type-check the Claude Code mod against the engine's declarations
   deploy-mod.ps1             Refresh the desktop app's copy of the plugin (claude plugin update) and check it matches plugin/
-skills/
-  switchboard/
-    SKILL.md           Agent skill instructions (MCP tool signatures + Away Mode protocol)
-hooks/
-  hooks.json           Names the Claude Code mod's module (switchboard.ts)
-  switchboard.ts       The mod: every hook and every function that takes $ (server calls, inbox poll, delivery, stop, turn end, AskUserQuestion bridge, session start/end) plus the $.state atoms
-  client.ts            Pure: base URL default, request headers, inbox-body parsing
-  status.ts            Pure: activity-indicator mapping (tool state + detail)
-  inbox.ts             Pure: poll interval and backoff
-  turn-end.ts          Pure: away-mode turn-end decision + redirect text
-  ask.ts               Pure: AskUserQuestion phone wording, reply unwrapping, terminal-sentinel check
-  telemetry.ts         Pure: measurement report, effort level, latest title in a transcript, Claude config dir
-  tests/               claude plugin test suites + harness.ts (the fake engine beneath the mod)
-types/
-  index.d.ts           The mod's $.state contract
+plugin/                The Claude Code plugin: the marketplace's ./plugin source, and all the desktop app's copy holds
+  .claude-plugin/
+    plugin.json        Plugin manifest; no version, so each commit is a new version
+  skills/
+    switchboard/
+      SKILL.md           Agent skill instructions (MCP tool signatures + Away Mode protocol)
+  hooks/
+    hooks.json           Names the Claude Code mod's module (switchboard.ts)
+    switchboard.ts       The mod: every hook and every function that takes $ (server calls, inbox poll, delivery, stop, turn end, AskUserQuestion bridge, session start/end) plus the $.state atoms
+    client.ts            Pure: base URL default, request headers, inbox-body parsing
+    status.ts            Pure: activity-indicator mapping (tool state + detail)
+    inbox.ts             Pure: poll interval and backoff
+    turn-end.ts          Pure: away-mode turn-end decision + redirect text
+    ask.ts               Pure: AskUserQuestion phone wording, reply unwrapping, terminal-sentinel check
+    telemetry.ts         Pure: measurement report, effort level, latest title in a transcript, Claude config dir
+    tests/               claude plugin test suites + harness.ts (the fake engine beneath the mod)
+  types/
+    index.d.ts           The mod's $.state contract
 android/                     Two Gradle modules: app (phone UI), shared (library used by app). A paired Wear OS watch shows the phone's notifications through Wear OS bridging; there is no watch app
   shared/src/main/java/io/github/johnjanthony/switchboard/
     MainViewModel.kt         ALL Firebase RTDB listeners + command writers (StateFlow state)
@@ -188,7 +191,7 @@ Switchboard ships as a Claude Code plugin. From any Claude Code session:
 /plugin install switchboard@switchboard
 ```
 
-The plugin install wires the skill and the Claude Code mod (`hooks/`). Two things are installed separately:
+The plugin install wires the skill and the Claude Code mod (`plugin/`). Two things are installed separately:
 
 1. **The MCP server connection.**
 
@@ -204,17 +207,17 @@ The plugin install wires the skill and the Claude Code mod (`hooks/`). Two thing
 
     For WSL agents, also point the mod (and the agy hooks) at the Windows host so their HTTP callbacks don't fall back to `127.0.0.1` (unreachable from WSL). Export these in the WSL **login-shell** chain (`~/.profile` or `~/.bash_profile`, sourced directly), NOT only `~/.bashrc`: phone-spawned WSL agents launch via `wsl.exe -e bash -l` (a login, non-interactive shell) whose `~/.bashrc` early-returns at its interactive guard before reaching the var, so a `~/.bashrc`-only value never reaches a spawned agent and its `Bearer ${SWITCHBOARD_TOKEN}` header then expands empty (401):
 
-    - `SWITCHBOARD_BASE_URL=http://<windows-host-ip>:9876` - read by the Claude Code mod (`hooks/switchboard.ts`) and the agy hooks.
+    - `SWITCHBOARD_BASE_URL=http://<windows-host-ip>:9876` - read by the Claude Code mod (`plugin/hooks/switchboard.ts`) and the agy hooks.
     - `SWITCHBOARD_TOKEN=<same value as the server's .env>` - read by the same; sent as `Authorization: Bearer <token>`. Required for WSL agents once the server has a token; a wrong one shows as one `401` line in the session's transcript.
     - `SWITCHBOARD_MARKER_DIR` is no longer read by Claude Code sessions (the mod POSTs `/session_end`); the server keeps sweeping the marker dir until the agy removal.
 
 2. **The Python server (NSSM Windows service).** Install with `scripts/install-service.ps1`. The plugin's MCP connection is useless until this is running.
 
-3. **The Antigravity CLI client.** A native Antigravity plugin install: `agy plugin install <path-to-this-repo>` wires the MCP server (root `mcp_config.json`), the agy hooks (root `hooks.json`), and `skills/`. Machines wired before the plugin restructure may still carry the equivalent chezmoi-managed `~/.gemini/config/hooks.json`. See the README's [Antigravity CLI (agy)](README.md#antigravity-cli-agy) subsection.
+3. **The Antigravity CLI client.** A native Antigravity plugin install: `agy plugin install <path-to-this-repo>` wires the MCP server (root `mcp_config.json`) and the agy hooks (root `hooks.json`); the switchboard skill lives in the Claude Code plugin (`plugin/skills/`), so agy no longer loads it. Machines wired before the plugin restructure may still carry the equivalent chezmoi-managed `~/.gemini/config/hooks.json`. See the README's [Antigravity CLI (agy)](README.md#antigravity-cli-agy) subsection.
 
 ## Hooks
 
-The Switchboard plugin's Claude Code hooks are a **mod**: TypeScript function hooks that run inside the Claude Code process (`hooks/hooks.json` names `hooks/switchboard.ts`; Claude Code 2.1.287 or later). Every function that takes the engine's `$`, and every `$.state` atom, lives in `hooks/switchboard.ts`, because the engine's load-time scan follows `$` and state references only within the module `hooks.json` names; a mod that passes `$` into an imported function does not load. The pure logic sits beside it: `client.ts` (base URL, headers, inbox parsing), `status.ts` (the activity-indicator mapping), `inbox.ts` (poll timing and backoff), `turn-end.ts` (the away-mode turn-end decision and redirect text), `ask.ts` (phone wording and reply parsing), `telemetry.ts` (telemetry reports and the transcript title). The `$.state` contract is `types/index.d.ts`, with every member named inline in `PluginState` (the validator does not follow a type alias).
+The Switchboard plugin's Claude Code hooks are a **mod**: TypeScript function hooks that run inside the Claude Code process (`plugin/hooks/hooks.json` names `plugin/hooks/switchboard.ts`; Claude Code 2.1.287 or later). Every function that takes the engine's `$`, and every `$.state` atom, lives in `plugin/hooks/switchboard.ts`, because the engine's load-time scan follows `$` and state references only within the module `hooks.json` names; a mod that passes `$` into an imported function does not load. The pure logic sits beside it: `client.ts` (base URL, headers, inbox parsing), `status.ts` (the activity-indicator mapping), `inbox.ts` (poll timing and backoff), `turn-end.ts` (the away-mode turn-end decision and redirect text), `ask.ts` (phone wording and reply parsing), `telemetry.ts` (telemetry reports and the transcript title). The `$.state` contract is `plugin/types/index.d.ts`, with every member named inline in `PluginState` (the validator does not follow a type alias).
 
 - **Injector:** a `tool.call` hook adds `cli_session_id` and `cwd` to every `mcp__switchboard__*` call. The mod does not pre-approve the tools (see the security-plugin note below); John's sessions run in `bypassPermissions`, and elsewhere an `mcp__switchboard__*` allow rule does it.
 - **Status:** `tool.call` posts the tool state before a call and `thinking` after; `turn.start` posts `thinking`; the turn end posts `clear`. Fire-and-forget POSTs to `/agent_status`.
@@ -224,9 +227,9 @@ The Switchboard plugin's Claude Code hooks are a **mod**: TypeScript function ho
 - **AskUserQuestion:** in away mode each question goes to the phone through `ask_human` (called with `$.mcp.call`; option labels become suggestions) and the replies return as the tool's answers. `$.mcp.call` hands back each switchboard reply wrapped as `{"result": "<reply>"}`, which `ask.ts` unwraps. Claude Code moves the mod's own `$.mcp.call` to a background task at ~120 s exactly as it does the model's MCP calls, handing back its "moved to the background as task <id>" text in place of the reply; the bridge recognises it (`backgroundedTaskId`, wording pinned by a test), asks no further questions, and denies with a reason saying John's answer will arrive as that task's result. Moving the bridge off MCP is a backlog option.
 - **Session start / end:** `session.start` POSTs `/session_start` (no `source`; `/clear` raises no `session.start`, so a cleared id is registered by its first inbox poll, with an empty cwd until its first status post); `session.end` POSTs `/session_end` inside Claude Code's 1.5 s exit bound. Every server call is bounded at 1.5 s (`FETCH_TIMEOUT_MS`), because `$.http.fetch` has no timeout. The server still sweeps SessionEnd marker files until the agy removal.
 
-Develop the mod with `claude plugin test .` (tests in `hooks/tests/`; `harness.ts` is the fake engine beneath the mod), `claude plugin validate .claude-plugin/plugin.json` (at the repo root, `validate .` checks only `marketplace.json` and never loads the hooks module), and `bash scripts/mod-typecheck.sh`; `tests/test_mod_plugin.py` runs the first two from pytest so a Claude Code update that breaks the early-access API fails the suite. **The org's security plugin bypasses a user mod's `classic.*` and `tool.check` hooks** (`cc-plugin-sec-default`; the debug log reads `switchboard: classic.Stop bypassed by cc-plugin-sec-default (tier user); beneath runs`). `claude plugin test` does not load that plugin, so such a hook passes its tests and never runs in a session: build on `turn.*`, `session.*`, `tool.call` and `prompt.submit`, and check a new event with `claude -p --debug-file`.
+Develop the mod with `claude plugin test plugin` (tests in `plugin/hooks/tests/`; `harness.ts` is the fake engine beneath the mod), `claude plugin validate plugin/.claude-plugin/plugin.json` (validating a folder checks only a `marketplace.json` in it and never loads the hooks module), and `bash scripts/mod-typecheck.sh`; `tests/test_mod_plugin.py` runs the first two from pytest so a Claude Code update that breaks the early-access API fails the suite. **The org's security plugin bypasses a user mod's `classic.*` and `tool.check` hooks** (`cc-plugin-sec-default`; the debug log reads `switchboard: classic.Stop bypassed by cc-plugin-sec-default (tier user); beneath runs`). `claude plugin test` does not load that plugin, so such a hook passes its tests and never runs in a session: build on `turn.*`, `session.*`, `tool.call` and `prompt.submit`, and check a new event with `claude -p --debug-file`.
 
-**Sessions load the plugin from the live repo.** The marketplace is a `directory` source at this repo: a new session reads `hooks/hooks.json` and the mod straight from the working tree (a version bump does not gate it), and `${CLAUDE_PLUGIN_ROOT}` in a running session's hook commands expands to the working tree, not the version-gated cache. A mod edit on disk, committed or not, reaches the next session opened; deploy the server first when the two change together. Deleting or renaming a script that some session's loaded `hooks.json` still calls breaks that session at once (a Python "can't open file" exits 2, which blocks every PreToolUse). Remove a hook script only after every session has relaunched onto hooks that no longer call it. WSL is a separate install: its marketplace is its own clone (`~/work/switchboard`, per `~/.claude/plugins/known_marketplaces.json` there), so WSL sessions pick up a change only after a `git pull --ff-only` in that clone, and the same relaunch rule applies to WSL sessions before a pull that deletes a script.
+**Sessions load the plugin from the live repo.** The marketplace is a `directory` source at this repo whose plugin is the `plugin/` folder: a new terminal session reads `plugin/hooks/hooks.json` and the mod straight from the working tree (a version bump does not gate it), and `${CLAUDE_PLUGIN_ROOT}` in a running session's hook commands expands to the working tree, not the version-gated cache. A mod edit on disk, committed or not, reaches the next session opened; deploy the server first when the two change together. Deleting or renaming a script that some session's loaded `hooks.json` still calls breaks that session at once (a Python "can't open file" exits 2, which blocks every PreToolUse). Remove a hook script only after every session has relaunched onto hooks that no longer call it. WSL is a separate install: its marketplace is its own clone (`~/work/switchboard`, per `~/.claude/plugins/known_marketplaces.json` there), so WSL sessions pick up a change only after a `git pull --ff-only` in that clone, and the same relaunch rule applies to WSL sessions before a pull that deletes a script.
 
 **Desktop sessions run a copy.** The Claude for Windows desktop app passes each installed plugin to Claude Code by its `installPath` in `~/.claude/plugins/installed_plugins.json`, a copy under `~/.claude/plugins/cache/`, so its sessions load the mod as `switchboard@inline` from that copy, not from the working tree (a terminal session's debug log says `switchboard@switchboard`). `claude plugin update` refreshes the copy only when the plugin's version changes, and `plugin/.claude-plugin/plugin.json` has no `version`, so the version is the commit. After a commit that touches `plugin/`, run `scripts/deploy-mod.ps1`: it refuses an uncommitted `plugin/`, runs the update and checks the copy matches. New desktop sessions load the new copy; running ones keep theirs until restarted, and `/healthz` `mod.stale_sessions` lists them.
 
