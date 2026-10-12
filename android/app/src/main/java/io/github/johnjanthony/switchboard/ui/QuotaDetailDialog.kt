@@ -15,11 +15,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import io.github.johnjanthony.switchboard.formatAgyGroupName
 import io.github.johnjanthony.switchboard.formatAsOf
 import io.github.johnjanthony.switchboard.formatTimeElapsedPercentage
-import io.github.johnjanthony.switchboard.groupSortKey
-import io.github.johnjanthony.switchboard.isAgyGroupVisible
 import io.github.johnjanthony.switchboard.network.WidgetQuota
 import io.github.johnjanthony.switchboard.network.WidgetQuotaWindow
 import kotlin.math.roundToInt
@@ -29,11 +26,6 @@ fun QuotaDetailDialog(
 	quota: WidgetQuota,
 	onDismiss: () -> Unit,
 ) {
-	val rawAgy = quota.antigravity ?: emptyList()
-	val visibleAgy = rawAgy
-		.filter { isAgyGroupVisible(it) }
-		.sortedBy { groupSortKey(it.displayName) }
-
 	val hasClaude = quota.session != null || quota.weekly != null
 
 	AlertDialog(
@@ -44,13 +36,6 @@ fun QuotaDetailDialog(
 				modifier = Modifier.verticalScroll(rememberScrollState()),
 				verticalArrangement = Arrangement.spacedBy(20.dp)
 			) {
-				for (group in visibleAgy) {
-					GroupQuotaSection(
-						title = formatAgyGroupName(group.displayName),
-						sessionWindow = group.session,
-						weeklyWindow = group.weekly,
-					)
-				}
 				if (hasClaude) {
 					GroupQuotaSection(
 						title = "Claude Code",

@@ -40,7 +40,6 @@ fun quotaFromNode(node: QuotaNode?): WidgetQuota? {
 		session = node.fiveHour?.let(::quotaWindow),
 		weekly = node.sevenDay?.let(::quotaWindow),
 		polledAt = node.receivedAt ?: "",
-		antigravity = null,
 	)
 }
 

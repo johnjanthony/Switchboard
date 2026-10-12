@@ -40,8 +40,8 @@ class ConversationPolicyTest {
 
 	@Test
 	fun `bulk respond label uses title, falling back to roster when blank`() {
-		assertEquals("Reviewing PR", bulkRespondSectionLabel("Reviewing PR", "Claude, Gemini"))
-		assertEquals("Claude, Gemini", bulkRespondSectionLabel("", "Claude, Gemini"))
+		assertEquals("Reviewing PR", bulkRespondSectionLabel("Reviewing PR", "Claude, Claude 2"))
+		assertEquals("Claude, Claude 2", bulkRespondSectionLabel("", "Claude, Claude 2"))
 		assertEquals("Claude", bulkRespondSectionLabel("   ", "Claude"))
 	}
 

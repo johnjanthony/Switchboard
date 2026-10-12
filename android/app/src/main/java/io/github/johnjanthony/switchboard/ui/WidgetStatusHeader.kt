@@ -25,8 +25,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.unit.dp
-import io.github.johnjanthony.switchboard.groupSortKey
-import io.github.johnjanthony.switchboard.isAgyGroupVisible
 import io.github.johnjanthony.switchboard.network.WidgetQuota
 import io.github.johnjanthony.switchboard.network.WidgetQuotaWindow
 import io.github.johnjanthony.switchboard.widgetStale
@@ -49,13 +47,7 @@ fun WidgetStatusHeader(
 	onClick: () -> Unit,
 ) {
 	val stale = widgetStale(nowMs, serverSeenAt)
-	val rawAgy = quota?.antigravity ?: emptyList()
-	val visibleAgy = rawAgy
-		.filter { isAgyGroupVisible(it) }
-		.sortedBy { groupSortKey(it.displayName) }
-
 	val hasClaude = quota?.session != null || quota?.weekly != null
-	val hasAny = visibleAgy.isNotEmpty() || hasClaude
 
 	Column(
 		modifier = Modifier
@@ -64,20 +56,13 @@ fun WidgetStatusHeader(
 			.padding(start = 14.dp, end = 14.dp, top = 2.dp, bottom = 6.dp),
 		verticalArrangement = Arrangement.spacedBy(6.dp)
 	) {
-		if (quota == null || !hasAny) {
+		if (quota == null || !hasClaude) {
 			Text(
 				"No quota data",
 				style = MaterialTheme.typography.labelSmall,
 				color = MaterialTheme.colorScheme.onSurfaceVariant,
 			)
 		} else {
-			for (group in visibleAgy) {
-				QuotaPairRow(
-					sessionWindow = group.session,
-					weeklyWindow = group.weekly,
-					stale = stale
-				)
-			}
 			if (hasClaude) {
 				QuotaPairRow(
 					sessionWindow = quota?.session,

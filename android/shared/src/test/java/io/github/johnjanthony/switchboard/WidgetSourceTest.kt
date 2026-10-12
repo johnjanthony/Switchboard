@@ -62,7 +62,6 @@ class WidgetSourceTest {
 				session = WidgetQuotaWindow(pct = 0.235, resetsAt = "2026-10-10T18:00:00Z"),
 				weekly = WidgetQuotaWindow(pct = 0.61, resetsAt = "2026-10-14T09:00:00Z"),
 				polledAt = "2026-10-10T17:02:11+00:00",
-				antigravity = null,
 			),
 			quotaFromNode(node),
 		)

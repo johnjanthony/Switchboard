@@ -141,18 +141,10 @@ data class WidgetQuotaWindow(
 )
 
 @IgnoreExtraProperties
-data class WidgetQuotaGroup(
-	@get:PropertyName("display_name") @set:PropertyName("display_name") var displayName: String = "",
-	@get:PropertyName("session") @set:PropertyName("session") var session: WidgetQuotaWindow? = null,
-	@get:PropertyName("weekly") @set:PropertyName("weekly") var weekly: WidgetQuotaWindow? = null,
-)
-
-@IgnoreExtraProperties
 data class WidgetQuota(
 	@get:PropertyName("session") @set:PropertyName("session") var session: WidgetQuotaWindow? = null,
 	@get:PropertyName("weekly") @set:PropertyName("weekly") var weekly: WidgetQuotaWindow? = null,
 	@get:PropertyName("polled_at") @set:PropertyName("polled_at") var polledAt: String = "",
-	@get:PropertyName("antigravity") @set:PropertyName("antigravity") var antigravity: List<WidgetQuotaGroup>? = null,
 )
 
 // --- Account plan usage: mirrors the server-written quota/ node (server/quota_store.py).
@@ -191,9 +183,9 @@ data class RegistrySession(
 	@get:PropertyName("cli_session_id") @set:PropertyName("cli_session_id") var cliSessionId: String = "",
 	@get:PropertyName("cwd") @set:PropertyName("cwd") var cwd: String = "",
 	@get:PropertyName("surface") @set:PropertyName("surface") var surface: String = "windows",
-	// Never rendered yet - kept as a deliberate node mirror: the server tracks
-	// non-Claude CLIs (e.g. Antigravity) in this field, and a sessions-board
-	// CLI badge is the expected consumer.
+	// Never rendered yet - kept as a deliberate node mirror of the server's cli field
+	// (old records may carry a retired CLI's name); a sessions-board CLI badge is the
+	// expected consumer.
 	@get:PropertyName("cli") @set:PropertyName("cli") var cli: String = "claude",
 	@get:PropertyName("started_at") @set:PropertyName("started_at") var startedAt: String = "",
 	@get:PropertyName("last_event_at") @set:PropertyName("last_event_at") var lastEventAt: String = "",
@@ -234,5 +226,4 @@ data class SpawnCliOptions(
 data class SpawnOptions(
 	@get:PropertyName("published_at") @set:PropertyName("published_at") var publishedAt: String = "",
 	@get:PropertyName("claude") @set:PropertyName("claude") var claude: SpawnCliOptions? = null,
-	@get:PropertyName("antigravity") @set:PropertyName("antigravity") var antigravity: SpawnCliOptions? = null,
 )

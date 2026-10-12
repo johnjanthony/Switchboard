@@ -71,7 +71,6 @@ fun ConversationListScreen(
 	rings: Map<String, WidgetRing> = emptyMap(),
 	quota: WidgetQuota? = null,
 	claudeStatus: WidgetStatus? = null,
-	antigravityStatus: WidgetStatus? = null,
 	serverSeenAt: String? = null,
 	onCheckStatus: () -> Unit = {},
 	onStopStatus: () -> Unit = {},
@@ -119,7 +118,7 @@ fun ConversationListScreen(
 									text = { Text("Check status") },
 									onClick = { onCheckStatus(); menuExpanded = false }
 								)
-								if (claudeStatus?.watchState == "watching" || antigravityStatus?.watchState == "watching") {
+								if (claudeStatus?.watchState == "watching") {
 									DropdownMenuItem(
 										text = { Text("Stop status watch") },
 										onClick = { onStopStatus(); menuExpanded = false }
@@ -141,7 +140,6 @@ fun ConversationListScreen(
 				actions = {
 					val stale = serverSeenAt != null && io.github.johnjanthony.switchboard.widgetStale(nowMs, serverSeenAt)
 					io.github.johnjanthony.switchboard.SwitchboardStalePillChip(stale = stale)
-					io.github.johnjanthony.switchboard.AntigravityStatusPillChip(status = antigravityStatus)
 					io.github.johnjanthony.switchboard.OnlineOfflinePillChip(status = claudeStatus)
 					AwayModePillChip(
 						active = globalAway,

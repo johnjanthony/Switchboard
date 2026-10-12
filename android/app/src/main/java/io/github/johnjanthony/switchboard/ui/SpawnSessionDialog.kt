@@ -45,7 +45,6 @@ fun SpawnSessionDialog(
 	spawnOptions: SpawnOptions?,
 	onDismiss: () -> Unit,
 	onSpawn: (
-		agent: String,
 		surface: String,
 		project: String,
 		prompt: String,
@@ -55,7 +54,6 @@ fun SpawnSessionDialog(
 	) -> Unit,
 	onRemoveFromMru: (String) -> Unit,
 ) {
-	var agent by remember { mutableStateOf("claude") }
 	var surface by remember { mutableStateOf("windows") }
 	var project by remember { mutableStateOf("") }
 	var prompt by remember { mutableStateOf("") }
@@ -65,8 +63,8 @@ fun SpawnSessionDialog(
 	var modelExpanded by remember { mutableStateOf(false) }
 	var effortExpanded by remember { mutableStateOf(false) }
 
-	val modelOptions = SpawnOptionsPolicy.modelOptions(spawnOptions, agent)
-	val effortOptions = SpawnOptionsPolicy.effortOptions(spawnOptions, agent, model)
+	val modelOptions = SpawnOptionsPolicy.modelOptions(spawnOptions)
+	val effortOptions = SpawnOptionsPolicy.effortOptions(spawnOptions, model)
 
 	// Conversation choice: null = "create new"; non-null = id of selected existing conversation
 	var addToExisting by remember { mutableStateOf(false) }
@@ -103,22 +101,6 @@ fun SpawnSessionDialog(
 					)
 				}
 
-				// Agent radio
-				Text("Agent", style = MaterialTheme.typography.labelMedium)
-				Row(verticalAlignment = Alignment.CenterVertically) {
-					RadioButton(
-						selected = agent == "claude",
-						onClick = { agent = "claude"; model = null; effort = null },
-					)
-					Text("Claude")
-					Spacer(Modifier.width(16.dp))
-					RadioButton(
-						selected = agent == "antigravity",
-						onClick = { agent = "antigravity"; model = null; effort = null },
-					)
-					Text("Antigravity")
-				}
-
 				// Model picker (server-published catalog; Default = no flag)
 				ExposedDropdownMenuBox(
 					expanded = modelExpanded,
@@ -146,7 +128,7 @@ fun SpawnSessionDialog(
 								text = { Text(item) },
 								onClick = {
 									model = item
-									if (effort != null && effort !in SpawnOptionsPolicy.effortOptions(spawnOptions, agent, item)) {
+									if (effort != null && effort !in SpawnOptionsPolicy.effortOptions(spawnOptions, item)) {
 										effort = null
 									}
 									modelExpanded = false
@@ -156,36 +138,34 @@ fun SpawnSessionDialog(
 					}
 				}
 
-				// Effort picker (hidden for Antigravity; disabled when the model has no tiers)
-				if (SpawnOptionsPolicy.showEffortPicker(agent)) {
-					ExposedDropdownMenuBox(
+				// Effort picker (disabled when the model has no tiers)
+				ExposedDropdownMenuBox(
+					expanded = effortExpanded,
+					onExpandedChange = { if (effortOptions.isNotEmpty()) effortExpanded = !effortExpanded },
+				) {
+					OutlinedTextField(
+						value = effort ?: "Default (CLI)",
+						onValueChange = {},
+						readOnly = true,
+						enabled = effortOptions.isNotEmpty(),
+						label = { Text("Effort") },
+						modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
+						trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = effortExpanded) },
+						colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
+					)
+					ExposedDropdownMenu(
 						expanded = effortExpanded,
-						onExpandedChange = { if (effortOptions.isNotEmpty()) effortExpanded = !effortExpanded },
+						onDismissRequest = { effortExpanded = false },
 					) {
-						OutlinedTextField(
-							value = effort ?: "Default (CLI)",
-							onValueChange = {},
-							readOnly = true,
-							enabled = effortOptions.isNotEmpty(),
-							label = { Text("Effort") },
-							modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
-							trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = effortExpanded) },
-							colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
+						DropdownMenuItem(
+							text = { Text("Default (CLI)") },
+							onClick = { effort = null; effortExpanded = false },
 						)
-						ExposedDropdownMenu(
-							expanded = effortExpanded,
-							onDismissRequest = { effortExpanded = false },
-						) {
+						effortOptions.forEach { item ->
 							DropdownMenuItem(
-								text = { Text("Default (CLI)") },
-								onClick = { effort = null; effortExpanded = false },
+								text = { Text(item) },
+								onClick = { effort = item; effortExpanded = false },
 							)
-							effortOptions.forEach { item ->
-								DropdownMenuItem(
-									text = { Text(item) },
-									onClick = { effort = item; effortExpanded = false },
-								)
-							}
 						}
 					}
 				}
@@ -328,7 +308,6 @@ fun SpawnSessionDialog(
 			Button(
 				onClick = {
 					onSpawn(
-						agent,
 						surface,
 						project.trim(),
 						prompt.trim(),

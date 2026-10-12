@@ -114,9 +114,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	private val _widgetStatus = MutableStateFlow<WidgetStatus?>(null)
 	val widgetStatus: StateFlow<WidgetStatus?> = _widgetStatus.asStateFlow()
 
-	private val _widgetAntigravityStatus = MutableStateFlow<WidgetStatus?>(null)
-	val widgetAntigravityStatus: StateFlow<WidgetStatus?> = _widgetAntigravityStatus.asStateFlow()
-
 	// When the server last wrote presence/server_at (every 60 s): the stale pill's signal.
 	private val _serverSeenAt = MutableStateFlow<String?>(null)
 	val serverSeenAt: StateFlow<String?> = _serverSeenAt.asStateFlow()
@@ -423,7 +420,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 	/**
 	 * Listen to the widget data the server publishes: plan quota (quota/), the Anthropic and
-	 * Antigravity service status (widget/status, widget/antigravity_status) and the server
+	 * service status (widget/status) and the server
 	 * heartbeat (presence/server_at). Context rings are built from the sessions/ records in
 	 * startSessionRegistryListeners.
 	 */
@@ -461,23 +458,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		}
 		statusRef.addValueEventListener(statusListener)
 		subscriptions.add { statusRef.removeEventListener(statusListener) }
-
-		val antigravityStatusRef = database.getReference("widget/antigravity_status")
-		val antigravityStatusListener = object : ValueEventListener {
-			override fun onDataChange(snapshot: DataSnapshot) {
-				_widgetAntigravityStatus.value = try {
-					snapshot.getValue(WidgetStatus::class.java)
-				} catch (e: Exception) {
-					android.util.Log.w("MainViewModel", "widget/antigravity_status parse failed", e)
-					null
-				}
-			}
-			override fun onCancelled(error: DatabaseError) {
-				android.util.Log.w("MainViewModel", "widget/antigravity_status listener cancelled: $error")
-			}
-		}
-		antigravityStatusRef.addValueEventListener(antigravityStatusListener)
-		subscriptions.add { antigravityStatusRef.removeEventListener(antigravityStatusListener) }
 
 		val presenceRef = database.getReference("presence/server_at")
 		val presenceListener = object : ValueEventListener {
@@ -908,7 +888,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	 * Returns true if away mode was auto-enabled (caller can show a toast).
 	 */
 	fun spawnSession(
-		agent: String,
 		surface: String,
 		project: String,
 		prompt: String,
@@ -923,7 +902,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 		}
 		val record = mutableMapOf<String, Any>(
 			"type" to "fresh",
-			"agent" to agent,
+			"agent" to "claude",
 			"surface" to surface,
 			"project" to project,
 			"issued_at" to nowIso(),
@@ -1046,9 +1025,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 	// --- Status request (phone -> server command queue) ---
 
 	/**
-	 * Trigger a fresh status check for all services (Claude and Antigravity). Pushes a command 
-	 * the server's status_request dispatcher routes to both services. The server publishes the
-	 * results to widget/status and widget/antigravity_status, which this view-model reads back.
+	 * Trigger a fresh Claude status check. Pushes a command the server's status_request
+	 * dispatcher routes to the status service, which publishes to widget/status, which this
+	 * view-model reads back.
 	 * Mirrors the away_mode_commands push pattern. This is the phone's trigger path - NOT an HTTP call.
 	 */
 	fun requestStatusCheckAll() {
