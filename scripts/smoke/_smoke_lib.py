@@ -149,6 +149,8 @@ class RunContext:
 	conversation_id: str | None = None
 	request_id: str | None = None
 	crash_snapshot: dict | None = None
+	# The killed-session flow's second identity: its own session and conversation.
+	killed: RunContext | None = None
 
 def make_context(base_url: str, repo_root: Path) -> RunContext:
 	rid = uuid.uuid4().hex[:8]

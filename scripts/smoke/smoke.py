@@ -3,7 +3,7 @@ plus a firebase_admin RTDB witness, standing in for an agent and John -
 exercises the running service end to end over its public surfaces (HTTP,
 MCP, RTDB). No server imports; run from the repo root."""
 from __future__ import annotations
-import argparse, asyncio, json, sys, time
+import argparse, asyncio, dataclasses, json, sys, time, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +17,7 @@ from _smoke_lib import (
 def build_arg_parser() -> argparse.ArgumentParser:
 	parser = argparse.ArgumentParser(description=__doc__)
 	parser.add_argument("--skip-restart", action="store_true", help="skip the restart-survival flow")
+	parser.add_argument("--skip-killed-session", action="store_true", help="skip the killed-session flow (about 2.5 minutes of waiting on the sweep)")
 	parser.add_argument("--force", action="store_true", help="proceed even if away mode is already ON")
 	parser.add_argument("--keep", action="store_true", help="skip cleanup, leaving run residue for debugging")
 	parser.add_argument("--preflight-only", action="store_true", help="run Flow 0 only and exit (fully read-only)")
@@ -401,6 +402,84 @@ async def flow_restart_survival(ctx, rep, args):
 	await poll_until("parked-answer notice delivered via GET /sessions/{sid}/inbox", _find_notice, 15)
 
 
+async def flow_killed_session_parks(ctx, rep, args):
+	"""A session whose inbox poll stops while it holds a live blocking ask is
+	judged lost, and its question is parked rather than left live: the card stays
+	answerable and the answer queues as a notice for the session. A second
+	identity plays the session. It keeps its MCP call open, so the call itself
+	returns the parked envelope, the path a falsely lost session takes; the
+	server side is the same as for a killed one."""
+	killed = dataclasses.replace(
+		ctx, sender=f"{ctx.sender}-k", title=f"{ctx.title} K", cli_session_id=str(uuid.uuid4()),
+		session_started=False, conversation_id=None, request_id=None, killed=None,
+	)
+	ctx.killed = killed
+	inbox = f"{ctx.base_url}/sessions/{killed.cli_session_id}/inbox"
+	status = http_post_json(f"{ctx.base_url}/session_start", {"session_id": killed.cli_session_id, "cwd": killed.cwd})
+	if status != 200:
+		raise SmokeFailure(f"/session_start for the killed identity returned {status}")
+	killed.session_started = True
+	for _ in range(3):
+		http_get_json(inbox)  # a poll stamp, as the mod's 2 s poll leaves
+		await asyncio.sleep(0.5)
+	# The mod posts this status before every ask_human call; it puts the session in awaiting_human.
+	http_post_json(f"{ctx.base_url}/agent_status", {
+		"session_id": killed.cli_session_id, "cwd": killed.cwd, "event": "PreToolUse", "state": "clear",
+	})
+	parked_before = http_get_json(f"{ctx.base_url}/healthz")["pending"]["parked"]
+	question = f"smoke killed-session probe {ctx.run_id}"
+	task = start_blocking_ask(killed, question)
+
+	def _find_pending():
+		convs = rtdb(ctx, "conversations").get() or {}
+		for cid, node in convs.items():
+			if not isinstance(node, dict) or killed.sender not in (node.get("members_active") or {}):
+				continue
+			for rid, rec in (node.get("pending_questions") or {}).items():
+				if isinstance(rec, dict) and rec.get("sender") == killed.sender:
+					return cid, rid, rec.get("msgId")
+		return None
+	killed.conversation_id, killed.request_id, msg_id = await poll_until(
+		"the killed identity's pending question recorded", _find_pending, 15)
+	if not msg_id:
+		raise SmokeFailure("the killed identity's pending_questions record has no msgId")
+
+	# The poll stops here. The sweep judges the session after 90 s without one, on
+	# its next 60 s tick, plus up to 90 s of grace if the service started recently.
+	def _lost():
+		return True if rtdb(ctx, f"sessions/{killed.cli_session_id}/state").get() == "lost" else None
+	await poll_until("the silent session marked lost by the sweep", _lost, 300, interval=5.0)
+	envelope = await await_task("the blocked ask to return the parked envelope", task, 30)
+	try:
+		parked_status = json.loads(envelope).get("status")
+	except (ValueError, AttributeError):
+		parked_status = None
+	if parked_status != "parked":
+		raise SmokeFailure(f"expected the parked envelope, got {envelope!r}")
+
+	if rtdb(ctx, f"messages/{killed.conversation_id}/{msg_id}/cancelled").get():
+		raise SmokeFailure("the parked question's card was cancelled")
+	if rtdb(ctx, f"conversations/{killed.conversation_id}/pending_questions/{killed.request_id}").get() is None:
+		raise SmokeFailure("the parked question's pending_questions record is gone")
+	parked = http_get_json(f"{ctx.base_url}/healthz")["pending"]["parked"]
+	if parked < parked_before + 1:
+		raise SmokeFailure(f"expected /healthz pending.parked >= {parked_before + 1} after the park, got {parked!r}")
+
+	expected_reply = f"smoke-killed-answer-{ctx.run_id}"
+	rtdb(ctx, f"answers/{killed.conversation_id}/{killed.request_id}").set({
+		"text": expected_reply, "sender": "John",
+		"request_id": killed.request_id, "written_at": datetime.now(timezone.utc).isoformat(),
+	})
+
+	def _find_notice():
+		data = http_get_json(inbox)
+		for notice in data.get("notices") or []:
+			if "John answered" in notice and question in notice and expected_reply in notice:
+				return notice
+		return None
+	await poll_until("the parked answer's notice in the killed identity's inbox", _find_notice, 15)
+
+
 FLOWS: list[tuple[str, callable]] = [
 	("preflight", flow_preflight),
 	("away-mode round-trip", flow_away_mode_roundtrip),
@@ -409,8 +488,80 @@ FLOWS: list[tuple[str, callable]] = [
 	("fastest-answer round-trip", flow_fast_answer),
 	("message interjection round-trip", flow_message_inject),
 	("background ask round-trip", flow_background_ask),
+	("killed session parks its ask", flow_killed_session_parks),
 	("restart survival", flow_restart_survival),
 ]
+
+
+def _flow_name(flow) -> str:
+	return next(name for name, fn in FLOWS if fn is flow)
+
+
+def requested_skips(args) -> dict[str, str]:
+	"""Flows the command line asked to skip, by name. Resolved by identity, not a
+	hardcoded name: a renamed flow must not silently turn --skip-restart into a
+	restart that severs live sessions."""
+	skips = {}
+	if args.skip_restart:
+		skips[_flow_name(flow_restart_survival)] = "--skip-restart"
+	if args.skip_killed_session:
+		skips[_flow_name(flow_killed_session_parks)] = "--skip-killed-session"
+	if args.preflight_only:
+		skips.update({name: "--preflight-only" for name, fn in FLOWS if fn is not flow_preflight})
+	return skips
+
+
+async def _retire_identity(ident: RunContext, errors: list[str]) -> None:
+	"""Leave and end one smoke identity's conversation and session. Runs after
+	away mode is restored, since leaving while it is on re-homes the session."""
+	if ident.conversation_id is not None:
+		try:
+			await mcp_call(ident, "leave_conversation", {"sender": ident.sender, "parting_message": "smoke run complete"})
+		except Exception as exc:
+			errors.append(f"leave_conversation failed: {exc}")
+
+		def _conv_ended():
+			state = rtdb(ident, f"conversations/{ident.conversation_id}/meta/state").get()
+			return True if state == "ended" else None
+		try:
+			await poll_until("conversation state == ended after leave", _conv_ended, 15)
+		except Exception as exc:
+			errors.append(str(exc))
+
+		try:
+			rtdb(ident, f"conversations/{ident.conversation_id}/meta/hidden").set(True)
+		except Exception as exc:
+			errors.append(f"hide conversation failed: {exc}")
+
+	if ident.session_started:
+		try:
+			status = http_post_json(f"{ident.base_url}/session_end",
+				{"session_id": ident.cli_session_id, "reason": "other"})
+			if status != 200:
+				errors.append(f"/session_end returned {status}")
+		except Exception as exc:
+			errors.append(f"POST /session_end failed: {exc}")
+
+		def _session_ended():
+			state = rtdb(ident, f"sessions/{ident.cli_session_id}/state").get()
+			return True if state == "ended" else None
+		try:
+			await poll_until("session state == ended after POST /session_end", _session_ended, 15)
+		except Exception as exc:
+			errors.append(str(exc))
+
+		# A --force run keeps a real away session's away mode on, so the leave above
+		# still re-homed the session into a fresh "(home)" conversation. Hide any
+		# conversation besides the run's own that holds the smoke sender. Hide only:
+		# force-ending it while away mode is on would re-home the session yet again.
+		try:
+			convs = rtdb(ident, "conversations").get() or {}
+			for cid, node in convs.items():
+				if cid != ident.conversation_id and isinstance(node, dict) and ident.sender in (node.get("members_active") or {}):
+					rtdb(ident, f"conversations/{cid}/meta/hidden").set(True)
+					print(f"cleanup: hid re-homed conversation {cid}")
+		except Exception as exc:
+			errors.append(f"re-homed conversation sweep failed: {exc}")
 
 
 async def cleanup(ctx: RunContext, rep: Reporter, args) -> None:
@@ -440,54 +591,9 @@ async def cleanup(ctx: RunContext, rep: Reporter, args) -> None:
 	except Exception as exc:
 		errors.append(f"away mode restore failed: {exc}")
 
-	if ctx.conversation_id is not None:
-		try:
-			await mcp_call(ctx, "leave_conversation", {"sender": ctx.sender, "parting_message": "smoke run complete"})
-		except Exception as exc:
-			errors.append(f"leave_conversation failed: {exc}")
-
-		def _conv_ended():
-			state = rtdb(ctx, f"conversations/{ctx.conversation_id}/meta/state").get()
-			return True if state == "ended" else None
-		try:
-			await poll_until("conversation state == ended after leave", _conv_ended, 15)
-		except Exception as exc:
-			errors.append(str(exc))
-
-		try:
-			rtdb(ctx, f"conversations/{ctx.conversation_id}/meta/hidden").set(True)
-		except Exception as exc:
-			errors.append(f"hide conversation failed: {exc}")
-
-	if ctx.session_started:
-		try:
-			status = http_post_json(f"{ctx.base_url}/session_end",
-				{"session_id": ctx.cli_session_id, "reason": "other"})
-			if status != 200:
-				errors.append(f"/session_end returned {status}")
-		except Exception as exc:
-			errors.append(f"POST /session_end failed: {exc}")
-
-		def _session_ended():
-			state = rtdb(ctx, f"sessions/{ctx.cli_session_id}/state").get()
-			return True if state == "ended" else None
-		try:
-			await poll_until("session state == ended after POST /session_end", _session_ended, 15)
-		except Exception as exc:
-			errors.append(str(exc))
-
-		# A --force run keeps a real away session's away mode on, so the leave above
-		# still re-homed the session into a fresh "(home)" conversation. Hide any
-		# conversation besides the run's own that holds the smoke sender. Hide only:
-		# force-ending it while away mode is on would re-home the session yet again.
-		try:
-			convs = rtdb(ctx, "conversations").get() or {}
-			for cid, node in convs.items():
-				if cid != ctx.conversation_id and isinstance(node, dict) and ctx.sender in (node.get("members_active") or {}):
-					rtdb(ctx, f"conversations/{cid}/meta/hidden").set(True)
-					print(f"cleanup: hid re-homed conversation {cid}")
-		except Exception as exc:
-			errors.append(f"re-homed conversation sweep failed: {exc}")
+	for ident in (ctx.killed, ctx):
+		if ident is not None:
+			await _retire_identity(ident, errors)
 
 	try:
 		hz = http_get_json(f"{ctx.base_url}/healthz")
@@ -532,13 +638,7 @@ async def main() -> int:
 	if not args.preflight_only:
 		sa, url = load_env(repo_root)
 		ctx.fb_app = init_firebase(sa, url)
-	skips = {}
-	if args.skip_restart:
-		# Resolved by identity, not a hardcoded name: a renamed flow must not
-		# silently turn --skip-restart into a restart that severs live sessions.
-		skips[next(name for name, fn in FLOWS if fn is flow_restart_survival)] = "--skip-restart"
-	if args.preflight_only:
-		skips.update({name: "--preflight-only" for name, fn in FLOWS if fn is not flow_preflight})
+	skips = requested_skips(args)
 	try:
 		await run_flows(FLOWS, ctx, rep, args, skips)
 	finally:

@@ -304,3 +304,40 @@ async def test_cleanup_hides_a_rehomed_conversation_when_away_was_already_on(mon
 	assert not [c for c in service.calls if "conv-real" in c]
 	assert "set_away_mode" not in service.calls
 	assert service.away is True
+
+
+def test_the_killed_session_flow_runs_before_the_restart_and_can_be_skipped():
+	flows = [fn for _, fn in smoke.FLOWS]
+	assert flows.index(smoke.flow_killed_session_parks) < flows.index(smoke.flow_restart_survival)
+	skips = smoke.requested_skips(smoke.build_arg_parser().parse_args(["--skip-killed-session"]))
+	name = next(name for name, fn in smoke.FLOWS if fn is smoke.flow_killed_session_parks)
+	assert skips == {name: "--skip-killed-session"}
+
+
+def test_preflight_only_still_skips_every_other_flow():
+	skips = smoke.requested_skips(smoke.build_arg_parser().parse_args(["--preflight-only"]))
+	assert set(skips) == {name for name, fn in smoke.FLOWS if fn is not smoke.flow_preflight}
+
+
+@pytest.mark.asyncio
+async def test_cleanup_retires_the_killed_identity_as_well_as_the_run_session(monkeypatch, tmp_path):
+	ctx = _started_ctx(tmp_path, prior_away=False)
+	killed = smoke_lib.make_context("http://127.0.0.1:9876", tmp_path)
+	killed.sender = f"{ctx.sender}-k"
+	killed.session_started = True
+	killed.conversation_id = "conv-killed"
+	ctx.killed = killed
+	service = _FakeService(away=True, store={
+		"conversations/conv-smoke/meta/state": "ended",
+		"conversations/conv-killed/meta/state": "ended",
+		f"sessions/{ctx.cli_session_id}/state": "ended",
+		f"sessions/{killed.cli_session_id}/state": "ended",
+	})
+	service.install(monkeypatch)
+
+	await smoke.cleanup(ctx, smoke_lib.Reporter(), None)
+
+	assert service.calls.count("leave_conversation") == 2
+	assert service.calls.count("POST session_end") == 2
+	assert "set conversations/conv-killed/meta/hidden=True" in service.calls
+	assert service.calls.index("set_away_mode") < service.calls.index("leave_conversation")
