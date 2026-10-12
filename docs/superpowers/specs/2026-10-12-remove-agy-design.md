@@ -21,7 +21,9 @@ Done means: no agy branch left in the tree outside the history listed under Docs
 
 - The root `hooks.json`, `mcp_config.json` and `plugin.json` are agy's plugin (`agy plugin install <repo>`). The Claude Code marketplace (`.claude-plugin/marketplace.json`) names `./plugin`, whose manifest is `plugin/.claude-plugin/plugin.json`, so no Claude Code session reads the root files.
 - The three Python hook scripts left in `scripts/` (`agy-identity-hook.py`, `turn-end-hook-away-mode.py`, `_hook_common.py`) are called only by agy: by the root `hooks.json`, and by `~/.gemini/config/hooks.json`, whose Windows copy has a `switchboard` block calling `C:/Work/switchboard/scripts/agy-identity-hook.py` and `turn-end-hook-away-mode.py --cli antigravity`. WSL has a `~/.gemini/config/hooks.json` too. Neither is chezmoi-managed. agy's Windows plugins directory lists `switchboard` beside `cerebro`, `superpowers`, `firebase` and `android-cli-plugin`, so agy itself stays installed.
-- The marker sweep (`dispatch_session_end_markers`) reads `logs/session-end`, a directory `server/main.py` derives from the log path. Claude Code sessions end through `POST /session_end` since the mod. The sweep's remaining users are agy's classic hooks and the smoke harness, whose session-end flow writes a marker (`write_session_end_marker`, `scripts/smoke/_smoke_lib.py`) and waits for the sweep.
+- The marker sweep (`dispatch_session_end_markers`) reads `logs/session-end`, a directory `server/main.py` derives from the log path. Claude Code sessions end through `POST /session_end` since the mod, and agy's hooks never wrote markers. Its only remaining writer is the smoke harness, whose session-end flow writes a marker (`write_session_end_marker`, `scripts/smoke/_smoke_lib.py`) and waits for the sweep. The harness's restart-survival flow also reads its parked-answer notice through the `/away-mode` `session_id` pop.
+- Once the catalog has no `antigravity` key, `validate_spawn_choice` raises `KeyError` for `agent: "antigravity"`, which `dispatch_spawn_commands` reports as a crashed command, not a rejection. Convene-by-resume (`_perform_convene`) relaunches ended or lost session records through `launch_resume_agent`, so it can reach an old agy record too.
+- `/widget-status` resolves its `target` query parameter silently: any value other than `antigravity` gets the Claude view.
 - `publish_spawn_options` (`server/firebase.py`) overwrites the whole `spawn_options` node at startup, so its `antigravity` key goes with the first publish. Nothing overwrites `widget/antigravity_status`.
 - Nothing produces `quota.antigravity` any more: Watchtower's Antigravity-quota reader was deleted in `a7b4ac0`. The phone's and Operator's readers of it are dead code.
 - `post_agent_message` and the `message_and_await_agent` timeout clamp were built because agy's `call_mcp_tool` froze the whole session while it waited. Claude agents use both in collab.
@@ -31,7 +33,7 @@ Done means: no agy branch left in the tree outside the history listed under Docs
 
 ### Server
 
-- `server/antigravity_status.py`; its construction and wiring in `server/main.py`; the `target=antigravity` branch of `/widget-status`; `write_widget_antigravity_status` in `server/firebase.py`; the Antigravity half of `check_all` and `stop_all` in `dispatch_status_request_commands`.
+- `server/antigravity_status.py`; its construction and wiring in `server/main.py`; the `target=antigravity` branch of `/widget-status`, which now answers 400 for any `target` other than `claude` (or none), so an old client asking for the Antigravity view fails loudly; `write_widget_antigravity_status` in `server/firebase.py`; the Antigravity half of `check_all` and `stop_all` in `dispatch_status_request_commands` (the phone still sends both types, which now drive the Claude service alone).
 - The marker sweep: `dispatch_session_end_markers`, its task, its supervisor entry, the marker-directory setup, and any counter or health field only it feeds. `handle_session_end` (`server/cli_session_end.py`) stays, because the `/session_end` route uses it.
 - The agy UserPromptSubmit notice pop in `/agent_status`, and the `session_id` notice pop in `/away-mode`. The `/away-mode` GET that reports the flag stays.
 - `_propagate_agy_lost_to_members` and its call in the session sweep.
@@ -43,19 +45,19 @@ Done means: no agy branch left in the tree outside the history listed under Docs
 
 - `scripts/agy-identity-hook.py`, `scripts/turn-end-hook-away-mode.py`, `scripts/_hook_common.py`, `scripts/spawn-agy-wsl.sh`, and the agy branch of `scripts/spawn-launcher.ps1`.
 - The root `hooks.json`, `mcp_config.json` and `plugin.json`.
-- The smoke harness ends its session with `POST /session_end` in place of `write_session_end_marker`, and its flow waits for the same `ended` state.
+- The smoke harness ends its session with `POST /session_end` in place of `write_session_end_marker`, and its flow waits for the same `ended` state. Its restart-survival flow reads the parked-answer notice from `GET /sessions/{sid}/inbox`.
 
 ### Operator (`dashboard/`)
 
 - The Agent picker in the spawn dialog; spawns always send `agent: "claude"`.
 - The Antigravity status pill (`AntigravityStatusControl` in `StatusBar.js`), `requestAntigravityStatus` and `setWidgetAntigravityStatus` in `store.js`, `widgetAntigravityStatus` in `schema.js`, and the `antigravity-pill` styles.
-- The agent branch of the spawn-option helpers in `derive.js`, the `quota.antigravity` reader, and the agy data in `demo.js`.
+- The agent branch of the spawn-option helpers in `derive.js`, and the agy data in `demo.js`. (Operator's `quota.antigravity` reader already went in `12b52da`.)
 
 ### Phone (`android/`)
 
 - The Agent picker in `SpawnSessionDialog`, and the agent parameter and branches in `SpawnOptionsPolicy`.
-- The `widget/antigravity_status` listener and the `widgetAntigravityStatus` flow in `MainViewModel`, and the lamp in `WidgetStatusHeader`.
-- The agy groups in `QuotaDetailDialog`, `formatAgyGroupName` and `isAgyGroupVisible` in `WidgetFormat`, and the `antigravity` fields in `network/Models.kt`.
+- The `widget/antigravity_status` listener and the `widgetAntigravityStatus` flow in `MainViewModel`, and the lamp: `AntigravityStatusPillChip` in `MainActivity.kt`, placed by `ConversationListScreen`.
+- The dead agy quota rows in `WidgetStatusHeader` and `QuotaDetailDialog`; `groupSortKey`, `formatAgyGroupName` and `isAgyGroupVisible` in `WidgetFormat`; `WidgetQuotaGroup` and the `antigravity` fields in `network/Models.kt`.
 
 ### Watchtower
 
@@ -63,11 +65,11 @@ Done means: no agy branch left in the tree outside the history listed under Docs
 
 ### Plugin
 
-- The agy guidance in `plugin/skills/switchboard/SKILL.md`: the `continue`-steering note, "Antigravity" as a sender example, and the `call_mcp_tool` collab pattern. The agy comment in `plugin/hooks/turn-end.ts`.
+- The agy guidance in `plugin/skills/switchboard/SKILL.md`: the `continue`-steering note, "Antigravity" as a sender example, and the `call_mcp_tool` collab pattern, rewritten harness-neutrally because another section points at it. The comment in `plugin/hooks/turn-end.ts` that names the deleted `scripts/turn-end-hook-away-mode.py`.
 
 ## Compatibility with old clients and old data
 
-- **Spawns and resumes that name agy.** A fresh spawn with `agent: "antigravity"` (from an APK or an Operator tab older than the deploy), a resume of a session whose record says `cli: "antigravity"`, and a combine-resume of such a member are each rejected loudly, the way an invalid model pick is today: a `send_text` to the phone and an audit entry, before away mode is touched, with no tab opened.
+- **Spawns and resumes that name agy.** A fresh spawn with `agent: "antigravity"` (from an APK or an Operator tab older than the deploy), a resume of a session whose record says `cli: "antigravity"`, and a combine-resume of such a member are each rejected loudly, the way an invalid model pick is today: a `send_text` to the phone and an audit entry, before away mode is touched, with no tab opened. A combine that would relaunch such a member aborts whole, moving nothing. Convene-by-resume skips such a record with a reason in its skipped list. The checks are generic (any `agent` or `cli` other than `"claude"`), so the server code names no retired CLI.
 - **Old records.** `sessions/` records and conversation members with `cli: "antigravity"` keep hydrating and rendering, since `cli` is display data. They age out under the existing retention rules.
 - **RTDB leftovers.** `widget/antigravity_status` is deleted once, by hand, during the deploy. It is a one-time migration, so it gets no permanent code. `spawn_options/antigravity` goes with the first startup publish.
 
@@ -77,7 +79,7 @@ Done as the first task, so agy's config never names a deleted script. On each ma
 
 ## Docs and tracking
 
-- **Updated:** `docs/switchboard-design-spec-comprehensive.md`; `README.md` (its Antigravity CLI subsection); `CLAUDE.md` (the Layout entries for `antigravity_status.py`, `agy-identity-hook.py` and the marker sweep, Setup step 3, the Hooks section's agy paragraph and marker mentions, and the MCP section's non-Claude note); `watchtower/README.md`.
+- **Updated:** `docs/switchboard-design-spec-comprehensive.md`; `README.md` (its Antigravity CLI subsection and the spawn section); `CLAUDE.md` (the Layout entries for `spawn_catalog.py`, `cli_session_end.py`, `gateway/dispatch.py` and `agy-identity-hook.py`, Setup step 3, the Hooks section's agy paragraph and marker mentions, and the MCP section's non-Claude note); `watchtower/README.md`; `docs/media/switchboard-architecture.svg` (its agy box, arrow and marker-sweep label).
 - **Unchanged, as history:** the dated specs under `docs/superpowers/specs/`, `PROJECT-JOURNAL.md`, and `.graphify-verdicts.json` (the src-view rebuild reports verdicts for deleted code as stale and keeps them).
 - **Backlog:** cut T-283 and T-261. Remove T-277's marker-count bullet. Refresh T-249's premise: the mod's `/session_end` replaced the marker, so any hard-killed session now leaves its member alive, and the agy branch it cites is gone. Trim the agy asides in T-252, T-260 and any other entry that still names agy.
 - **Journal:** a PROJECT-JOURNAL entry. **Memory:** retire `project_agy_spawn_support`.
@@ -85,13 +87,14 @@ Done as the first task, so agy's config never names a deleted script. On each ma
 ## Testing
 
 - **Deleted:** `tests/test_agy_identity_hook.py`, `tests/test_hook_common.py`, `tests/test_turn_end_hook.py`, `tests/test_session_end_markers.py`, `tests/test_antigravity_status.py`, and `AntigravityStatusViewTests.cs`. Mixed test files lose their agy cases.
-- **Added (server):**
-  - A fresh spawn with `agent: "antigravity"` is rejected with a phone notice and leaves away mode, the session registry and the launcher untouched.
-  - A resume of a `cli: "antigravity"` record is rejected the same way.
-  - A hydrated `cli: "antigravity"` session record still loads.
+- **Added (server).** The compatibility tests use a neutral non-claude value (`"retired-cli"`), which exercises the same generic checks an old agy record or client hits:
+  - A fresh spawn naming a non-claude agent is rejected with a phone notice and leaves away mode, the session registry and the launcher untouched.
+  - A resume, a resume-session and a combine of a non-claude record are rejected the same way; convene skips it.
+  - A hydrated non-claude session record still loads.
   - `/away-mode?session_id=<sid>` returns the flag and leaves that session's notices queued.
   - `/agent_status` pops no notices, whatever the `cli`.
-  - The built catalog has no `antigravity` key.
+  - The built catalog holds only the `claude` key.
+  - `/widget-status` answers 400 for an unknown `target`; `check_all` and `stop_all` drive the Claude service.
 - **Gates:** `pytest` with an explicit fresh `--basetemp`, `node --test dashboard/*.test.js`, `dotnet test` from `watchtower/`, `:shared:testDebugUnitTest` plus the app compile, and the mod checks (`claude plugin test plugin` and `scripts/mod-typecheck.sh`, which `tests/test_mod_plugin.py` also runs).
 - **Final sweep:** a case-insensitive grep (`git grep -I -i`) for `agy`, `antigravity` and `gemini` across tracked text files finds nothing outside the history listed under Docs and tracking and `.gitignore`'s `/GEMINI.md`.
 
