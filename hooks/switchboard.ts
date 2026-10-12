@@ -5,6 +5,8 @@ import type { AskQuestion } from './ask'
 import { backgroundedDeny, backgroundedTaskId, isTerminal, phoneQuestion, raceAbort, replyText } from './ask'
 import type { InboxAnswer, StatusBody } from './client'
 import { DEFAULT_BASE_URL, FETCH_TIMEOUT_MS, parseInboxBody, requestHeaders } from './client'
+import type { ModFile } from './fingerprint'
+import { fromBase64, modFingerprint } from './fingerprint'
 import { backoffMs, POLL_MS } from './inbox'
 import { preToolState } from './status'
 import type { Title } from './telemetry'
@@ -111,7 +113,10 @@ let telemetryFailing = false
 
 async function telemetryFor($: EngineInterface): Promise<Telemetry> {
 	const sessionId = await $.session.id()
-	if (telemetry?.sessionId !== sessionId) telemetry = { sessionId, titleDone: false, freshLimits: false }
+	if (telemetry?.sessionId !== sessionId) {
+		telemetry = { sessionId, titleDone: false, freshLimits: false }
+		void reportFingerprint($, sessionId)
+	}
 	return telemetry
 }
 
@@ -130,6 +135,30 @@ function postTelemetry($: EngineInterface, sessionId: string, report: Record<str
 		},
 		error => failed(String(error)),
 	)
+}
+
+// The mod's own top-level hooks/*.ts, read as bytes so the digest matches the
+// server's over the repo copy whatever the files' encoding.
+async function readModFiles($: EngineInterface): Promise<ModFile[]> {
+	const dir = `${$.plugin.root}/hooks`
+	const files: ModFile[] = []
+	for (const entry of await $.fs.list(dir)) {
+		if (entry.kind !== 'file' || !entry.name.endsWith('.ts')) continue
+		const { base64 } = await $.fs.read(`${dir}/${entry.name}`, { as: 'bytes' })
+		files.push({ name: entry.name, bytes: fromBase64(base64) })
+	}
+	return files
+}
+
+// Once per session id (telemetryFor), so a /clear's new id reports too. The
+// server compares it with the repo's plugin/hooks and flags an older mod.
+async function reportFingerprint($: EngineInterface, sessionId: string): Promise<void> {
+	try {
+		const fingerprint = await modFingerprint(await readModFiles($))
+		if (fingerprint !== undefined) postTelemetry($, sessionId, { mod_fingerprint: fingerprint })
+	} catch (error) {
+		$.ui.log(`switchboard: could not fingerprint the mod: ${String(error)}`, { to: 'debug' })
+	}
 }
 
 async function noteModel($: EngineInterface, model: string, effort: string | null): Promise<void> {

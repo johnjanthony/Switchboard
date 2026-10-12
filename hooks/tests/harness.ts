@@ -27,6 +27,7 @@ export type World = {
 	toolInputs: Array<Record<string, unknown>>
 	dirs: string[]
 	files: Record<string, string>
+	modFiles: Record<string, string>
 	readError: string | null
 	reads: string[]
 }
@@ -52,6 +53,7 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		toolInputs: [],
 		dirs: [],
 		files: {},
+		modFiles: {},
 		readError: null,
 		reads: [],
 	}
@@ -103,15 +105,26 @@ export function world(on: On, env: Record<string, string> = {}): World {
 	on('turn.step', async function* (_$, e) {
 		return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: null }
 	})
-	on('fs.list', () => ({ value: w.dirs.map(name => ({ name, kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false })) }))
 	// The engine hands fs handlers native paths (backslashes on Windows); the
 	// world keys files by the forward-slash paths the mod builds.
 	const slashed = (path: string): string => path.replaceAll('\\', '/')
+	// The mod lists and reads its own hooks folder (under $.plugin.root, the
+	// real plugin folder even in tests) for its fingerprint; modFiles answers
+	// any path ending /hooks, so tests need not know the root.
+	on('fs.list', (_$, e) => {
+		if (slashed(e.path).endsWith('/hooks')) {
+			return { value: Object.entries(w.modFiles).map(([name, text]) => ({ name, kind: 'file' as const, size: text.length, mtimeMs: 0, isLink: false })) }
+		}
+		return { value: w.dirs.map(name => ({ name, kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false })) }
+	})
 	on('fs.exists', (_$, e) => ({ value: slashed(e.path) in w.files }))
 	on('fs.read', (_$, e) => {
 		const path = slashed(e.path)
 		w.reads.push(path)
 		if (w.readError !== null) return { deny: w.readError }
+		const name = path.slice(path.lastIndexOf('/') + 1)
+		const mod = w.modFiles[name]
+		if (e.as === 'bytes' && path.endsWith(`/hooks/${name}`) && mod !== undefined) return { value: { base64: btoa(mod) } }
 		const text = w.files[path]
 		return text === undefined ? { deny: `no such file: ${path}` } : { value: text }
 	})

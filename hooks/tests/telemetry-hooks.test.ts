@@ -173,3 +173,47 @@ test('a failing server is logged once per failure streak', async ($, on) => {
 	await w.clock.settle()
 	expect(failures()).toBe(2)
 })
+
+const VECTOR = '32495c7f04ecccc8c3dddc24cf463335502ae7eb098a8cffce64442bb67c06b5'
+const MOD = { 'a.ts': 'one\r\ntwo\n', 'b.ts': 'three' }
+
+function fingerprints(w: World, sessionId = 'S1'): Array<Record<string, unknown> | null> {
+	return telemetry(w, sessionId).filter(body => body !== null && 'mod_fingerprint' in body)
+}
+
+test('a session reports the fingerprint of its mod once', async ($, on) => {
+	const w = world(on)
+	w.modFiles = { ...MOD }
+	await step($, { model: 'claude-opus-5-5', effort: 'high' })
+	await step($, { model: 'claude-sonnet-5-5', effort: 'high' })
+	await w.clock.settle()
+	expect(fingerprints(w)).toEqual([{ mod_fingerprint: VECTOR }])
+})
+
+test('a new session id gets its own fingerprint', async ($, on) => {
+	const w = world(on)
+	w.modFiles = { ...MOD }
+	await step($, { model: 'claude-opus-5-5' })
+	w.sessionId = 'S2'
+	await step($, { model: 'claude-opus-5-5' })
+	await w.clock.settle()
+	expect(fingerprints(w, 'S1')).toEqual([{ mod_fingerprint: VECTOR }])
+	expect(fingerprints(w, 'S2')).toEqual([{ mod_fingerprint: VECTOR }])
+})
+
+test('a mod with no hook files reports no fingerprint', async ($, on) => {
+	const w = world(on)
+	await step($, { model: 'claude-opus-5-5' })
+	await w.clock.settle()
+	expect(fingerprints(w)).toEqual([])
+})
+
+test('a failed read reports no fingerprint and says why in the debug log', async ($, on) => {
+	const w = world(on)
+	w.modFiles = { ...MOD }
+	w.readError = 'refused'
+	await step($, { model: 'claude-opus-5-5' })
+	await w.clock.settle()
+	expect(fingerprints(w)).toEqual([])
+	expect(w.logs.some(l => l.to === 'debug' && l.text.includes('could not fingerprint the mod'))).toBe(true)
+})
