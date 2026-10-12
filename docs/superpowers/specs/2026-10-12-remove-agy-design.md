@@ -132,6 +132,13 @@ Commits on `develop`, by task:
 - Tidy, five stale sentences: `4254cdd`.
 - Task 10, live checks: no commit.
 
+Behaviours that replaced the agy paths:
+
+- Spawn, resume, resume-session, combine and convene refuse any agent or session cli other than `claude`, loudly and before any side effect (convene skips the record with a reason).
+- `/widget-status` answers 400 for any target other than `claude`.
+- `/away-mode` and `/agent_status` never pop a session's notices; the mod's inbox poll is the only consumer.
+- The smoke harness ends its session through `POST /session_end` and reads its parked-answer notice from the inbox.
+
 Deviations from the plan:
 
 - Work ran in the main checkout on `develop`, with no worktree.
