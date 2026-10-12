@@ -12,7 +12,7 @@ public sealed record SessionModel(
 	string? SessionId = null,  // Claude Code session id (transcript filename stem); null when unknown
 	string? Name = null,
 	string? NameSource = null,
-	string? Effort = null)     // observed effort of the last real turn; null for Antigravity and haiku
+	string? Effort = null)     // observed effort of the last real turn; null for haiku and other models without effort tiers
 {
 	public double Pct => WindowSize <= 0 ? 0 : (double)ContextTokens / WindowSize;
 	public Severity Severity => SeverityClassifier.For(Pct);

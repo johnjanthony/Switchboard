@@ -28,9 +28,6 @@ internal sealed class AppHost : IDisposable
 	readonly ClaudeStatusReader _claudeStatusReader;
 	volatile bool _claudeStatusScanning;
 	ClaudeStatusView _claudeStatusView;                               // latest server view (drives the surfaces)
-	readonly AntigravityStatusReader _agyStatusReader;
-	volatile bool _agyStatusScanning;
-	AntigravityStatusView _agyStatusView;
 	readonly System.Windows.Forms.Timer _claudePulseTimer = new();
 	readonly System.Windows.Forms.Timer _anchorTimer = new();   // once-a-day session-window anchor
 	DateOnly? _anchorHandledDate;                                // in-memory; the day the anchor was last decided
@@ -53,16 +50,12 @@ internal sealed class AppHost : IDisposable
 
 		_claudeStatusReader = new ClaudeStatusReader(_config.ClaudeStatus.StatusUrl, LogError);
 		_claudeStatusView = ClaudeServerStatus.ParseView("");   // hidden idle until the first poll
-		_agyStatusReader = new AntigravityStatusReader(_config.ClaudeStatus.StatusUrl, LogError);
-		_agyStatusView = AntigravityServerStatus.ParseView("");
 		_claudeStatusTimer.Interval = Math.Max(2, _config.ClaudeStatus.PollSeconds) * 1000;
-		_claudeStatusTimer.Tick += (_, _) => { PollClaudeStatus(); PollAntigravityStatus(); };
+		_claudeStatusTimer.Tick += (_, _) => PollClaudeStatus();
 		_claudePulseTimer.Interval = 70;
 		_claudePulseTimer.Tick += (_, _) => _widget.TickClaudePulse();
 		_tray.ClaudeStatusActionRequested += OnClaudeStatusAction;
 		_panel.ClaudeStatusButtonClicked += OnClaudeStatusAction;
-		_tray.AntigravityStatusActionRequested += OnAntigravityStatusAction;
-		_panel.AntigravityStatusButtonClicked += OnAntigravityStatusAction;
 		_tray.OpenDashboardRequested += () => OpenDashboard();
 		_panel.OpenDashboardRequested += () => OpenDashboard();
 		_panel.SetAwayModeOnRequested += () =>
@@ -125,7 +118,6 @@ internal sealed class AppHost : IDisposable
 		PollSwitchboard();
 		_claudeStatusTimer.Start();
 		PollClaudeStatus();
-		PollAntigravityStatus();
 		_anchorTimer.Start();
 	}
 
@@ -138,7 +130,7 @@ internal sealed class AppHost : IDisposable
 		{
 			new("Switchboard", null, 112000, 200000, "claude-3-7-fable", SessionStatus.Live, now, false, "demo-1", "Switchboard", "project"),
 			new("Switchboard", "Ubuntu", 94000, 200000, "claude-3-5-sonnet", SessionStatus.Live, now, false, "demo-2", "Switchboard", "project"),
-			new("Switchboard", null, 380000, 1000000, "gemini-2.5-pro", SessionStatus.Live, now, false, "demo-3", "Switchboard", "project"),
+			new("Switchboard", null, 380000, 1000000, "claude-sonnet-4-5", SessionStatus.Live, now, false, "demo-3", "Switchboard", "project"),
 			new("Switchboard", null, 44000, 200000, "claude-3-opus", SessionStatus.Live, now, false, "demo-4", "Switchboard", "project"),
 			new("Switchboard", null, 24000, 200000, "claude-3-5-haiku", SessionStatus.Idle, now, false, "demo-5", "Switchboard", "project"),
 		};
@@ -183,7 +175,6 @@ internal sealed class AppHost : IDisposable
 			"button": "stop"
 		}
 		"""));
-		_panel.UpdateAntigravityStatus(AntigravityServerStatus.ParseView(""));
 		_tray.SetPending(showBadge: true, hasPending: true);
 		_widget.SetPending(showBadge: true, hasPending: true);
 		_widget.SetAwayMode(awayMode);
@@ -355,16 +346,6 @@ internal sealed class AppHost : IDisposable
 		}, TaskScheduler.FromCurrentSynchronizationContext());
 	}
 
-	void OnAntigravityStatusAction()
-	{
-		string action = _agyStatusView.Button == AntigravityStatusButton.CheckNow ? "check" : "stop";
-		_agyStatusReader.PostActionAsync(action, CancellationToken.None).ContinueWith(t =>
-		{
-			if (t.IsFaulted) LogError("antigravity-status-action", t.Exception!);
-			PollAntigravityStatus();   // re-sync the dot from the server right after the action
-		}, TaskScheduler.FromCurrentSynchronizationContext());
-	}
-
 	// Fire-and-forget GET of the server view; result marshaled back to the UI thread.
 	void PollClaudeStatus()
 	{
@@ -379,34 +360,12 @@ internal sealed class AppHost : IDisposable
 		}, TaskScheduler.FromCurrentSynchronizationContext());
 	}
 
-	void PollAntigravityStatus()
-	{
-		if (_agyStatusScanning) return;
-		_agyStatusScanning = true;
-		_agyStatusReader.GetViewAsync(CancellationToken.None).ContinueWith(t =>
-		{
-			_agyStatusScanning = false;
-			if (t.IsFaulted) { LogError("antigravity-status-poll", t.Exception!); return; }
-			_agyStatusView = t.Result;
-			RefreshAntigravityStatusSurfaces();
-		}, TaskScheduler.FromCurrentSynchronizationContext());
-	}
-
 	void RefreshClaudeStatusSurfaces()
 	{
 		var v = _claudeStatusView;
 		_panel.UpdateClaudeStatus(v);
 		_widget.SetClaudeStatus(v.DotVisible, v.DotLevel);
 		_tray.SetClaudeStatusButton(v.Button);
-		if (_widget.ClaudePulsing) _claudePulseTimer.Start(); else _claudePulseTimer.Stop();
-	}
-
-	void RefreshAntigravityStatusSurfaces()
-	{
-		var v = _agyStatusView;
-		_panel.UpdateAntigravityStatus(v);
-		_widget.SetAntigravityStatus(v.DotVisible, v.DotLevel);
-		_tray.SetAntigravityStatusButton(v.Button);
 		if (_widget.ClaudePulsing) _claudePulseTimer.Start(); else _claudePulseTimer.Stop();
 	}
 

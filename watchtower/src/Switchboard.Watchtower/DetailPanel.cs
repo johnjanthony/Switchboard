@@ -134,8 +134,6 @@ internal sealed class DetailPanel : Form
 
 	ClaudeStatusView? _claudeStatus;
 	readonly PillButton _claudePillButton;
-	AntigravityStatusView? _antigravityStatus;
-	readonly PillButton _agyPillButton;
 	readonly PillButton _awayPillButton;
 	readonly ToolTip _toolTip;
 
@@ -146,7 +144,6 @@ internal sealed class DetailPanel : Form
 
 	public event Action? OpenDashboardRequested;
 	public event Action? ClaudeStatusButtonClicked;
-	public event Action? AntigravityStatusButtonClicked;
 	public event Action? SetAwayModeOnRequested;
 
 	public DetailPanel()
@@ -191,21 +188,6 @@ internal sealed class DetailPanel : Form
 		Controls.Add(_switchboardPillButton);
 		_toolTip.SetToolTip(_switchboardPillButton, "Switchboard Operator");
 
-		_agyPillButton = new PillButton
-		{
-			IconType = PillIconType.Antigravity,
-			Text = "",
-			Visible = true,
-			BackColor = Color.FromArgb(8, 9, 11),
-			BorderColor = Color.FromArgb(30, 41, 59),
-			SurfaceColor = Color.FromArgb(42, 42, 42),
-			ForeColor = Color.FromArgb(99, 109, 125),
-			DotColor = Color.FromArgb(154, 160, 166),
-		};
-		_agyPillButton.Click += (_, _) => OnAntigravityPillClicked();
-		Controls.Add(_agyPillButton);
-		_toolTip.SetToolTip(_agyPillButton, "Antigravity: Status Unknown");
-
 		_awayPillButton = new PillButton
 		{
 			IconType = PillIconType.Moon,
@@ -244,24 +226,6 @@ internal sealed class DetailPanel : Form
 			try
 			{
 				System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://status.claude.com") { UseShellExecute = true });
-			}
-			catch { }
-		}
-	}
-
-	void OnAntigravityPillClicked()
-	{
-		var level = _antigravityStatus?.DotLevel ?? AntigravityStatusLevel.Unknown;
-		bool isGreen = _antigravityStatus is null || level == AntigravityStatusLevel.Operational || level == AntigravityStatusLevel.Unknown;
-		if (isGreen)
-		{
-			AntigravityStatusButtonClicked?.Invoke();
-		}
-		else
-		{
-			try
-			{
-				System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://status.cloud.google.com") { UseShellExecute = true });
 			}
 			catch { }
 		}
@@ -475,49 +439,6 @@ internal sealed class DetailPanel : Form
 		Invalidate();
 	}
 
-	// Latest Antigravity status view (published by the server, parsed via AntigravityServerStatus.ParseView).
-	public void UpdateAntigravityStatus(AntigravityStatusView view)
-	{
-		_antigravityStatus = view;
-		var level = view?.DotLevel ?? AntigravityStatusLevel.Unknown;
-		bool isGreen = view is null || level == AntigravityStatusLevel.Operational || level == AntigravityStatusLevel.Unknown;
-
-		Color dotColor = isGreen
-			? (view is { HasData: true } || view is { DotVisible: true } ? StatusColors.Green : _palette.Muted)
-			: Palette.ForAntigravityStatus(level);
-
-		Color textColor = !isGreen
-			? (level == AntigravityStatusLevel.Minor ? Color.FromArgb(205, 212, 221) : Color.White)
-			: Color.FromArgb(99, 109, 125);
-
-		_agyPillButton.DotColor = dotColor;
-		_agyPillButton.ForeColor = textColor;
-		_agyPillButton.SurfaceColor = _palette.Surface;
-		_agyPillButton.BackColor = Color.FromArgb(8, 9, 11);
-		_agyPillButton.BorderColor = _palette.Track;
-
-		string agyDetail = view is null || !view.HasData
-			? "Status Unknown"
-			: (!string.IsNullOrEmpty(view.Description) ? view.Description : "Operational");
-
-		if (view is { IncidentNames.Count: > 0 })
-		{
-			string incidentsText = string.Join("; ", view.IncidentNames);
-			if (string.IsNullOrEmpty(agyDetail) || agyDetail.Contains("operational", StringComparison.OrdinalIgnoreCase))
-			{
-				agyDetail = incidentsText;
-			}
-			else if (!agyDetail.Contains(incidentsText, StringComparison.OrdinalIgnoreCase))
-			{
-				agyDetail = agyDetail + " - " + incidentsText;
-			}
-		}
-		_toolTip.SetToolTip(_agyPillButton, "Antigravity: " + agyDetail);
-
-		RecomputeHeight();
-		Invalidate();
-	}
-
 	void RecomputeHeight()
 	{
 		int quotaContentH = (_quota.HasValue ? 2 * QuotaWindowRowH : 0) + (_quotaAsOfShown ? QuotaNoteRowH : 0);
@@ -717,7 +638,7 @@ internal sealed class DetailPanel : Form
 			y += RowH;
 		}
 
-		// Group 3: Group panel containing Away, Claude, Switchboard & Antigravity indicator pills.
+		// Group 3: Group panel containing the Claude, Switchboard & Away indicator pills.
 		int group3Top = ctxTop + ctxH + GroupGap;
 		int group3H = BottomPillRowH + 2 * GroupVPad;
 		DrawGroupPanel(g, group3Top, group3H);
@@ -725,19 +646,16 @@ internal sealed class DetailPanel : Form
 		int btn3Y = group3Top + GroupVPad + animY;
 		int padX = 14;
 		int btnGap = 6;
-		int availableW = Width - 2 * padX - 3 * btnGap;
-		int btnW = availableW / 4;
+		int availableW = Width - 2 * padX - 2 * btnGap;
+		int btnW = availableW / 3;
 
-		_agyPillButton.Location = new Point(padX, btn3Y);
-		_agyPillButton.Size = new Size(btnW, BottomPillRowH);
-
-		_claudePillButton.Location = new Point(padX + btnW + btnGap, btn3Y);
+		_claudePillButton.Location = new Point(padX, btn3Y);
 		_claudePillButton.Size = new Size(btnW, BottomPillRowH);
 
-		_switchboardPillButton.Location = new Point(padX + 2 * (btnW + btnGap), btn3Y);
+		_switchboardPillButton.Location = new Point(padX + btnW + btnGap, btn3Y);
 		_switchboardPillButton.Size = new Size(btnW, BottomPillRowH);
 
-		_awayPillButton.Location = new Point(padX + 3 * (btnW + btnGap), btn3Y);
+		_awayPillButton.Location = new Point(padX + 2 * (btnW + btnGap), btn3Y);
 		_awayPillButton.Size = new Size(btnW, BottomPillRowH);
 
 		if (animY != 0)
@@ -751,8 +669,7 @@ internal sealed class DetailPanel : Form
 		None,
 		Moon,
 		Claude,
-		Switchboard,
-		Antigravity
+		Switchboard
 	}
 
 	private sealed class PillButton : Button
@@ -810,7 +727,6 @@ internal sealed class DetailPanel : Form
 				PillIconType.Moon => 13f,
 				PillIconType.Claude => 12f,
 				PillIconType.Switchboard => 12f,
-				PillIconType.Antigravity => 12f,
 				_ => 0f,
 			};
 
@@ -836,15 +752,6 @@ internal sealed class DetailPanel : Form
 				using var claudePath = CreateClaudePath(currentX, iconY, iconSize);
 				using var iconBrush = new SolidBrush(DotColor);
 				g.FillPath(iconBrush, claudePath);
-				currentX += iconSize + iconGap;
-			}
-			else if (IconType == PillIconType.Antigravity)
-			{
-				float iconSize = 12f;
-				float iconY = (Height - iconSize) / 2f;
-				using var agyPath = CreateAntigravityPath(currentX, iconY, iconSize);
-				using var iconBrush = new SolidBrush(DotColor);
-				g.FillPath(iconBrush, agyPath);
 				currentX += iconSize + iconGap;
 			}
 			else if (IconType == PillIconType.Switchboard)
@@ -884,27 +791,6 @@ internal sealed class DetailPanel : Form
 				pts[i] = new PointF((float)(cx + r * Math.Cos(angle)), (float)(cy + r * Math.Sin(angle)));
 			}
 			path.AddPolygon(pts);
-			return path;
-		}
-
-		static GraphicsPath CreateAntigravityPath(float x, float y, float size)
-		{
-			var path = new GraphicsPath();
-			float cx = x + size / 2f;
-			float cy = y + size / 2f;
-			float r = size / 2f;
-
-			PointF top = new PointF(cx, cy - r);
-			PointF right = new PointF(cx + r, cy);
-			PointF bottom = new PointF(cx, cy + r);
-			PointF left = new PointF(cx - r, cy);
-
-			path.AddBezier(top, new PointF(cx + r * 0.35f, cy - r * 0.35f), new PointF(cx + r * 0.35f, cy - r * 0.35f), right);
-			path.AddBezier(right, new PointF(cx + r * 0.35f, cy + r * 0.35f), new PointF(cx + r * 0.35f, cy + r * 0.35f), bottom);
-			path.AddBezier(bottom, new PointF(cx - r * 0.35f, cy + r * 0.35f), new PointF(cx - r * 0.35f, cy + r * 0.35f), left);
-			path.AddBezier(left, new PointF(cx - r * 0.35f, cy - r * 0.35f), new PointF(cx - r * 0.35f, cy - r * 0.35f), top);
-
-			path.CloseFigure();
 			return path;
 		}
 
@@ -1066,12 +952,6 @@ internal sealed class DetailPanel : Form
 		if (model.Contains("opus", StringComparison.OrdinalIgnoreCase)) return "Opus";
 		if (model.Contains("sonnet", StringComparison.OrdinalIgnoreCase)) return "Sonnet";
 		if (model.Contains("haiku", StringComparison.OrdinalIgnoreCase)) return "Haiku";
-		if (model.Contains("gemini", StringComparison.OrdinalIgnoreCase))
-		{
-			if (model.Contains("flash", StringComparison.OrdinalIgnoreCase)) return "Gemini Flash";
-			if (model.Contains("pro", StringComparison.OrdinalIgnoreCase)) return "Gemini Pro";
-			return "Gemini";
-		}
 		return model.Length > 12 ? model.Substring(0, 10) + "..." : model;
 	}
 

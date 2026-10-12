@@ -12,7 +12,6 @@ internal sealed class TrayIcon : IDisposable
 	readonly ToolStripMenuItem _clearTypeItem;
 	readonly ToolStripMenuItem _showQuotaItem;
 	readonly ToolStripMenuItem _claudeStatusItem;
-	readonly ToolStripMenuItem _agyStatusItem;
 	readonly ToolStripMenuItem _wakeTimeItem;
 	IntPtr _hicon;
 	Icon? _ownedIcon;
@@ -25,7 +24,6 @@ internal sealed class TrayIcon : IDisposable
 
 	public event Action? RefreshRequested;
 	public event Action? ClaudeStatusActionRequested;
-	public event Action? AntigravityStatusActionRequested;
 	public event Action? WakeTimeRequested;
 	public event Action<bool>? AutostartToggled;
 	public event Action<bool>? RenderModeToggled;    // true = opaque ClearType, false = true transparency
@@ -39,8 +37,6 @@ internal sealed class TrayIcon : IDisposable
 		menu.Items.Add("Refresh now", null, (_, _) => RefreshRequested?.Invoke());
 		_claudeStatusItem = new ToolStripMenuItem("Check Claude status", null, (_, _) => ClaudeStatusActionRequested?.Invoke());
 		menu.Items.Add(_claudeStatusItem);
-		_agyStatusItem = new ToolStripMenuItem("Check Antigravity status", null, (_, _) => AntigravityStatusActionRequested?.Invoke());
-		menu.Items.Add(_agyStatusItem);
 		_autostartItem = new ToolStripMenuItem("Start with Windows", null, (_, _) =>
 		{
 			_autostartItem!.Checked = !_autostartItem.Checked;
@@ -165,16 +161,6 @@ internal sealed class TrayIcon : IDisposable
 			ClaudeStatusButton.StopWatching => "Stop watching Claude status",
 			ClaudeStatusButton.Clear => "Clear Claude status",
 			_ => "Check Claude status",
-		};
-	}
-
-	public void SetAntigravityStatusButton(AntigravityStatusButton button)
-	{
-		_agyStatusItem.Text = button switch
-		{
-			AntigravityStatusButton.StopWatching => "Stop watching Antigravity status",
-			AntigravityStatusButton.Clear => "Clear Antigravity status",
-			_ => "Check Antigravity status",
 		};
 	}
 
