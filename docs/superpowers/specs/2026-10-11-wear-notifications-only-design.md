@@ -1,7 +1,7 @@
 # Wear: notifications only, bridged from the phone; questions clear when they end (design)
 
 **Date:** 2026-10-11
-**Status:** approved by John 2026-10-11 (design and written spec). The answered-side hook was revised at planning (marked "revised at planning" below). Plan: `docs/superpowers/plans/2026-10-11-wear-notifications-only.md` (disk-only, gitignored).
+**Status:** approved by John 2026-10-11 (design and written spec). The answered-side hook was revised at planning (marked "revised at planning" below). Plan: `docs/superpowers/plans/2026-10-11-wear-notifications-only.md` (disk-only, gitignored). Landed 2026-10-11 (`36759bb`..`f270f76`, deployed, live checks passed; final-review fixes `9a14478`, `bc0fe14`, `f270f76`); deviations in the plan's Deviations section.
 **Backlog:** T-285 (cut the Wear app down to notifications with "open on phone", dismissed in sync with the phone). Discharges T-262 (the `:wear:lintDebug` failure) by deleting the module it fails in.
 **Evidence:** an emulator probe on 2026-10-11 (below), and the code paths cited in each section.
 
