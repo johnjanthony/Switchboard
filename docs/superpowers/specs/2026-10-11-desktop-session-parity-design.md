@@ -1,7 +1,7 @@
 # Desktop sessions as first-class sessions: the plugin copy the app runs, the inbox poll, and a stale-mod alarm (design)
 
 **Date:** 2026-10-11
-**Status:** design approved by John in conversation 2026-10-11, section by section; written spec awaiting his review.
+**Status:** approved by John 2026-10-11 (design and written spec); built on branch claude/t288-desktop-session-parity-fc5cb5. Plan: docs/superpowers/plans/2026-10-11-desktop-session-parity.md (disk-only, gitignored).
 **Backlog:** T-288 (this work). T-289 (an option, not part of this work): refresh the desktop copy automatically from git hooks.
 **Evidence:** the investigation of 2026-10-11 in a Claude for Windows desktop session (below), with that session's `/debug` log.
 

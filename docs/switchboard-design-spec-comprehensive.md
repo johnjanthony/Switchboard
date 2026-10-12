@@ -288,6 +288,8 @@ Twelve added routes, plus the `/mcp` transport and a static mount, all wrapped o
 
 `scripts/_hook_common.py` centralizes `read_stdin_json()`, `SWITCHBOARD_BASE_URL` (default `http://127.0.0.1:9876`) and `SWITCHBOARD_TOKEN` (sent as `Authorization: Bearer <token>`) for the agy hook scripts. No current client writes SessionEnd marker files (the Claude Code hook that did was retired with the mod); the server still sweeps `logs/session-end/` until the agy removal (§13.2).
 
+The plugin lives in `plugin/`, the marketplace's `./plugin` source, with no `version` in its manifest, so each commit is a new version. Terminal sessions read it live from the working tree; the Claude for Windows desktop app passes Claude Code the copy under `installed_plugins.json`'s `installPath`, refreshed by `scripts/deploy-mod.ps1` (`claude plugin update`, then a byte comparison with `plugin/`).
+
 ---
 
 ## 7. The conversation wait queue (FIFO)
@@ -672,6 +674,8 @@ Each session's mod reports its own telemetry to `POST /sessions/{sid}/telemetry`
 - **Server heartbeat.** A supervised loop (`dispatch_presence`) writes `presence/server_at` at startup and every 60 s. The phone's stale pill (5 minutes) and Operator's rail flag (120 s) read it, so staleness means the server or the network is down.
 - **Consumers.** The phone and Operator build their context rings from the `sessions/` records (one ring per live session that has reported its context) and their quota bars from the `quota` node; Watchtower reads both through `/stats` (§5). Cost is not reported: no surface shows it.
 
+Once per session id the mod also reports `mod_fingerprint`, SHA-256 over its top-level `hooks/*.ts` framed like the server's source fingerprint. The server compares it with the repo's `plugin/hooks` each sweep tick and sets `mod_stale` (null until both are known); `/healthz` lists live and lost sessions whose mod is stale, and Operator marks them.
+
 ### 10.6 Session liveness
 
 The session sweep (`dispatch_session_sweep`, every 60 s) judges each non-terminal record:
@@ -683,6 +687,8 @@ The session sweep (`dispatch_session_sweep`, every 60 s) judges each non-termina
 - **Exemptions.** An `awaiting_human` or `awaiting_agent` session backed by a live ask or wait is not marked lost.
 
 Marking a Claude Code session lost leaves its conversation member as it is (§15.1).
+
+A desktop-app session polls like a terminal one once the app attaches as a surface (`session.attach`), so the 90 s poll rule judges it; a `-p` run never polls and stays on the silence rule.
 
 ---
 
@@ -827,6 +833,8 @@ WSL agents also need env vars pointing the mod (and agy's hooks) at the Windows 
 WSL sessions load the mod from WSL's own clone of the repo (`~/work/switchboard`, its own directory marketplace), so they pick up a change only after a `git pull --ff-only` there.
 
 Antigravity (agy) is wired separately, outside this plugin (§6) — there is no repo-side installer analogous to the above.
+
+After a commit that touches `plugin/`, run `scripts/deploy-mod.ps1` so new desktop-app sessions load it; running ones keep their copy until restarted.
 
 ---
 
