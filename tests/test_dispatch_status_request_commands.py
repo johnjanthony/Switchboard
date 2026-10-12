@@ -96,3 +96,25 @@ async def test_unknown_type_logs_and_continues(tmp_path):
 	service.check.assert_awaited_once()
 	events = [json.loads(l) for l in log_path.read_text().splitlines() if l]
 	assert any("status_request_command_unknown_type" in e.get("detail", "") for e in events)
+
+
+@pytest.mark.asyncio
+async def test_check_all_command_calls_service_check(tmp_path):
+	service = _make_service()
+	backend = _make_backend([{"type": "check_all", "issued_at": _now_iso()}])
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+	with pytest.raises(asyncio.CancelledError):
+		await dispatch_status_request_commands(service, backend, logger, _make_supervisor())
+	service.check.assert_awaited_once()
+	service.stop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stop_all_command_calls_service_stop(tmp_path):
+	service = _make_service()
+	backend = _make_backend([{"type": "stop_all", "issued_at": _now_iso()}])
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+	with pytest.raises(asyncio.CancelledError):
+		await dispatch_status_request_commands(service, backend, logger, _make_supervisor())
+	service.stop.assert_awaited_once()
+	service.check.assert_not_awaited()

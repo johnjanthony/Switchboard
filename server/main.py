@@ -55,7 +55,6 @@ from server.rules_audit import audit_rtdb_rules
 from server.quota_store import QuotaStore
 from server.telemetry import parse_telemetry
 from server.claude_status import ClaudeStatusService
-from server.antigravity_status import AntigravityStatusService
 
 
 def _build_away_mode_route(registry: Registry, session_registry, backend=None, logger=None):
@@ -428,29 +427,26 @@ class _CachePolicyStaticFiles(StaticFiles):
 		return response
 
 
-def _build_widget_status_route(claude_service, antigravity_service=None):
+def _build_widget_status_route(claude_service):
 	"""POST /widget-status {action: check|stop} - the same-origin control surface
-	Operator and Watchtower use to drive the server-owned status watch.
-	Supports target=claude (default) or target=antigravity.
+	Operator and Watchtower use to drive the server-owned Claude status watch.
+	target=claude (or none) is the only target; any other answers 400, so a
+	client still asking for a retired service's view fails loudly.
 	Localhost trust, like /stats. Returns the current view."""
 	async def widget_status(request: Request):
-		target = request.query_params.get("target", "claude")
-		service = (
-			antigravity_service
-			if target == "antigravity" and antigravity_service is not None
-			else claude_service
-		)
+		if request.query_params.get("target", "claude") != "claude":
+			return JSONResponse({"error": "unknown target"}, status_code=400)
 		if request.method == "GET":
-			return JSONResponse(service.view())
+			return JSONResponse(claude_service.view())
 		try:
 			body = await request.json()
 		except Exception:
 			body = {}
 		action = request.query_params.get("action") or (body.get("action") if isinstance(body, dict) else None)
 		if action == "check":
-			return JSONResponse(await service.check())
+			return JSONResponse(await claude_service.check())
 		if action == "stop":
-			return JSONResponse(await service.stop())
+			return JSONResponse(await claude_service.stop())
 		return JSONResponse({"error": "unknown action"}, status_code=400)
 
 	return widget_status
@@ -1041,9 +1037,8 @@ async def _run(config: Config) -> None:
 		})
 
 	claude_status_service = ClaudeStatusService(publish=backend.write_widget_status)
-	antigravity_status_service = AntigravityStatusService(publish=backend.write_widget_antigravity_status)
 	app.add_route("/healthz", healthz, methods=["GET"])
-	app.add_route("/widget-status", _build_widget_status_route(claude_status_service, antigravity_status_service), methods=["GET", "POST"])
+	app.add_route("/widget-status", _build_widget_status_route(claude_status_service), methods=["GET", "POST"])
 	app.add_route("/away-mode", _build_away_mode_route(registry, session_registry, backend, logger), methods=["GET", "POST"])
 	app.add_route(
 		"/stats",
@@ -1141,7 +1136,6 @@ async def _run(config: Config) -> None:
 	status_request_task = asyncio.create_task(
 		dispatch_status_request_commands(
 			claude_status_service, backend, logger, loop_sups["dispatch_status_request_commands"],
-			antigravity_service=antigravity_status_service,
 		)
 	)
 

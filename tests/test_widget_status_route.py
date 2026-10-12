@@ -7,14 +7,14 @@ import pytest
 from server.main import _build_widget_status_route
 
 
-def _request(action=None, raw=None):
+def _request(action=None, raw=None, query=b""):
 	from starlette.requests import Request
 	payload = raw if raw is not None else json.dumps({"action": action}).encode()
 
 	async def receive():
 		return {"type": "http.request", "body": payload, "more_body": False}
 
-	scope = {"type": "http", "method": "POST", "headers": [], "query_string": b""}
+	scope = {"type": "http", "method": "POST", "headers": [], "query_string": query}
 	return Request(scope, receive)
 
 
@@ -88,3 +88,22 @@ async def test_malformed_body_returns_400():
 	route = _build_widget_status_route(svc)
 	resp = await route(_request(raw=b"not json"))
 	assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_unknown_target_returns_400():
+	svc = _FakeService()
+	route = _build_widget_status_route(svc)
+	resp = await route(_request("check", query=b"target=retired"))
+	assert resp.status_code == 400
+	assert json.loads(resp.body) == {"error": "unknown target"}
+	assert svc.calls == []
+
+
+@pytest.mark.asyncio
+async def test_claude_target_is_accepted():
+	svc = _FakeService()
+	route = _build_widget_status_route(svc)
+	resp = await route(_request("check", query=b"target=claude"))
+	assert resp.status_code == 200
+	assert svc.calls == ["check"]

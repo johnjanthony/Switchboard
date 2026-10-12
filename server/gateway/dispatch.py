@@ -591,17 +591,15 @@ async def dispatch_away_mode_commands(registry, backend, logger, supervisor, ses
 			await supervisor.record_crash(exc)
 
 
-async def dispatch_status_request_commands(service, backend, logger, supervisor, antigravity_service=None):
+async def dispatch_status_request_commands(service, backend, logger, supervisor):
 	"""Watch /widget-status_request for phone-initiated status checks.
 
 	Command shape (Android-emitted):
-	  {type: "check"|"stop", issued_at: "<ISO>"}           - Claude only (legacy)
-	  {type: "check_all"|"stop_all", issued_at: "<ISO>"}   - all services
+	  {type: "check"|"stop", issued_at: "<ISO>"}           - legacy
+	  {type: "check_all"|"stop_all", issued_at: "<ISO>"}   - what the phone sends
 
-	check/stop -> Claude service only (backwards compat with Watchtower HTTP route).
-	check_all  -> Claude + Antigravity .check() concurrently.
-	stop_all   -> Claude + Antigravity .stop() concurrently.
-	The services publish their respective widget/* nodes; the phone reads back.
+	check/check_all -> the Claude service's .check(); stop/stop_all -> its .stop().
+	The service publishes widget/status; the phone reads back.
 	Stale commands are dropped with a log line - a status check is transient and
 	idempotent, so no phone-visible notice is warranted (unlike away-mode toggles)."""
 	while True:
@@ -623,16 +621,10 @@ async def dispatch_status_request_commands(service, backend, logger, supervisor,
 						await service.stop()
 						await logger.info("status_request_stop")
 					elif cmd_type == "check_all":
-						coros = [service.check()]
-						if antigravity_service is not None:
-							coros.append(antigravity_service.check())
-						await asyncio.gather(*coros)
+						await service.check()
 						await logger.info("status_request_check_all")
 					elif cmd_type == "stop_all":
-						coros = [service.stop()]
-						if antigravity_service is not None:
-							coros.append(antigravity_service.stop())
-						await asyncio.gather(*coros)
+						await service.stop()
 						await logger.info("status_request_stop_all")
 					else:
 						await logger.surface_error(f"status_request_command_unknown_type: {cmd_type}")
