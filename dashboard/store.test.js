@@ -67,7 +67,7 @@ test('initialState shape is exactly the contract', () => {
 		messageCommands: {},
 		seenSends: {},
 		connected: true,
-		widget: { rings: {}, quota: null, status: null, antigravityStatus: null, serverAt: null },
+		widget: { rings: {}, quota: null, status: null, serverAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
 		health: { reachable: false, healthy: false, totalAnswered: null },
@@ -536,13 +536,6 @@ test('requestClaudeStatus calls requestStatus and returns true on ok', async () 
 	assert.deepEqual(called, { a: 'check', target: 'claude' });
 });
 
-test('requestAntigravityStatus calls requestStatus with antigravity target and returns true on ok', async () => {
-	let called = null;
-	const { store } = makeStore({ requestStatus: (a, target) => { called = { a, target }; return Promise.resolve({ ok: true, status: 200 }); } });
-	assert.equal(await store.requestAntigravityStatus('check'), true);
-	assert.deepEqual(called, { a: 'check', target: 'antigravity' });
-});
-
 test('requestClaudeStatus surfaces a non-ok response to the global pane', async () => {
 	const { store } = makeStore({ requestStatus: () => Promise.resolve({ ok: false, status: 503 }) });
 	assert.equal(await store.requestClaudeStatus('check'), false);
@@ -594,7 +587,7 @@ test('startGlobalListeners is idempotent: a second call detaches the first set',
 	const detached = fb.calls.unsubs.slice(unsubsBefore).map((u) => u.path);
 	assert.ok(detached.includes('conversations'), 'prior conversations listener detached before re-attach');
 	assert.ok(detached.includes('global_settings/away_mode'), 'prior away-mode listener detached');
-	assert.equal(detached.length, 17, 'all 17 global listeners detached before re-attach - update this count when adding a listener');
+	assert.equal(detached.length, 16, 'all 16 global listeners detached before re-attach - update this count when adding a listener');
 });
 
 test('sendAnswer writes answerCmd and returns true on success', async () => {
@@ -657,7 +650,6 @@ test('spawn_options listener updates state.spawnOptions', () => {
 	const SPAWN_OPTIONS = {
 		published_at: 'T',
 		claude: { models: [{ id: 'sonnet', efforts: ['low', 'medium'] }] },
-		antigravity: { models: [{ id: 'gemini-3.6-flash-high', efforts: [] }] },
 	};
 	entry.cb(SPAWN_OPTIONS);
 	assert.deepEqual(store.getState().spawnOptions, SPAWN_OPTIONS);

@@ -108,11 +108,6 @@ export function createStore(deps) {
 		notify();
 	}
 
-	function setWidgetAntigravityStatus(status) {
-		state.widget = { ...state.widget, antigravityStatus: status || null };
-		notify();
-	}
-
 	function setServerAt(ts) {
 		state.widget = { ...state.widget, serverAt: ts || null };
 		notify();
@@ -275,15 +270,6 @@ export function createStore(deps) {
 		});
 	}
 
-	function requestAntigravityStatus(action) {
-		return guardedWrite('global', async () => {
-			const resp = await requestStatus(action, 'antigravity');
-			if (!resp || !resp.ok) {
-				throw new Error(resp ? `HTTP ${resp.status}` : 'no response');
-			}
-		});
-	}
-
 	// Drag-to-resize the left conversation list. Width is clamped to a sane range
 	// and persisted, like the collapse flags. Only meaningful when not collapsed.
 	function setLeftWidth(px) {
@@ -379,7 +365,6 @@ export function createStore(deps) {
 		globalUnsubs.push(fb.onValue(paths.spawnOptions(), (val) => setSpawnOptions(val || null), onReadError));
 		globalUnsubs.push(fb.onValue(paths.quota(), (val) => setWidgetQuota(quotaFromNode(val)), onReadError));
 		globalUnsubs.push(fb.onValue(paths.widgetStatus(), (val) => setWidgetStatus(val || null), onReadError));
-		globalUnsubs.push(fb.onValue(paths.widgetAntigravityStatus(), (val) => setWidgetAntigravityStatus(val || null), onReadError));
 		globalUnsubs.push(fb.onValue(paths.serverPresence(), (val) => setServerAt(val || null), onReadError));
 		globalUnsubs.push(fb.onValue(paths.sessions(), (val) => setSessions(val || {}), onReadError));
 		globalUnsubs.push(fb.onValue(paths.sessionAcks(), (val) => setSessionAcks(val || {}), onReadError));
@@ -591,7 +576,6 @@ export function createStore(deps) {
 		setSpawnOptions,
 		setWidgetQuota,
 		setWidgetStatus,
-		setWidgetAntigravityStatus,
 		setServerAt,
 		setSessions,
 		setSessionAcks,
@@ -606,7 +590,6 @@ export function createStore(deps) {
 		awayOff,
 		setHidden,
 		requestClaudeStatus,
-		requestAntigravityStatus,
 		upsertConversationMeta,
 		removeConversation,
 		upsertAdminNotification,
@@ -673,7 +656,7 @@ function initialState(storage) {
 		messageCommands: {},
 		seenSends: {},
 		connected: true,
-		widget: { rings: {}, quota: null, status: null, antigravityStatus: null, serverAt: null },
+		widget: { rings: {}, quota: null, status: null, serverAt: null },
 		selectedConversationId: null,
 		pendingsFlat: [],
 		health: { reachable: false, healthy: false, totalAnswered: null },

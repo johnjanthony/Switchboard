@@ -46,10 +46,6 @@ test('widgetStatus() targets widget/status', () => {
 	assert.equal(schema.widgetStatus(), 'widget/status');
 });
 
-test('widgetAntigravityStatus() targets widget/antigravity_status', () => {
-	assert.equal(schema.widgetAntigravityStatus(), 'widget/antigravity_status');
-});
-
 test('sessions() is the sessions root', () => {
 	assert.equal(schema.sessions(), 'sessions');
 });

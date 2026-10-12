@@ -49,13 +49,14 @@ test('awayOffCmd with skip decision includes decision but not default_text', () 
 test('spawnFreshCmd builds a fresh spawn with surface and project', () => {
 	const cmd = spawnFreshCmd({ surface: 'windows', project: 'C:/Work/X' }, nowIso);
 	assert.equal(cmd.path, 'spawn_commands');
-	assert.deepEqual(cmd.value, { type: 'fresh', surface: 'windows', project: 'C:/Work/X', issued_at: FIXED_ISO });
+	assert.deepEqual(cmd.value, { type: 'fresh', agent: 'claude', surface: 'windows', project: 'C:/Work/X', issued_at: FIXED_ISO });
 });
 
 test('spawnFreshCmd includes optional prompt and target_conversation_id when given', () => {
 	const cmd = spawnFreshCmd({ surface: 'wsl', project: '/work/y', prompt: 'go', targetConversationId: 'c2' }, nowIso);
 	assert.deepEqual(cmd.value, {
 		type: 'fresh',
+		agent: 'claude',
 		surface: 'wsl',
 		project: '/work/y',
 		issued_at: FIXED_ISO,
@@ -64,25 +65,19 @@ test('spawnFreshCmd includes optional prompt and target_conversation_id when giv
 	});
 });
 
-test('spawnFreshCmd includes optional agent when given', () => {
-	const cmd = spawnFreshCmd({ agent: 'antigravity', surface: 'windows', project: 'C:/Work/X' }, nowIso);
-	assert.deepEqual(cmd.value, {
-		type: 'fresh',
-		agent: 'antigravity',
-		surface: 'windows',
-		project: 'C:/Work/X',
-		issued_at: FIXED_ISO,
-	});
+test('spawnFreshCmd always sends agent claude', () => {
+	const cmd = spawnFreshCmd({ surface: 'windows', project: 'C:/Work/X' }, nowIso);
+	assert.equal(cmd.value.agent, 'claude');
 });
 
 test('spawnFreshCmd includes model/effort only when provided', () => {
 	const withPicks = spawnFreshCmd(
-		{ agent: 'claude', surface: 'windows', project: 'x', model: 'sonnet', effort: 'low' },
+		{ surface: 'windows', project: 'x', model: 'sonnet', effort: 'low' },
 		() => 'T',
 	);
 	assert.equal(withPicks.value.model, 'sonnet');
 	assert.equal(withPicks.value.effort, 'low');
-	const without = spawnFreshCmd({ agent: 'claude', surface: 'windows', project: 'x' }, () => 'T');
+	const without = spawnFreshCmd({ surface: 'windows', project: 'x' }, () => 'T');
 	assert.ok(!('model' in without.value));
 	assert.ok(!('effort' in without.value));
 });

@@ -51,10 +51,6 @@ export function widgetStatus() {
 	return 'widget/status';
 }
 
-export function widgetAntigravityStatus() {
-	return 'widget/antigravity_status';
-}
-
 export function sessions() {
 	return 'sessions';
 }

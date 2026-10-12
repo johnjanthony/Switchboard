@@ -704,7 +704,7 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 	width: 100%;
 }
 
-.claude-pill, .antigravity-pill, .switchboard-pill, .status-pill, .open-line-btn, .away-pill, .rail-toggle-header {
+.claude-pill, .switchboard-pill, .status-pill, .open-line-btn, .away-pill, .rail-toggle-header {
 	flex: 1 1 0px;
 	min-width: 0;
 	width: auto;
@@ -718,14 +718,12 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 .rail-collapsed .rail-header-controls .open-line-btn,
 .rail-collapsed .rail-header-controls .away-pill,
 .rail-collapsed .rail-header-controls .claude-pill,
-.rail-collapsed .rail-header-controls .antigravity-pill,
 .rail-collapsed .rail-header-controls .switchboard-pill,
 .rail-collapsed .rail-header-controls .rail-toggle-header,
 .rail-header-controls.collapsed .status-pill,
 .rail-header-controls.collapsed .open-line-btn,
 .rail-header-controls.collapsed .away-pill,
 .rail-header-controls.collapsed .claude-pill,
-.rail-header-controls.collapsed .antigravity-pill,
 .rail-header-controls.collapsed .switchboard-pill,
 .rail-header-controls.collapsed .rail-toggle-header {
 	flex: 0 0 24px;
@@ -737,12 +735,12 @@ body.resizing-col { cursor: col-resize; user-select: none; }
 	width: 13px; height: 13px;
 }
 
-.claude-pill.status-green, .antigravity-pill.status-green, .switchboard-pill.status-green { color: var(--lamp-green); }
-.claude-pill.status-amber, .antigravity-pill.status-amber, .switchboard-pill.status-amber { color: var(--lamp-amber); }
-.claude-pill.status-red,   .antigravity-pill.status-red,   .switchboard-pill.status-red   { color: var(--lamp-red); }
-.claude-pill.status-cold,  .antigravity-pill.status-cold,  .switchboard-pill.status-cold  { color: #636d7d; }
+.claude-pill.status-green, .switchboard-pill.status-green { color: var(--lamp-green); }
+.claude-pill.status-amber, .switchboard-pill.status-amber { color: var(--lamp-amber); }
+.claude-pill.status-red,   .switchboard-pill.status-red   { color: var(--lamp-red); }
+.claude-pill.status-cold,  .switchboard-pill.status-cold  { color: #636d7d; }
 
-.claude-pill:hover, .antigravity-pill:hover, .switchboard-pill:hover, .away-pill:hover, .open-line-btn:hover { border-color: var(--label-dim); }
+.claude-pill:hover, .switchboard-pill:hover, .away-pill:hover, .open-line-btn:hover { border-color: var(--label-dim); }
 .claude-status-label { font-family: var(--font-mono); font-size: 11px; color: var(--label-faint); }
 .claude-status-btn { font-family: var(--font-mono); font-size: 11px; padding: 1px 8px; }
 

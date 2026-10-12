@@ -27,11 +27,8 @@ export function awayOffCmd({ decision, defaultText } = {}, nowIsoFn) {
 	return { path: 'away_mode_commands', value };
 }
 
-export function spawnFreshCmd({ agent, surface, project, prompt, targetConversationId, model, effort } = {}, nowIsoFn) {
-	const value = { type: 'fresh', surface, project, issued_at: nowIsoFn() };
-	if (agent !== undefined && agent !== null) {
-		value.agent = agent;
-	}
+export function spawnFreshCmd({ surface, project, prompt, targetConversationId, model, effort } = {}, nowIsoFn) {
+	const value = { type: 'fresh', agent: 'claude', surface, project, issued_at: nowIsoFn() };
 	if (prompt !== undefined && prompt !== null) {
 		value.prompt = prompt;
 	}

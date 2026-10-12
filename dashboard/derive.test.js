@@ -285,28 +285,18 @@ const SPAWN_OPTIONS = {
 		{ id: 'sonnet', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
 		{ id: 'haiku', efforts: [] },
 	] },
-	antigravity: { models: [
-		{ id: 'gemini-3.6-flash-high', efforts: [] },
-	] },
 };
 
-test('modelOptionsFor keys to agent and tolerates absence', () => {
-	assert.deepEqual(modelOptionsFor(SPAWN_OPTIONS, 'claude'), ['fable', 'sonnet', 'haiku']);
-	assert.deepEqual(modelOptionsFor(SPAWN_OPTIONS, 'antigravity'), ['gemini-3.6-flash-high']);
-	assert.deepEqual(modelOptionsFor(null, 'claude'), []);
+test('modelOptionsFor lists the claude catalog and tolerates absence', () => {
+	assert.deepEqual(modelOptionsFor(SPAWN_OPTIONS), ['fable', 'sonnet', 'haiku']);
+	assert.deepEqual(modelOptionsFor(null), []);
 });
 
 test('effortOptionsFor rules', () => {
-	assert.deepEqual(effortOptionsFor(SPAWN_OPTIONS, 'antigravity', 'gemini-3.6-flash-high'), []);
-	// An agy id absent from claude's list returns [] even with the antigravity guard
-	// removed, so these two pin the guard itself: a claude model id under antigravity,
-	// and the no-model union branch. Both fail if the guard is dropped.
-	assert.deepEqual(effortOptionsFor(SPAWN_OPTIONS, 'antigravity', 'sonnet'), []);
-	assert.deepEqual(effortOptionsFor(SPAWN_OPTIONS, 'antigravity', null), []);
-	assert.deepEqual(effortOptionsFor(SPAWN_OPTIONS, 'claude', 'haiku'), []);
-	assert.deepEqual(effortOptionsFor(SPAWN_OPTIONS, 'claude', 'sonnet'), ['low', 'medium', 'high', 'xhigh', 'max']);
-	assert.deepEqual(effortOptionsFor(SPAWN_OPTIONS, 'claude', null), ['low', 'medium', 'high', 'xhigh', 'max']);
-	assert.deepEqual(effortOptionsFor(null, 'claude', 'sonnet'), []);
+	assert.deepEqual(effortOptionsFor(SPAWN_OPTIONS, 'haiku'), []);
+	assert.deepEqual(effortOptionsFor(SPAWN_OPTIONS, 'sonnet'), ['low', 'medium', 'high', 'xhigh', 'max']);
+	assert.deepEqual(effortOptionsFor(SPAWN_OPTIONS, null), ['low', 'medium', 'high', 'xhigh', 'max']);
+	assert.deepEqual(effortOptionsFor(null, 'sonnet'), []);
 });
 
 const ROSTER = {

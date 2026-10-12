@@ -159,8 +159,8 @@ function buildConversation1Members() {
 			surface: 'windows',
 			cli_session_id: 'demo-1',
 		},
-		'Antigravity': {
-			sender: 'Antigravity',
+		'Claude 2': {
+			sender: 'Claude 2',
 			alive: true,
 			surface: 'windows',
 			cli_session_id: 'demo-6',
@@ -182,12 +182,12 @@ function buildConversation1Messages() {
 		},
 		'msg-002': {
 			sender: 'Claude',
-			text: "I'll open with what I think is the most elegant piece: the **away-mode enforcement model**. The turn-end hook is a genuinely clever solution to a hard UX problem. Rather than requiring John to remember to redirect his agents, the system does it automatically - every agent turn ends by checking a server-side flag, and if John has stepped away, the agent is forced into `ask_human`. It's a single checkpoint that makes the entire phone-based interaction loop possible without any agent cooperation beyond honoring the hook contract.\n\nThe fact that it works across both Claude and Antigravity sessions, with different hook wiring for each, but the same server-side gate - that's good separation of concerns.",
+			text: "I'll open with what I think is the most elegant piece: the **away-mode enforcement model**. The turn-end hook is a genuinely clever solution to a hard UX problem. Rather than requiring John to remember to redirect his agents, the system does it automatically - every agent turn ends by checking a server-side flag, and if John has stepped away, the agent is forced into `ask_human`. It's a single checkpoint that makes the entire phone-based interaction loop possible without any agent cooperation beyond honoring the hook contract.\n\nThe fact that every session, Windows or WSL, goes through the same server-side gate - that's good separation of concerns.",
 			timestamp: t(30),
 			format: 'markdown',
 		},
 		'msg-003': {
-			sender: 'Antigravity',
+			sender: 'Claude 2',
 			text: "That's a solid pick, but I'd argue the **conversation model itself** is the real architectural gem. The `conv-<uuid>` abstraction with its `members_active` roster, pending questions, and message timeline gives you something none of the individual AI coding tools provide on their own: a persistent, multi-agent collaboration surface.\n\nConsider what it enables: two agents from different vendors can work on the same problem, see each other's questions to the human, and coordinate through the shared conversation. The `session_to_conversation_id` routing map means any CLI session can join any conversation, and the hydration layer means conversations survive server restarts. That's a lot of capability from a fairly simple data model.",
 			timestamp: t(75),
 			format: 'markdown',
@@ -199,7 +199,7 @@ function buildConversation1Messages() {
 			format: 'markdown',
 		},
 		'msg-005': {
-			sender: 'Antigravity',
+			sender: 'Claude 2',
 			text: "Fair point on the symbiosis between the hook and the model. Let me raise another contender though: the **\"no web UI\" stance that was deliberately reversed for Operator**. The original spec explicitly said \"no web UI\" because the phone is the primary away-mode surface. But when the need for a big-screen control surface became clear, the team didn't bolt on a generic admin panel - they built Operator as a zero-build Preact+htm app that reads Firebase RTDB directly.\n\nNo build step. No bundler. No framework churn. Import maps point at pinned ESM files in `/vendor/`. The entire dashboard is debuggable by reading the source files the browser actually executes. In a world of 400MB `node_modules`, that's a principled choice.",
 			timestamp: t(210),
 			format: 'markdown',
@@ -211,7 +211,7 @@ function buildConversation1Messages() {
 			format: 'markdown',
 		},
 		'msg-007': {
-			sender: 'Antigravity',
+			sender: 'Claude 2',
 			text: "Now we're converging. I think the through-line in all of these is: **Switchboard treats the human as a first-class participant in the agent loop, not an afterthought.** The away-mode hook makes the human reachable. The conversation model makes the interaction persistent. The phone app makes it mobile. The Operator makes it manageable. The Watchtower widget makes it observable.\n\nEvery layer exists because someone asked \"what does John need to see or do right now?\" and built the minimum viable answer. There's no speculative infrastructure - the Firebase schema evolved through concrete specs, each one solving a real problem that appeared in daily use.",
 			timestamp: t(350),
 			format: 'markdown',
@@ -254,7 +254,7 @@ function buildConversation1AgentStatus() {
 			detail: null,
 			updated_at: Date.now(),
 		},
-		'Antigravity': {
+		'Claude 2': {
 			state: 'idle',
 			detail: null,
 			updated_at: Date.now(),
@@ -279,7 +279,7 @@ function buildConversation2Messages() {
 	return {
 		'msg-201': {
 			sender: 'Claude',
-			text: 'Analyzing the turn-end hook contract to verify the away-mode gating is consistent across both Claude and Antigravity sessions...',
+			text: 'Analyzing the turn-end hook contract to verify the away-mode gating is consistent across Windows and WSL sessions...',
 			timestamp: minsAgo(35),
 			format: 'markdown',
 		},
@@ -289,20 +289,20 @@ function buildConversation2Messages() {
 // Conversation #3: active singleton
 function buildConversation3Members() {
 	return {
-		'Antigravity': { sender: 'Antigravity', alive: true, surface: 'windows', cli_session_id: 'demo-3' },
+		'Claude 2': { sender: 'Claude 2', alive: true, surface: 'windows', cli_session_id: 'demo-3' },
 	};
 }
 
 function buildConversation3AgentStatus() {
 	return {
-		'Antigravity': { state: 'running', detail: 'Read: firebase.py', updated_at: Date.now() },
+		'Claude 2': { state: 'running', detail: 'Read: firebase.py', updated_at: Date.now() },
 	};
 }
 
 function buildConversation3Messages() {
 	return {
 		'msg-301': {
-			sender: 'Antigravity',
+			sender: 'Claude 2',
 			text: 'Reading the current RTDB schema to map out the migration path for the conversation restructuring...',
 			timestamp: hoursAgo(1),
 			format: 'markdown',
@@ -334,7 +334,7 @@ function buildEndedConvMessages(sender, summary, timestamp) {
 function buildConversation4Members() {
 	return {
 		'Claude': { sender: 'Claude', alive: true, surface: 'windows', cli_session_id: 'demo-4' },
-		'Antigravity': { sender: 'Antigravity', alive: false, surface: 'windows' },
+		'Claude 2': { sender: 'Claude 2', alive: false, surface: 'windows' },
 	};
 }
 
@@ -405,13 +405,13 @@ function buildSessions() {
 		'demo-6': {
 			name: 'Critique of the conversation model',
 			name_source: 'ai-title',
-			sender: 'Antigravity',
+			sender: 'Claude 2',
 			cwd: 'C:\\Work\\Switchboard',
 			state: 'active',
 			last_event_at: minsAgo(4),
 			conversation_id: CONV_IDS[0],
 			context_pct: 0.44,
-			model: 'gemini-2.5-pro',
+			model: 'claude-sonnet-4-5',
 		},
 		'demo-2': {
 			name: 'Away-mode enforcement hook',
@@ -427,13 +427,13 @@ function buildSessions() {
 		'demo-3': {
 			name: 'Firebase schema migration',
 			name_source: 'custom-title',
-			sender: 'Antigravity',
+			sender: 'Claude 2',
 			cwd: 'C:\\Work\\Switchboard',
 			state: 'active',
 			last_event_at: hoursAgo(1),
 			conversation_id: CONV_IDS[2],
 			context_pct: 0.38,
-			model: 'gemini-2.5-pro',
+			model: 'claude-sonnet-4-5',
 		},
 		'demo-4': {
 			name: 'Watchtower ring rendering',
@@ -491,7 +491,7 @@ export function applyDemoData(store) {
 		store.upsertConversationMeta(id, data.meta);
 	}
 
-	// Active conversation #1: the debate (collab: Claude + Antigravity)
+	// Active conversation #1: the debate (collab: Claude + Claude 2)
 	store.mergeConversationMembers(CONV_IDS[0], buildConversation1Members());
 	store.mergeConversationMessages(CONV_IDS[0], buildConversation1Messages());
 	store.mergeConversationPending(CONV_IDS[0], buildConversation1Pending());
@@ -520,11 +520,11 @@ export function applyDemoData(store) {
 	// Ended conversations with minimal data
 	const endedData = [
 		{ idx: 5, senders: ['Claude'], msg: 'Set up three FCM notification channels: questions, status, and admin.', ts: hoursAgo(28) },
-		{ idx: 6, senders: ['Antigravity'], msg: 'Added WSL surface detection to the session spawner with launcher integration.', ts: daysAgo(2) },
+		{ idx: 6, senders: ['Claude 2'], msg: 'Added WSL surface detection to the session spawner with launcher integration.', ts: daysAgo(2) },
 		{ idx: 7, senders: ['Claude'], msg: 'Implemented conversation hydration so state survives service restarts.', ts: hoursAgo(56) },
-		{ idx: 8, senders: ['Claude', 'Antigravity'], msg: 'Built per-channel token-bucket rate limiter for notify_human and send_document_human.', ts: daysAgo(3) },
+		{ idx: 8, senders: ['Claude', 'Claude 2'], msg: 'Built per-channel token-bucket rate limiter for notify_human and send_document_human.', ts: daysAgo(3) },
 		{ idx: 9, senders: ['Claude'], msg: 'Wired the cli-session-injector hook to inject session_id into every MCP tool call.', ts: hoursAgo(84) },
-		{ idx: 10, senders: ['Antigravity'], msg: 'Implemented combine_conversations with member migration and queue-for-intro logic.', ts: daysAgo(4) },
+		{ idx: 10, senders: ['Claude 2'], msg: 'Implemented combine_conversations with member migration and queue-for-intro logic.', ts: daysAgo(4) },
 		{ idx: 11, senders: ['Claude'], msg: 'Built SupervisedListener and LoopSupervisor for Firebase listener crash recovery.', ts: daysAgo(5) },
 	];
 

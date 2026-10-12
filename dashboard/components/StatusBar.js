@@ -10,7 +10,6 @@ function healthLampClass(health) {
 // Open a fresh line. The one global action that doesn't act on an existing line,
 // so it lives in the operator header rather than on a conversation.
 function SpawnDialog({ store, onClose }) {
-	const [agent, setAgent] = useState("claude");
 	const [surface, setSurface] = useState("windows");
 	const [project, setProject] = useState("");
 	const [prompt, setPrompt] = useState("");
@@ -18,13 +17,12 @@ function SpawnDialog({ store, onClose }) {
 	const [model, setModel] = useState("");
 	const [effort, setEffort] = useState("");
 	const spawnOpts = store.getState().spawnOptions;
-	const modelOptions = modelOptionsFor(spawnOpts, agent);
-	const effortOptions = effortOptionsFor(spawnOpts, agent, model || null);
+	const modelOptions = modelOptionsFor(spawnOpts);
+	const effortOptions = effortOptionsFor(spawnOpts, model || null);
 	const canSubmit = project.trim().length > 0;
 	const submit = () => {
 		if (!canSubmit) return;
 		store.spawnFresh({
-			agent,
 			surface,
 			project,
 			prompt: prompt || undefined,
@@ -37,12 +35,6 @@ function SpawnDialog({ store, onClose }) {
 	return html`
 		<div class="dialog" role="dialog">
 			<h3>Open a line</h3>
-			<label>Agent
-				<select value=${agent} onChange=${(e) => { setAgent(e.target.value); setModel(""); setEffort(""); }}>
-					<option value="claude">Claude</option>
-					<option value="antigravity">Antigravity</option>
-				</select>
-			</label>
 			<label>Surface
 				<select value=${surface} onChange=${(e) => setSurface(e.target.value)}>
 					<option value="windows">windows</option>
@@ -53,20 +45,18 @@ function SpawnDialog({ store, onClose }) {
 				<select value=${model} onChange=${(e) => {
 					const v = e.target.value;
 					setModel(v);
-					if (effort && !effortOptionsFor(spawnOpts, agent, v || null).includes(effort)) setEffort("");
+					if (effort && !effortOptionsFor(spawnOpts, v || null).includes(effort)) setEffort("");
 				}}>
 					<option value="">Default (CLI)</option>
 					${modelOptions.map((id) => html`<option value=${id}>${id}</option>`)}
 				</select>
 			</label>
-			${agent !== "antigravity" ? html`
-				<label>Effort
-					<select value=${effort} disabled=${effortOptions.length === 0} onChange=${(e) => setEffort(e.target.value)}>
-						<option value="">Default (CLI)</option>
-						${effortOptions.map((t) => html`<option value=${t}>${t}</option>`)}
-					</select>
-				</label>
-			` : null}
+			<label>Effort
+				<select value=${effort} disabled=${effortOptions.length === 0} onChange=${(e) => setEffort(e.target.value)}>
+					<option value="">Default (CLI)</option>
+					${effortOptions.map((t) => html`<option value=${t}>${t}</option>`)}
+				</select>
+			</label>
 			<label>Project path
 				<input value=${project} onInput=${(e) => setProject(e.target.value)} /></label>
 			<label>Opening prompt (optional)
@@ -304,43 +294,6 @@ function ClaudeStatusControl({ status, store }) {
 	`;
 }
 
-function AntigravityStatusControl({ status, store }) {
-	const s = status || { watch_state: "idle", button: "check", level: "operational", description: "", incidents: [] };
-	const isWatching = s.watch_state !== "idle" && s.button !== "check";
-	const isGreen = !s.level || s.level === "operational" || s.level === "none";
-
-	let desc = s.description || "Antigravity status";
-	if (s.incidents && s.incidents.length > 0) {
-		const incidentsText = s.incidents.join("; ");
-		if (!desc || desc.toLowerCase().includes("all systems operational")) {
-			desc = incidentsText;
-		} else if (!desc.includes(incidentsText)) {
-			desc = desc + " - " + incidentsText;
-		}
-	}
-	const title = "Antigravity: " + desc;
-	const onClick = () => {
-		if (!isGreen) {
-			window.open("https://status.cloud.google.com", "_blank");
-			return;
-		}
-		const action = (s.button === "check" || s.watch_state === "idle") ? "check" : "stop";
-		store.requestAntigravityStatus(action);
-	};
-	const colorClass = isGreen ? "status-green" : claudeStatusPillClass(s.level);
-	return html`
-		<button
-			class=${"antigravity-pill status-pill " + (isWatching ? "watching " : "idle ") + colorClass}
-			onClick=${onClick}
-			title=${title}
-		>
-			<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-				<path d="M 12 0 C 16.2 7.8 16.2 7.8 24 12 C 16.2 16.2 16.2 16.2 12 24 C 7.8 16.2 7.8 16.2 0 12 C 7.8 7.8 7.8 7.8 12 0 Z"/>
-			</svg>
-		</button>
-	`;
-}
-
 function SwitchboardStatusControl({ health }) {
 	const reachable = health && health.reachable;
 	const healthy = health && health.healthy;
@@ -388,7 +341,6 @@ export function HeaderControls({ store, collapsed }) {
 					<path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-1.14 1.4-2.88 2.26-4.8 2.26-3.31 0-6-2.69-6-6 0-1.92.86-3.66 2.26-4.8C12.92 3.04 12.46 3 12 3z"/>
 				</svg>
 			</button>
-			<${AntigravityStatusControl} status=${state.widget.antigravityStatus} store=${store} />
 			<${ClaudeStatusControl} status=${state.widget.status} store=${store} />
 			<${SwitchboardStatusControl} health=${state.health} />
 			${!collapsed ? html`

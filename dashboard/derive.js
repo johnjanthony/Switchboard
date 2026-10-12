@@ -391,14 +391,13 @@ export function isConvenable(record) {
 
 // Spawn-dialog pick lists from the server-published spawn_options catalog.
 // Absent catalog -> empty lists -> the dialog offers only "Default (CLI)".
-export function modelOptionsFor(spawnOptions, agent) {
-	const cli = spawnOptions ? spawnOptions[agent === 'antigravity' ? 'antigravity' : 'claude'] : null;
+export function modelOptionsFor(spawnOptions) {
+	const cli = spawnOptions ? spawnOptions.claude : null;
 	const models = cli && Array.isArray(cli.models) ? cli.models : [];
 	return models.map((m) => m && m.id).filter(Boolean);
 }
 
-export function effortOptionsFor(spawnOptions, agent, modelId) {
-	if (agent === 'antigravity') return [];
+export function effortOptionsFor(spawnOptions, modelId) {
 	const cli = spawnOptions ? spawnOptions.claude : null;
 	const models = cli && Array.isArray(cli.models) ? cli.models : [];
 	if (!modelId) {
