@@ -467,7 +467,6 @@ async def _spawn_pending_for_combine_resume(
 	member: ConversationMember,
 	target_id: str,
 	source_id: str,
-	agent: str = "claude",
 	model: str | None = None,
 	effort: str | None = None,
 ) -> None:
@@ -489,7 +488,6 @@ async def _spawn_pending_for_combine_resume(
 		"target_conversation_id": target_id,
 		"source_conversation_id": source_id,
 		"agents": [{
-			"agent": agent,
 			"surface": member.surface,
 			"cli_session_id": member.cli_session_id,
 			"prompt": f"You were moved from conversation '{source_id}' to '{target_id}' via combine. Call join_conversation(sender='{member.sender}', ref='{target_id}') to collect the new conversation's history.",
@@ -546,6 +544,30 @@ async def _perform_combine(
 		if not m.session_lost_permanently and not m.alive
 	]
 	if movable_dormant and pending_dir is not None:
+		# Switchboard launches Claude Code only: a dormant member whose session
+		# record names another CLI cannot be relaunched, so the whole combine
+		# aborts before anything moves (the same no-partial-move rule as below).
+		sessions = getattr(registry, "sessions", None)
+		unsupported = []
+		for m in movable_dormant:
+			rec = sessions.get(m.cli_session_id) if sessions is not None else None
+			if rec is not None and rec.cli != "claude":
+				unsupported.append(f"{m.sender} ({rec.cli})")
+		if unsupported:
+			names = ", ".join(unsupported)
+			notice = (
+				f"Combine aborted: dormant member(s) {names} ran on a CLI Switchboard "
+				"no longer launches (Claude Code only). Nothing was moved."
+			)
+			if logger is not None:
+				await logger.surface_error(f"combine_unsupported_cli: {source_id}->{target_id}: {names}")
+			if backend is not None and hasattr(backend, "send_text"):
+				try:
+					await backend.send_text(notice)
+				except Exception as exc:
+					if logger is not None:
+						await logger.surface_error(f"combine_unsupported_cli_notice_failed: {exc}")
+			return f"ERROR: {notice}"
 		from server import spawn as _spawn_mod
 		if not await _spawn_mod.user_has_interactive_session():
 			names = ", ".join(m.sender for m in movable_dormant)
@@ -584,9 +606,6 @@ async def _perform_combine(
 						label=f"fb_move_member:{source_id}->{target_id}:{actual_sender}",
 					)
 			else:
-				sessions = getattr(registry, "sessions", None)
-				rec = sessions.get(sid) if sessions is not None else None
-				agent = (getattr(rec, "cli", None) or "claude") if rec is not None else "claude"
 				# Dormant member: write the relaunch pending file, then bind
 				# and flip alive TOGETHER (bound = alive-or-launching
 				# invariant; handle_resume does the same). Clearing the
@@ -597,7 +616,7 @@ async def _perform_combine(
 				from server.spawn_catalog import build_catalog, recorded_choice_for_resume
 				r_model, r_effort, dropped = recorded_choice_for_resume(
 					registry.spawn_catalog or build_catalog(),
-					registry.sessions, member.cli_session_id, agent,
+					registry.sessions, member.cli_session_id,
 				)
 				if dropped:
 					if logger is not None:
@@ -609,7 +628,7 @@ async def _perform_combine(
 							if logger is not None:
 								await logger.surface_error(f"combine_resume_notice_send_failed: {exc}")
 				await _spawn_pending_for_combine_resume(
-					pending_dir, member, target_id, source_id, agent=agent, model=r_model, effort=r_effort,
+					pending_dir, member, target_id, source_id, model=r_model, effort=r_effort,
 				)
 				if pending_dir is not None:
 					flipped.append((member, (member.session_ended_at, member.session_end_reason, member.left_at)))
@@ -964,6 +983,9 @@ async def _perform_convene(registry, session_registry, cmd: dict, logger, backen
 		if rec.state in ("ended", "lost"):
 			if spawn_handler is None:
 				result["skipped"].append({"session_id": sid, "reason": "resume unavailable"})
+				continue
+			if rec.cli != "claude":
+				result["skipped"].append({"session_id": sid, "reason": f"a {rec.cli} session; Switchboard resumes Claude Code only"})
 				continue
 			if not rec.cwd:
 				result["skipped"].append({"session_id": sid, "reason": "no cwd recorded"})

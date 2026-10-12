@@ -50,14 +50,13 @@ foreach ($f in $pendingFiles) {
 		# Each agent specifies its surface ("windows" or "wsl") and cli_session_id.
 		foreach ($agent in $params.agents) {
 			$surface   = if ($agent.PSObject.Properties.Name -contains 'surface') { $agent.surface } else { "windows" }
-			$agentType = if ($agent.PSObject.Properties.Name -contains 'agent') { $agent.agent } else { "claude" }
 			$sessionId = $agent.cli_session_id
 			$rawPath   = $agent.project_path
 			$rawPrompt = $agent.prompt
 			$rawModel  = if ($agent.PSObject.Properties.Name -contains 'model'  -and $agent.model)  { [string]$agent.model }  else { "" }
 			$rawEffort = if ($agent.PSObject.Properties.Name -contains 'effort' -and $agent.effort) { [string]$agent.effort } else { "" }
 
-			Write-LauncherLog "agent[$([Array]::IndexOf($params.agents, $agent))] agent=$agentType surface=$surface session=$sessionId path='$rawPath' prompt-bytes=$($rawPrompt.Length) model='$rawModel' effort='$rawEffort'"
+			Write-LauncherLog "agent[$([Array]::IndexOf($params.agents, $agent))] surface=$surface session=$sessionId path='$rawPath' prompt-bytes=$($rawPrompt.Length) model='$rawModel' effort='$rawEffort'"
 			if ($surface -eq "wsl") {
 				# Versioned static script + per-spawn prompt file. The launcher
 				# writes only the prompt (short text, no quoting required) to
@@ -90,9 +89,6 @@ foreach ($f in $pendingFiles) {
 
 				# Static script lives in the plugin's scripts/ directory.
 				$staticScriptWsl = "/mnt/c/Work/Switchboard/scripts/spawn-claude-wsl.sh"
-				if ($agentType -eq "antigravity") {
-					$staticScriptWsl = "/mnt/c/Work/Switchboard/scripts/spawn-agy-wsl.sh"
-				}
 
 				$modelArg  = if ($rawModel)  { $rawModel }  else { "-" }
 				$effortArg = if ($rawEffort) { $rawEffort } else { "-" }
@@ -113,15 +109,7 @@ foreach ($f in $pendingFiles) {
 				if ($rawModel)  { $safeModel  = $rawModel  -replace "'", "''"; $flagSuffix += " --model '$safeModel'" }
 				if ($rawEffort) { $safeEffort = $rawEffort -replace "'", "''"; $flagSuffix += " --effort '$safeEffort'" }
 
-				if ($agentType -eq "antigravity") {
-					if ($psSafePrompt) {
-						$cli = "agy -i '$psSafePrompt' --add-dir '$psSafePath' --conversation '$sessionId' --dangerously-skip-permissions$flagSuffix"
-					} else {
-						$cli = "agy --add-dir '$psSafePath' --conversation '$sessionId' --dangerously-skip-permissions$flagSuffix"
-					}
-				} else {
-					$cli = "claude '$psSafePrompt' $sessionFlag '$sessionId' --dangerously-skip-permissions$flagSuffix"
-				}
+				$cli = "claude '$psSafePrompt' $sessionFlag '$sessionId' --dangerously-skip-permissions$flagSuffix"
 				$command = "Set-Location '$psSafePath'; $cli"
 				$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 				Start-Process -FilePath "wt" -ArgumentList "new-tab", "--", "powershell.exe", "-EncodedCommand", $encoded
@@ -136,9 +124,6 @@ foreach ($f in $pendingFiles) {
 		$escapedPrompt = $params.prompt.Replace("'", "''").Replace('"', '\"')
 
 		$cli = "claude '$escapedPrompt' --dangerously-skip-permissions"
-		if ($params.backend -eq "gemini") {
-			$cli = "gemini '$escapedPrompt' --yolo"
-		}
 
 		$command = "Set-Location '$escapedPath'; $cli"
 		$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))

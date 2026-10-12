@@ -876,7 +876,7 @@ async def test_launch_resume_agent_pending_file_write_failure_returns_false(tmp_
 	assert "resume_session_launch_failed" in log_contents
 
 
-def _registry_with_dormant_agy(session_id: str = "agy-sess-1") -> Registry:
+def _registry_with_dormant_retired_cli(session_id: str = "old-sess-1") -> Registry:
 	import time as _time
 	from server.registry import Conversation, ConversationMember
 	from server.session_registry import SessionRegistry
@@ -888,66 +888,52 @@ def _registry_with_dormant_agy(session_id: str = "agy-sess-1") -> Registry:
 	)
 	registry.conversations["conv-src"] = conv
 	registry.sessions = SessionRegistry()
-	registry.sessions.record_session_start(session_id, cwd="C:/Work/X", cli="antigravity")
+	registry.sessions.record_session_start(session_id, cwd="C:/Work/X", cli="retired-cli")
 	return registry
 
 
 @pytest.mark.asyncio
-async def test_handle_resume_launches_antigravity_member(tmp_path):
-	import json
+async def test_handle_resume_refuses_a_non_claude_member(tmp_path):
+	"""A dormant member whose session record names another CLI refuses the whole
+	resume before away mode or the launcher is touched."""
 	from server.spawn import SpawnHandler
 	cfg = make_config_with_wsl(tmp_path)
 	backend = make_backend()
-	registry = _registry_with_dormant_agy()
+	registry = _registry_with_dormant_retired_cli()
 	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()) as launcher:
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle_resume({"type": "resume", "source_conversation_id": "conv-src"})
-	files = _find_pending_files(cfg)
-	assert len(files) == 1
-	launcher.assert_awaited_once()
-	payload = json.loads(files[0].read_text(encoding="utf-8"))
-	assert payload["agents"][0]["agent"] == "antigravity"
+	assert _find_pending_files(cfg) == []
+	launcher.assert_not_called()
+	assert registry.global_away_mode is False
+	backend.send_text.assert_awaited()
+	assert "Claude Code only" in backend.send_text.await_args.args[0]
+	assert "spawn_resume_unsupported_cli" in Path(cfg.log_path).read_text(encoding="utf-8")
+	member = registry.conversations["conv-src"].members_active["old-sess-1"]
+	assert member.alive is False
+	assert len(registry.conversations) == 1
 
 
 @pytest.mark.asyncio
-async def test_handle_resume_session_launches_antigravity(tmp_path):
-	import json
+async def test_handle_resume_session_refuses_a_non_claude_record(tmp_path):
 	from server.spawn import SpawnHandler
 	from server.session_registry import SessionRegistry
 	cfg = make_config_with_wsl(tmp_path)
 	backend = make_backend()
 	registry = Registry()
 	registry.sessions = SessionRegistry()
-	registry.sessions.record_session_start("agy-sess-2", cwd="C:/Work/X", cli="antigravity")
-	registry.sessions.record_session_end("agy-sess-2", reason="exit", ended_at="2026-07-14T00:00:00Z")
+	registry.sessions.record_session_start("old-sess-2", cwd="C:/Work/X", cli="retired-cli")
+	registry.sessions.record_session_end("old-sess-2", reason="exit", ended_at="2026-07-14T00:00:00Z")
 	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()) as launcher:
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
-		await handler.handle_resume_session({"session_id": "agy-sess-2"})
-	files = _find_pending_files(cfg)
-	assert len(files) == 1
-	launcher.assert_awaited_once()
-	payload = json.loads(files[0].read_text(encoding="utf-8"))
-	assert payload["agents"][0]["agent"] == "antigravity"
-
-
-@pytest.mark.asyncio
-async def test_launch_resume_agent_returns_true_for_antigravity(tmp_path):
-	from server.spawn import SpawnHandler
-	from server.session_registry import SessionRegistry
-	cfg = make_config_with_wsl(tmp_path)
-	backend = make_backend()
-	registry = Registry()
-	registry.sessions = SessionRegistry()
-	registry.sessions.record_session_start("agy-sess-3", cwd="C:/Work/X", cli="antigravity")
-	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock()) as launcher:
-		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
-		ok = await handler.launch_resume_agent(
-			session_id="agy-sess-3", surface="windows", cwd="C:/Work/X", prompt="p", prior_sender=None,
-		)
-	assert ok is True
-	files = _find_pending_files(cfg)
-	assert len(files) == 1
-	launcher.assert_awaited_once()
+		await handler.handle_resume_session({"session_id": "old-sess-2"})
+	assert _find_pending_files(cfg) == []
+	launcher.assert_not_called()
+	assert registry.global_away_mode is False
+	assert registry.conversations == {}
+	backend.send_text.assert_awaited()
+	assert "Claude Code only" in backend.send_text.await_args.args[0]
+	assert "resume_session_unsupported_cli" in Path(cfg.log_path).read_text(encoding="utf-8")
 
 
 # ===========================================================================
@@ -979,7 +965,7 @@ async def test_handle_resume_launcher_failure_rolls_members_back(tmp_path):
 	from server.spawn import SpawnHandler
 	cfg = make_config_with_wsl(tmp_path)
 	backend = make_backend()
-	registry = _registry_with_dormant_claude("sess-d1")  # helper: dormant member, no agy session record
+	registry = _registry_with_dormant_claude("sess-d1")  # helper: dormant member, no session record
 	with patch.object(SpawnHandler, "_invoke_launcher", new=AsyncMock(side_effect=RuntimeError("schtasks 1"))):
 		handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 		await handler.handle_resume({"type": "resume", "source_conversation_id": "conv-src"})
@@ -1042,25 +1028,33 @@ async def test_handle_fresh_invalid_model_rejected_loudly_no_side_effects(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_handle_fresh_effort_on_antigravity_rejected(tmp_path):
+async def test_handle_fresh_rejects_a_non_claude_agent_without_side_effects(tmp_path):
+	"""An older client naming a retired agent gets a phone notice, not a crashed
+	command: no pending file, no away-mode flip, no conversation, no record."""
 	from server.spawn import SpawnHandler
+	from server.session_registry import SessionRegistry
 	spawn_root = tmp_path / "projects"
 	spawn_root.mkdir()
 	cfg = make_config_with_wsl(tmp_path, spawn_root=spawn_root)
 	backend = make_backend()
 	registry = Registry()
+	registry.sessions = SessionRegistry()
 	handler = SpawnHandler(cfg, backend, JsonlLogger(cfg.log_path), registry)
 	await handler.handle_fresh({
 		"type": "fresh",
-		"agent": "antigravity",
+		"agent": "retired-cli",
 		"surface": "windows",
 		"project": "myproject",
-		"effort": "high",
 		"issued_at": "2026-07-30T00:00:00Z",
 	})
 	backend.send_text.assert_awaited()
-	assert "effort" in backend.send_text.await_args.args[0].lower()
+	assert "Claude Code only" in backend.send_text.await_args.args[0]
 	assert _find_pending_files(cfg) == []
+	assert registry.global_away_mode is False
+	assert registry.conversations == {}
+	assert registry.session_to_conversation_id == {}
+	assert registry.sessions.snapshot() == []
+	assert "spawn_fresh_invalid_choice" in Path(cfg.log_path).read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio

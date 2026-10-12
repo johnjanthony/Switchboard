@@ -16,9 +16,6 @@ _SEP = " \u00b7 "
 def friendly_model_name(model_id: str) -> str:
 	"""Display name for a model id. An id this does not recognize comes back
 	unchanged: a raw id is honest, a guessed name is not."""
-	if any(ch.isspace() for ch in model_id):
-		# Already a display name (Antigravity reports these, e.g. "Gemini 3.1 Pro").
-		return model_id
 	if model_id in _CLAUDE_FAMILIES:
 		return model_id.title()
 	parts = model_id.split("-")
@@ -29,8 +26,6 @@ def friendly_model_name(model_id: str) -> str:
 		if numbers and all(p.isdigit() for p in numbers):
 			return f"{parts[1].title()} {'.'.join(numbers)}"
 		return model_id
-	if len(parts) >= 2 and parts[0] == "gemini":
-		return " ".join(p.title() if p.isalpha() else p for p in parts)
 	return model_id
 
 

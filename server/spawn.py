@@ -112,11 +112,6 @@ class SpawnHandler:
 		self._logger = logger
 		self._registry = registry
 
-	def _is_antigravity_session(self, session_id: str) -> bool:
-		sessions = getattr(self._registry, "sessions", None)
-		rec = sessions.get(session_id) if sessions is not None else None
-		return rec is not None and rec.cli == "antigravity"
-
 	async def _cancel_prior_pending(self, conversation_id: str) -> None:
 		"""Cancel any pending ask_human requests left over for this conversation before launching
 		a new agent. Without this, a prior agent that died without reaching its tool-handler
@@ -179,7 +174,6 @@ class SpawnHandler:
 			"John is currently away. All communications MUST go through the switchboard MCP. "
 			"Tool calls auto-inject your cli_session_id; you don't need to provide it manually. "
 		)
-		agent_label = "Antigravity" if cmd.get("agent") == "antigravity" else "Claude"
 		if join_existing:
 			roster_parts: list[str] = []
 			for m in conv.members_active.values():
@@ -205,9 +199,9 @@ class SpawnHandler:
 				f"You're joining the conversation \"{conv.title}\". "
 				f"Current members: {roster}. "
 				"Pick a short human-readable sender name distinct from those — surface labels "
-				f"(e.g. '{agent_label} Win', '{agent_label} WSL') or role labels (e.g. 'Reviewer', 'Implementer') "
+				"(e.g. 'Claude Win', 'Claude WSL') or role labels (e.g. 'Reviewer', 'Implementer') "
 				"both work. If you pick a name already in use, the server appends a numeric suffix "
-				f"(e.g. '{agent_label} Win 2'). "
+				"(e.g. 'Claude Win 2'). "
 				f"Call join_conversation(sender='<your_name>', ref='{conv.id}') as your first "
 				"switchboard action to collect the recent log right away. After you have that "
 				"context, introduce yourself via message_and_await_agent, which blocks until a "
@@ -216,7 +210,7 @@ class SpawnHandler:
 			)
 		else:
 			base += (
-				f"Pick a short human-readable sender name (e.g. '{agent_label} Win', 'Implementer'). "
+				"Pick a short human-readable sender name (e.g. 'Claude Win', 'Implementer'). "
 				"Your first switchboard tool call registers you as a member of this conversation. "
 			)
 			user_prompt = cmd.get("prompt")
@@ -351,12 +345,11 @@ class SpawnHandler:
 			# Generated placeholder, not a chosen title: the spawned agent's own
 			# session title supersedes it once its mod reports one.
 			conv = Conversation(id=conv_id, title=f"{project} ({surface})", title_source="default", origin="spawn")
-			agent_label = "Antigravity" if agent == "antigravity" else "Claude"
 			spawn_msg = {
 				"seq": 0,
 				"sender": "<system>",
 				"type": "system",
-				"text": f"Spawning {agent_label} in {project} ({surface})",
+				"text": f"Spawning Claude in {project} ({surface})",
 				"timestamp": now_iso(),
 			}
 			conv.messages.append(spawn_msg)
@@ -415,7 +408,6 @@ class SpawnHandler:
 
 		# Write spawn-pending file
 		agent_entry = {
-			"agent": agent,
 			"surface": surface,
 			"cli_session_id": new_session_id,
 			"prompt": prompt,
@@ -464,6 +456,26 @@ class SpawnHandler:
 		source = self._registry.conversations.get(source_id)
 		if not source:
 			await self._logger.surface_error(f"spawn_resume: source {source_id} not found")
+			return
+
+		# Switchboard launches Claude Code only. A dormant member whose session
+		# record names another CLI (an old record) cannot be resumed: refuse the
+		# whole resume before away mode or the launcher is touched.
+		sessions = getattr(self._registry, "sessions", None)
+		unsupported = []
+		for m in source.members_active.values():
+			if m.alive or m.session_lost_permanently:
+				continue
+			rec = sessions.get(m.cli_session_id) if sessions is not None else None
+			if rec is not None and rec.cli != "claude":
+				unsupported.append(f"{m.sender} ({rec.cli})")
+		if unsupported:
+			names = ", ".join(unsupported)
+			await self._logger.surface_error(f"spawn_resume_unsupported_cli: {source_id}: {names}")
+			await self._backend.send_text(
+				f"Cannot resume '{source.title}': {names} ran on a CLI Switchboard no longer launches "
+				"(Claude Code only). Nothing was launched."
+			)
 			return
 
 		if not await self._user_has_interactive_session():
@@ -574,10 +586,9 @@ class SpawnHandler:
 			self._registry.bind_session(m.cli_session_id, new_id)
 			new_conv.members_active[m.cli_session_id] = m
 			del source.members_active[m.cli_session_id]
-			agent_kind = "antigravity" if self._is_antigravity_session(m.cli_session_id) else "claude"
 			r_model, r_effort, dropped = recorded_choice_for_resume(
 				self._registry.spawn_catalog or build_catalog(),
-				self._registry.sessions, m.cli_session_id, agent_kind,
+				self._registry.sessions, m.cli_session_id,
 			)
 			if dropped:
 				await self._logger.surface_error(f"spawn_resume_choice_dropped: {dropped}")
@@ -586,7 +597,6 @@ class SpawnHandler:
 				except Exception as exc:
 					await self._logger.surface_error(f"spawn_resume_notice_send_failed: {exc}")
 			entry = {
-				"agent": agent_kind,
 				"surface": m.surface,
 				"cli_session_id": m.cli_session_id,
 				"prompt": self._format_resume_prompt(cmd, m, new_id, solo_resume),
@@ -659,10 +669,9 @@ class SpawnHandler:
 		owns that policy (resume paths enable it; convene never does)."""
 		if not await self._user_has_interactive_session():
 			return False
-		agent_kind = "antigravity" if self._is_antigravity_session(session_id) else "claude"
 		r_model, r_effort, dropped = recorded_choice_for_resume(
 			self._registry.spawn_catalog or build_catalog(),
-			self._registry.sessions, session_id, agent_kind,
+			self._registry.sessions, session_id,
 		)
 		if dropped:
 			await self._logger.surface_error(f"resume_session_choice_dropped: {dropped}")
@@ -671,7 +680,6 @@ class SpawnHandler:
 			except Exception as exc:
 				await self._logger.surface_error(f"resume_session_notice_send_failed: {exc}")
 		agent_entry = {
-			"agent": agent_kind,
 			"surface": surface,
 			"cli_session_id": session_id,
 			"prompt": prompt,
@@ -706,6 +714,12 @@ class SpawnHandler:
 		rec = sessions.get(session_id) if sessions is not None else None
 		if rec is None:
 			await self._backend.send_text(f"Cannot resume {session_id[:8]}: session not found in the registry (pruned?).")
+			return
+		if rec.cli != "claude":
+			await self._logger.surface_error(f"resume_session_unsupported_cli: {session_id} cli={rec.cli}")
+			await self._backend.send_text(
+				f"Cannot resume {session_id[:8]}: it is a {rec.cli} session, and Switchboard launches Claude Code only."
+			)
 			return
 		if rec.state not in ("ended", "lost"):
 			await self._backend.send_text(f"Cannot resume {session_id[:8]}: the session is still live ({rec.state}).")

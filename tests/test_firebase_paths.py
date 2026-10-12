@@ -372,7 +372,6 @@ async def test_publish_spawn_options_writes_full_node(backend):
 
 	catalog = {
 		"claude": {"models": [{"id": "sonnet", "efforts": ["low"]}]},
-		"antigravity": {"models": [{"id": "gemini-3.6-flash-low", "efforts": []}]},
 	}
 	await be.publish_spawn_options(catalog)
 
@@ -383,7 +382,6 @@ async def test_publish_spawn_options_writes_full_node(backend):
 	payload = captured[0]
 	assert "published_at" in payload
 	assert payload["claude"] == catalog["claude"]
-	assert payload["antigravity"] == catalog["antigravity"]
 	# The spread must merge at the top level, not nest under a "catalog" key.
 	assert "catalog" not in payload
 

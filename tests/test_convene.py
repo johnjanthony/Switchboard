@@ -394,6 +394,27 @@ async def test_convene_fork_resumes_ended_session(logger):
 
 
 @pytest.mark.asyncio
+async def test_convene_skips_a_non_claude_ended_session(logger):
+	"""Convene resumes Claude Code sessions only: an ended record that names
+	another CLI is skipped with a reason, and nothing is launched."""
+	registry = make_registry_with_loopback()
+	session_registry = SessionRegistry()
+	registry.sessions = session_registry
+
+	session_registry.record_session_start("s-old", cwd="C:/Work/E", cli="retired-cli")
+	session_registry.record_session_end("s-old", reason="logout", ended_at="2026-07-06T00:00:00+00:00")
+
+	spawn_handler = FakeSpawnHandler()
+	cmd = {"session_ids": ["s-old"], "target": "new", "title": None, "issued_at": "x"}
+	result = await _perform_convene(registry, session_registry, cmd, logger, spawn_handler=spawn_handler)
+
+	assert spawn_handler.calls == []
+	assert result["skipped"] == [
+		{"session_id": "s-old", "reason": "a retired-cli session; Switchboard resumes Claude Code only"},
+	]
+
+
+@pytest.mark.asyncio
 async def test_convene_fork_no_cwd_skips(logger):
 	"""An ended session with no recorded cwd can't be resumed (no project
 	path to relaunch into) - skipped as "no cwd recorded", spawn handler not

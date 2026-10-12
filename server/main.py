@@ -943,10 +943,10 @@ async def _run(config: Config) -> None:
 	except Exception as exc:
 		await logger.surface_error(f"set_global_wsl_available_failed: {exc}")
 
-	# Per-CLI model/effort catalog - probed once at startup, published for the
+	# Claude Code model/effort catalog - built once at startup, published for the
 	# spawn dialogs, kept on the registry as the dispatch validation allowlist.
-	from server.spawn_catalog import build_catalog, probe_agy_models
-	registry.spawn_catalog = build_catalog(await probe_agy_models(logger))
+	from server.spawn_catalog import build_catalog
+	registry.spawn_catalog = build_catalog()
 	try:
 		await backend.publish_spawn_options(registry.spawn_catalog)
 	except Exception as exc:

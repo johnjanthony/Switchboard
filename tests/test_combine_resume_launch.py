@@ -220,12 +220,14 @@ async def test_combine_launcher_success_keeps_flip(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_combine_launches_antigravity_member(tmp_path):
+async def test_combine_refuses_a_non_claude_dormant_member(tmp_path):
+	"""A dormant member whose record names another CLI cannot be relaunched, so
+	the whole combine aborts with nothing moved and the phone told."""
 	from server.conversation_ops import _perform_combine
 	from server.session_registry import SessionRegistry
 	registry = _registry_with_source_and_target()
 	registry.sessions = SessionRegistry()
-	registry.sessions.record_session_start("sess-dormant", cwd="C:/Work/X", cli="antigravity")
+	registry.sessions.record_session_start("sess-dormant", cwd="C:/Work/X", cli="retired-cli")
 	backend = RecordingBackend()
 	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
 
@@ -237,15 +239,15 @@ async def test_combine_launches_antigravity_member(tmp_path):
 	for _ in range(5):
 		await asyncio.sleep(0)
 
-	assert not result.startswith("ERROR")
-	member = registry.conversations["conv-tgt"].members_active["sess-dormant"]
-	assert member.alive is True
-	assert registry.session_to_conversation_id.get("sess-dormant") == "conv-tgt"
-	files = list(tmp_path.glob("spawn-pending-*.json"))
-	assert len(files) == 1
-	payload = json.loads(files[0].read_text(encoding="utf-8"))
-	assert payload["type"] == "combine_resume"
-	assert payload["agents"][0]["agent"] == "antigravity"
+	assert result.startswith("ERROR"), f"expected abort, got: {result}"
+	assert "Claude Code only" in result
+	assert "sess-dormant" in registry.conversations["conv-src"].members_active
+	assert "sess-dormant" not in registry.conversations["conv-tgt"].members_active
+	assert registry.conversations["conv-src"].state == "active"
+	assert list(tmp_path.glob("spawn-pending-*.json")) == []
+	mock_launch.assert_not_awaited()
+	assert backend.sent_texts
+	assert "combine_unsupported_cli" in (tmp_path / "log.jsonl").read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio

@@ -53,7 +53,7 @@ def _registry(active=0, ended=0, away=False):
 async def test_stats_returns_all_keys_and_counts():
 	registry = _registry(active=3, ended=2, away=True)
 	registry.add(conversation_id="a0", cli_session_id="s-a0", sender="Claude", request_id="r1")
-	registry.add(conversation_id="a1", cli_session_id="s-a1", sender="Gemini", request_id="r2")
+	registry.add(conversation_id="a1", cli_session_id="s-a1", sender="Claude WSL", request_id="r2")
 	backend = _FakeBackend([{"name": "responses", "state": "live"}])
 	loop_sups = {"dispatch_responses": _FakeLoopSup(0)}
 	route = _build_stats_route(registry, backend, loop_sups)

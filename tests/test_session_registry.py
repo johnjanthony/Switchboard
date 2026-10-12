@@ -252,15 +252,15 @@ def test_hook_event_still_revives_lost_record():
 
 def test_upsert_from_hook_sets_cli():
 	reg = SessionRegistry()
-	rec = reg.upsert_from_hook("s1", state="active", cwd="C:/w", event="UserPromptSubmit", cli="antigravity")
-	assert rec.cli == "antigravity"
+	rec = reg.upsert_from_hook("s1", state="active", cwd="C:/w", event="UserPromptSubmit", cli="retired-cli")
+	assert rec.cli == "retired-cli"
 
 
 def test_upsert_from_hook_cli_none_preserves_existing():
 	reg = SessionRegistry()
-	reg.upsert_from_hook("s1", state="active", cli="antigravity")
+	reg.upsert_from_hook("s1", state="active", cli="retired-cli")
 	rec = reg.upsert_from_hook("s1", state="idle")
-	assert rec.cli == "antigravity"
+	assert rec.cli == "retired-cli"
 
 
 def test_record_spawn_choice_sets_fields_and_mirrors():
@@ -295,6 +295,23 @@ def test_hydrate_record_restores_spawn_choice():
 	rec = reg.get("sid-hyd")
 	assert rec.spawn_model == "haiku"
 	assert rec.spawn_effort is None
+
+
+def test_hydrate_record_keeps_a_non_claude_cli():
+	"""Records another CLI wrote before it was retired still hydrate; cli is
+	display data."""
+	reg = SessionRegistry()
+	reg.hydrate_record({
+		"cli_session_id": "sid-old",
+		"cwd": "C:/Work/X",
+		"state": "ended",
+		"cli": "retired-cli",
+		"model": "Retired Model 3 (High)",
+	})
+	rec = reg.get("sid-old")
+	assert rec is not None
+	assert rec.cli == "retired-cli"
+	assert rec.state == "ended"
 
 
 def test_record_spawn_choice_seeds_cwd_on_new_record():
