@@ -538,3 +538,18 @@ test('serverOffline is true when presence is absent or older than 120 s', () => 
 	assert.equal(derive.serverOffline('2026-07-06T12:09:00Z', nowMs), false);
 	assert.equal(derive.serverOffline('2026-07-06T12:07:59Z', nowMs), true);
 });
+
+test('sessionModChip flags a session running an older mod', () => {
+	assert.deepEqual(derive.sessionModChip({ mod_stale: true }), {
+		text: 'old mod',
+		cls: 'session-old-mod',
+		title: 'Restart this session to load the current Switchboard mod',
+	});
+});
+
+test('sessionModChip is null for a current or unknown mod', () => {
+	assert.equal(derive.sessionModChip({ mod_stale: false }), null);
+	assert.equal(derive.sessionModChip({ mod_stale: null }), null);
+	assert.equal(derive.sessionModChip({}), null);
+	assert.equal(derive.sessionModChip(null), null);
+});

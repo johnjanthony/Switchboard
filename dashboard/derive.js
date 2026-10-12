@@ -227,6 +227,17 @@ export function sessionModelChip(record) {
 	};
 }
 
+export function sessionModChip(record) {
+	if (!record || record.mod_stale !== true) {
+		return null;
+	}
+	return {
+		text: 'old mod',
+		cls: 'session-old-mod',
+		title: 'Restart this session to load the current Switchboard mod',
+	};
+}
+
 export function projectTail(cwd) {
 	if (!cwd) {
 		return '';
