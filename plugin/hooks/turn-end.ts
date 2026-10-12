@@ -1,7 +1,6 @@
 import type { InboxAnswer } from './client'
 
 // The away-mode instruction for an agent ending its turn while John is away.
-// Verbatim REDIRECT_REASON_AWAY_MODE from scripts/turn-end-hook-away-mode.py.
 export const REDIRECT_REASON_AWAY_MODE = [
 	'You are in away mode. John is on his phone, not watching the terminal.',
 	'To hand your turn back, call ask_human() and wait for his reply. This is the correct and ONLY way to end your turn while away.',

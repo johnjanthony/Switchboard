@@ -577,10 +577,8 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		immediately; John's answer is delivered at your next hook boundary,
 		blocked ask, or wait.
 
-		cli_session_id and cwd identify your session. Claude Code: injected
-		automatically by the plugin hook (do not pass them). Other CLIs (e.g.
-		Antigravity): pass cli_session_id=<your conversation id> and
-		cwd=<your workspace root> explicitly on every call."""
+		cli_session_id and cwd identify your session. The switchboard mod
+		injects both automatically; do not pass them."""
 		# Keepalive: this call legitimately blocks for hours awaiting John.
 		return await _await_with_progress_keepalive(mcp, handlers.ask_human(
 			question, sender, title=title, format=format, suggestions=suggestions,
@@ -598,10 +596,8 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 	) -> str:
 		"""Fire a status message to John. Non-blocking.
 
-		cli_session_id and cwd identify your session. Claude Code: injected
-		automatically by the plugin hook (do not pass them). Other CLIs (e.g.
-		Antigravity): pass cli_session_id=<your conversation id> and
-		cwd=<your workspace root> explicitly on every call."""
+		cli_session_id and cwd identify your session. The switchboard mod
+		injects both automatically; do not pass them."""
 		return await handlers.notify_human(
 			message, sender, title=title, format=format,
 			cli_session_id=cli_session_id, cwd=cwd,
@@ -618,10 +614,8 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 	) -> str:
 		"""Deliver a file to John. Non-blocking. path is relative to cwd. Max 5 MB.
 
-		cli_session_id and cwd identify your session. Claude Code: injected
-		automatically by the plugin hook (do not pass them). Other CLIs (e.g.
-		Antigravity): pass cli_session_id=<your conversation id> and
-		cwd=<your workspace root> explicitly on every call."""
+		cli_session_id and cwd identify your session. The switchboard mod
+		injects both automatically; do not pass them."""
 		return await handlers.send_document_human(
 			path, sender, title=title, caption=caption,
 			cli_session_id=cli_session_id, cwd=cwd,
@@ -645,10 +639,8 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		control - do other work and poll or re-enter the wait - not the
 		pause-and-record timeout protocol.
 
-		cli_session_id and cwd identify your session. Claude Code: injected
-		automatically by the plugin hook (do not pass them). Other CLIs (e.g.
-		Antigravity): pass cli_session_id=<your conversation id> and
-		cwd=<your workspace root> explicitly on every call."""
+		cli_session_id and cwd identify your session. The switchboard mod
+		injects both automatically; do not pass them."""
 		# Keepalive: blocks until a collab partner speaks, which can be hours.
 		return await _await_with_progress_keepalive(mcp, handlers.message_and_await_agent(
 			sender, message, title=title, timeout_seconds=timeout_seconds,
@@ -673,10 +665,8 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		failed - do NOT re-post. It never supersedes or disturbs a parked
 		message_and_await_agent wait from your own session.
 
-		cli_session_id and cwd identify your session. Claude Code: injected
-		automatically by the plugin hook (do not pass them). Other CLIs (e.g.
-		Antigravity): pass cli_session_id=<your conversation id> and
-		cwd=<your workspace root> explicitly on every call."""
+		cli_session_id and cwd identify your session. The switchboard mod
+		injects both automatically; do not pass them."""
 		return await handlers.post_agent_message(
 			sender, message, title=title,
 			cli_session_id=cli_session_id, cwd=cwd,
@@ -695,10 +685,8 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		Returns one-line JSON: {"status":"ok","source":...,"target":...,"detail":...}
 		on success; an "ERROR: ..." string on failure.
 
-		cli_session_id and cwd identify your session. Claude Code: injected
-		automatically by the plugin hook (do not pass them). Other CLIs (e.g.
-		Antigravity): pass cli_session_id=<your conversation id> and
-		cwd=<your workspace root> explicitly on every call."""
+		cli_session_id and cwd identify your session. The switchboard mod
+		injects both automatically; do not pass them."""
 		return await handlers.combine_conversations(
 			source_id, target_id,
 			cli_session_id=cli_session_id, cwd=cwd,
@@ -731,10 +719,8 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		message sent now will wake that member. To wait for peers afterwards,
 		call message_and_await_agent.
 
-		cli_session_id and cwd identify your session. Claude Code: injected
-		automatically by the plugin hook (do not pass them). Other CLIs (e.g.
-		Antigravity): pass cli_session_id=<your conversation id> and
-		cwd=<your workspace root> explicitly on every call."""
+		cli_session_id and cwd identify your session. The switchboard mod
+		injects both automatically; do not pass them."""
 		return await handlers.join_conversation(
 			sender, ref=ref, title=title,
 			cli_session_id=cli_session_id, cwd=cwd,
@@ -757,10 +743,8 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		sender_contains: case-insensitive substring match.
 		title_contains: case-insensitive substring match.
 
-		cli_session_id and cwd identify your session. Claude Code: injected
-		automatically by the plugin hook (do not pass them). Other CLIs (e.g.
-		Antigravity): pass cli_session_id=<your conversation id> and
-		cwd=<your workspace root> explicitly on every call."""
+		cli_session_id and cwd identify your session. The switchboard mod
+		injects both automatically; do not pass them."""
 		return await handlers.lookup_conversation_ids(
 			cwd_filter=cwd_filter,
 			sender_contains=sender_contains,
@@ -781,10 +765,8 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		alive member and no dormant members remain.
 		Returns one-line JSON: {"status":"ok","conversation_id":...}.
 
-		cli_session_id and cwd identify your session. Claude Code: injected
-		automatically by the plugin hook (do not pass them). Other CLIs (e.g.
-		Antigravity): pass cli_session_id=<your conversation id> and
-		cwd=<your workspace root> explicitly on every call."""
+		cli_session_id and cwd identify your session. The switchboard mod
+		injects both automatically; do not pass them."""
 		return await handlers.leave_conversation(
 			sender, parting_message,
 			cli_session_id=cli_session_id, cwd=cwd,
@@ -798,10 +780,8 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 	) -> str:
 		"""Set the away_mode flag. Persisted to Firebase.
 
-		cli_session_id and cwd identify your session. Claude Code: injected
-		automatically by the plugin hook (do not pass them). Other CLIs (e.g.
-		Antigravity): pass cli_session_id=<your conversation id> and
-		cwd=<your workspace root> explicitly on every call."""
+		cli_session_id and cwd identify your session. The switchboard mod
+		injects both automatically; do not pass them."""
 		return await handlers.set_away_mode(
 			value,
 			cli_session_id=cli_session_id, cwd=cwd,

@@ -121,13 +121,10 @@ async def _safe_mark_cancelled(backend: MessageWriter, conversation_id: str, req
 def require_cli_session_id(handler):
 	"""Decorator: rejects calls missing cli_session_id.
 
-	The switchboard MCP plugin's PreToolUse hook injects cli_session_id (and
-	cwd) into every switchboard tool call from Claude Code. Non-Claude agents
-	(e.g. Antigravity) have no such hook, so by design they pass both values
-	explicitly as tool arguments instead. A missing cli_session_id means
-	either (a) the hook didn't fire for a Claude session (plugin missing or
-	stale), or (b) a non-Claude agent omitted the explicit arguments it was
-	supposed to supply. Under the v2 routing model (parent design),
+	The switchboard mod injects cli_session_id (and cwd) into every
+	switchboard tool call from Claude Code. A missing cli_session_id means
+	the injection didn't happen (the plugin is missing or stale, or the mod
+	failed to load). Under the v2 routing model (parent design),
 	switchboard tools require this identity - the channel-by-cwd legacy
 	routing has been retired.
 
@@ -139,11 +136,9 @@ def require_cli_session_id(handler):
 	async def wrapped(*args, cli_session_id: str | None = None, cwd: str | None = None, **kwargs):
 		if not cli_session_id:
 			return (
-				"ERROR: cli_session_id required. Claude Code: this call arrived without "
-				"the switchboard plugin's PreToolUse hook injection (plugin missing or "
-				"stale). Other CLIs (e.g. Antigravity): retry the same call with "
-				"cli_session_id=<your conversation id> and cwd=<your workspace root> "
-				"added inside the tool arguments."
+				"ERROR: cli_session_id required. This call arrived without the "
+				"switchboard mod's session injection (plugin missing or stale, or the "
+				"mod failed to load)."
 			)
 		return await handler(*args, cli_session_id=cli_session_id, cwd=cwd, **kwargs)
 
