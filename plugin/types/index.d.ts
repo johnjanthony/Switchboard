@@ -2,6 +2,6 @@
 // declared once so `claude plugin validate` holds the mod to it.
 declare module 'claude-code' {
 	interface PluginState {
-		switchboard: { held: string[]; busy: boolean; turnId: string | null; warned401: boolean }
+		switchboard: { held: string[]; busy: boolean; turnId: string | null; warned401: boolean; redirects: number }
 	}
 }

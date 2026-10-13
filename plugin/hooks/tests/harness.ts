@@ -19,6 +19,10 @@ export type World = {
 	hangFetch: boolean
 	rejectSubmit: boolean
 	checkDecision: 'allow' | 'ask' | 'deny'
+	// Set to make every tool call come back as an error result (a rejected dialog does).
+	toolError: string | null
+	// Set to make the mod's own $.mcp.call fail.
+	mcpError: string | null
 	mcpReplies: string[]
 	sent: Sent[]
 	prompts: Array<{ text: string; context: readonly string[] }>
@@ -50,6 +54,8 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		hangFetch: false,
 		rejectSubmit: false,
 		checkDecision: 'allow',
+		toolError: null,
+		mcpError: null,
 		mcpReplies: [],
 		sent: [],
 		prompts: [],
@@ -86,6 +92,7 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		w.toolInputs.push({ ...e })
 		// A test holding a call open sets toolGate and resolves it to let the call finish.
 		if (w.toolGate !== null) await w.toolGate
+		if (w.toolError !== null) return { result: w.toolError, isError: true as const }
 		return { result: 'ran' }
 	})
 	on('telemetry.log', (_$, e) => {
@@ -107,6 +114,7 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		return { value: undefined }
 	})
 	on('mcp.call', (_$, e) => {
+		if (w.mcpError !== null) return { deny: w.mcpError }
 		w.mcpCalls.push({ server: e.server, tool: e.tool, args: e.args })
 		return { value: { content: [{ type: 'text', text: w.mcpReplies.shift() ?? '' }], isError: false } }
 	})

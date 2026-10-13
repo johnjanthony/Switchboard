@@ -13,7 +13,7 @@ import { backoffMs, POLL_MS } from './inbox'
 import { preToolState } from './status'
 import type { Title } from './telemetry'
 import { claudeConfigRoots, effortLevel, latestTitle, measureReport } from './telemetry'
-import { turnEndBlock } from './turn-end'
+import { askedJohn, isOwnRedirect, REDIRECT_CAP_NOTICE, redirectPlan } from './turn-end'
 
 const SWITCHBOARD_TOOL = /^mcp__switchboard__/
 
@@ -33,6 +33,8 @@ const busy = atom({ plugin: 'switchboard', key: 'busy' } as const, false)
 const turnId = atom({ plugin: 'switchboard', key: 'turnId' } as const, null as string | null)
 // Whether this session has already been told about a 401.
 const warned401 = atom({ plugin: 'switchboard', key: 'warned401' } as const, false)
+// Bare redirects the turn-end check has submitted since the session's last real input.
+const redirects = atom({ plugin: 'switchboard', key: 'redirects' } as const, 0)
 
 // -- server client -----------------------------------------------------------
 
@@ -311,6 +313,10 @@ async function deliverIfIdle($: EngineInterface): Promise<void> {
 // submit puts the items back for the next poll.
 async function submitPrompt($: EngineInterface, text: string, items: readonly string[]): Promise<void> {
 	await update($, busy, () => true)
+	// Phone messages are new input. Reset here, not only in prompt.submit: a submit
+	// from the poller's timer did not pass through this mod's own prompt.submit
+	// hook in the test kit.
+	if (items.length > 0) await update($, redirects, () => 0)
 	try {
 		const submitted = await $.prompt.submit({ text })
 		if ('drop' in submitted) {
@@ -362,7 +368,8 @@ async function askFromPhone($: EngineInterface, questions: readonly AskQuestion[
 	for (const [index, q] of questions.entries()) {
 		let result: McpToolResult
 		try {
-			// $.mcp.call is the plugin's own call, so the injector never sees it.
+			// The mod's own $.mcp.call passes through its tool.call hook too, but the
+			// ids are passed here so the call does not depend on that.
 			result = await raceAbort(
 				$.mcp.call('switchboard', 'ask_human', {
 					question: phoneQuestion(q, index, questions.length),
@@ -420,14 +427,34 @@ async function checkTurnEnd($: EngineInterface): Promise<void> {
 	// ask_human calls past ~120s), so it ends the turn quietly.
 	if (answer !== null && answer.away && !answer.pending_ask) {
 		const items = await takeHeld($)
-		const text = turnEndBlock(items, answer)
-		if (text !== undefined) {
-			void submitPrompt($, text, items)
+		const plan = redirectPlan(items, await read($, redirects))
+		await update($, redirects, () => plan.redirects)
+		if ('submit' in plan) {
+			void submitPrompt($, plan.submit, items)
 			return
 		}
+		if ('cap' in plan) void notifyRedirectCap($)
+	} else if (answer !== null) {
+		await update($, redirects, () => 0)
 	}
 	await update($, busy, () => false)
 	void deliverIfIdle($)
+}
+
+// Past the cap the session goes idle, and John is told once, in the session's own
+// conversation, so his reply there starts its next turn.
+async function notifyRedirectCap($: EngineInterface): Promise<void> {
+	try {
+		const result = await $.mcp.call('switchboard', 'notify_human', {
+			message: REDIRECT_CAP_NOTICE,
+			sender: 'Claude',
+			cli_session_id: await $.session.id(),
+			cwd: await $.session.cwd(),
+		})
+		if (result.isError) $.ui.log(`switchboard: could not tell John the away-mode reminder stopped: ${replyText(result)}`, { to: 'debug' })
+	} catch (error) {
+		$.ui.log(`switchboard: could not tell John the away-mode reminder stopped: ${String(error)}`, { to: 'debug' })
+	}
 }
 
 // -- wiring ------------------------------------------------------------------
@@ -465,6 +492,8 @@ export const register: Register = on => {
 
 	// A prompt John types while items are held carries them as context.
 	on('prompt.submit', async ($, e, next) => {
+		// Anything but the turn-end check's own bare redirect is new input.
+		if (!isOwnRedirect(e.origin, e.text)) await update($, redirects, () => 0)
 		const items = await takeHeld($)
 		return items.length === 0 ? next(e) : next({ ...e, context: [...(e.context ?? []), ...items] })
 	})
@@ -485,6 +514,7 @@ export const register: Register = on => {
 				if (toolUseId !== undefined) inflight.delete(toolUseId)
 			}
 		}
+		if (askedJohn(tool, input as Record<string, unknown>, ran)) await update($, redirects, () => 0)
 		postStatus($, { session_id: sessionId, cwd, event: 'PostToolUse', state: 'thinking' })
 		// Main loop only: a subagent must never receive John's message.
 		return agentId === undefined ? withHeldContext($, ran) : ran
