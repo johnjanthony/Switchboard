@@ -1,7 +1,7 @@
 import type { Engine } from 'claude-code/testing'
 import { describe, expect, test } from 'claude-code/testing'
 
-import { askedJohn, isOwnRedirect, REDIRECT_CAP, REDIRECT_CAP_NOTICE, REDIRECT_REASON_AWAY_MODE, redirectPlan } from '../turn-end'
+import { askedJohn, isOwnSubmit, REDIRECT_CAP, REDIRECT_CAP_NOTICE, REDIRECT_REASON_AWAY_MODE, redirectPlan } from '../turn-end'
 import { inboxPolls, postsTo, startSession, world } from './harness'
 
 const R = REDIRECT_REASON_AWAY_MODE
@@ -23,16 +23,16 @@ describe('redirectPlan (an away-mode turn end with no live ask)', () => {
 	})
 })
 
-describe('isOwnRedirect', () => {
-	test('the mod submitting the bare redirect', () => {
-		expect(isOwnRedirect({ kind: 'plugin', name: 'switchboard' }, R)).toBe(true)
+describe('isOwnSubmit', () => {
+	test('a prompt this mod submitted, redirect or phone message', () => {
+		expect(isOwnSubmit({ kind: 'plugin', name: 'switchboard' })).toBe(true)
 	})
 
 	test('anything else is new input', () => {
-		expect(isOwnRedirect({ kind: 'composer' }, R)).toBe(false)
-		expect(isOwnRedirect({ kind: 'plugin', name: 'cerebro' }, R)).toBe(false)
-		expect(isOwnRedirect({ kind: 'plugin', name: 'switchboard' }, `John (from phone): go\n\n${R}`)).toBe(false)
-		expect(isOwnRedirect(undefined, R)).toBe(false)
+		expect(isOwnSubmit({ kind: 'composer' })).toBe(false)
+		expect(isOwnSubmit({ kind: 'plugin', name: 'cerebro' })).toBe(false)
+		expect(isOwnSubmit({ kind: 'task-notification' })).toBe(false)
+		expect(isOwnSubmit(undefined)).toBe(false)
 	})
 })
 

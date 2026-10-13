@@ -26,9 +26,11 @@ export function redirectPlan(heldItems: readonly string[], redirects: number): R
 	return { quiet: true, redirects }
 }
 
-// The mod's own bare redirect is the one prompt that does not start a new chain.
-export function isOwnRedirect(origin: { kind: string; name?: string } | undefined, text: string): boolean {
-	return origin !== undefined && origin.kind === 'plugin' && origin.name === 'switchboard' && text === REDIRECT_REASON_AWAY_MODE
+// A prompt this mod submitted. Live the engine never shows the mod's own submits
+// to its prompt.submit hook (it logs them as re-entry), so submitPrompt decides
+// their reset; the test kit does pass them through, and this keeps them out.
+export function isOwnSubmit(origin: { kind: string; name?: string } | undefined): boolean {
+	return origin !== undefined && origin.kind === 'plugin' && origin.name === 'switchboard'
 }
 
 // A question that reached John and ran: a blocking ask_human, or AskUserQuestion

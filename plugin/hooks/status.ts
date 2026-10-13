@@ -1,3 +1,5 @@
+import type { Origin } from 'claude-code'
+
 // The agent-status mapping, ported from the former Python agent-status hook: the state
 // and one-line detail the phone shows while a session works.
 
@@ -7,6 +9,12 @@ const FILE_TOOLS = new Set(['Edit', 'Write', 'Read', 'NotebookEdit'])
 const DETAIL_CAP = 200
 
 export type ToolState = { state: string; detail?: string }
+
+// A tool call this mod raised itself (its $.mcp.call), which the engine runs
+// through the mod's own tool.call hook like the model's.
+export function isOwnCall(origin: Origin): boolean {
+	return origin.plugin === 'switchboard'
+}
 
 function text(input: Record<string, unknown>, key: string): string | undefined {
 	const value = input[key]

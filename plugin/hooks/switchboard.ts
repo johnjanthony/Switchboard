@@ -10,10 +10,10 @@ import { DEFAULT_BASE_URL, FETCH_TIMEOUT_MS, parseInboxBody, requestHeaders } fr
 import type { ModFile } from './fingerprint'
 import { fromBase64, modFingerprint } from './fingerprint'
 import { backoffMs, POLL_MS } from './inbox'
-import { preToolState } from './status'
+import { isOwnCall, preToolState } from './status'
 import type { Title } from './telemetry'
 import { claudeConfigRoots, effortLevel, latestTitle, measureReport } from './telemetry'
-import { askedJohn, isOwnRedirect, REDIRECT_CAP_NOTICE, redirectPlan } from './turn-end'
+import { askedJohn, isOwnSubmit, REDIRECT_CAP_NOTICE, redirectPlan } from './turn-end'
 
 const SWITCHBOARD_TOOL = /^mcp__switchboard__/
 
@@ -313,9 +313,8 @@ async function deliverIfIdle($: EngineInterface): Promise<void> {
 // submit puts the items back for the next poll.
 async function submitPrompt($: EngineInterface, text: string, items: readonly string[]): Promise<void> {
 	await update($, busy, () => true)
-	// Phone messages are new input. Reset here, not only in prompt.submit: a submit
-	// from the poller's timer did not pass through this mod's own prompt.submit
-	// hook in the test kit.
+	// Phone messages are new input; a bare redirect is not. The reset lives here
+	// because the engine never shows this mod's own submits to its prompt.submit hook.
 	if (items.length > 0) await update($, redirects, () => 0)
 	try {
 		const submitted = await $.prompt.submit({ text })
@@ -492,8 +491,8 @@ export const register: Register = on => {
 
 	// A prompt John types while items are held carries them as context.
 	on('prompt.submit', async ($, e, next) => {
-		// Anything but the turn-end check's own bare redirect is new input.
-		if (!isOwnRedirect(e.origin, e.text)) await update($, redirects, () => 0)
+		// A prompt from anywhere but this mod is new input.
+		if (!isOwnSubmit(e.origin)) await update($, redirects, () => 0)
 		const items = await takeHeld($)
 		return items.length === 0 ? next(e) : next({ ...e, context: [...(e.context ?? []), ...items] })
 	})
@@ -502,7 +501,12 @@ export const register: Register = on => {
 		const { tool, tool_use_id: toolUseId, agentId, ...input } = e
 		const sessionId = await $.session.id()
 		const cwd = await $.session.cwd()
-		postStatus($, { session_id: sessionId, cwd, event: 'PreToolUse', ...preToolState(tool, input as Record<string, unknown>) })
+		// The mod's own $.mcp.call (the cap notice, the AskUserQuestion bridge) comes
+		// through here too. Its result goes back to the mod, never the model, so it
+		// takes no held messages; outside a turn it posts no status over the turn's clear.
+		const own = isOwnCall(next.origin)
+		const reports = !own || (await read($, turnId)) !== null
+		if (reports) postStatus($, { session_id: sessionId, cwd, event: 'PreToolUse', ...preToolState(tool, input as Record<string, unknown>) })
 		const call = SWITCHBOARD_TOOL.test(tool) ? ({ ...e, cli_session_id: sessionId, cwd } as typeof e) : e
 		const answered = e.tool === 'AskUserQuestion' ? await answerIfAway($, e.questions, next.signal) : undefined
 		let ran = answered
@@ -515,9 +519,9 @@ export const register: Register = on => {
 			}
 		}
 		if (askedJohn(tool, input as Record<string, unknown>, ran)) await update($, redirects, () => 0)
-		postStatus($, { session_id: sessionId, cwd, event: 'PostToolUse', state: 'thinking' })
+		if (reports) postStatus($, { session_id: sessionId, cwd, event: 'PostToolUse', state: 'thinking' })
 		// Main loop only: a subagent must never receive John's message.
-		return agentId === undefined ? withHeldContext($, ran) : ran
+		return agentId === undefined && !own ? withHeldContext($, ran) : ran
 	})
 
 	// turn.start fires for the main loop only (a subagent's run raises none).

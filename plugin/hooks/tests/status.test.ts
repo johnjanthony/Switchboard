@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { buildDetail, preToolState } from '../status'
+import { buildDetail, isOwnCall, preToolState } from '../status'
 
 describe('preToolState', () => {
 	test('ask_human reports clear', () => {
@@ -43,5 +43,16 @@ describe('buildDetail', () => {
 
 	test('an empty field gives no detail', () => {
 		expect(buildDetail('Bash', { command: '' })).toBeUndefined()
+	})
+})
+
+describe('isOwnCall', () => {
+	test('a tool call this mod raised itself', () => {
+		expect(isOwnCall({ plugin: 'switchboard', tier: 'user' })).toBe(true)
+	})
+
+	test('the model, or another plugin', () => {
+		expect(isOwnCall({ plugin: 'engine', tier: 'core' })).toBe(false)
+		expect(isOwnCall({ plugin: 'cerebro', tier: 'user' })).toBe(false)
 	})
 })
