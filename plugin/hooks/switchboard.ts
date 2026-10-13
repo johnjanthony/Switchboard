@@ -3,6 +3,8 @@ import { atom, read, update } from 'claude-code'
 
 import type { AskQuestion } from './ask'
 import { backgroundedDeny, backgroundedTaskId, isTerminal, phoneQuestion, raceAbort, replyText } from './ask'
+import type { InFlight, SettledBody } from './approval'
+import { inFlightCall, settledReport } from './approval'
 import type { InboxAnswer, StatusBody } from './client'
 import { DEFAULT_BASE_URL, FETCH_TIMEOUT_MS, parseInboxBody, requestHeaders } from './client'
 import type { ModFile } from './fingerprint'
@@ -329,6 +331,26 @@ async function withHeldContext($: EngineInterface, ran: ToolCallResult): Promise
 	return { ...ran, context: [...(ran.context ?? []), ...items] }
 }
 
+// -- approvals -------------------------------------------------------------------
+// A permission dialog runs the plugin's PermissionRequest command hook
+// (scripts/permission-request.sh), which the server holds until John answers on
+// the phone. The dialog also answers at the terminal, and Claude Code does not
+// stop the hook then, so a person's decision is reported here and the server
+// releases the hook.
+
+// Calls between tool.call and their result, by tool_use_id: what a
+// tool_decision record lacks. A module variable: a hot reload drops it, and the
+// server's turn-end backstop covers what it held.
+const inflight = new Map<string, InFlight>()
+
+// Fire-and-forget like the status posts: the turn-end backstop releases the
+// hook if this report is lost.
+function postSettled($: EngineInterface, sessionId: string, body: SettledBody): void {
+	postJson($, `/sessions/${encodeURIComponent(sessionId)}/approvals/settled`, body).catch(error =>
+		$.ui.log(`switchboard: approval report failed: ${String(error)}`, { to: 'debug' }),
+	)
+}
+
 // -- AskUserQuestion from the phone --------------------------------------------
 // In away mode each question goes to John's phone through ask_human, one after
 // another, and his replies come back as the tool's answers.
@@ -444,13 +466,21 @@ export const register: Register = on => {
 	})
 
 	on('tool.call', async ($, e, next) => {
-		const { tool, tool_use_id: _toolUseId, agentId, ...input } = e
+		const { tool, tool_use_id: toolUseId, agentId, ...input } = e
 		const sessionId = await $.session.id()
 		const cwd = await $.session.cwd()
 		postStatus($, { session_id: sessionId, cwd, event: 'PreToolUse', ...preToolState(tool, input as Record<string, unknown>) })
 		const call = SWITCHBOARD_TOOL.test(tool) ? ({ ...e, cli_session_id: sessionId, cwd } as typeof e) : e
 		const answered = e.tool === 'AskUserQuestion' ? await answerIfAway($, e.questions, next.signal) : undefined
-		const ran = answered ?? (await next(call))
+		let ran = answered
+		if (ran === undefined) {
+			if (toolUseId !== undefined) inflight.set(toolUseId, inFlightCall(call as unknown as Readonly<Record<string, unknown>>))
+			try {
+				ran = await next(call)
+			} finally {
+				if (toolUseId !== undefined) inflight.delete(toolUseId)
+			}
+		}
 		postStatus($, { session_id: sessionId, cwd, event: 'PostToolUse', state: 'thinking' })
 		// Main loop only: a subagent must never receive John's message.
 		return agentId === undefined ? withHeldContext($, ran) : ran
@@ -519,5 +549,14 @@ export const register: Register = on => {
 		const ran = await next(e)
 		void refreshTitle($, e.args)
 		return ran
+	})
+
+	// Observe only: every record passes through untouched.
+	on('telemetry.log', { to: 'collector', event: 'tool_decision' }, async ($, e, next) => {
+		if (e.to === 'collector') {
+			const body = settledReport(e.attributes, inflight)
+			if (body !== undefined) postSettled($, await $.session.id(), body)
+		}
+		return next(e)
 	})
 }

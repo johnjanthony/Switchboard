@@ -33,6 +33,7 @@ export type World = {
 	reads: string[]
 	sessionIdReads: number
 	readGate: Promise<void> | null
+	toolGate: Promise<void> | null
 }
 
 export function world(on: On, env: Record<string, string> = {}): World {
@@ -62,6 +63,7 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		reads: [],
 		sessionIdReads: 0,
 		readGate: null,
+		toolGate: null,
 	}
 	mock.env(on, env)
 	on('session.id', () => {
@@ -78,10 +80,13 @@ export function world(on: On, env: Record<string, string> = {}): World {
 	on('turn.start', (_$, e) => ({ turnId: e.turnId }))
 	on('turn.complete', (_$, e) => ({ text: e.answer }))
 	on('tool.check', () => ({ decision: w.checkDecision }))
-	on('tool.call', (_$, e) => {
+	on('tool.call', async (_$, e) => {
 		w.toolInputs.push({ ...e })
+		// A test holding a call open sets toolGate and resolves it to let the call finish.
+		if (w.toolGate !== null) await w.toolGate
 		return { result: 'ran' }
 	})
+	on('telemetry.log', () => ({ value: undefined }))
 	on('prompt.read', () => ({ value: { text: w.draft, cursor: w.draft.length } }))
 	on('prompt.submit', (_$, e) => {
 		if (w.rejectSubmit) throw new Error('engine refused the prompt')
