@@ -312,7 +312,7 @@ def _build_session_start_route(session_registry: SessionRegistry, logger):
 	return session_start
 
 
-def _build_session_end_route(registry: Registry, session_registry, backend, logger):
+def _build_session_end_route(registry: Registry, session_registry, backend, logger, approvals=None):
 	"""POST /session_end - the Claude Code mod's session.end hook. A mod's
 	session.end is awaited inside a short bound, so the POST lands before the
 	process exits. Always 200, like the other hook routes."""
@@ -334,6 +334,8 @@ def _build_session_end_route(registry: Registry, session_registry, backend, logg
 			logger=logger,
 			session_registry=session_registry,
 		)
+		if approvals is not None:
+			await approvals.close_session(session_id, "session_end")
 		return JSONResponse({}, status_code=200)
 	return session_end
 
@@ -354,7 +356,7 @@ def _build_sessions_route(session_registry: SessionRegistry):
 	return sessions
 
 
-def _build_agent_status_route(handlers, session_registry: SessionRegistry):
+def _build_agent_status_route(handlers, session_registry: SessionRegistry, approvals=None):
 	"""POST /agent_status - hook-driven status writes. Returns 200 with an empty
 	body on malformed input, or {"notices": []} on success: it never pops a
 	session's notices, which the Claude Code mod takes from its
@@ -395,6 +397,10 @@ def _build_agent_status_route(handlers, session_registry: SessionRegistry):
 		else:
 			session_registry.touch_mcp(session_id, cwd=cwd or "")
 		await handlers.handle_agent_status(session_id, state, detail)
+		# A main-loop dialog cannot outlive its turn: a turn end releases any
+		# approval still held, should the mod's terminal-answer report be lost.
+		if approvals is not None and event == "Stop":
+			await approvals.close_main_loop(session_id, "turn_end")
 		return JSONResponse({"notices": []}, status_code=200)
 	return agent_status
 
@@ -413,10 +419,18 @@ def _compute_healthy(listeners, loop_failures) -> bool:
 	return not listener_unhealthy and not loop_unhealthy
 
 
-def _compute_needs_you(registry: Registry) -> dict:
+def _iso_age_seconds(iso: str | None, now: datetime) -> float:
+	try:
+		return max(0.0, (now - datetime.fromisoformat(iso)).total_seconds())
+	except (ValueError, TypeError):
+		return 0.0
+
+
+def _compute_needs_you(registry: Registry, session_registry=None) -> dict:
 	"""Sessions blocked on John, for Watchtower's per-session dot: every pending
-	ask, live or parked (parked pendings can outlive their session record). A
-	session pending in several conversations reports its oldest age."""
+	ask, live or parked (parked pendings can outlive their session record), and
+	every live session with an open permission dialog. ask wins when both apply;
+	a session pending in several conversations reports its oldest age."""
 	now = datetime.now(timezone.utc)
 	needs_you: dict[str, dict] = {}
 	for p in registry.all_pending():
@@ -424,6 +438,10 @@ def _compute_needs_you(registry: Registry) -> dict:
 		prev = needs_you.get(p.cli_session_id)
 		if prev is None or age > prev["age_seconds"]:
 			needs_you[p.cli_session_id] = {"reason": "ask", "age_seconds": age}
+	if session_registry is not None:
+		for rec in session_registry.snapshot():
+			if rec.awaiting_approval and rec.state not in TERMINAL_STATES and rec.cli_session_id not in needs_you:
+				needs_you[rec.cli_session_id] = {"reason": "approval", "age_seconds": _iso_age_seconds(rec.approval_since, now)}
 	return needs_you
 
 
@@ -476,7 +494,7 @@ def _build_stats_route(registry: Registry, backend, loop_sups: dict, session_reg
 				"by_state": session_registry.counts_by_state() if session_registry is not None else {},
 				"items": _session_items(session_registry) if session_registry is not None else [],
 			},
-			"needs_you": _compute_needs_you(registry),
+			"needs_you": _compute_needs_you(registry, session_registry),
 			"quota": quota_store.snapshot() if quota_store is not None else None,
 		})
 	return stats
@@ -1074,6 +1092,8 @@ async def _run(config: Config) -> None:
 	route_limiter = RateLimiter(config.route_rate_limit)
 	stop = ServiceStop()
 	handlers = build_tool_handlers(config, registry, backend, logger, limiter, session_registry=session_registry, stop=stop)
+	approvals = ApprovalRegistry(registry, session_registry, backend, logger)
+	registry.add_away_observer(approvals.on_away_change)
 
 	from server.spawn import SpawnHandler
 	spawn_handler = SpawnHandler(config, backend, logger, registry)
@@ -1155,7 +1175,8 @@ async def _run(config: Config) -> None:
 	app.add_route(
 		"/session_end",
 		_with_route_limit(
-			_build_session_end_route(registry, session_registry, backend, logger), route_limiter, "/session_end", logger,
+			_build_session_end_route(registry, session_registry, backend, logger, approvals=approvals),
+			route_limiter, "/session_end", logger,
 		),
 		methods=["POST"],
 	)
@@ -1175,9 +1196,22 @@ async def _run(config: Config) -> None:
 		methods=["POST"],
 	)
 	app.add_route(
+		"/approvals",
+		_with_route_limit(_build_approvals_route(approvals, stop), route_limiter, "/approvals", logger),
+		methods=["POST"],
+	)
+	app.add_route(
+		"/sessions/{sid}/approvals/settled",
+		_with_route_limit(
+			_build_approvals_settled_route(approvals), route_limiter, "/sessions/approvals/settled", logger,
+		),
+		methods=["POST"],
+	)
+	app.add_route(
 		"/agent_status",
 		_with_route_limit(
-			_build_agent_status_route(handlers, session_registry), route_limiter, "/agent_status", logger,
+			_build_agent_status_route(handlers, session_registry, approvals=approvals),
+			route_limiter, "/agent_status", logger,
 		),
 		methods=["POST"],
 	)
@@ -1194,7 +1228,9 @@ async def _run(config: Config) -> None:
 	server = SwitchboardServer(uv_config, stop)
 
 	dispatch_task = asyncio.create_task(
-		dispatch_responses(registry, backend, logger, loop_sups["dispatch_responses"], session_registry=session_registry)
+		dispatch_responses(registry, backend, logger, loop_sups["dispatch_responses"], session_registry=session_registry,
+			approvals=approvals,
+		)
 	)
 
 	combine_task = asyncio.create_task(

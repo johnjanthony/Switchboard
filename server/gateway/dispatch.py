@@ -24,6 +24,7 @@ async def dispatch_responses(
 	logger: JsonlLogger,
 	supervisor: LoopSupervisor,
 	session_registry=None,
+	approvals=None,
 ) -> None:
 	from server.gateway.handlers import _append_session_log
 	while True:
@@ -32,6 +33,12 @@ async def dispatch_responses(
 				supervisor.record_success()
 				try:
 					conversation_id = response.correlation if isinstance(response.correlation, str) else None
+					# An answer to an approval card decides that approval; the
+					# ask path below never sees it.
+					if conversation_id and response.request_id and approvals is not None \
+							and approvals.owns(conversation_id, response.request_id):
+						await approvals.answer(conversation_id, response.request_id, response.text, response.slot)
+						continue
 					if conversation_id and response.request_id:
 						record = registry.find_by_request_id(conversation_id, response.request_id)
 						req_id = registry.resolve(conversation_id, response.request_id, response.text)
