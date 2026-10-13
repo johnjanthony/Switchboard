@@ -445,7 +445,7 @@ async def flow_killed_session_parks(ctx, rep, args):
 		raise SmokeFailure("the killed identity's pending_questions record has no msgId")
 
 	# The poll stops here. The sweep judges the session after 90 s without one, on
-	# its next 60 s tick, plus up to 90 s of grace if the service started recently.
+	# its next 60 s tick (later only if the host slept, which restarts the grace).
 	def _lost():
 		return True if rtdb(ctx, f"sessions/{killed.cli_session_id}/state").get() == "lost" else None
 	await poll_until("the silent session marked lost by the sweep", _lost, 300, interval=5.0)

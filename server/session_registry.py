@@ -503,7 +503,9 @@ class SessionRegistry:
 		server started is lost after poll_lost_after_seconds without a poll, and
 		one that never polled (a -p run, a record hydrated after a
 		restart that has not polled yet) after lost_after_seconds of silence.
-		A never-polled session awaiting a human or an agent with a live structure behind it is exempt; a polling session is not, since its poll runs through a blocked tool call."""
+		A never-polled session awaiting a human or an agent with a live structure
+		behind it is exempt; a polling session is not, since its poll runs through
+		a blocked tool call."""
 		pruned: list[str] = []
 		mono_now = self._mono()
 		for sid, rec in list(self._records.items()):
