@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,6 +32,14 @@ from server.gateway.bg_tasks import _spawn_bg
 EXCLUDED_TOOLS = frozenset({"AskUserQuestion", "ExitPlanMode"})
 
 _RECENT_CARDS_MAX = 256
+
+# Every card id this registry mints starts with this; an ask's request id is
+# eight hex digits, so the prefix tells a card's answer apart after a restart.
+_CARD_PREFIX = "apr-"
+
+# The hook's start-up is about 0.5 s; ten seconds is generous and still far
+# shorter than any second identical dialog in practice.
+_EARLY_SETTLE_SECONDS = 10.0
 
 
 @dataclass(frozen=True)
@@ -89,6 +98,7 @@ class ApprovalRegistry:
 		*,
 		resolve_conversation: ConversationResolver | None = None,
 		now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+		mono: Callable[[], float] = time.monotonic,
 	) -> None:
 		self._registry = registry
 		self._sessions = session_registry
@@ -98,6 +108,10 @@ class ApprovalRegistry:
 			lambda sid, cwd: resolve_card_conversation(registry, backend, sid, cwd)
 		)
 		self._now = now
+		self._mono = mono
+		# Terminal answers that matched no open approval, in case the hook that
+		# opens the approval reaches the server a moment later.
+		self._early: collections.deque = collections.deque(maxlen=64)
 		self._open: dict[str, Approval] = {}
 		self._by_card: dict[str, Approval] = {}
 		self._recent_cards: collections.OrderedDict[str, None] = collections.OrderedDict()
@@ -127,8 +141,13 @@ class ApprovalRegistry:
 
 	def owns(self, conversation_id: str, request_id: str) -> bool:
 		"""True for an answer keyed by a card this registry posted, live or
-		recently ended. Card ids are unique, so the conversation is not needed."""
-		return request_id in self._by_card or request_id in self._recent_cards
+		recently ended, or by any id carrying the card prefix, which a restart
+		leaves unindexed. Card ids are unique, so the conversation is not needed."""
+		return (
+			request_id in self._by_card
+			or request_id in self._recent_cards
+			or request_id.startswith(_CARD_PREFIX)
+		)
 
 	# -- lifecycle --------------------------------------------------------
 
@@ -137,17 +156,32 @@ class ApprovalRegistry:
 	) -> Approval:
 		"""Opens an approval for a dialog that just opened. In away mode its card
 		is up before this returns."""
+		digest = input_digest(tool_input)
+		early = self._take_early(cli_session_id, agent_id, tool, digest)
 		approval = Approval(
 			id=uuid.uuid4().hex,
 			cli_session_id=cli_session_id,
 			agent_id=agent_id,
 			tool=tool,
 			tool_input=tool_input,
-			digest=input_digest(tool_input),
+			digest=digest,
 			cwd=cwd,
 			opened_at=self._now(),
 			future=asyncio.get_running_loop().create_future(),
 		)
+		if early is not None:
+			# The terminal answered before the hook arrived: nothing to hold.
+			source, decision = early
+			reason = f"terminal_before_hook:{source}:{decision}"
+			approval.closed = True
+			approval.future.set_result(Outcome("released", reason=reason))
+			await self._logger.info(
+				f"approval_opened: id={approval.id} session={cli_session_id} agent={agent_id} tool={tool}"
+			)
+			await self._logger.info(
+				f"approval_closed: id={approval.id} session={cli_session_id} outcome=released reason={reason}"
+			)
+			return approval
 		self._open[approval.id] = approval
 		self._mark_session(cli_session_id)
 		await self._logger.info(
@@ -216,7 +250,11 @@ class ApprovalRegistry:
 	) -> bool:
 		"""The mod's report that the terminal answered a dialog. Releases the
 		approval with the same session, agent, tool and input, else the oldest
-		with the same session, agent and tool, so its hook exits quietly."""
+		with the same session, agent and tool, so its hook exits quietly. An
+		answer that matches nothing is remembered briefly, for a hook that has
+		not reached the server yet."""
+		if tool in EXCLUDED_TOOLS:
+			return False
 		candidates = [
 			a for a in self._open.values()
 			if a.cli_session_id == cli_session_id and a.agent_id == agent_id and a.tool == tool
@@ -224,6 +262,9 @@ class ApprovalRegistry:
 		if not candidates:
 			await self._logger.info(
 				f"approval_settle_unmatched: session={cli_session_id} tool={tool} source={source}"
+			)
+			self._early.append(
+				(cli_session_id, agent_id, tool, input_digest(tool_input), self._mono(), source, decision)
 			)
 			return False
 		digest = input_digest(tool_input)
@@ -235,6 +276,19 @@ class ApprovalRegistry:
 		)
 		await self.close(match, Outcome("released", reason=f"terminal:{source}:{decision}"))
 		return True
+
+	def _take_early(self, cli_session_id: str, agent_id: str | None, tool: str, digest: str) -> tuple[str, str] | None:
+		"""Drops remembered terminal answers past the window and consumes the
+		one matching a dialog that is just opening, as (source, decision)."""
+		now = self._mono()
+		fresh = [e for e in self._early if now - e[4] <= _EARLY_SETTLE_SECONDS]
+		self._early.clear()
+		self._early.extend(fresh)
+		for entry in fresh:
+			if entry[:4] == (cli_session_id, agent_id, tool, digest):
+				self._early.remove(entry)
+				return entry[5], entry[6]
+		return None
 
 	async def close_session(self, cli_session_id: str, reason: str) -> int:
 		matches = [a for a in self._open.values() if a.cli_session_id == cli_session_id]
@@ -292,7 +346,7 @@ class ApprovalRegistry:
 		withdraws it again if the approval ended while it was being written."""
 		if approval.closed or approval.card_live:
 			return
-		card_id = f"apr-{uuid.uuid4().hex[:12]}"
+		card_id = f"{_CARD_PREFIX}{uuid.uuid4().hex[:12]}"
 		try:
 			conversation_id, sender = await self._resolve(approval.cli_session_id, approval.cwd)
 			title, text = render_card(approval.tool, approval.tool_input, in_subagent=approval.agent_id is not None)

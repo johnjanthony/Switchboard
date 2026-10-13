@@ -404,11 +404,11 @@ def _build_agent_status_route(handlers, session_registry: SessionRegistry, appro
 			)
 		else:
 			session_registry.touch_mcp(session_id, cwd=cwd or "")
-		await handlers.handle_agent_status(session_id, state, detail)
 		# A main-loop dialog cannot outlive its turn: a turn end releases any
 		# approval still held, should the mod's terminal-answer report be lost.
 		if approvals is not None and event == "Stop":
 			await approvals.close_main_loop(session_id, "turn_end")
+		await handlers.handle_agent_status(session_id, state, detail)
 		return JSONResponse({"notices": []}, status_code=200)
 	return agent_status
 
