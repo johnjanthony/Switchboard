@@ -246,4 +246,4 @@ Live evidence (Claude Code 2.1.296, a ConPTY-driven `default`-mode haiku session
 - **WSL:** a WSL session's dialog opened an approval through the Bearer gate.
 - **Surfaces:** the phone's sessions board (release build) and Operator both showed the "needs approval" chip and the attention dot.
 
-Follow-ups filed: T-293 (deferred edges), T-294 (desktop sessions held at the desk), T-295 (ExitPlanMode plan approval from the phone), T-296 (the away-mode redirect in a session without a switchboard allow rule), T-297 (an MCP session that did not reconnect after a long restart).
+Follow-ups filed: T-293 (deferred edges), T-294 (desktop sessions held at the desk), T-295 (ExitPlanMode plan approval from the phone), T-296 (the away-mode redirect in a session without a switchboard allow rule); and T-032 gained the observation of an MCP session that did not reconnect after a long restart.
