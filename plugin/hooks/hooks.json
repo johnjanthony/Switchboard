@@ -1,3 +1,16 @@
 {
-	"modules": ["./switchboard.ts"]
+	"modules": ["./switchboard.ts"],
+	"hooks": {
+		"PermissionRequest": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/permission-request.sh\"",
+						"timeout": 86400
+					}
+				]
+			}
+		]
+	}
 }
