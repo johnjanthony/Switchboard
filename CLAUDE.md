@@ -24,7 +24,7 @@ server/
   http_auth.py         TokenAuthMiddleware - shared-secret Bearer gate (loopback peers and /healthz exempt; active when SWITCHBOARD_TOKEN is set)
   config.py            Env-based Config loader (dotenv fallback)
   registry.py          PendingRequest + Registry (in-memory); conversations dict with members/pendings keyed by cli_session_id; session_to_conversation_id routing map; per-session asyncio.Lock for race-free first-call conv creation; away-mode flag
-  session_registry.py  SessionRecord + SessionRegistry (session roster; push-fed; sweeper rules: inbox-poll heartbeat for polling sessions, silence for the rest, LivenessGrace after a start or a sleep)
+  session_registry.py  SessionRecord + SessionRegistry (session roster; push-fed; sweeper rules: inbox-poll heartbeat for polling sessions with no awaiting exemption, silence for the rest, LivenessGrace after a start or a sleep)
   telemetry.py         Field-by-field validation of the mod's telemetry reports (POST /sessions/{sid}/telemetry)
   quota_store.py       QuotaStore: the account's plan usage (5-hour and 7-day windows) as the mods last reported it; mirrored to RTDB quota, zeroed when a window's reset passes
   model_label.py       Session model chip text: friendly model names + observed-else-spawn-pick resolution, published on sessions/ records as model_label / model_source
@@ -45,13 +45,14 @@ server/
   command_freshness.py Staleness gate for queued Firebase command entries (COMMAND_TTL_SECONDS)
   claude_status.py     Claude service-status watch (poll loop + status parse published to widget/status)
   build_info.py        Running-service identity for /healthz (start time, server/ source fingerprint, git HEAD); the smoke harness keeps a pinned copy of the fingerprint; mod_fingerprint over plugin/hooks for the stale-mod alarm
+  service_stop.py      ServiceStop: the stop flag SwitchboardServer (server/main.py, a uvicorn.Server subclass) raises at handle_exit; ask_human's wait arm reads it to leave a blocking question for hydration to park instead of cancelling it
   gateway/             Tool handlers + dispatch loops
     handlers.py          ask_human, notify_human, send_document_human, message_and_await_agent, post_agent_message, join_conversation, combine_conversations, lookup_conversation_ids, leave_conversation, set_away_mode tool closures; JSON status envelopes (_envelope/_terminal_envelope/_wrap_wait_result)
     dispatch.py          dispatch_responses, dispatch_combine_commands, dispatch_force_end_commands, dispatch_spawn_commands, dispatch_away_mode_commands, dispatch_message_commands, dispatch_status_request_commands, dispatch_session_sweep, dispatch_conversation_sweep, dispatch_presence, handle_force_end
     document.py          _validate_path + extension allowlist + secret-name denylist + sha256 helpers
     bulk_respond.py      _apply_bulk_respond_decision (used by exit_global to drain pending questions)
     parked.py            finish_parked_resolve - bookkeeping for resolving a future-less parked pending (record cleanup + session notices)
-    pending_lifecycle.py terminate_pending - single terminal-path owner for pending ask_humans (pop + future settlement + Firebase cancel + benign-replay memory); ask arms, force-end, combine, session-end, spawn cleanup, and the TTL sweep all route through it
+    pending_lifecycle.py terminate_pending - single terminal-path owner for pending ask_humans (pop + future settlement + Firebase cancel + benign-replay memory); ask arms, force-end, combine, session-end, spawn cleanup, and the TTL sweep all route through it; also park_pending, the one non-terminal transition (the session sweep swaps a lost polling session's live ask for a parked record)
     bg_tasks.py          _BG_TASKS + _spawn_bg — strong-ref tracker for background tasks
 scripts/
   install-service.ps1        One-time NSSM service install
