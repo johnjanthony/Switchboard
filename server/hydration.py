@@ -107,7 +107,7 @@ async def hydrate_from_firebase(registry: Registry, backend, logger, session_reg
 	# cliSessionId/askedAt), records under conversations that did not hydrate
 	# (ended/degenerate), and stray cancelled records are cancelled once - the
 	# old startup-sweep behavior, applied one final time.
-	parked = legacy_cancelled = 0
+	parked = legacy_cancelled = approval_cancelled = 0
 	if isinstance(conversations_data, dict):
 		for conv_id, conv_node in conversations_data.items():
 			if not isinstance(conv_node, dict):
@@ -117,6 +117,18 @@ async def hydrate_from_firebase(registry: Registry, backend, logger, session_reg
 				continue
 			for request_id, rec in pending_node.items():
 				if not isinstance(rec, dict):
+					continue
+				if rec.get("approval"):
+					# An approval card answers a hook connection, which the restart
+					# dropped; the hook resends and a fresh card replaces this one.
+					if backend is not None:
+						try:
+							await backend.mark_question_cancelled(conv_id, request_id)
+						except Exception as exc:
+							await logger.surface_error(
+								f"hydration_approval_cancel_failed: conv_id={conv_id} request_id={request_id} {exc}"
+							)
+					approval_cancelled += 1
 					continue
 				cli_session_id = rec.get("cliSessionId")
 				asked_at = _parse_iso(rec.get("askedAt"))
@@ -155,8 +167,11 @@ async def hydrate_from_firebase(registry: Registry, backend, logger, session_reg
 								f"hydration_pending_cancel_failed: conv_id={conv_id} request_id={request_id} {exc}"
 							)
 					legacy_cancelled += 1
-	if parked or legacy_cancelled:
-		await logger.info(f"hydration_parked_pendings: parked={parked} legacy_cancelled={legacy_cancelled}")
+	if parked or legacy_cancelled or approval_cancelled:
+		await logger.info(
+			f"hydration_parked_pendings: parked={parked} legacy_cancelled={legacy_cancelled} "
+			f"approval_cancelled={approval_cancelled}"
+		)
 
 	# 2c. Session roster. Terminal records hydrate too: the sweeper can only
 	# retention-prune RTDB entries it holds in memory.

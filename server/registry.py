@@ -32,7 +32,7 @@ import collections
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Callable, Literal
 
 # Cap on the recently-resolved memory (see Registry._recently_resolved). Bounds
 # the set in a long-running process; far larger than any realistic in-flight
@@ -122,6 +122,7 @@ class Registry:
 		self.sessions = None  # SessionRegistry, attached by main.py; optional for tests
 		self.spawn_catalog = None  # dict from spawn_catalog.build_catalog, attached by main.py; optional for tests
 		self._global_away = False
+		self._away_observers: list[Callable[[bool], None]] = []
 		self._pending_mirror = None
 		self._session_to_conversation_id: dict[str, str] = {}
 		self._session_home_conversation_id: dict[str, str] = {}
@@ -159,7 +160,7 @@ class Registry:
 
 	@global_away_mode.setter
 	def global_away_mode(self, value: bool) -> None:
-		self._global_away = bool(value)
+		self._set_away(value)
 
 	def bind_session(self, session_id: str, conversation_id: str) -> None:
 		self._session_to_conversation_id[session_id] = conversation_id
@@ -418,13 +419,35 @@ class Registry:
 
 	def update_global_away_cache(self, active: bool) -> None:
 		"""Listener entry point: update the in-memory cache to reflect a Firebase change."""
-		self._global_away = bool(active)
+		self._set_away(active)
+
+	def _set_away(self, value: bool) -> None:
+		was = self._global_away
+		self._global_away = bool(value)
+		if self._global_away == was:
+			return
+		for observer in list(self._away_observers):
+			try:
+				observer(self._global_away)
+			except Exception:
+				logging.getLogger(__name__).exception("away observer raised")
+
+	def add_away_observer(self, observer: Callable[[bool], None]) -> None:
+		"""observer(active) runs synchronously on every change of the away flag,
+		whichever path made it: the setter or the Firebase listener's cache update."""
+		self._away_observers.append(observer)
 
 	def set_pending_mirror(self, callback) -> None:
 		"""Callback fires synchronously with (conversation_id, delta) on every pending-count
 		mutation. Implementations typically schedule an asyncio task to write
 		to Firebase; the callback itself is sync to keep Registry's interface clean."""
 		self._pending_mirror = callback
+
+	def fire_pending_mirror(self, conversation_id: str, delta: int) -> None:
+		"""The pending-mirror bump for a pending Registry does not hold (an
+		approval card, server/approvals.py), so the conversation's
+		pending_responses counter counts it too."""
+		self._fire_pending_mirror(conversation_id, delta)
 
 	def _fire_pending_mirror(self, conversation_id: str, delta: int) -> None:
 		if self._pending_mirror is None or delta == 0:

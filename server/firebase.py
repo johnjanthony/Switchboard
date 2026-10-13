@@ -205,6 +205,7 @@ class FirebaseBackend(
 		cli_session_id: str | None = None,
 		asked_at: str | None = None,
 		background: bool = False,
+		approval: bool = False,
 	) -> None:
 		"""Persist an in-flight ask_human at
 		/conversations/<id>/pending_questions/<request_id> per the 2026-05-19 spec."""
@@ -222,6 +223,10 @@ class FirebaseBackend(
 		# absence-as-blocking rule stays intact.
 		if background:
 			record["background"] = True
+		# Marks an approval card's record (server/approvals.py), which hydration
+		# cancels rather than parks.
+		if approval:
+			record["approval"] = True
 		await asyncio.to_thread(ref.set, record)
 
 	async def update_pending_question_text(self, conversation_id: str, request_id: str, question_text: str) -> None:

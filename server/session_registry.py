@@ -95,6 +95,11 @@ class SessionRecord:
 	# and whether it differs from the repo's: None until both are known.
 	mod_fingerprint: str | None = None
 	mod_stale: bool | None = None
+	# A permission dialog is open in the session (server/approvals.py), and the
+	# time the oldest open one opened. Approvals live in memory, so neither is
+	# ever hydrated.
+	awaiting_approval: bool = False
+	approval_since: str | None = None
 
 	def to_payload(self) -> dict:
 		payload = asdict(self)
@@ -358,6 +363,17 @@ class SessionRegistry:
 		rec.sender = sender
 		self._fire_mirror(rec)
 
+	def set_awaiting_approval(self, cli_session_id: str, since: str | None) -> None:
+		"""Mark the session's open permission dialog (since: when its oldest open
+		approval opened) or clear it (None). A dialog proves the session exists,
+		so an unknown id gets a record; an ended record is never marked."""
+		rec = self._ensure(cli_session_id, source="hook")
+		if rec.state == "ended" and since is not None:
+			return
+		rec.awaiting_approval = since is not None
+		rec.approval_since = since
+		self._fire_mirror(rec)
+
 	def queue_notice(self, cli_session_id: str, text: str) -> bool:
 		"""Queue a wake notice that waits for the session's inbox poll
 		(GET /sessions/{sid}/inbox). At-most-once: pop_notices clears on read; the
@@ -483,6 +499,11 @@ class SessionRegistry:
 		# an identical payload.
 		payload = rec.to_payload()
 		self._mirror_canon[sid] = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+		# A stored open dialog is stale after a restart (approvals live in
+		# memory): write the cleared record back now, not at its next change.
+		if data.get("awaiting_approval"):
+			self._mirror_canon.pop(sid, None)
+			self._fire_mirror(rec)
 
 	# -- sweep ------------------------------------------------------------
 
