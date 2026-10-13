@@ -1,7 +1,7 @@
 # Approval prompts on the phone: show a permission dialog there, and answer it (design)
 
 **Date:** 2026-10-12
-**Status:** written 2026-10-12 while John was away, from the decisions he took after the probe report ("proceed with your recommendations"); awaiting his review of this written spec. Nothing is implemented. Implementation plan `docs/superpowers/plans/2026-10-12-approval-prompts.md` (disk-only, gitignored), also awaiting review; one detail was revised at planning, marked "revised at planning".
+**Status:** implemented 2026-10-13 (`b2afdf9..aebae2b`); the As built section at the end records where the build differs from this design. Written 2026-10-12 from the decisions John took after the probe report; implementation plan `docs/superpowers/plans/2026-10-12-approval-prompts.md` (disk-only, gitignored).
 **Backlog:** T-284 (approval prompts through the mod). It brings back, from a new source, the approval signal T-279 retired (`blocked_on_approval`, removed in `b2fd4ee`, `c5cd438` and `12b52da`).
 **Evidence:** the probe of 2026-10-12 on Claude Code 2.1.296 (Windows terminal; four headless runs, two of them in `auto` mode, and nine interactive runs in `default`-mode sessions driven through a ConPTY), written up in the vault note `Reference/Claude Code Permission Prompts from a Plugin`, with its plugin, driver and logs in `C:\Work\Claude-Scratch\T-284-perm-probe\`; the 2.1.296 mod declarations; and the code paths cited below.
 
@@ -224,3 +224,26 @@ The mod does not call `$.tool.check`; the hook's arrival is the exact signal.
   - **Away** (John-gated, since away mode is global and pushes to his phone): the card appears; Allow from the phone runs the command; Deny delivers the message; a terminal answer withdraws the card; Esc closes it; toggling away mode posts and withdraws cards; a service restart reposts the card.
   - **Desktop app:** one dialog, to see whether a hook answer closes the app's permission UI.
   - **WSL:** one dialog, through the Bearer gate.
+
+## As built (2026-10-13)
+
+Implemented in commits `b2afdf9..aebae2b` on `develop` (pushed by John 2026-10-13): plan Tasks 1-10, then four fix tasks the whole-branch review and the live checks led to. Every task was reviewed before its commit. What differs from the design above:
+
+- **The desk hold rule (narrows Decision 2).** Live probes showed two contexts where no dialog races the hook. A backgrounded subagent's dialog is drawn only after the PermissionRequest hook returns (without the plugin it draws at once in the main view), so holding it hid the dialog for up to 24 hours. A headless `-p` run has no dialog at all, so it hung where it used to be refused at once. John chose the rule: at the desk the server holds a request only for a main-loop call (`agent_id` absent) from a session whose record is not known to be non-interactive, and answers every other request `204` at once. The mod's `/session_start` post carries `interactive` (`isInteractive` and surface `terminal`), stored on the session record (null for a session started before the change, held as before). In away mode every request is held and carded. When away mode turns off, every open approval the desk would not hold is released (`desk_release`), re-checking away mode before each release. A desktop or VS Code session reports false, so the desk answers it `204` and the app draws its own prompt.
+- **The card.** Write and Edit cards also carry the path as a Markdown code span (`Path: ...`) in the body; the plain first line mangled names like `__init__.py` and paths with `\_`. "Yes !" allows, and one line reads "1 line".
+- **Answers under the lock.** `answer()` re-checks its approval under the card lock, so an answer queued behind an away flip or a terminal close no longer retires a reposted card or writes a reply that lost. An answer that crosses a withdrawal therefore decides only when it reaches the lock first.
+- **A stop wins.** `_await_approval` answers `503` whenever the stop flag is up, because uvicorn's shutdown wakes the receive channel with a disconnect before the stop poll fires (a real stop answered `204` and withdrew the card in 18 of 20 runs before this).
+- **The script's retry window** counts from the start of a failure streak, and a `503` that ends a request held at least 30 s starts a fresh one, so a restart during a long hold resends. The knobs (`SWITCHBOARD_APPROVAL_RETRY_SECONDS`, `_RETRY_DELAY`, `_HELD_SECONDS`) are validated.
+- **Recovery and noise.** Any `apr-` request id is the approval registry's, so an answer re-delivered after a restart is a benign replay. A terminal report that matches no open approval is remembered for 10 s, and an approval opening for the same session, agent, tool and input closes at once (`terminal_before_hook`), since the hook reaches the server about 0.5 s after the dialog opens. AskUserQuestion and ExitPlanMode terminal reports are ignored quietly. The turn-end release runs before the turn-end status write. A matched terminal report logs `approval_settled_at_terminal` with `exact=`.
+- **Repo.** `.gitattributes` pins `*.sh` to LF, because a CRLF checkout under Linux bash would turn every dialog's hook into a parse error, and exit 2 blocks the call.
+
+Live evidence (Claude Code 2.1.296, a ConPTY-driven `default`-mode haiku session unless noted; details in the plan's Deviations and the execution ledger):
+
+- **At the desk:** a main-loop dialog opened an approval, `/stats` `needs_you` showed reason `approval` and the record `awaiting_approval: true`. A terminal Yes released it (`exact=True`), a terminal Esc released it (`user_reject`, later `user_abort`), and AskUserQuestion opened none. After the fix tasks a backgrounded subagent's hook answered `204` in 467 ms and its dialog drew at once, and a `-p` run's hook answered `204` in 441 ms and the run exited in 8 s.
+- **In away mode (with John):** the card posted 4 ms after the dialog opened, with a push, and Allow from the phone closed the dialog. A free-text reply denied, and the model ran what it said. A terminal answer withdrew the card. Away off and on withdrew it and posted a fresh one. A background subagent's request was carded and answered from the phone.
+- **A restart while held:** the hook got `503`, hydration withdrew the old card (`approval_cancelled=1`), and the resend posted a fresh one 1.8 s after hydration finished. One hook process held 247 s across the restart and was then allowed from the phone.
+- **Desktop app (Decision 6):** Allow from the phone closed the app's own permission prompt and the command ran.
+- **WSL:** a WSL session's dialog opened an approval through the Bearer gate.
+- **Surfaces:** the phone's sessions board (release build) and Operator both showed the "needs approval" chip and the attention dot.
+
+Follow-ups filed: T-293 (deferred edges), T-294 (desktop sessions held at the desk), T-295 (ExitPlanMode plan approval from the phone), T-296 (the away-mode redirect in a session without a switchboard allow rule), T-297 (an MCP session that did not reconnect after a long restart).
