@@ -3,6 +3,17 @@
 	"hooks": {
 		"PermissionRequest": [
 			{
+				"matcher": "^mcp__switchboard__",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}'",
+						"timeout": 10
+					}
+				]
+			},
+			{
+				"matcher": "^(?!mcp__switchboard__)",
 				"hooks": [
 					{
 						"type": "command",

@@ -3,6 +3,7 @@ run with bash against a small local HTTP server."""
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import socket
@@ -217,13 +218,54 @@ def test_a_large_input_goes_through_whole():
 	assert json.loads(server.requests[0]["body"]) == payload
 
 
-def test_hooks_json_names_the_script_with_a_day_long_timeout():
+def _permission_entries():
 	hooks = json.loads((SCRIPT.parents[1] / "hooks" / "hooks.json").read_text(encoding="utf-8"))
 	assert hooks["modules"] == ["./switchboard.ts"]
-	(entry,) = hooks["hooks"]["PermissionRequest"]
-	(hook,) = entry["hooks"]
-	assert hook == {
-		"type": "command",
-		"command": 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/permission-request.sh"',
-		"timeout": 86400,
-	}
+	return hooks["hooks"]["PermissionRequest"]
+
+
+def test_hooks_json_allows_switchboard_tools_and_hands_the_rest_to_the_script():
+	allow_entry, script_entry = _permission_entries()
+	assert allow_entry["matcher"] == "^mcp__switchboard__"
+	(allow_hook,) = allow_entry["hooks"]
+	assert allow_hook["type"] == "command"
+	assert allow_hook["timeout"] == 10
+	assert script_entry["matcher"] == "^(?!mcp__switchboard__)"
+	assert script_entry["hooks"] == [
+		{"type": "command", "command": 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/permission-request.sh"', "timeout": 86400},
+	]
+
+
+@pytest.mark.parametrize(
+	("tool", "allowed"),
+	[
+		("mcp__switchboard__ask_human", True),
+		("mcp__switchboard__notify_human", True),
+		("mcp__switchboard__send_document_human", True),
+		("mcp__switchboard__set_away_mode", True),
+		("Bash", False),
+		("Write", False),
+		("AskUserQuestion", False),
+		("ExitPlanMode", False),
+		("mcp__other__tool", False),
+		("mcp__other__mcp__switchboard__x", False),
+	],
+)
+def test_each_tool_matches_exactly_one_permission_entry(tool, allowed):
+	# Claude Code matches these as JavaScript regexes against the tool name (probed
+	# live on 2.1.296: the first entry alone ran for ask_human, the second alone for
+	# Bash); Python's re.search reads both patterns the same way.
+	allow_entry, script_entry = _permission_entries()
+	assert bool(re.search(allow_entry["matcher"], tool)) is allowed
+	assert bool(re.search(script_entry["matcher"], tool)) is not allowed
+
+
+def test_the_switchboard_entry_prints_the_allow_decision():
+	allow_entry, _ = _permission_entries()
+	hook_input = {**HOOK_INPUT, "tool_name": "mcp__switchboard__ask_human", "tool_input": {"question": "ok?"}}
+	result = subprocess.run(
+		[BASH, "-c", allow_entry["hooks"][0]["command"]],
+		input=json.dumps(hook_input), capture_output=True, text=True, timeout=30,
+	)
+	assert result.returncode == 0, result.stderr
+	assert json.loads(result.stdout) == DECISION

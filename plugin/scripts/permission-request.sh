@@ -4,6 +4,9 @@
 # card on his phone, or releases it when the terminal answers first. Prints the
 # server's decision, or nothing, which leaves the dialog to the terminal.
 #
+# The switchboard's own tools never reach this script: hooks.json allows them
+# first, by matcher on the tool name, so an agent in away mode can always ask.
+#
 # Always exits 0: a PermissionRequest hook's exit code 2 is a blocking error.
 # Runs under Git Bash on Windows and bash in WSL.
 
