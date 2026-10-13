@@ -1,7 +1,7 @@
 # The away-mode redirect: cap the loop, pre-approve the switchboard tools (design)
 
 **Date:** 2026-10-13
-**Status:** approved design, not yet implemented. Written 2026-10-13 from the decisions John took after the probe report.
+**Status:** implemented 2026-10-13 (`380cdba..c1d6ac7`); the As built section at the end records where the build differs from this design. Written 2026-10-13 from the decisions John took after the probe report; implementation plan `docs/superpowers/plans/2026-10-13-away-mode-redirect-cap.md` (disk-only, gitignored).
 **Backlog:** T-296 (the away-mode redirect in a session without a switchboard allow rule).
 **Evidence:** T-284's live run r5 (`C:\Work\Claude-Scratch\T-284-live\r5-debug.log`, screens in `r5\history.txt`); the T-296 probe of 2026-10-13 on Claude Code 2.1.296 (Windows terminal; three interactive `default`-mode haiku sessions driven through a ConPTY, each loading a throwaway copy of `plugin/` with `--plugin-dir`), with its plugin copy, driver and logs in `C:\Work\Claude-Scratch\T-296-probe\` (`a-debug.log`, `b-debug.log`, `c-debug.log`, `hook.log`); the 2.1.296 mod declarations; and the code paths cited below.
 
@@ -157,3 +157,18 @@ The other lines are unchanged. The test pinning the first and last lines (`plugi
 - **`docs/switchboard-design-spec-comprehensive.md`:** §6 ("The switchboard tools are not pre-approved"), §6.1 and §8.2, folded in with the As built.
 - **The stale comment** at `plugin/hooks/switchboard.ts:365`.
 - **Memory** `project_live_dialog_checks`: Esc at a dialog does not stop the redirect; with this change a `default`-mode test session no longer prompts for `ask_human`. The vault note `Reference/Claude Code Permission Prompts from a Plugin` gains the matcher split and the rejected-dialog facts above.
+
+## As built (2026-10-13)
+
+Commits `380cdba` (matcher split), `412f755` (the cap), `db1d1c6` (docs), `c1d6ac7` (final-review fixes). Where the build differs from the design above:
+
+- **A wrong fact, corrected.** The Facts section says a plugin's own `$.prompt.submit` runs through the mod's `prompt.submit` hook. It does not: live, every mod-raised submit is logged `hooks module switchboard@switchboard prompt.submit skipped: re-entry (the plugin's own code raised it; origin switchboard)` (170 times in r5, the log this spec cites; its "settled" lines were typed prompts). So the reset rule "any `prompt.submit` other than the mod's own bare redirect (origin plus exact text)" never saw the mod's own submits live. The build resets in `submitPrompt` whenever a submit carries held phone messages (a bare redirect keeps the count), and `prompt.submit` resets only for prompts from elsewhere, recognised by origin alone (`isOwnSubmit`, `plugin/hooks/turn-end.ts`); the exact-text match is gone. The test kit gets this backwards (a submit raised inside a hook reaches `prompt.submit` there), which is why the kit passed with the original rule.
+- **The mod's own `$.mcp.call` is now treated as its own.** The cap notice runs through the mod's `tool.call` hook, which posted a tool status and then `thinking` after the turn's `clear`, so the idle session showed as active on every surface (seen live by John and by the final review), and the hook could attach held phone messages to a result only the mod reads. The hook now recognises the mod's own call by `next.origin.plugin === 'switchboard'` (`isOwnCall`, `plugin/hooks/status.ts`): it never takes held messages, and with no turn running it posts no status. The AskUserQuestion bridge, whose calls run inside a turn, keeps its statuses.
+- **An answered `AskUserQuestion` also resets the count** (made at planning): the bridge's `$.mcp.call` passes through `tool.call` live but not in the kit, so the reset is explicit (`askedJohn`), and a terminal-answered question is John's input too.
+- **`turnEndBlock` is gone**, replaced by `redirectPlan`, which also moves the count past the cap (to 3), so a later turn end in the same chain stays quiet. The cap notice reads "ended 3 turns" from `REDIRECT_CAP + 1`.
+- **Verification.** pytest 1353 passed (one pre-existing httpx DeprecationWarning); `claude plugin test plugin` 141 pass; typecheck clean; `claude plugin validate` passes with the shipped warnings. Live on `db1d1c6`, away mode on with John, in `default`-mode haiku sessions:
+  - **The cap:** a session told to answer in text ended exactly three turns, then sent the notice (auto-allowed in 374 ms, no approval card, no dialog drawn), and stayed idle; John's phone reply started a new turn, then two redirects and a second notice.
+  - **`ask_human`:** the inline allow answered it, the question card posted with no approval, and John's answer came back.
+  - **Bash:** its approval card still posted, and John's Allow from the phone ran the command.
+  - **The own-call fix** (at the desk, with a `--plugin-dir` copy of `c1d6ac7` plus a probe trigger): the mod's own `notify_human` reached `tool.call` with origin `switchboard` and no running turn, and no `/agent_status` post followed the turn's `Stop`.
+- **Deferred minors** (final review): the count's read-then-write in `checkTurnEnd` is not atomic; `^mcp__switchboard__` also matches a server named `switchboard__<x>`; the inline hook's 10 s timeout sits at the Git Bash startup floor.
