@@ -2,7 +2,8 @@
 on POST /approvals (plugin/scripts/permission-request.sh).
 
 An approval opens when the hook connects and ends exactly once, through
-close(): John answers its card, the terminal answers (the mod's report), the
+close() (bar one the terminal answered before the hook arrived, which open()
+returns already released): John answers its card, the terminal answers (the mod's report), the
 hook goes away, the session or its main-loop turn ends, away mode turns off
 while the approval is one the desk would not hold (a background agent's dialog
 draws only after its hook returns, and a headless run draws none, so it is
@@ -155,7 +156,8 @@ class ApprovalRegistry:
 		self, *, cli_session_id: str, agent_id: str | None, tool: str, tool_input: object, cwd: str,
 	) -> Approval:
 		"""Opens an approval for a dialog that just opened. In away mode its card
-		is up before this returns."""
+		is up before this returns, unless the terminal already answered, which
+		returns an approval already released and with no card."""
 		digest = input_digest(tool_input)
 		early = self._take_early(cli_session_id, agent_id, tool, digest)
 		approval = Approval(

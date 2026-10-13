@@ -340,11 +340,11 @@ async function withHeldContext($: EngineInterface, ran: ToolCallResult): Promise
 
 // Calls between tool.call and their result, by tool_use_id: what a
 // tool_decision record lacks. A module variable: a hot reload drops it, and the
-// server's turn-end backstop covers what it held.
+// server's turn-end backstop releases a main-loop approval it held, not a subagent's.
 const inflight = new Map<string, InFlight>()
 
-// Fire-and-forget like the status posts: the turn-end backstop releases the
-// hook if this report is lost.
+// Fire-and-forget like the status posts: if this report is lost, the turn-end
+// backstop releases a main-loop hook, and a subagent's waits for session end.
 function postSettled($: EngineInterface, sessionId: string, body: SettledBody): void {
 	postJson($, `/sessions/${encodeURIComponent(sessionId)}/approvals/settled`, body).catch(error =>
 		$.ui.log(`switchboard: approval report failed: ${String(error)}`, { to: 'debug' }),

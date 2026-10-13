@@ -34,6 +34,7 @@ export type World = {
 	sessionIdReads: number
 	readGate: Promise<void> | null
 	toolGate: Promise<void> | null
+	telemetry: Array<Record<string, unknown>>
 }
 
 export function world(on: On, env: Record<string, string> = {}): World {
@@ -64,6 +65,7 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		sessionIdReads: 0,
 		readGate: null,
 		toolGate: null,
+		telemetry: [],
 	}
 	mock.env(on, env)
 	on('session.id', () => {
@@ -86,7 +88,10 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		if (w.toolGate !== null) await w.toolGate
 		return { result: 'ran' }
 	})
-	on('telemetry.log', () => ({ value: undefined }))
+	on('telemetry.log', (_$, e) => {
+		w.telemetry.push({ ...e })
+		return { value: undefined }
+	})
 	on('prompt.read', () => ({ value: { text: w.draft, cursor: w.draft.length } }))
 	on('prompt.submit', (_$, e) => {
 		if (w.rejectSubmit) throw new Error('engine refused the prompt')

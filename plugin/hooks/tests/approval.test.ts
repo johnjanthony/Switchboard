@@ -71,6 +71,23 @@ test('a hook or rule decision, or one after the call ended, reports nothing', as
 	expect(postsTo(w, '/sessions/S1/approvals/settled')).toEqual([])
 })
 
+test('every tool_decision record passes through to the collector, reported or not', async ($, on) => {
+	const w = world(on)
+	let release: () => void = () => {}
+	w.toolGate = new Promise<void>(resolve => { release = resolve })
+	const call = $.tool.call({ tool: 'Bash', command: 'ls' })
+	await until(() => w.toolInputs.length === 1)
+	const toolUseId = String(w.toolInputs[0]?.tool_use_id)
+	await $.telemetry.log(decision(toolUseId, 'user_temporary'))
+	await $.telemetry.log(decision(toolUseId, 'hook'))
+	await $.telemetry.log(decision(toolUseId, 'config'))
+	release()
+	await call
+	await w.clock.settle()
+	expect(w.telemetry.map(t => (t.attributes as Record<string, unknown>).source)).toEqual(['user_temporary', 'hook', 'config'])
+	expect(postsTo(w, '/sessions/S1/approvals/settled')).toHaveLength(1)
+})
+
 test('a switchboard tool is reported with the ids the injector added', async ($, on) => {
 	const w = world(on)
 	let release: () => void = () => {}
