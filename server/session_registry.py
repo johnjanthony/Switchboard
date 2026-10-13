@@ -100,6 +100,8 @@ class SessionRecord:
 	# ever hydrated.
 	awaiting_approval: bool = False
 	approval_since: str | None = None
+	# Whether the session is a terminal REPL, as its mod reports at session start; None = unknown.
+	interactive: bool | None = None
 
 	def to_payload(self) -> dict:
 		payload = asdict(self)
@@ -181,6 +183,7 @@ class SessionRegistry:
 
 	def record_session_start(
 		self, cli_session_id: str, *, cwd: str, cli: str = "claude", start_source: str | None = None,
+		interactive: bool | None = None,
 	) -> SessionRecord:
 		from server.conversation_ops import _infer_surface
 		rec = self._ensure(cli_session_id, source="hook")
@@ -197,6 +200,8 @@ class SessionRegistry:
 		rec.state_detail = start_source
 		rec.end_reason = None
 		rec.last_transition_source = "session_start"
+		if interactive is not None:
+			rec.interactive = interactive
 		self._fire_mirror(rec)
 		return rec
 
@@ -492,6 +497,7 @@ class SessionRegistry:
 			in_tool=bool(data.get("in_tool", False)),
 			pending_notices=list(data.get("pending_notices") or []),
 			mod_fingerprint=data.get("mod_fingerprint"),
+			interactive=data.get("interactive") if isinstance(data.get("interactive"), bool) else None,
 		)
 		self._judge_mod(rec)
 		self._records[sid] = rec

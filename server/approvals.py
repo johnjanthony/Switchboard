@@ -3,7 +3,10 @@ on POST /approvals (plugin/scripts/permission-request.sh).
 
 An approval opens when the hook connects and ends exactly once, through
 close(): John answers its card, the terminal answers (the mod's report), the
-hook goes away, the session or its main-loop turn ends, or the service stops.
+hook goes away, the session or its main-loop turn ends, away mode turns off
+while the approval is one the desk would not hold (a background agent's dialog
+draws only after its hook returns, and a headless run draws none, so it is
+released), or the service stops.
 In away mode an open approval has a question card in the session's
 conversation, with Allow and Deny, and the cards follow away mode as it turns
 on and off. Each card post gets its own id, because mark_question_cancelled
@@ -106,6 +109,21 @@ class ApprovalRegistry:
 
 	def open_approvals(self) -> list[Approval]:
 		return list(self._open.values())
+
+	def holds_at_desk(self, cli_session_id: str, agent_id: str | None) -> bool:
+		"""A request is held at the desk only when it is a main-loop dialog of a
+		session not known to be non-interactive: a background agent's dialog is
+		drawn only after the hook returns, and a headless run draws none. Every
+		subagent request is answered 204 at the desk, foreground ones included,
+		because the hook input cannot tell a background agent from a foreground
+		one."""
+		if agent_id is not None:
+			return False
+		rec = self._sessions.get(cli_session_id) if self._sessions is not None else None
+		return rec is None or rec.interactive is not False
+
+	def should_hold(self, cli_session_id: str, agent_id: str | None) -> bool:
+		return self._registry.global_away_mode or self.holds_at_desk(cli_session_id, agent_id)
 
 	def owns(self, conversation_id: str, request_id: str) -> bool:
 		"""True for an answer keyed by a card this registry posted, live or
@@ -234,14 +252,17 @@ class ApprovalRegistry:
 	# -- away mode --------------------------------------------------------
 
 	def on_away_change(self, active: bool) -> None:
-		"""Registry's away observer: the cards follow away mode."""
+		"""Registry's away observer: the cards follow away mode, and turning it
+		off releases the approvals the desk would not hold."""
 		if self._open:
 			_spawn_bg(self.sync_cards(), label="approvals_away_sync")
 
 	async def sync_cards(self) -> None:
 		"""Posts a card for every open approval without one while away, and
-		withdraws every live card at the desk. Reads the flag under the lock, so
-		the last of several quick flips wins."""
+		withdraws every live card at the desk, then releases (desk_release) each
+		open approval the desk would not hold, so its dialog draws or a headless
+		run refuses. Reads the flag under the lock, so the last of several quick
+		flips wins, and again before each release."""
 		async with self._cards:
 			away = self._registry.global_away_mode
 			for approval in list(self._open.values()):
@@ -249,6 +270,20 @@ class ApprovalRegistry:
 					await self._post_card(approval)
 				else:
 					await self._withdraw(approval)
+			releasable = [
+				a for a in self._open.values() if not self.holds_at_desk(a.cli_session_id, a.agent_id)
+			] if not away else []
+		# close() takes the card lock itself. A quick off/on flip must not release
+		# a request John can answer from the phone again.
+		if self._registry.global_away_mode:
+			return
+		for approval in releasable:
+			# Each close awaits, so a flip back on can land between two releases;
+			# close() settles the future before its first await, so this check and
+			# the settle are atomic.
+			if self._registry.global_away_mode:
+				return
+			await self.close(approval, Outcome("released", reason="desk_release"))
 
 	# -- cards (callers hold self._cards) ---------------------------------
 

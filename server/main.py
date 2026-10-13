@@ -168,7 +168,9 @@ def _build_approvals_route(approvals, stop: ServiceStop | None):
 	(plugin/scripts/permission-request.sh), its body the hook's input. The
 	connection is the hold: 200 with the hook's decision JSON once John answers
 	the card, 204 when the dialog is left to the terminal, 503 while the service
-	stops (the script resends after the restart)."""
+	stops (the script resends after the restart). At the desk only a main-loop
+	request from a session not known to be non-interactive is held; the rest get
+	204 at once."""
 	async def approvals_route(request: Request):
 		try:
 			body = await request.json()
@@ -185,10 +187,13 @@ def _build_approvals_route(approvals, stop: ServiceStop | None):
 		if stop is not None and stop.requested:
 			return Response(status_code=503)
 		agent_id = body.get("agent_id")
+		agent_id = agent_id if isinstance(agent_id, str) and agent_id else None
+		if not approvals.should_hold(session_id, agent_id):
+			return Response(status_code=204)
 		cwd = body.get("cwd")
 		approval = await approvals.open(
 			cli_session_id=session_id,
-			agent_id=agent_id if isinstance(agent_id, str) and agent_id else None,
+			agent_id=agent_id,
 			tool=tool,
 			tool_input=body.get("tool_input"),
 			cwd=cwd if isinstance(cwd, str) else "",
@@ -307,7 +312,10 @@ def _build_session_start_route(session_registry: SessionRegistry, logger):
 					f"{session_id} (cwd {cwd}) - CC id-on-resume behavior may have changed; see the "
 					f"dormant supersession rules in the roadmap"
 				)
-		session_registry.record_session_start(session_id, cwd=cwd, start_source=source)
+		interactive = body.get("interactive")
+		session_registry.record_session_start(
+			session_id, cwd=cwd, start_source=source, interactive=interactive if isinstance(interactive, bool) else None,
+		)
 		return JSONResponse({}, status_code=200)
 	return session_start
 

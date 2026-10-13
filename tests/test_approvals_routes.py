@@ -170,7 +170,7 @@ async def test_a_malformed_body_gets_204(body):
 
 @pytest.mark.asyncio
 async def test_a_subagent_hook_records_its_agent():
-	approvals, _ = _approvals()
+	approvals, _ = _approvals(away=True)
 	route = _build_approvals_route(approvals, ServiceStop())
 	task, approval = await _held(approvals, route, _request(_hook_input(agent_id="agent-1"), asyncio.Event()))
 	assert approval.agent_id == "agent-1"

@@ -443,7 +443,11 @@ export const register: Register = on => {
 	// attached starts the poller here too.
 	on('session.start', async ($, e, next) => {
 		try {
-			await postJson($, '/session_start', { session_id: await $.session.id(), cwd: e.cwd })
+			// interactive is true only for the terminal REPL, the one surface where a
+			// permission dialog was verified to draw at once and race the PermissionRequest
+			// hook; a -p or SDK run, a desktop or VS Code session reports false.
+			const interactive = e.isInteractive && e.surface === 'terminal'
+			await postJson($, '/session_start', { session_id: await $.session.id(), cwd: e.cwd, interactive })
 		} catch (error) {
 			$.ui.log(`switchboard: session start post failed: ${String(error)}`, { to: 'debug' })
 		}
