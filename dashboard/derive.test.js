@@ -483,6 +483,13 @@ test('a stale blocked flag no longer needs attention or changes the chip', () =>
 	assert.equal(derive.needsAttention(record, null), false);
 });
 
+test('an open permission dialog needs attention and shows the needs-approval chip', () => {
+	const record = { state: 'active', awaiting_approval: true, last_event_at: '2026-07-06T12:00:00Z' };
+	assert.deepEqual(derive.sessionChip(record), { label: 'needs approval', cls: 'chip-needs-approval' });
+	assert.equal(derive.needsAttention(record, null), true);
+	assert.equal(derive.needsAttention(record, '2026-07-06T12:00:01Z'), true);
+});
+
 test('ringsFromSessions: one ring per live session that has reported its context', () => {
 	const rings = derive.ringsFromSessions({
 		a: { state: 'active', context_pct: 0.41, context_tokens: 410000, context_window: 1000000, model: 'claude-opus-5-5' },

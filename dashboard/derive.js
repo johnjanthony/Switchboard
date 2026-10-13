@@ -207,6 +207,9 @@ const SESSION_CHIPS = {
 };
 
 export function sessionChip(record) {
+	if (record && record.awaiting_approval) {
+		return { label: 'needs approval', cls: 'chip-needs-approval' };
+	}
 	const state = record && record.state ? record.state : 'idle';
 	return SESSION_CHIPS[state] || { label: state, cls: 'chip-idle' };
 }
@@ -341,13 +344,17 @@ export function soleSessionFor(convId, sessionsMap) {
 	return found;
 }
 
-// True when an idle session has an unacknowledged event: no ack yet, or the
+// True when a permission dialog is open in the session, or when an idle session has an unacknowledged event: no ack yet, or the
 // session's last_event_at is newer than the stored ack. Uses Date.parse (not
 // string comparison) because the server stamps "+00:00" while fb.nowIso stamps
 // "Z", so equal-second timestamps compare unequal lexicographically.
 export function needsAttention(record, ackIso) {
 	if (!record) {
 		return false;
+	}
+	// An open permission dialog waits on John whatever the ack says.
+	if (record.awaiting_approval) {
+		return true;
 	}
 	if (record.state !== 'idle') {
 		return false;
