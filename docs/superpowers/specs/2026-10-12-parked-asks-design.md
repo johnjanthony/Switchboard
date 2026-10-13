@@ -1,7 +1,7 @@
 # Parked asks: a restart or a killed session keeps the question (design)
 
 **Date:** 2026-10-12
-**Status:** design approved by John 2026-10-12 in chat; written spec awaiting his review.
+**Status:** design approved by John 2026-10-12 in chat; spec and plan approved; executed and live-verified 2026-10-12 (see As built).
 **Backlog:** T-291 (a restart cancels blocking asks) and T-286 (session telemetry chunk 1 review minors), as one chunk ahead of T-255.
 
 ## Goal
@@ -112,3 +112,26 @@ John-gated where the standing rules say so.
 - The peer wait of `message_and_await_agent`.
 - T-249 (dormancy for a lost session's member), T-032 and T-142.
 - Explaining the seven early `ASGI callable` lines beyond the audit evidence Section 1 collects.
+
+## As built (2026-10-12)
+
+Executed subagent-driven on `develop` (sonnet implementers, opus task reviewers, a fable whole-branch review), every task review clean on the first pass.
+
+- Spec and refinements: `d85414f`, `fa291d4`.
+- Task 1, the stop flag and the wait arm: `fda914d`.
+- Task 2, `park_live`, `park_pending`, the `parked` envelope, the recorded question: `2a2d86c`.
+- Task 3, the sweep rule and the sweep's parking: `60075c7`.
+- Task 4, the telemetry mirror: `014fc27`.
+- Task 5, the mod minors: `54f85c6`.
+- Task 6, the smoke flow: `b7c5e51`.
+- Final-review fix wave (doc counts, a comment, a docstring wrap): `5410ff9`.
+
+**Deviations from the plan (controller rulings).**
+
+- The sweep also skips an ask whose `msg_id` is still `None`: its question write has not returned, so its `pending_questions` record is not spawned yet, and a park then would leave nothing for a restart to re-park. Task 3's tests give their asks a `msg_id` so each still discriminates its own guard.
+- Task 3's notice test gained `assert parked.future is None`; without it the test passed before the sweep parked anything.
+- Task 1's test helper waits a real 0.2 s after the `pending_questions` record appears before cancelling: the record is spawned before two thread-backed log writes, so cancelling at once landed in the setup-write arm.
+
+**Live evidence (full smoke run, restart included, all ten flows PASS).** The killed-session flow passed in 142 s, with `pending_parked_session_lost: ... request_id=2860fa5d` in the audit log. Restart survival passed: flow 7's ask logged `ask_human_cancelled: request_id=31c35cca ... stopping=True stop_age_ms=191`, and hydration then parked it (`parked=1`). The seven early `ASGI callable returned` lines of the 19:51 restart did not recur on this one. In this process `uvicorn.Server.handle_exit` is sse-starlette 3.3.4's patched method (the final review probed the chain under the service's import order), so a uvicorn or sse-starlette upgrade should re-run the restart-survival flow.
+
+**Left for a follow-up (T-292).** The final review rated every remaining item "can wait" and traced four narrow handler races to one root: the pre-wait part of `ask_human` has three distinct "now parkable" moments (added, card written, record spawned), and the arms and the sweep key off proxies (a `request_id` lookup, `msg_id`). The fix is an explicit recorded marker, `record.future is future` guards in the timeout and cancel arms, and the two log awaits moved under the stop-aware wait arm. The follow-up also covers an answer that lands between the stop flag and the dispatch loop's cancellation, which gets a false "reply withdrawn" notice although its question still comes back parked. It also carries three test gaps: an `awaiting_agent` sweep test, a mod test where `HOME`'s `projects/` fails to list, and dropping the 0.2 s sleep.
