@@ -26,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.johnjanthony.switchboard.cwdTail
@@ -140,10 +141,15 @@ fun RegistrySessionRow(
 		}
 		Column(horizontalAlignment = Alignment.End) {
 			Text(
-				text = rec.state,
+				text = if (rec.awaitingApproval) "needs approval" else rec.state,
 				style = MaterialTheme.typography.labelSmall,
+				color = if (rec.awaitingApproval) MaterialTheme.colorScheme.tertiary else Color.Unspecified,
 				modifier = Modifier
-					.border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
+					.border(
+						1.dp,
+						if (rec.awaitingApproval) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.outline,
+						RoundedCornerShape(8.dp),
+					)
 					.padding(horizontal = 6.dp, vertical = 1.dp),
 			)
 			Spacer(Modifier.height(4.dp))

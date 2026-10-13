@@ -38,12 +38,14 @@ fun parseIsoMs(iso: String?): Long? {
 }
 
 /**
- * True when a session is idle and its last event is unacknowledged: either there is no ack yet,
- * or the last event happened strictly after the most recent ack. Both timestamps are compared as
+ * True when a permission dialog is open in the session (it waits on John whatever the ack), or
+ * when the session is idle and its last event is unacknowledged: either there is no ack yet, or
+ * the last event happened strictly after the most recent ack. Both timestamps are compared as
  * parsed instants (never as raw strings) since lastEventAt and ackIso come from different
  * stampers using different (though equivalent) offset notations.
  */
 fun sessionNeedsAttention(rec: RegistrySession, ackIso: String?): Boolean {
+	if (rec.awaitingApproval) return true
 	if (rec.state != "idle") return false
 	val eventMs = parseIsoMs(rec.lastEventAt) ?: return false
 	if (ackIso == null) return true

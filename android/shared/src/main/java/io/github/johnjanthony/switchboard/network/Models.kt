@@ -202,6 +202,9 @@ data class RegistrySession(
 	@get:PropertyName("name_source") @set:PropertyName("name_source") var nameSource: String? = null,
 	@get:PropertyName("last_transition_source") @set:PropertyName("last_transition_source") var lastTransitionSource: String? = null,
 	@get:PropertyName("in_tool") @set:PropertyName("in_tool") var inTool: Boolean = false,
+	// A permission dialog is open in the session (server/approvals.py), since approval_since.
+	@get:PropertyName("awaiting_approval") @set:PropertyName("awaiting_approval") var awaitingApproval: Boolean = false,
+	@get:PropertyName("approval_since") @set:PropertyName("approval_since") var approvalSince: String? = null,
 	// Resolved by the server (server/model_label.py): observed model + effort, else the spawn pick.
 	@get:PropertyName("model_label") @set:PropertyName("model_label") var modelLabel: String? = null,
 	@get:PropertyName("model_source") @set:PropertyName("model_source") var modelSource: String? = null,

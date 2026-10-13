@@ -16,6 +16,7 @@ class SessionBoardPolicyTest {
 		sender: String? = null,
 		cwd: String = "C:\\Work\\Switchboard",
 		inTool: Boolean = false,
+		awaitingApproval: Boolean = false,
 	) = RegistrySession(
 		cliSessionId = "s1",
 		cwd = cwd,
@@ -24,6 +25,7 @@ class SessionBoardPolicyTest {
 		name = name,
 		sender = sender,
 		inTool = inTool,
+		awaitingApproval = awaitingApproval,
 	)
 
 	// --- sessionBoardLabel ---
@@ -99,6 +101,12 @@ class SessionBoardPolicyTest {
 	}
 
 	// --- sessionNeedsAttention ---
+
+	@Test
+	fun `an open permission dialog needs attention whatever the ack`() {
+		val r = rec(state = "active", inTool = true, awaitingApproval = true)
+		assertTrue(sessionNeedsAttention(r, ackIso = "2026-07-07T12:00:01Z"))
+	}
 
 	@Test
 	fun `needs attention when idle and never acked`() {
@@ -203,6 +211,18 @@ class SessionBoardPolicyTest {
 	// --- partitionSessionBoard ---
 
 	@Test
+	fun `partition floats a session awaiting approval above a fresher but acked idle session`() {
+		val waiting = rec(state = "active", awaitingApproval = true, lastEventAt = "2026-07-07T10:00:00+00:00")
+		val fresherAckedIdle = rec(state = "idle", lastEventAt = "2026-07-07T13:00:00+00:00")
+		val sessions = mapOf("s-waiting" to waiting, "s-fresh" to fresherAckedIdle)
+		val acks = mapOf("s-fresh" to "2026-07-07T13:00:01Z")
+
+		val (live, _) = partitionSessionBoard(sessions, acks)
+
+		assertEquals(listOf(waiting, fresherAckedIdle), live)
+	}
+
+	@Test
 	fun `partition puts needs-attention live sessions first, then live by recency, ended sessions second`() {
 		val attn = rec(state = "idle", lastEventAt = "2026-07-07T12:00:00+00:00")
 		val recent = rec(state = "active", lastEventAt = "2026-07-07T13:00:00+00:00")
@@ -241,6 +261,15 @@ class SessionBoardPolicyTest {
 	}
 
 	// --- sessionBadgeCount ---
+
+	@Test
+	fun `badge count includes a session awaiting approval`() {
+		val sessions = mapOf(
+			"s1" to rec(state = "active", awaitingApproval = true),
+			"s2" to rec(state = "active"),
+		)
+		assertEquals(1, sessionBadgeCount(sessions, acks = emptyMap()))
+	}
 
 	@Test
 	fun `badge count is the number of needs-attention sessions`() {
