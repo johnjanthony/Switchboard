@@ -15,12 +15,14 @@ from pathlib import Path as _Path
 import anyio
 import uvicorn
 from mcp.server.fastmcp import FastMCP
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.requests import Request
 from starlette.staticfiles import StaticFiles
 
 import dataclasses
 
+from server.approval_card import hook_output
+from server.approvals import EXCLUDED_TOOLS, ApprovalRegistry, Outcome
 from server.build_info import mod_fingerprint, service_identity
 from server.cli_session_end import handle_session_end
 from server.clock import now_iso
@@ -120,6 +122,117 @@ def _build_stop_route(session_registry):
 	async def stop(request: Request):
 		return JSONResponse({"queued": session_registry.request_stop(request.path_params["sid"])})
 	return stop
+
+
+# How often a held approval re-reads the service's stop flag.
+_APPROVAL_STOP_POLL_SECONDS = 0.25
+
+
+async def _await_approval(
+	request: Request, future: asyncio.Future, stop: ServiceStop | None,
+	poll_seconds: float = _APPROVAL_STOP_POLL_SECONDS,
+) -> str:
+	"""Waits on a held approval while watching its hook's connection and the
+	service's stop flag: "outcome" once the future settles, "gone" when the hook
+	disconnects, "stopping" when the service stops. uvicorn waits for every
+	response before it shuts down, so a hold must end promptly on a stop. Its
+	shutdown wakes the receive channel with a disconnect before the poll fires,
+	so the stop flag, which handle_exit raises first, decides over the disconnect."""
+	async def disconnected() -> None:
+		while True:
+			message = await request.receive()
+			if message.get("type") == "http.disconnect":
+				return
+
+	async def stopping() -> None:
+		while stop is None or not stop.requested:
+			await asyncio.sleep(poll_seconds)
+
+	gone = asyncio.ensure_future(disconnected())
+	halt = asyncio.ensure_future(stopping())
+	try:
+		done, _pending = await asyncio.wait({future, gone, halt}, return_when=asyncio.FIRST_COMPLETED)
+	finally:
+		for watcher in (gone, halt):
+			watcher.cancel()
+		await asyncio.gather(gone, halt, return_exceptions=True)
+	if future.done():
+		return "outcome"
+	if halt in done or (stop is not None and stop.requested):
+		return "stopping"
+	return "gone"
+
+
+def _build_approvals_route(approvals, stop: ServiceStop | None):
+	"""POST /approvals - the PermissionRequest hook's long-poll
+	(plugin/scripts/permission-request.sh), its body the hook's input. The
+	connection is the hold: 200 with the hook's decision JSON once John answers
+	the card, 204 when the dialog is left to the terminal, 503 while the service
+	stops (the script resends after the restart)."""
+	async def approvals_route(request: Request):
+		try:
+			body = await request.json()
+		except Exception:
+			return Response(status_code=204)
+		if not isinstance(body, dict):
+			return Response(status_code=204)
+		session_id = body.get("session_id")
+		tool = body.get("tool_name")
+		if not isinstance(session_id, str) or not session_id or not isinstance(tool, str) or not tool:
+			return Response(status_code=204)
+		if tool in EXCLUDED_TOOLS:
+			return Response(status_code=204)
+		if stop is not None and stop.requested:
+			return Response(status_code=503)
+		agent_id = body.get("agent_id")
+		cwd = body.get("cwd")
+		approval = await approvals.open(
+			cli_session_id=session_id,
+			agent_id=agent_id if isinstance(agent_id, str) and agent_id else None,
+			tool=tool,
+			tool_input=body.get("tool_input"),
+			cwd=cwd if isinstance(cwd, str) else "",
+		)
+		how = await _await_approval(request, approval.future, stop)
+		if how == "outcome":
+			outcome = approval.future.result()
+			if outcome.kind == "decided":
+				return JSONResponse(hook_output(outcome.decision), status_code=200)
+			return Response(status_code=204)
+		if how == "stopping":
+			await approvals.close(approval, Outcome("released", reason="service_stop"), withdraw=False)
+			return Response(status_code=503)
+		await approvals.close(approval, Outcome("released", reason="hook_gone"))
+		return Response(status_code=204)
+	return approvals_route
+
+
+def _build_approvals_settled_route(approvals):
+	"""POST /sessions/{sid}/approvals/settled - the mod's report that a dialog
+	was answered at the terminal (its tool_decision telemetry): releases the
+	matching approval so its hook exits quietly. Always 200."""
+	async def approvals_settled(request: Request):
+		session_id = request.path_params.get("sid")
+		try:
+			body = await request.json()
+		except Exception:
+			return JSONResponse({}, status_code=200)
+		if not isinstance(session_id, str) or not session_id or not isinstance(body, dict):
+			return JSONResponse({}, status_code=200)
+		tool = body.get("tool")
+		if not isinstance(tool, str) or not tool:
+			return JSONResponse({}, status_code=200)
+		agent_id = body.get("agent_id")
+		await approvals.settle_from_terminal(
+			session_id,
+			agent_id=agent_id if isinstance(agent_id, str) and agent_id else None,
+			tool=tool,
+			tool_input=body.get("input"),
+			decision=str(body.get("decision") or ""),
+			source=str(body.get("source") or ""),
+		)
+		return JSONResponse({}, status_code=200)
+	return approvals_settled
 
 
 def _build_telemetry_route(session_registry, quota_store, backend, logger, registry=None, clock=None):
