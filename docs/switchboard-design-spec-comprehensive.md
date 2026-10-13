@@ -234,7 +234,7 @@ No "cannot leave in away mode" guard — the session-fallback rule covers the or
 
 ## 5. HTTP endpoints
 
-Twelve added routes, plus the `/mcp` transport and a static mount, all wrapped once by `TokenAuthMiddleware` (`server/main.py`):
+Fourteen added routes, plus the `/mcp` transport and a static mount, all wrapped once by `TokenAuthMiddleware` (`server/main.py`):
 
 | Route | Method(s) | Purpose | Token gate |
 |---|---|---|---|
@@ -250,12 +250,14 @@ Twelve added routes, plus the `/mcp` transport and a static mount, all wrapped o
 | `/sessions/{sid}/inbox` | GET | The mod's 2 s poll and the session's liveness heartbeat (§6, §10.6): `{notices, stop, away, pending_ask}`, popping the queued notices and a stop under 30 s old, with `away` and `pending_ask` read fresh. An unknown session's poll creates its record (source `poll`), with no notices and no stop. Its access-log lines are filtered out. | Gated |
 | `/sessions/{sid}/stop` | POST | Queues a stop for the session's running turn, delivered by its next inbox poll. No phone or Operator button calls it yet. | Gated; rate-limited |
 | `/sessions/{sid}/telemetry` | POST | The mod's telemetry report (§10.5): context, rate limits, model, effort and title, validated field by field. Always 200. | Gated; rate-limited |
+| `/approvals` | POST | The `PermissionRequest` hook's long-poll (§6.1): the hook input as its body; held until decided (200 with the hook's decision JSON) or released (204); 503 while the service stops. | Gated; rate-limited |
+| `/sessions/{sid}/approvals/settled` | POST | The mod's report that a dialog was answered at the terminal: `{tool_use_id, tool, agent_id, input, decision, source}`; releases the matching approval. Always 200. | Gated; rate-limited |
 | `/agent_status` | POST | Status ingest from the mod: `{session_id, state, event, cwd?, detail?}`. Upserts the SessionRegistry **before** the away-mode gate (so the roster updates at the desk too), then writes or deletes `conversations/<id>/agent_status/<sender>`, gated on away mode except that `state == "clear"` always deletes. Returns `{"notices": []}` and pops nothing: Claude Code sessions take their notices from the inbox (§6). | Gated; rate-limited |
 | `/dashboard` (mount) | GET (StaticFiles, `html=True`) | Serves the Operator cockpit (`dashboard/`). | Gated |
 
 **Auth model.** `/healthz` is the only path exemption; loopback peers (`127.0.0.1`, `::1`) are exempt on every path regardless of bind; a `401 {"error": "unauthorized"}` covers everything else. A non-loopback bind without `SWITCHBOARD_TOKEN` is a hard startup failure (`ConfigError`, fail-closed), so the ungated configuration cannot reach uvicorn.
 
-**Rate limiting.** `/session_start`, `/session_end`, `/sessions/{sid}/stop`, `/sessions/{sid}/telemetry` and `/agent_status` each get a coarse per-route token bucket (`SWITCHBOARD_ROUTE_RATE_LIMIT`, default 600/min per route) returning `429` when exceeded — separate from the per-conversation tool limiter in §4/§15.3.
+**Rate limiting.** `/session_start`, `/session_end`, `/sessions/{sid}/stop`, `/sessions/{sid}/telemetry`, `/approvals`, `/sessions/{sid}/approvals/settled` and `/agent_status` each get a coarse per-route token bucket (`SWITCHBOARD_ROUTE_RATE_LIMIT`, default 600/min per route) returning `429` when exceeded — separate from the per-conversation tool limiter in §4/§15.3.
 
 ---
 
@@ -265,7 +267,7 @@ Twelve added routes, plus the `/mcp` transport and a static mount, all wrapped o
 
 | Hook | Job |
 |---|---|
-| `tool.call` | Adds `cli_session_id` and `cwd` to every `mcp__switchboard__*` call (§3). Posts the tool state to `/agent_status` before the call (`clear` for `ask_human`, `waiting` for `message_and_await_agent`, otherwise `tool:<name>` with a short detail) and `thinking` after it. On the main loop, attaches held notices to the tool result as context. Answers `AskUserQuestion` from the phone in away mode (§8.2). |
+| `tool.call` | Adds `cli_session_id` and `cwd` to every `mcp__switchboard__*` call (§3). Posts the tool state to `/agent_status` before the call (`clear` for `ask_human`, `waiting` for `message_and_await_agent`, otherwise `tool:<name>` with a short detail) and `thinking` after it. On the main loop, attaches held notices to the tool result as context. Answers `AskUserQuestion` from the phone in away mode (§8.2). Records the call (tool, agent, arguments) until it returns, for that report. |
 | `turn.start` | Main loop: marks the session busy, records the turn id, posts `thinking`. |
 | `turn.complete` | Main loop: posts `clear`, reads the transcript for a title until one is found (§10.3), and after a turn that ended with an answer runs the turn-end check (§8.2). |
 | `prompt.submit` | A prompt John types while notices are held carries them as context. |
@@ -274,17 +276,26 @@ Twelve added routes, plus the `/mcp` transport and a static mount, all wrapped o
 | `session.end` | POSTs `/session_end` (`session_id`, `reason`) inside Claude Code's 1.5 s exit bound, so the member goes dormant (§2.2). |
 | `session.measure` | Posts the context (`tokens`, `window`) when it moved, and the rate limits when a model request has run since they last went, to `/sessions/{sid}/telemetry` (§10.5). |
 | `turn.step` | Marks the rate limits fresh for the next measurement; on the main thread, posts `model` and `effort` when they change (§10.4). |
+| `telemetry.log` (collector, `tool_decision`) | A decision a person made at the terminal (`source` `user_*`) on a call in flight is posted to `/sessions/{sid}/approvals/settled` (§6.1). |
 | `command.run` (`rename`) | Re-reads the transcript once `/rename` has run and posts the new title (§10.3). |
 
 **Inbox poll.** Every interactive session, and every desktop-app session once the app attaches as a surface, polls `GET /sessions/{sid}/inbox` every 2 s, backing off to 30 s while the server fails. It is the only route that pops a Claude Code session's notices (§5). Each answer carries the session's queued notices, a pending stop, the global away flag and whether the session holds a live blocking ask. Idle, held notices are submitted as the session's next prompt, which starts a turn with nobody at the terminal; busy, they ride the next main-loop tool result, a typed prompt or the turn-end prompt; at the desk a draft in the prompt box defers delivery. A stop (`POST /sessions/{sid}/stop`) cancels the running turn; one that finds the session idle is dropped. Each poll is also the session's liveness heartbeat (§10.6). Headless `claude -p` runs do not poll.
 
 **Bounded and fail-open.** `$.http.fetch` has no timeout, so every server call races a 1.5 s timer (`FETCH_TIMEOUT_MS`). Status and telemetry posts are fire-and-forget, and a down server never breaks a session. A 401 (a WSL session with a missing or wrong `SWITCHBOARD_TOKEN`) is written to the transcript once per session. A mod that fails to load shows as every switchboard tool call failing with `cli_session_id required` (§3).
 
-**What the engine rules out.** The work org's security plugin (`cc-plugin-sec-default`) bypasses a user mod's `classic.*` and `tool.check` hooks, so the mod uses neither. The turn-end check runs after `turn.complete` instead of blocking a Stop (§8.2). Session start comes from `session.start`, which carries no `source`; `/clear` raises no `session.start`, so a cleared id is registered by its first inbox poll (source `poll`, with an empty `cwd` until its first status post). The switchboard tools are not pre-approved; John's sessions run in `bypassPermissions`. `$.fs.read` refuses a file over 4 MiB, which ends a session's title search (§10.3).
+**What the engine rules out.** The work org's security plugin (`cc-plugin-sec-default`) bypasses a user mod's `classic.*` hooks and logs a user mod's `tool.check` verdict as bypassed (`tool.check` hooks ran on 2.1.296, but the mod does not use them), so the mod uses neither; it does run a plugin's command hooks (§6.1). The turn-end check runs after `turn.complete` instead of blocking a Stop (§8.2). Session start comes from `session.start`, which carries no `source`; `/clear` raises no `session.start`, so a cleared id is registered by its first inbox poll (source `poll`, with an empty `cwd` until its first status post). The switchboard tools are not pre-approved; John's sessions run in `bypassPermissions`. `$.fs.read` refuses a file over 4 MiB, which ends a session's title search (§10.3).
 
 **Sessions load the mod from the working tree.** The plugin's marketplace is a `directory` source at this repo, so each new session reads `plugin/hooks/hooks.json` and the mod straight from disk, committed or not, and a version bump gates nothing; a running session keeps the module it loaded. WSL is a separate install, a clone at `~/work/switchboard`, which picks up a change only after a `git pull --ff-only` there.
 
 The plugin lives in `plugin/`, the marketplace's `./plugin` source, with no `version` in its manifest, so each commit is a new version. Terminal sessions read it live from the working tree; the Claude for Windows desktop app passes Claude Code the copy under `installed_plugins.json`'s `installPath`, refreshed by `scripts/deploy-mod.ps1` (`claude plugin update`, then a byte comparison with `plugin/`).
+
+### 6.1 Approval prompts
+
+A permission dialog (Claude Code's "Do you want to proceed?") runs the plugin's `PermissionRequest` command hook, `plugin/scripts/permission-request.sh`, with `timeout: 86400`. The script POSTs the hook input to `/approvals` and holds the connection; it prints a 200's body as the hook's decision, prints nothing on any other answer, and always exits 0. On 503 or no connection it resends, and its 10-minute give-up window counts from the start of a failure streak rather than from the hook's start, so a 503 that ends a request the server held for at least 30 s (the service restarted) starts a fresh window.
+
+The server (`server/approvals.py`) opens an approval per held hook and marks the session's record `awaiting_approval` (with `approval_since`), which the phone and Operator show as "needs approval" and `/stats` reports as `needs_you` reason `approval`. In away mode the approval gets a question card in the session's conversation (titled `Approve <tool>?`, suggestions Allow and Deny, a `pending_questions` record flagged `approval: true`; a Write or Edit card also carries the file path as a Markdown code span, `Path: ...`, in its body, while the first line stays plain for the push notification). Cards follow away mode: posted when it turns on, withdrawn when it turns off, each post with a fresh card id. A reply of allow, yes, y, approve, approved, ok or okay allows; deny, no or n denies with "John denied this from his phone."; anything else denies with John's words as the reason the model reads. A deny never interrupts the turn.
+
+The dialog draws at once and races the hook, so the first answer wins. A terminal selection does not stop the hook, so the mod reports it (§6) and the server releases the hook with 204, logging `approval_settled_at_terminal` (`exact=True` for an input-digest match, `exact=False` for the fallback match) before `approval_closed`. An approval also closes on the hook's disconnect (Esc, its timeout, the session exiting), on the session's end, and on a main-loop turn end (a backstop for a lost report). A service stop answers 503 (whenever the stop flag is up, even when uvicorn's shutdown has already dropped the connection) and leaves the card for hydration, which cancels every `approval: true` record at startup; the script's resend opens a fresh approval and card. AskUserQuestion and ExitPlanMode dialogs are answered 204 at once.
 
 ---
 
@@ -468,6 +479,7 @@ conversations/<conversation_id>/
     suggestions                 (list[str] | null)
     cliSessionId                (str | null)   # with askedAt, decides at hydration whether a survivor parks or is cancelled (§11)
     askedAt                     (iso-8601 str | null)
+    approval                    (bool, optional; true on an approval card's record, which hydration cancels at startup, §6.1)
 
   agent_status/<sender>/        # per-member; written only while away mode is on
     state                       "thinking" | "waiting" | "tool:<name>" | "clear"   # "clear" deletes the node rather than writing it (§10.1)
@@ -611,6 +623,8 @@ sessions/<cli_session_id>/      # the SessionRegistry roster; source for Android
   last_transition_source
   in_tool
   pending_notices
+  awaiting_approval            (bool) # a permission dialog is held on the server (§6.1); never hydrated
+  approval_since               (iso-8601 str | null) # when the oldest open approval began; never hydrated
 
 session_acks/<cli_session_id>   (iso-8601 — deleted alongside the session record on prune)
 ```
@@ -842,7 +856,7 @@ Every variable below is read by `server/config.py` unless noted otherwise.
 | `SWITCHBOARD_WSL_SPAWN_ROOT_SEGMENT` | No | `work` | Segment appended to resolved WSL home for WSL project paths. |
 | `SWITCHBOARD_RATE_LIMIT` | No | `30` | Per-conversation rate limit for `ask_human` + `notify_human` + `send_document_human` + `message_and_await_agent` + `post_agent_message` (tokens/min; the last two degrade to FCM suppression instead of rejecting). |
 | `SWITCHBOARD_TOKEN` | For non-loopback | — | Shared-secret for the Bearer gate; required when `SWITCHBOARD_HOST` is non-loopback (server refuses to start without it). Loopback callers and `/healthz` are exempt. |
-| `SWITCHBOARD_ROUTE_RATE_LIMIT` | No | `600` | Coarse per-route rate limit for `/session_start`, `/session_end`, `/agent_status`, `/sessions/{sid}/stop` and `/sessions/{sid}/telemetry` (tokens/min per route; `0` disables). |
+| `SWITCHBOARD_ROUTE_RATE_LIMIT` | No | `600` | Coarse per-route rate limit for `/session_start`, `/session_end`, `/agent_status`, `/sessions/{sid}/stop`, `/sessions/{sid}/telemetry`, `/approvals` and `/sessions/{sid}/approvals/settled` (tokens/min per route; `0` disables). |
 | `SWITCHBOARD_SESSION_LOST_AFTER_SECONDS` | No | `900` | Silence threshold for sessions that have never polled (`claude -p` runs, and records hydrated after a restart until they poll): after this long with no hook or MCP activity the sweep marks the session lost (§10.6). |
 | `SWITCHBOARD_SESSION_POLL_LOST_AFTER_SECONDS` | No | `90` | Poll threshold: a session that has polled its inbox since the server started is marked lost after this long without a poll (§10.6). Keep it above the mod's 30 s poll backoff cap. |
 | `SWITCHBOARD_SESSION_RETENTION_HOURS` | No | `72` | How long a terminal (ended/lost) session record, and a parked pending question (§7), survive before the sweeper prunes them. |
