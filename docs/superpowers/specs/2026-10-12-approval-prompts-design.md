@@ -35,7 +35,7 @@ It matters once sessions run in `default` or `auto` mode; `bypassPermissions` ne
 
 ## Decisions (settled with John, 2026-10-12)
 
-1. **Design for `default` and `auto` modes.** `auto` is probed at planning: whether the hook fires before the classifier or only when the classifier hands a call to the dialog. Either way the design holds, since it keys on the hook, which fires only when a dialog opens.
+1. **Design for `default` and `auto` modes.** `auto` is probed at planning: whether the hook fires before the classifier or only when the classifier hands a call to the dialog. Either way the design holds, since it keys on the hook, which fires only when a dialog opens. Probed at planning (2026-10-12): in `auto` mode the classifier settled a `rm -rf` outside the workspace in about 1.2 s (`permissionDecisionMs` 1159), no `PermissionRequest` ran, and the decision reported `source: config`; so in `auto` mode the hook fires only for a call the classifier hands to a dialog.
 2. **The hook always holds.** Every dialog's hook waits on the server, at the desk too. The card shows only in away mode, and follows away mode as it turns on and off. Rejected: holding only in away mode, which strands a dialog already open when John walks away.
 3. **The card rides the existing question machinery,** as a question message with Allow and Deny suggestions and a `pending_questions` record, in the session's conversation. So the phone, Operator, push and the answer path need no new UI. Refined while grounding (see Rejected alternatives): the server keeps approvals in their own small registry rather than as a third slot in `Registry`, and `dispatch_responses` gains one branch for them.
 4. **No "always allow" from the phone.** Allow and Deny only; the hook never returns `updatedPermissions`.
@@ -216,7 +216,7 @@ The mod does not call `$.tool.check`; the hook's arrival is the exact signal.
   - **The `/approvals` route through Starlette's test client:** 200 with the decision; 204 on release; 204 at once for AskUserQuestion and ExitPlanMode; 503 when stopping; a disconnect closes the approval.
   - **Other paths:** the `dispatch_responses` branch (with a replay); hydration cancelling `approval: true` records; card rendering per tool; the reply mapping; `needs_you` and the session record fields.
 - **The hook script (pytest driving `bash`** against a small local HTTP server): 200 prints the body; 204 and 401 print nothing; it retries through 503 and a refused connection; it exits 0 in every case.
-- **The mod (`claude plugin test`):** the in-flight map; a `user_*` `tool_decision` posts the settled report and a `hook` or `config` one does not. Whether the test kit can raise `telemetry.log` is checked at planning.
+- **The mod (`claude plugin test`):** the in-flight map; a `user_*` `tool_decision` posts the settled report and a `hook` or `config` one does not. The kit raises the record with `$.telemetry.log({ to: 'collector', event: 'tool_decision', attributes, loggedAt })`, which reaches the mod's matcher (verified at planning with a throwaway mod).
 - **Android:** `SessionBoardPolicy` unit tests for the restored attention and chip.
 - **Operator:** `derive.test.js` likewise.
 - **Live checks:** the ConPTY driver from the probe, against the deployed service.
