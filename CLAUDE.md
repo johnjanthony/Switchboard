@@ -300,13 +300,14 @@ The moment the operator says they are stepping away (or any similar phrasing), s
 
 - Server uses stateful HTTP (`stateless_http=False`). This is what makes per-tool-call `notifications/cancelled` propagate from the CLI to the in-flight responder so a cancel from the terminal correctly marks the question `cancelled: true`.
 - Cost: a server restart momentarily interrupts every active MCP session. Claude Code re-establishes its session on its own after the restart (observed 2026-07-24); if a session does not recover, `/exit` + relaunch restores the tools. Away mode is NOT affected by a restart - it persists across restarts (T-029) and is toggled only from the phone/dashboard (or the `set_away_mode` tool), so a pre-restart agent resumes with away mode intact and keeps routing through the switchboard tools.
-## Recovery when the turn-end hook blocks and MCP tools are unavailable
 
-If the Switchboard MCP tools disconnect from your session while the away-mode flag is active, the turn-end hook will block every response with no way to call `set_away_mode(false)` or `notify_human`. Symptom: every turn ends with "Stop hook feedback: You are in away mode..." and `mcp__switchboard__*` tools are gone. Recovery, in order of preference:
+## Recovery when away mode is on and the MCP tools are unavailable
 
-1. **Toggle via the Android global pill chip (Page A top-bar)** — long-press -> Exit. Writes `global_settings/away_mode = false` to Firebase; the hook reads the server state and stops blocking.
-2. **Restart the service** (`.\scripts\restart-service.ps1 -SkipTests`) — Claude Code reconnects its MCP tools afterward, so use this if the tools are genuinely wedged. Note: a restart no longer turns away mode off (it persists across restarts, T-029), so it is NOT a way to exit away mode — use the phone toggle (option 1) for that.
-3. **Inspect `/healthz`** — reports per-listener state (`live` / `reconnecting` / `starting` / `stopped`), per-loop crash counts, and pending-question state. A `reconnecting` listener means the supervisor detected its SDK thread died and is rebuilding with exponential backoff — wait ~5 s and retry.
+If the Switchboard MCP tools disconnect from a session while the away-mode flag is on, the agent cannot hand its turn back with `ask_human`. Symptom: each turn end is followed by a "Prompt from the switchboard plugin" carrying the away-mode redirect, and `mcp__switchboard__*` tools are gone. The redirect is capped: after two unanswered redirects the session goes idle on its own (its cap notice to the phone needs MCP too, so it may not arrive; the mod logs the failure to the debug log). Esc during a turn also stops it. To get the tools back, or out of away mode, in order of preference:
+
+1. **Turn away mode off from the phone or Operator.** On the phone, long-press the global pill chip in the conversation list's top bar and choose Exit; in Operator, use its away-mode control. Either writes `global_settings/away_mode = false`, and the next turn end gets no redirect.
+2. **Restart the service** (`.\scripts\restart-service.ps1 -SkipTests`) if the tools are genuinely wedged; Claude Code re-establishes its MCP session afterwards, and if a session does not recover, `/exit` and relaunch restores the tools. A restart does not turn away mode off (it persists across restarts), so it is not a way out of away mode.
+3. **Inspect `/healthz`.** It reports per-listener state (`live` / `reconnecting` / `starting` / `stopped`), per-loop crash counts, and pending-question state. A `reconnecting` listener means the supervisor detected its SDK thread died and is rebuilding with exponential backoff; wait about 5 s and retry.
 
 ## Spawn flow
 
