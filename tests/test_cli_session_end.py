@@ -253,3 +253,26 @@ def test_session_end_leaves_other_sessions_pendings_alone():
 		await handle_session_end(registry, sid, "clear", now=lambda: "2026-07-08T00:00:00+00:00", backend=backend)
 		assert registry.find_by_request_id(conv_id, "req-other") is not None
 	asyncio.run(run())
+
+
+class _AsyncLogger:
+	def __init__(self):
+		self.infos = []
+		self.errors = []
+
+	async def info(self, msg):
+		self.infos.append(msg)
+
+	async def surface_error(self, msg):
+		self.errors.append(msg)
+
+
+@pytest.mark.asyncio
+async def test_unbound_session_end_logs_no_binding_on_the_info_channel():
+	registry = Registry()
+	logger = _AsyncLogger()
+	await handle_session_end(registry, "sess-X", "logout", _fixed_now, logger=logger)
+	assert logger.infos == [
+		"session_end_no_binding: session sess-X not bound to any conversation (reason=logout)"
+	]
+	assert logger.errors == []

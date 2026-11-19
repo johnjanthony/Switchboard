@@ -126,6 +126,7 @@ class Registry:
 		self._pending_mirror = None
 		self._session_to_conversation_id: dict[str, str] = {}
 		self._session_home_conversation_id: dict[str, str] = {}
+		self.lost_dormant: set[str] = set()
 		self.conversations: dict[str, "Conversation"] = {}
 		self._session_create_locks: dict[str, asyncio.Lock] = {}
 		# Bounded memory of recently terminally-handled (conversation_id,
