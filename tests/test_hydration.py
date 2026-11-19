@@ -790,3 +790,106 @@ async def test_hydration_filters_messages_to_live_types():
 
 	conv = registry.conversations["conv-x"]
 	assert [m["type"] for m in conv.messages] == ["system", "agent_msg", "parting"]
+
+
+class _RecordingBackend:
+	def __init__(self):
+		self.members, self.messages = [], []
+
+	async def write_conversation_member(self, conv_id, member):
+		self.members.append((conv_id, member.cli_session_id))
+
+	async def write_conversation_message(self, conv_id, message):
+		self.messages.append((conv_id, message))
+
+
+def _repair_snapshot(sessions_node):
+	return {
+		"conversations": {"conv-r": conv_snapshot("conv-r", members={"Claude": member_data(cli_session_id="sess-r")})},
+		"sessions": sessions_node,
+	}
+
+
+_LOST_NODE = {"sess-r": {"cli_session_id": "sess-r", "state": "lost", "last_event_at": "t1"}}
+
+
+async def _hydrate_for_repair(mock_db, session_registry, backend):
+	registry, logger = Registry(), make_logger()
+	with patch("server.hydration.db", mock_db):
+		from server.hydration import hydrate_from_firebase
+		await hydrate_from_firebase(registry, backend, logger, session_registry=session_registry)
+	return registry, logger
+
+
+@pytest.mark.asyncio
+async def test_hydration_repairs_an_alive_member_whose_session_is_gone():
+	backend = _RecordingBackend()
+	registry, logger = await _hydrate_for_repair(
+		make_firebase_db_mock(_repair_snapshot(_LOST_NODE)), SessionRegistry(), backend,
+	)
+	member = registry.conversations["conv-r"].members_active["sess-r"]
+	assert member.alive is False and member.session_end_reason == "lost"
+	assert "sess-r" not in registry.session_to_conversation_id
+	assert backend.members == [("conv-r", "sess-r")]
+	assert backend.messages == []
+	assert "sess-r" in registry.lost_dormant
+	assert member.session_ended_at == "t1"
+	logger.info.assert_any_await("member_dormant_lost: session=sess-r conversation=conv-r sender=Claude via=hydration")
+	logger.info.assert_any_await("hydration_members_repaired: 1")
+
+
+def _make_db_raising_on(snapshot, raising_path):
+	def reference(path):
+		ref = MagicMock()
+		if path == raising_path:
+			ref.get.side_effect = RuntimeError("boom")
+		else:
+			ref.get.return_value = snapshot.get(path)
+		return ref
+	mock_db = MagicMock()
+	mock_db.reference = reference
+	return mock_db
+
+
+async def _assert_repair_skipped(mock_db, session_registry):
+	backend = _RecordingBackend()
+	registry, logger = await _hydrate_for_repair(mock_db, session_registry, backend)
+	member = registry.conversations["conv-r"].members_active["sess-r"]
+	assert member.alive is True
+	assert registry.session_to_conversation_id["sess-r"] == "conv-r"
+	assert backend.members == [] and backend.messages == []
+	return logger
+
+
+@pytest.mark.asyncio
+async def test_hydration_skips_the_repair_when_the_roster_read_fails():
+	mock_db = _make_db_raising_on(_repair_snapshot(_LOST_NODE), "sessions")
+	logger = await _assert_repair_skipped(mock_db, SessionRegistry())
+	logger.surface_error.assert_any_await("hydration_member_repair_skipped: roster not hydrated")
+
+
+@pytest.mark.asyncio
+async def test_hydration_skips_the_repair_when_the_roster_is_empty():
+	for node in (None, {}):
+		mock_db = make_firebase_db_mock(_repair_snapshot(node))
+		logger = await _assert_repair_skipped(mock_db, SessionRegistry())
+		logger.surface_error.assert_any_await("hydration_member_repair_skipped: roster not hydrated")
+
+
+@pytest.mark.asyncio
+async def test_hydration_skips_the_repair_without_a_session_registry():
+	await _assert_repair_skipped(make_firebase_db_mock(_repair_snapshot(_LOST_NODE)), None)
+
+
+@pytest.mark.asyncio
+async def test_hydration_rebuilds_the_lost_set_even_when_the_repair_is_skipped():
+	snapshot = {
+		"conversations": {"conv-r": conv_snapshot("conv-r", members={"Claude": member_data(
+			cli_session_id="sess-r", alive=False, session_end_reason="lost",
+		)})},
+	}
+	registry, logger = await _hydrate_for_repair(
+		_make_db_raising_on(snapshot, "sessions"), SessionRegistry(), _RecordingBackend(),
+	)
+	logger.surface_error.assert_any_await("hydration_member_repair_skipped: roster not hydrated")
+	assert "sess-r" in registry.lost_dormant

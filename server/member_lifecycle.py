@@ -256,3 +256,39 @@ async def close_revive_window(registry, backend, logger, session_id: str) -> boo
 					label=f"fb_write_member_restarted:{conv.id}:{member.sender}",
 				)
 	return True
+
+
+def rebuild_lost_dormant(registry) -> None:
+	"""Add every member of an active conversation stored dormant as lost to registry.lost_dormant."""
+	for conv in registry.conversations.values():
+		if conv.state != "active":
+			continue
+		for member in conv.members_active.values():
+			if member.cli_session_id and member.alive is False and member.session_end_reason == LOST_REASON:
+				registry.lost_dormant.add(member.cli_session_id)
+
+
+def repair_members(registry, session_registry) -> list[tuple[str, ConversationMember]]:
+	"""Make dormant (lost) every alive member of an active conversation whose session the roster has as lost, ended or missing.
+
+	Also rebuilds registry.lost_dormant. Returns the (conversation_id, member) pairs it changed.
+	Synchronous and free of I/O.
+	"""
+	from server.session_registry import TERMINAL_STATES
+	changed = []
+	for conv_id, conv in registry.conversations.items():
+		if conv.state != "active":
+			continue
+		for member in conv.members_active.values():
+			if not member.cli_session_id or not member.alive:
+				continue
+			rec = session_registry.get(member.cli_session_id)
+			if rec is not None and rec.state not in TERMINAL_STATES:
+				continue
+			member.alive = False
+			member.session_end_reason = LOST_REASON
+			if rec is not None:
+				member.session_ended_at = rec.last_event_at or member.session_ended_at
+			changed.append((conv_id, member))
+	rebuild_lost_dormant(registry)
+	return changed

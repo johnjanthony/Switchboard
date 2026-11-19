@@ -175,6 +175,7 @@ async def hydrate_from_firebase(registry: Registry, backend, logger, session_reg
 
 	# 2c. Session roster. Terminal records hydrate too: the sweeper can only
 	# retention-prune RTDB entries it holds in memory.
+	roster_hydrated = False
 	if session_registry is not None:
 		try:
 			sessions_node = await _read_path("sessions")
@@ -182,6 +183,7 @@ async def hydrate_from_firebase(registry: Registry, backend, logger, session_reg
 				for _sid, data in sessions_node.items():
 					if isinstance(data, dict):
 						session_registry.hydrate_record(data)
+				roster_hydrated = bool(sessions_node)
 		except Exception as exc:
 			await logger.surface_error(f"hydration_sessions_failed: {exc}")
 
@@ -239,6 +241,29 @@ async def hydrate_from_firebase(registry: Registry, backend, logger, session_reg
 				f"hydration_duplicate_member_demoted: session {dup_session_id} alive in "
 				f"{conv_id} and {winner_conv_id}; kept {winner_conv_id}"
 			)
+
+	# 3c. Repair members whose session the roster no longer has alive. Only
+	# with a roster that actually loaded: an empty read would otherwise make
+	# every alive member dormant.
+	from server.member_lifecycle import rebuild_lost_dormant, repair_members
+	rebuild_lost_dormant(registry)
+	if session_registry is None:
+		pass
+	elif not roster_hydrated:
+		await logger.surface_error("hydration_member_repair_skipped: roster not hydrated")
+	else:
+		repaired = repair_members(registry, session_registry)
+		for conv_id, member in repaired:
+			if backend is not None:
+				try:
+					await backend.write_conversation_member(conv_id, member)
+				except Exception as exc:
+					await logger.surface_error(f"hydration_member_repair_write_failed: {exc}")
+			await logger.info(
+				f"member_dormant_lost: session={member.cli_session_id} conversation={conv_id} "
+				f"sender={member.sender} via=hydration"
+			)
+		await logger.info(f"hydration_members_repaired: {len(repaired)}")
 
 	# 4. Derive session_to_conversation_id from alive members in hydrated
 	# Active conversations ONLY. Dormant members stay unbound: the

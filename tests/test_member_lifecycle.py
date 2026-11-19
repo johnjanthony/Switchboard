@@ -315,3 +315,40 @@ async def test_a_new_life_rewrites_the_reason_and_stops_any_revive():
 	assert backend.member_writes == [(conv_id, member)]
 	assert await revive_member(registry, sessions, backend, _Log(), sid, trigger="tool_call") is False
 	assert sid not in registry.session_to_conversation_id
+
+
+from server.member_lifecycle import repair_members
+
+
+def _alive_member_with_record(state):
+	registry, backend, conv_id, sid = _setup_conv_with_member()
+	registry.unbind_session(sid)
+	sessions = SessionRegistry(now=lambda: "2026-11-01T00:00:00+00:00")
+	if state is not None:
+		sessions.hydrate_record({"cli_session_id": sid, "state": state, "last_event_at": "2026-10-13T08:00:00+00:00"})
+	return registry, conv_id, sid, sessions
+
+
+def test_repair_makes_a_member_with_a_terminal_or_missing_record_dormant():
+	for state in ("lost", "ended", None):
+		registry, conv_id, sid, sessions = _alive_member_with_record(state)
+		changed = repair_members(registry, sessions)
+		member = registry.conversations[conv_id].members_active[sid]
+		assert changed == [(conv_id, member)]
+		assert member.alive is False and member.session_end_reason == "lost"
+		assert member.session_ended_at == ("2026-10-13T08:00:00+00:00" if state else None)
+		assert sid in registry.lost_dormant
+
+
+def test_repair_leaves_a_member_with_a_live_record_alone():
+	registry, conv_id, sid, sessions = _alive_member_with_record("idle")
+	assert repair_members(registry, sessions) == []
+	assert registry.conversations[conv_id].members_active[sid].alive is True
+
+
+def test_repair_rebuilds_the_set_from_a_stored_lost_member_without_reporting_it():
+	registry, conv_id, sid, sessions = _alive_member_with_record("lost")
+	member = registry.conversations[conv_id].members_active[sid]
+	member.alive, member.session_end_reason = False, "lost"
+	assert repair_members(registry, sessions) == []
+	assert sid in registry.lost_dormant
