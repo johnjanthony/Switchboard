@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -446,6 +447,10 @@ async def test_handle_resume_ends_source_when_all_resumed(tmp_path):
 
 	assert source.state == "ended"
 	assert source.ended_at is not None
+	for _ in range(5):
+		await asyncio.sleep(0)
+	backend.set_conversation_state.assert_awaited_once_with("conv-src", "ended", ended_at=source.ended_at)
+	assert source.ended_at == pytest.approx(time.time(), abs=1)
 
 
 @pytest.mark.asyncio

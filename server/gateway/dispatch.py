@@ -184,7 +184,7 @@ async def handle_force_end(registry, conversation_id: str, backend=None, logger=
 					label=f"fb_remove_member:{conversation_id}:{sender}",
 				)
 			_spawn_bg(
-				backend.set_conversation_state(conversation_id, "ended"),
+				backend.set_conversation_state(conversation_id, "ended", ended_at=conv.ended_at),
 				label=f"fb_set_state:{conversation_id}:ended",
 			)
 			_spawn_bg(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -172,6 +173,11 @@ async def test_dispatch_force_end_command_invokes_handle_force_end(logger):
 	assert conv.ended_at is not None
 	supervisor.record_success.assert_called_once()
 	supervisor.record_crash.assert_not_awaited()
+	for _ in range(5):
+		await asyncio.sleep(0)
+	backend.set_conversation_state.assert_awaited_once_with("conv-xyz", "ended", ended_at=conv.ended_at)
+	assert isinstance(conv.ended_at, float)
+	assert conv.ended_at == pytest.approx(time.time(), abs=1)
 
 
 @pytest.mark.asyncio

@@ -111,7 +111,9 @@ async def test_leave_conversation_removes_member_and_writes_state(tmp_path):
 	assert call_args[2] == "parting"  # type
 	assert call_args[3] == "goodbye!"  # text
 	# Conversation ended (sole member left)
-	backend.set_conversation_state.assert_awaited_once_with(conv.id, "ended")
+	backend.set_conversation_state.assert_awaited_once_with(conv.id, "ended", ended_at=conv.ended_at)
+	assert isinstance(conv.ended_at, float)
+	assert conv.ended_at == pytest.approx(time.time(), abs=1)
 	backend.set_conversation_last_activity.assert_awaited()
 
 
@@ -151,7 +153,10 @@ async def test_combine_writes_both_target_member_and_source_state(tmp_path):
 	assert args.args[0] == "conv-src" and args.args[1] == "conv-tgt"
 	assert args.args[3] == "Agent"          # old_sender
 	assert args.kwargs == {"end_source": False}
-	backend.set_conversation_state.assert_awaited_once_with("conv-src", "ended")
+	source = registry.conversations["conv-src"]
+	backend.set_conversation_state.assert_awaited_once_with("conv-src", "ended", ended_at=source.ended_at)
+	assert isinstance(source.ended_at, float)
+	assert source.ended_at == pytest.approx(time.time(), abs=1)
 	backend.set_conversation_last_activity.assert_awaited_once_with("conv-tgt", pytest.approx(time.time(), abs=5))
 
 
@@ -390,3 +395,30 @@ async def test_handle_force_end_without_backend_still_ends_conversation():
 	# Call without backend — must not raise
 	await handle_force_end(registry, "conv-1")
 	assert conv.state == "ended"
+
+
+@pytest.mark.asyncio
+async def test_migrating_the_last_member_persists_ended_at_with_the_move():
+	from server.conversation_ops import _migrate_member
+	from server.registry import Conversation, ConversationMember, Registry
+
+	backend = _make_store_backend()
+	registry = Registry()
+	for cid in ("conv-src", "conv-tgt"):
+		registry.conversations[cid] = Conversation(id=cid, title=cid)
+	m = ConversationMember(
+		cli_session_id="s-1", sender="Agent", cwd="C:/Work/X", surface="windows", joined_at=time.time(),
+	)
+	registry.conversations["conv-src"].members_active["s-1"] = m
+	registry.bind_session("s-1", "conv-src")
+
+	await _migrate_member(registry, "conv-src", "conv-tgt", "s-1", "Agent", "C:/Work/X", backend=backend)
+	await _drain_bg()
+
+	source = registry.conversations["conv-src"]
+	assert source.state == "ended"
+	kwargs = backend.move_conversation_member.await_args.kwargs
+	assert kwargs["end_source"] is True
+	assert isinstance(kwargs["ended_at"], float)
+	assert kwargs["ended_at"] == pytest.approx(time.time(), abs=1)
+	assert kwargs["ended_at"] == source.ended_at

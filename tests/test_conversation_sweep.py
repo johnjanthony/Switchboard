@@ -158,3 +158,14 @@ async def test_admin_prune_empty_is_noop():
 	pruned = await _prune_admin_notifications_once(backend, make_logger(), retention_hours=168, now_ts=1_000_000.0)
 	assert pruned == []
 	assert backend.admin_deleted == []
+
+
+@pytest.mark.asyncio
+async def test_retention_counts_from_the_end_not_from_the_last_activity():
+	now = time.time()
+	backend = _SweepBackend({
+		"conv-idle-ended-now": {"state": "ended", "ended_at": now - 3600, "last_activity_at": now - 20 * 86400},
+		"conv-ended-long-ago": {"state": "ended", "ended_at": now - 73 * 3600, "last_activity_at": now - 73 * 3600},
+	})
+	deleted = await _conversation_sweep_once(Registry(), backend, make_logger(), retention_hours=72)
+	assert deleted == ["conv-ended-long-ago"]

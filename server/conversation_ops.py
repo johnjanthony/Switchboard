@@ -433,7 +433,7 @@ async def _migrate_member(
 		source_ended = True
 	if backend is not None:
 		_spawn_bg(
-			backend.move_conversation_member(source_id, target_id, caller_member, old_sender, end_source=source_ended),
+			backend.move_conversation_member(source_id, target_id, caller_member, old_sender, end_source=source_ended, ended_at=source.ended_at if source_ended else None),
 			label=f"fb_move_member:{source_id}->{target_id}:{actual_sender}",
 		)
 
@@ -697,7 +697,7 @@ async def _perform_combine(
 				label=f"fb_write_combine_msg_source:{source_id}",
 			)
 			_spawn_bg(
-				backend.set_conversation_state(source_id, "ended"),
+				backend.set_conversation_state(source_id, "ended", ended_at=source.ended_at),
 				label=f"fb_set_state:{source_id}:ended",
 			)
 			_spawn_bg(

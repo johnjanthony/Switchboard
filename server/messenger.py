@@ -233,7 +233,7 @@ class ConversationStore:
 		"""Remove a member entry under /conversations/<id>/members_active/<sender>."""
 		pass
 
-	async def move_conversation_member(self, source_id: str, target_id: str, member, old_sender: str, *, end_source: bool = False) -> None:
+	async def move_conversation_member(self, source_id: str, target_id: str, member, old_sender: str, *, end_source: bool = False, ended_at: float | None = None) -> None:
 		"""Atomically move a member: delete members_active/<old_sender> under
 		source, write the member under target, optionally end the source - one
 		multi-location update so a crash cannot mirror the member in both
@@ -275,7 +275,7 @@ class ConversationStore:
 			return ""
 		return conv_id, None
 
-	async def set_conversation_state(self, conv_id: str, state: str) -> None:
+	async def set_conversation_state(self, conv_id: str, state: str, *, ended_at: float | None = None) -> None:
 		"""Update a conversation's state (active/ended)."""
 		pass
 

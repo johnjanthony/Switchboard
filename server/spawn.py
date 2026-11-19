@@ -622,7 +622,7 @@ class SpawnHandler:
 			source_ended = True
 		if source_ended:
 			_sbg(
-				self._backend.set_conversation_state(source_id, "ended"),
+				self._backend.set_conversation_state(source_id, "ended", ended_at=source.ended_at),
 				label=f"fb_set_state:{source_id}:ended",
 			)
 

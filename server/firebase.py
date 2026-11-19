@@ -698,10 +698,15 @@ class FirebaseBackend(
 		ref = db.reference(f"conversations/{conv_id}/members_active/{member.sender}")
 		await asyncio.to_thread(ref.set, _member_payload(member))
 
-	async def set_conversation_state(self, conv_id: str, state: str) -> None:
+	async def set_conversation_state(self, conv_id: str, state: str, *, ended_at: float | None = None) -> None:
 		"""Update a conversation's state (active/ended) at /conversations/<id>/meta/state.
 		Hydration reads from meta.state — writing the top-level /state path was a bug
 		that let Ended conversations resurrect on restart."""
+		if ended_at is not None:
+			# One update so the state and the end time land together.
+			meta_ref = db.reference(f"conversations/{conv_id}/meta")
+			await asyncio.to_thread(meta_ref.update, {"state": state, "ended_at": ended_at})
+			return
 		ref = db.reference(f"conversations/{conv_id}/meta/state")
 		await asyncio.to_thread(ref.set, state)
 
@@ -745,7 +750,7 @@ class FirebaseBackend(
 		ref = db.reference(f"conversations/{conv_id}/members_active/{sender}")
 		await asyncio.to_thread(ref.delete)
 
-	async def move_conversation_member(self, source_id: str, target_id: str, member, old_sender: str, *, end_source: bool = False) -> None:
+	async def move_conversation_member(self, source_id: str, target_id: str, member, old_sender: str, *, end_source: bool = False, ended_at: float | None = None) -> None:
 		"""Move a member between conversations as ONE multi-location update
 		(REV-104): remove from source, add to target, optionally end the
 		source. Member nodes are keyed by the raw sender string (the same
@@ -758,6 +763,8 @@ class FirebaseBackend(
 		}
 		if end_source:
 			updates[f"conversations/{source_id}/meta/state"] = "ended"
+			if ended_at is not None:
+				updates[f"conversations/{source_id}/meta/ended_at"] = ended_at
 		ref = db.reference()
 		await asyncio.to_thread(ref.update, updates)
 

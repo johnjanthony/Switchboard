@@ -977,7 +977,7 @@ def build_tool_handlers(
 			)
 			if conv_ended:
 				_spawn_bg(
-					backend.set_conversation_state(conv_id, "ended"),
+					backend.set_conversation_state(conv_id, "ended", ended_at=conv.ended_at),
 					label=f"fb_set_state:{conv_id}:ended",
 				)
 
