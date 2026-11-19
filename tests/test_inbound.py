@@ -332,3 +332,65 @@ async def test_message_history_write_failure_raises(tmp_path):
 	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
 	with pytest.raises(RuntimeError, match="rtdb down"):
 		await deliver_human_message(registry, backend, MagicMock(), logger, "conv-1", "hi")
+
+
+def _lost_setup(reason, with_record=True):
+	from server.session_registry import SessionRegistry
+	registry = Registry()
+	conv = _conv(registry, members=[("sess-1", "Agent")])
+	member = conv.members_active["sess-1"]
+	member.alive = False
+	member.session_end_reason = reason
+	session_registry = SessionRegistry()
+	if with_record:
+		session_registry.touch_mcp("sess-1", cwd="c:/w", sender="Agent")
+	return registry, session_registry
+
+
+async def _deliver(registry, session_registry, tmp_path):
+	from server.logging_jsonl import JsonlLogger
+	logger = JsonlLogger(str(tmp_path / "log.jsonl"))
+	result = await deliver_human_message(registry, _backend(), session_registry, logger, "conv-1", "are you there")
+	await _pump()
+	return result
+
+
+@pytest.mark.asyncio
+async def test_a_lost_dormant_member_gets_the_message_as_a_notice(tmp_path):
+	from server.inbound import NOTICE_PREFIX
+	registry, session_registry = _lost_setup("lost")
+	result = await _deliver(registry, session_registry, tmp_path)
+	notices = session_registry.get("sess-1").pending_notices
+	assert len(notices) == 1
+	assert notices[0].startswith(NOTICE_PREFIX)
+	assert notices[0].endswith("are you there")
+	assert "sess-1" in result["noticed"]
+
+
+@pytest.mark.asyncio
+async def test_an_ordinarily_dormant_member_gets_no_notice(tmp_path):
+	registry, session_registry = _lost_setup("logout")
+	result = await _deliver(registry, session_registry, tmp_path)
+	assert session_registry.get("sess-1").pending_notices == []
+	assert "sess-1" not in result["noticed"]
+
+
+@pytest.mark.asyncio
+async def test_a_lost_dormant_member_with_no_roster_record_is_not_claimed(tmp_path):
+	registry, session_registry = _lost_setup("lost", with_record=False)
+	result = await _deliver(registry, session_registry, tmp_path)
+	assert result["delivered"] is True
+	assert "sess-1" not in result["noticed"]
+
+
+@pytest.mark.asyncio
+async def test_the_notice_survives_a_roster_round_trip(tmp_path):
+	from server.session_registry import SessionRegistry
+	registry, session_registry = _lost_setup("lost")
+	await _deliver(registry, session_registry, tmp_path)
+	payload = session_registry.get("sess-1").to_payload()
+	fresh = SessionRegistry()
+	fresh.hydrate_record(payload)
+	notices = fresh.pop_notices("sess-1")
+	assert len(notices) == 1
+	assert notices[0].endswith("are you there")

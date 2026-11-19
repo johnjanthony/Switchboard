@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from server.gateway.bg_tasks import _spawn_bg
 from server.gateway.pending_lifecycle import terminate_pending
+from server.member_lifecycle import LOST_REASON
 
 INTERJECT_PREFIX = "[John interjected - not a direct answer to your question] "
 NOTICE_PREFIX = "John (from phone): "
@@ -65,7 +66,7 @@ async def deliver_human_message(registry, backend, session_registry, logger, con
 					to_cancel.append(record.request_id)
 		woken = _wake_all_from(conv, exclude_session_ids=set(resolved))
 		for sid, member in list(conv.members_active.items()):
-			if not member.alive or sid in resolved or sid in woken:
+			if not (member.alive or member.session_end_reason == LOST_REASON) or sid in resolved or sid in woken:
 				continue
 			if session_registry is not None and session_registry.queue_notice(sid, NOTICE_PREFIX + text):
 				noticed.append(sid)
