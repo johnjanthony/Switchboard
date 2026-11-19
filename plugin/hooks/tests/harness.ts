@@ -19,6 +19,8 @@ export type World = {
 	hangFetch: boolean
 	rejectSubmit: boolean
 	checkDecision: 'allow' | 'ask' | 'deny'
+	// Set to 'deny' to refuse a call, as a No at its dialog does.
+	callDecision: 'allow' | 'deny'
 	// Set to make every tool call come back as an error result (a rejected dialog does).
 	toolError: string | null
 	// Set to make the mod's own $.mcp.call fail.
@@ -38,7 +40,8 @@ export type World = {
 	sessionIdReads: number
 	readGate: Promise<void> | null
 	toolGate: Promise<void> | null
-	telemetry: Array<Record<string, unknown>>
+	// What the mod's $.tool.check queries asked.
+	checks: Array<{ tool: string; input: unknown }>
 }
 
 export function world(on: On, env: Record<string, string> = {}): World {
@@ -54,6 +57,7 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		hangFetch: false,
 		rejectSubmit: false,
 		checkDecision: 'allow',
+		callDecision: 'allow',
 		toolError: null,
 		mcpError: null,
 		mcpReplies: [],
@@ -71,7 +75,7 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		sessionIdReads: 0,
 		readGate: null,
 		toolGate: null,
-		telemetry: [],
+		checks: [],
 	}
 	mock.env(on, env)
 	on('session.id', () => {
@@ -87,7 +91,6 @@ export function world(on: On, env: Record<string, string> = {}): World {
 	on('classic.Stop', () => ({}))
 	on('turn.start', (_$, e) => ({ turnId: e.turnId }))
 	on('turn.complete', (_$, e) => ({ text: e.answer }))
-	on('tool.check', () => ({ decision: w.checkDecision }))
 	on('tool.call', async (_$, e) => {
 		w.toolInputs.push({ ...e })
 		// A test holding a call open sets toolGate and resolves it to let the call finish.
@@ -95,9 +98,13 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		if (w.toolError !== null) return { result: w.toolError, isError: true as const }
 		return { result: 'ran' }
 	})
-	on('telemetry.log', (_$, e) => {
-		w.telemetry.push({ ...e })
-		return { value: undefined }
+	// The kit raises tool.check for each $.tool.call too, with the call's
+	// tool_use_id. checkDecision answers only the mod's own query (no
+	// tool_use_id), which predicts a dialog; callDecision answers the call itself.
+	on('tool.check', (_$, e) => {
+		if (e.tool_use_id !== undefined) return { decision: w.callDecision }
+		w.checks.push({ tool: e.tool, input: e.input })
+		return { decision: w.checkDecision }
 	})
 	on('prompt.read', () => ({ value: { text: w.draft, cursor: w.draft.length } }))
 	on('prompt.submit', (_$, e) => {
@@ -119,7 +126,8 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		return { value: { content: [{ type: 'text', text: w.mcpReplies.shift() ?? '' }], isError: false } }
 	})
 	on('http.fetch', (_$, e) => {
-		const body = e.init?.body === undefined ? null : (JSON.parse(e.init.body) as Record<string, unknown>)
+		// The mod sends only JSON text; a bytes body ({ base64 }) would be a bug.
+		const body = typeof e.init?.body === 'string' ? (JSON.parse(e.init.body) as Record<string, unknown>) : null
 		w.sent.push({ url: e.url, method: e.init?.method ?? 'GET', headers: e.init?.headers ?? {}, body })
 		if (w.fetchError !== null) return { deny: w.fetchError }
 		// A server that accepts the connection and never answers.

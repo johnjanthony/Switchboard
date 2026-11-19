@@ -4,7 +4,7 @@ import { atom, read, update } from 'claude-code'
 import type { AskQuestion } from './ask'
 import { backgroundedDeny, backgroundedTaskId, isTerminal, phoneQuestion, raceAbort, replyText } from './ask'
 import type { InFlight, SettledBody } from './approval'
-import { inFlightCall, settledReport } from './approval'
+import { inFlightCall, predictsDialog, REPORTED_TOOL, settledBody } from './approval'
 import type { InboxAnswer, StatusBody } from './client'
 import { DEFAULT_BASE_URL, FETCH_TIMEOUT_MS, parseInboxBody, requestHeaders } from './client'
 import type { ModFile } from './fingerprint'
@@ -340,12 +340,16 @@ async function withHeldContext($: EngineInterface, ran: ToolCallResult): Promise
 // A permission dialog runs the plugin's PermissionRequest command hook
 // (scripts/permission-request.sh), which the server holds until John answers on
 // the phone. The dialog also answers at the terminal, and Claude Code does not
-// stop the hook then, so a person's decision is reported here and the server
-// releases the hook.
+// stop the hook then, so the mod reports each decided call whose dialog the
+// engine's own check predicted, and the server releases the hook. The org's
+// security plugin skips a user mod's telemetry.log hook (2.1.328), so the
+// tool_decision record is out of reach: an allowed call is seen at tool.run,
+// which fires only once a call is allowed, and a refused one by its never
+// getting there.
 
-// Calls between tool.call and their result, by tool_use_id: what a
-// tool_decision record lacks. A module variable: a hot reload drops it, and the
-// server's turn-end backstop releases a main-loop approval it held, not a subagent's.
+// Calls between tool.call and their result, by tool_use_id. A module variable:
+// a hot reload drops it, and the server's turn-end backstop releases a
+// main-loop approval it held, not a subagent's.
 const inflight = new Map<string, InFlight>()
 
 // Fire-and-forget like the status posts: if this report is lost, the turn-end
@@ -354,6 +358,17 @@ function postSettled($: EngineInterface, sessionId: string, body: SettledBody): 
 	postJson($, `/sessions/${encodeURIComponent(sessionId)}/approvals/settled`, body).catch(error =>
 		$.ui.log(`switchboard: approval report failed: ${String(error)}`, { to: 'debug' }),
 	)
+}
+
+// Reports a decided call once its check has answered, if it predicted a dialog.
+// The check runs beside the call, so a call with no dialog is never slowed by it.
+// The post goes from a timer: a No at a dialog interrupts the turn, which aborts
+// every $ call the tool.call hook makes after it (2.1.328), the report included.
+function reportDecided($: EngineInterface, sessionId: string, toolUseId: string, call: InFlight): void {
+	const body = settledBody(toolUseId, call)
+	void call.asks.then(asks => {
+		if (asks) $.clock.after(0, () => postSettled($, sessionId, body))
+	})
 }
 
 // -- AskUserQuestion from the phone --------------------------------------------
@@ -511,11 +526,21 @@ export const register: Register = on => {
 		const answered = e.tool === 'AskUserQuestion' ? await answerIfAway($, e.questions, next.signal) : undefined
 		let ran = answered
 		if (ran === undefined) {
-			if (toolUseId !== undefined) inflight.set(toolUseId, inFlightCall(call as unknown as Readonly<Record<string, unknown>>))
+			let tracked: InFlight | undefined
+			if (toolUseId !== undefined && REPORTED_TOOL.test(tool)) {
+				const record = inFlightCall(call as unknown as Readonly<Record<string, unknown>>)
+				const asks = $.tool.check({ tool, input: record.input }).then(predictsDialog, () => false)
+				tracked = { ...record, asks, ran: false }
+				inflight.set(toolUseId, tracked)
+			}
 			try {
 				ran = await next(call)
 			} finally {
-				if (toolUseId !== undefined) inflight.delete(toolUseId)
+				if (toolUseId !== undefined && tracked !== undefined) {
+					inflight.delete(toolUseId)
+					// Allowed calls were reported at tool.run; this one never got there.
+					if (!tracked.ran) reportDecided($, sessionId, toolUseId, tracked)
+				}
 			}
 		}
 		if (askedJohn(tool, input as Record<string, unknown>, ran)) await update($, redirects, () => 0)
@@ -589,11 +614,16 @@ export const register: Register = on => {
 		return ran
 	})
 
-	// Observe only: every record passes through untouched.
-	on('telemetry.log', { to: 'collector', event: 'tool_decision' }, async ($, e, next) => {
-		if (e.to === 'collector') {
-			const body = settledReport(e.attributes, inflight)
-			if (body !== undefined) postSettled($, await $.session.id(), body)
+	// Fires only once a call is allowed, by whoever answered its dialog. The
+	// matcher leaves out the tools the server never holds. The engine's docs say a
+	// hook matching a tool turns off its move to the background, but on 2.1.328 a
+	// long MCP call still moved at 120 s under a tool.run hook matching every tool.
+	on('tool.run', { tool: REPORTED_TOOL }, async ($, e, next) => {
+		const toolUseId = e.tool_use_id
+		const tracked = toolUseId === undefined ? undefined : inflight.get(toolUseId)
+		if (toolUseId !== undefined && tracked !== undefined && !tracked.ran) {
+			tracked.ran = true
+			reportDecided($, await $.session.id(), toolUseId, tracked)
 		}
 		return next(e)
 	})
