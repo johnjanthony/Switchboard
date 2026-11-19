@@ -127,6 +127,12 @@ class SessionRegistry:
 		# heartbeat. Kept apart from SessionRecord, like stops, so a poll every
 		# 2 s never reaches Firebase.
 		self._polls: dict[str, float] = {}
+		# Latest sign of life by session and the time its conversation binding was
+		# made, both on the monotonic clock. Kept off SessionRecord, like polls and
+		# stops: they change on every hook and poll, so mirroring or hydrating them
+		# would flood Firebase, and a restart must start every session's clock fresh.
+		self._life: dict[str, float] = {}
+		self._bound_at: dict[str, float] = {}
 		self._repo_mod_fingerprint: str | None = None
 
 	# -- reads ------------------------------------------------------------
@@ -186,6 +192,7 @@ class SessionRegistry:
 		interactive: bool | None = None,
 	) -> SessionRecord:
 		from server.conversation_ops import _infer_surface
+		self._life[cli_session_id] = self._mono()
 		rec = self._ensure(cli_session_id, source="hook")
 		# A resumed id starts a new life that has not polled yet; its last
 		# life's stamp would mark it lost before its first poll.
@@ -210,6 +217,7 @@ class SessionRegistry:
 		cwd: str | None = None, event: str | None = None, in_tool: bool | None = None,
 		cli: str | None = None,
 	) -> SessionRecord:
+		self._life[cli_session_id] = self._mono()
 		rec = self._ensure(cli_session_id, source="hook")
 		if rec.state == "ended":
 			# REV-114: an explicit SessionEnd is authoritative. A straggler
@@ -240,6 +248,7 @@ class SessionRegistry:
 		return rec
 
 	def touch_mcp(self, cli_session_id: str, *, cwd: str, sender: str | None = None) -> SessionRecord:
+		self._life[cli_session_id] = self._mono()
 		rec = self._ensure(cli_session_id, source="mcp")
 		if cwd:
 			from server.conversation_ops import _infer_surface
@@ -292,6 +301,7 @@ class SessionRegistry:
 		report that created the record or changed a field is mirrored: the
 		rate limits go to the quota store, so a rate-limits-only report would
 		otherwise rewrite sessions/<sid> for last_event_at alone."""
+		self._life[cli_session_id] = self._mono()
 		existing = self._records.get(cli_session_id)
 		if existing is not None and existing.state == "ended":
 			return None
@@ -352,6 +362,10 @@ class SessionRegistry:
 	def set_binding(self, cli_session_id: str, conversation_id: str | None) -> None:
 		"""Reflect Registry.bind_session/unbind_session onto the record. Unknown
 		ids are ignored: binding is an attribute of a session, not a birth event."""
+		if conversation_id is None:
+			self._bound_at.pop(cli_session_id, None)
+		else:
+			self._bound_at[cli_session_id] = self._mono()
 		rec = self._records.get(cli_session_id)
 		if rec is None:
 			return
@@ -372,6 +386,8 @@ class SessionRegistry:
 		"""Mark the session's open permission dialog (since: when its oldest open
 		approval opened) or clear it (None). A dialog proves the session exists,
 		so an unknown id gets a record; an ended record is never marked."""
+		if since is not None:
+			self._life[cli_session_id] = self._mono()
 		rec = self._ensure(cli_session_id, source="hook")
 		if rec.state == "ended" and since is not None:
 			return
@@ -411,10 +427,23 @@ class SessionRegistry:
 		requested_at = self._stops.pop(cli_session_id, None)
 		return requested_at is not None and self._mono() - requested_at <= STOP_FRESH_SECONDS
 
+	def mono(self) -> float:
+		"""The registry's monotonic clock, for callers comparing against its stamps."""
+		return self._mono()
+
+	def last_life(self, cli_session_id: str) -> float | None:
+		"""Monotonic time of the session's latest sign of life, or None if none seen."""
+		return self._life.get(cli_session_id)
+
+	def bound_at(self, cli_session_id: str) -> float | None:
+		"""Monotonic time the session was last bound to a conversation, or None."""
+		return self._bound_at.get(cli_session_id)
+
 	def note_poll(self, cli_session_id: str) -> None:
 		"""Record an inbox poll. A poll from an unknown session creates its
 		record; one from a lost session revives it, since a poll is proof of
 		life. An ended record stays ended: its session end is authoritative."""
+		self._life[cli_session_id] = self._mono()
 		rec = self._records.get(cli_session_id)
 		if rec is not None and rec.state == "ended":
 			return
@@ -541,6 +570,8 @@ class SessionRegistry:
 				if age is not None and age > retention_seconds:
 					del self._records[sid]
 					self._polls.pop(sid, None)
+					self._life.pop(sid, None)
+					self._bound_at.pop(sid, None)
 					pruned.append(sid)
 					self._fire_mirror_delete(sid)
 				continue
