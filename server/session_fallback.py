@@ -6,6 +6,8 @@ from __future__ import annotations
 import uuid
 from typing import Literal
 
+from server.session_registry import TERMINAL_STATES
+
 
 def compute_fallback(
 	session_id: str,
@@ -43,17 +45,22 @@ def apply_fallback(registry, session_id: str, backend=None) -> None:
 	from server.registry import Conversation, ConversationMember
 	from server.gateway.bg_tasks import _spawn_bg
 
-	# Dormant-session short-circuit: a session that is not in
-	# session_to_conversation_id has already had its binding cleared (by
-	# cli_session_end when its CLI process died; hydration deliberately does
-	# not restore dormant bindings). It will never make another
-	# MCP call, so creating a new conversation for it would just spawn an
-	# orphan. Instead, do cleanup-only: if the session's home pointer points
-	# at a conversation that no longer exists or is Ended, clear it; if it
-	# points at a still-active conversation, leave it alone (it's a valid
-	# resume target). Never call unbind_session here (already unbound) and
-	# never mint a new conversation for a dead session.
+	# Dormant-session short-circuit. A session is dormant for either of two
+	# reasons: it is not in session_to_conversation_id (its binding was already
+	# cleared when its CLI process died; hydration does not restore dormant
+	# bindings), or the session roster records it as lost, ended or unknown, so
+	# it will never make another MCP call even though a stale binding remains.
+	# Either way minting a new conversation would just spawn an orphan.
+	# Instead, do cleanup-only: unbind a still-bound one, then if the session's
+	# home pointer points at a conversation that no longer exists or is Ended,
+	# clear it; if it points at a still-active conversation, leave it alone
+	# (it's a valid resume target). Never mint a new conversation for it.
 	is_dormant = session_id not in registry.session_to_conversation_id
+	if not is_dormant and registry.sessions is not None:
+		record = registry.sessions.get(session_id)
+		if record is None or record.state in TERMINAL_STATES:
+			registry.unbind_session(session_id)
+			is_dormant = True
 	if is_dormant:
 		home_id = registry.session_home_conversation_id.get(session_id)
 		if home_id is None:

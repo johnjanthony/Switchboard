@@ -170,3 +170,70 @@ def test_apply_fallback_dormant_with_no_home_is_noop(mock_registry):
 	apply_fallback(mock_registry, session_id="s-dorm")
 	assert "s-dorm" not in mock_registry.session_home_conversation_id
 	assert "s-dorm" not in mock_registry.session_to_conversation_id
+
+
+def _ended_bound_session(registry, state):
+	"""Away mode on; s-1 bound to a conversation that is Ended, with its home pointer at it.
+	state: a roster state to record, or None for no roster record."""
+	from server.registry import Conversation
+	from server.session_registry import SessionRegistry
+	registry._global_away = True
+	registry.sessions = SessionRegistry()
+	if state == "ended":
+		registry.sessions.record_session_start("s-1", cwd="/home/john/work")
+		registry.sessions.record_session_end("s-1", reason="exit", ended_at="2026-11-19T00:00:00Z")
+	elif state is not None:
+		registry.sessions.record_session_start("s-1", cwd="/home/john/work")
+		registry.sessions.get("s-1").state = state
+	registry.conversations["conv-old"] = Conversation(id="conv-old", title="old", state="ended")
+	registry.set_session_home("s-1", "conv-old")
+	registry.bind_session("s-1", "conv-old")
+
+
+def test_a_bound_session_the_roster_calls_lost_gets_no_home(mock_registry):
+	from server.session_fallback import apply_fallback
+	_ended_bound_session(mock_registry, "lost")
+	before = len(mock_registry.conversations)
+	apply_fallback(mock_registry, session_id="s-1")
+	assert len(mock_registry.conversations) == before
+	assert "s-1" not in mock_registry.session_to_conversation_id
+	assert "s-1" not in mock_registry.session_home_conversation_id
+
+
+def test_a_bound_session_the_roster_calls_ended_gets_no_home(mock_registry):
+	from server.session_fallback import apply_fallback
+	_ended_bound_session(mock_registry, "ended")
+	before = len(mock_registry.conversations)
+	apply_fallback(mock_registry, session_id="s-1")
+	assert len(mock_registry.conversations) == before
+	assert "s-1" not in mock_registry.session_to_conversation_id
+	assert "s-1" not in mock_registry.session_home_conversation_id
+
+
+def test_a_bound_session_with_no_roster_record_gets_no_home(mock_registry):
+	from server.session_fallback import apply_fallback
+	_ended_bound_session(mock_registry, None)
+	before = len(mock_registry.conversations)
+	apply_fallback(mock_registry, session_id="s-1")
+	assert len(mock_registry.conversations) == before
+	assert "s-1" not in mock_registry.session_to_conversation_id
+	assert "s-1" not in mock_registry.session_home_conversation_id
+
+
+def test_a_live_bound_session_still_gets_its_home(mock_registry):
+	from server.session_fallback import apply_fallback
+	_ended_bound_session(mock_registry, "idle")
+	apply_fallback(mock_registry, session_id="s-1")
+	homes = [c for c in mock_registry.conversations.values() if c.title == "(home)"]
+	assert len(homes) == 1
+	assert mock_registry.session_to_conversation_id["s-1"] == homes[0].id
+
+
+def test_without_a_roster_the_binding_alone_decides(mock_registry):
+	from server.session_fallback import apply_fallback
+	_ended_bound_session(mock_registry, "idle")
+	mock_registry.sessions = None
+	apply_fallback(mock_registry, session_id="s-1")
+	homes = [c for c in mock_registry.conversations.values() if c.title == "(home)"]
+	assert len(homes) == 1
+	assert mock_registry.session_to_conversation_id["s-1"] == homes[0].id
