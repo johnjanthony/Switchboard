@@ -41,29 +41,48 @@ async def test_sweep_once_in_grace_marks_nothing_lost():
 	assert reg.get("sess-OLD").state == "idle"
 
 
-@pytest.mark.asyncio
-async def test_sweep_leaves_lost_claude_member_untouched():
-	"""The sweep never flips a lost session's member dormant: a lost session can
-	still be alive (a desktop session that has not polled), so member dormancy
-	waits for POST /session_end or a force-end."""
-	reg = _reg()
-	reg.record_session_start("cc-sess", cwd="C:/Work/X", cli="claude")
+def _polled_member_session(mono):
+	"""A member bound at t=1000 whose session started and polled at t=1010, holding a live blocking ask."""
+	reg = SessionRegistry(now=lambda: "2026-07-06T12:00:00+00:00", mono=mono)
 	registry = Registry()
 	registry.sessions = reg
-	conv = Conversation(id="conv-2", title="X (windows)")
+	conv = Conversation(id="conv-1", title="X (windows)")
 	member = ConversationMember(
-		cli_session_id="cc-sess", sender="Claude Win", cwd="C:/Work/X",
-		surface="windows", joined_at=0.0, alive=True,
+		cli_session_id="s-killed", sender="Claude", cwd="C:/Work/X", surface="windows", joined_at=0.0, alive=True,
 	)
-	conv.members_active["cc-sess"] = member
-	registry.conversations["conv-2"] = conv
-	registry.bind_session("cc-sess", "conv-2")
+	conv.members_active["s-killed"] = member
+	registry.conversations["conv-1"] = conv
+	registry.bind_session("s-killed", "conv-1")
+	mono.t += 10
+	reg.record_session_start("s-killed", cwd="C:/Work/X")
+	reg.upsert_from_hook("s-killed", state="awaiting_human", detail=None, event="PreToolUse")
+	reg.note_poll("s-killed")
+	fut = registry.add("conv-1", "s-killed", "Claude", "req-k", msg_id="m-k", question="Ship it?")
+	mono.t += 91
+	return reg, registry, member, fut
+
+
+@pytest.mark.asyncio
+async def test_sweep_makes_a_silent_polled_session_member_dormant_and_parks_its_ask():
+	reg, registry, member, fut = _polled_member_session(_Mono())
 
 	await _sweep_once(reg, registry=registry)
 
-	assert reg.get("cc-sess").state == "lost"
+	assert reg.get("s-killed").state == "lost"
+	assert member.alive is False and member.session_end_reason == "lost"
+	assert fut.result() == PARKED_SENTINEL
+	assert registry.find_by_request_id("conv-1", "req-k").future is None
+
+
+@pytest.mark.asyncio
+async def test_sweep_in_grace_leaves_the_member_alive():
+	reg, registry, member, fut = _polled_member_session(_Mono())
+
+	reg.get("s-killed").state = "lost"
+
+	await _sweep_once(reg, registry=registry, in_grace=True)
+
 	assert member.alive is True
-	assert registry.session_to_conversation_id.get("cc-sess") == "conv-2"
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,8 @@
 from __future__ import annotations
 from typing import Callable, TYPE_CHECKING
 
+from server.clock import now_iso
+
 if TYPE_CHECKING:
 	from server.registry import Conversation, ConversationMember
 
@@ -101,3 +103,55 @@ async def make_member_dormant(
 		# _wake_one_from in conversation_ops.py). F-70.
 		member.last_seen_seq = len(conv.messages)
 	return "ok", conv, target
+
+
+async def sweep_lost_members(
+	registry,
+	session_registry,
+	backend,
+	logger,
+	*,
+	poll_lost_after_seconds: float,
+	lost_after_seconds: float,
+	now: Callable[[], str] = now_iso,
+) -> list[str]:
+	"""Make dormant the members of sessions gone silent in every channel; returns the session ids.
+
+	A session that lived since it was bound goes dormant once its record is lost and its last sign of
+	life is older than the poll threshold; one that never showed life since it was bound goes dormant
+	after the launch threshold, whatever its record says.
+	"""
+	dormant: list[str] = []
+	for sid, conv_id in list(registry.session_to_conversation_id.items()):
+		if registry.session_to_conversation_id.get(sid) != conv_id:
+			continue
+		conv = registry.conversations.get(conv_id)
+		member = conv.members_active.get(sid) if conv is not None else None
+		if conv is None or conv.state != "active" or member is None or not member.alive:
+			continue
+		rec = session_registry.get(sid)
+		if not (rec is None or rec.state in ("lost", "ended")):
+			continue
+		life, bound, t = session_registry.last_life(sid), session_registry.bound_at(sid), session_registry.mono()
+		if bound is None:
+			continue
+		if life is not None and life > bound:
+			if not (rec is not None and rec.state == "lost" and t - life > poll_lost_after_seconds):
+				continue
+			via = "sweep"
+		else:
+			if not t - bound > lost_after_seconds:
+				continue
+			via = "launch_timeout"
+		status, done_conv, done_member = await make_member_dormant(
+			registry, sid, reason=LOST_REASON, message_for=lambda m: lost_message(m.sender), now=now,
+			backend=backend, wake_own=False,
+		)
+		if status != "ok":
+			continue
+		dormant.append(sid)
+		if logger is not None:
+			await logger.info(
+				f"member_dormant_lost: session={sid} conversation={done_conv.id} sender={done_member.sender} via={via}"
+			)
+	return dormant

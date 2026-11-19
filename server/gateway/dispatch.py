@@ -666,6 +666,12 @@ async def _session_sweep_once(
 	)
 	if registry is not None:
 		await _park_lost_sessions_asks(registry, session_registry, logger)
+		if not in_grace:
+			from server.member_lifecycle import sweep_lost_members
+			await sweep_lost_members(
+				registry, session_registry, backend, logger,
+				poll_lost_after_seconds=poll_lost_after_seconds, lost_after_seconds=lost_after_seconds,
+			)
 	if quota_store is not None and backend is not None and quota_store.expire(now):
 		try:
 			await backend.write_quota(quota_store.snapshot())
