@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from server.approvals import ApprovalRegistry
+from server.approvals import ApprovalRegistry, Outcome
 from server.gateway.dispatch import dispatch_responses
 from server.main import _build_agent_status_route, _build_approvals_route
 from server.messenger import IncomingResponse
@@ -171,6 +171,32 @@ async def test_an_early_report_is_consumed_once():
 	assert first.closed is True
 	assert second.closed is False
 	assert approvals.open_approvals() == [second]
+
+
+@pytest.mark.asyncio
+async def test_a_report_for_an_approval_already_closed_is_a_replay_not_an_early_answer():
+	# The phone allows a call, so it runs and the mod reports it: that report must
+	# not release the next identical dialog, which John has not answered.
+	_, _, approvals = _world(away=True)
+	phone = await _open(approvals)
+	await approvals.close(phone, Outcome("decided", decision={"behavior": "allow"}, reason="phone"))
+	assert await _settle(approvals) is False
+	assert len(approvals._early) == 0
+	assert any(line.startswith("approval_settle_after_close:") for line in _logged(approvals))
+	retry = await _open(approvals)
+	assert retry.closed is False
+	assert approvals.open_approvals() == [retry]
+
+
+@pytest.mark.asyncio
+async def test_a_closed_approval_older_than_ten_seconds_does_not_absorb_a_report():
+	clock = _Clock()
+	_, _, approvals = _world(clock=clock)
+	closed = await _open(approvals)
+	await approvals.close(closed, Outcome("released", reason="turn_end"))
+	clock.t += 10.5
+	await _settle(approvals)
+	assert len(approvals._early) == 1
 
 
 @pytest.mark.asyncio

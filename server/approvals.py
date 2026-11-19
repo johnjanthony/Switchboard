@@ -113,6 +113,10 @@ class ApprovalRegistry:
 		# Terminal answers that matched no open approval, in case the hook that
 		# opens the approval reaches the server a moment later.
 		self._early: collections.deque = collections.deque(maxlen=64)
+		# Approvals that closed in the last moments, so the mod's report of a call
+		# that ran (or was refused) after its approval ended is not taken for an
+		# early answer to the next identical dialog.
+		self._closed_recent: collections.deque = collections.deque(maxlen=64)
 		self._open: dict[str, Approval] = {}
 		self._by_card: dict[str, Approval] = {}
 		self._recent_cards: collections.OrderedDict[str, None] = collections.OrderedDict()
@@ -203,6 +207,9 @@ class ApprovalRegistry:
 			return False
 		approval.closed = True
 		self._open.pop(approval.id, None)
+		self._closed_recent.append(
+			(approval.cli_session_id, approval.agent_id, approval.tool, approval.digest, self._mono())
+		)
 		if not approval.future.done():
 			approval.future.set_result(outcome)
 		self._mark_session(approval.cli_session_id)
@@ -261,15 +268,18 @@ class ApprovalRegistry:
 			a for a in self._open.values()
 			if a.cli_session_id == cli_session_id and a.agent_id == agent_id and a.tool == tool
 		]
+		digest = input_digest(tool_input)
 		if not candidates:
+			if self._take_closed(cli_session_id, agent_id, tool, digest):
+				await self._logger.info(
+					f"approval_settle_after_close: session={cli_session_id} tool={tool} source={source}"
+				)
+				return False
 			await self._logger.info(
 				f"approval_settle_unmatched: session={cli_session_id} tool={tool} source={source}"
 			)
-			self._early.append(
-				(cli_session_id, agent_id, tool, input_digest(tool_input), self._mono(), source, decision)
-			)
+			self._early.append((cli_session_id, agent_id, tool, digest, self._mono(), source, decision))
 			return False
-		digest = input_digest(tool_input)
 		exact = [a for a in candidates if a.digest == digest]
 		match = min(exact or candidates, key=lambda a: a.opened_at)
 		await self._logger.info(
@@ -278,6 +288,16 @@ class ApprovalRegistry:
 		)
 		await self.close(match, Outcome("released", reason=f"terminal:{source}:{decision}"))
 		return True
+
+	def _take_closed(self, cli_session_id: str, agent_id: str | None, tool: str, digest: str) -> bool:
+		"""Consumes a recently closed approval matching a report: the call was
+		decided after its approval ended (a phone answer, a turn end)."""
+		now = self._mono()
+		for entry in self._closed_recent:
+			if entry[:4] == (cli_session_id, agent_id, tool, digest) and now - entry[4] <= _EARLY_SETTLE_SECONDS:
+				self._closed_recent.remove(entry)
+				return True
+		return False
 
 	def _take_early(self, cli_session_id: str, agent_id: str | None, tool: str, digest: str) -> tuple[str, str] | None:
 		"""Drops remembered terminal answers past the window and consumes the
