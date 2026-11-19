@@ -20,6 +20,7 @@ from server.rate_limiter import RateLimiter
 from server.registry import PARKED_SENTINEL, Registry, SUPERSEDED_SENTINEL
 from server.gateway.document import _validate_path, _sha256_hex
 from server.gateway.bg_tasks import _spawn_bg
+from server.member_lifecycle import revive_member
 from server.gateway.pending_lifecycle import terminate_pending
 
 TIMEOUT_SENTINEL = "__TIMEOUT__"
@@ -219,6 +220,7 @@ def build_tool_handlers(
 		async def wrapped(*args, cli_session_id=None, cwd=None, **kwargs):
 			if cli_session_id and session_registry is not None:
 				session_registry.touch_mcp(cli_session_id, cwd=cwd or "")
+				await revive_member(registry, session_registry, backend, logger, cli_session_id, trigger="tool_call")
 			return await handler(*args, cli_session_id=cli_session_id, cwd=cwd, **kwargs)
 		return wrapped
 

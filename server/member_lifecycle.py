@@ -155,3 +155,104 @@ async def sweep_lost_members(
 				f"member_dormant_lost: session={sid} conversation={done_conv.id} sender={done_member.sender} via={via}"
 			)
 	return dormant
+
+
+def _lost_candidates(registry, session_id: str) -> list:
+	found = []
+	for conv in registry.conversations.values():
+		member = conv.members_active.get(session_id)
+		if (
+			conv.state == "active" and member is not None and member.alive is False
+			and member.session_end_reason == LOST_REASON and not member.session_lost_permanently
+		):
+			found.append((conv, member))
+	return found
+
+
+async def revive_member(
+	registry,
+	session_registry,
+	backend,
+	logger,
+	session_id: str,
+	*,
+	trigger: str,
+	now: Callable[[], str] = now_iso,
+) -> bool:
+	"""Bring back the member of a session made dormant as lost once it shows a sign of life.
+
+	Costs one set lookup for any session that was not lost. Returns True when a member was revived
+	and the session rebound to its conversation.
+	"""
+	if session_id not in registry.lost_dormant:
+		return False
+	if session_id in registry.session_to_conversation_id:
+		registry.lost_dormant.discard(session_id)
+		return False
+	candidates = _lost_candidates(registry, session_id)
+	if not candidates:
+		registry.lost_dormant.discard(session_id)
+		return False
+	from server.gateway.bg_tasks import _spawn_bg
+	conv, _ = max(candidates, key=lambda c: (c[1].session_ended_at or "", c[1].joined_at))
+	async with conv.lock:
+		member = conv.members_active.get(session_id)
+		if (
+			session_id not in registry.lost_dormant
+			or session_id in registry.session_to_conversation_id
+			or conv.state != "active"
+			or member is None
+			or member.alive is not False
+			or member.session_end_reason != LOST_REASON
+			or member.session_lost_permanently
+		):
+			return False
+		member.alive = True
+		member.session_ended_at = None
+		member.session_end_reason = None
+		member.left_at = None
+		registry.bind_session(session_id, conv.id)
+		back_msg = {
+			"seq": len(conv.messages),
+			"type": "system",
+			"sender": "<system>",
+			"text": back_message(member.sender),
+			"timestamp": now(),
+		}
+		conv.messages.append(back_msg)
+		registry.lost_dormant.discard(session_id)
+		if backend is not None:
+			_spawn_bg(
+				backend.write_conversation_member(conv.id, member),
+				label=f"fb_write_member_revived:{conv.id}:{member.sender}",
+			)
+			_spawn_bg(
+				backend.write_conversation_message(conv.id, back_msg),
+				label=f"fb_write_revive_msg:{conv.id}:{member.sender}",
+			)
+	if logger is not None:
+		await logger.info(
+			f"member_revived: session={session_id} conversation={conv.id} sender={member.sender} trigger={trigger}"
+		)
+	return True
+
+
+async def close_revive_window(registry, backend, logger, session_id: str) -> bool:
+	"""A new session start for a lost-dormant session is a new life: rewrite its reason so it never revives."""
+	if session_id not in registry.lost_dormant:
+		return False
+	registry.lost_dormant.discard(session_id)
+	from server.gateway.bg_tasks import _spawn_bg
+	for conv in registry.conversations.values():
+		member = conv.members_active.get(session_id)
+		if (
+			conv.state == "active" and member is not None and member.alive is False
+			and member.session_end_reason == LOST_REASON
+		):
+			member.session_end_reason = RESTARTED_REASON
+			if backend is not None:
+				_spawn_bg(
+					backend.write_conversation_member(conv.id, member),
+					label=f"fb_write_member_restarted:{conv.id}:{member.sender}",
+				)
+	return True

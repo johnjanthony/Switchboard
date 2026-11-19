@@ -27,6 +27,7 @@ from typing import Awaitable, Callable
 
 from server.approval_card import APPROVAL_SUGGESTIONS, decide_reply, input_digest, render_card
 from server.gateway.bg_tasks import _spawn_bg
+from server.member_lifecycle import revive_member
 
 # The mod's AskUserQuestion bridge owns that tool's dialog, and plan approval
 # chooses how to leave plan mode, which allow or deny cannot say.
@@ -190,6 +191,9 @@ class ApprovalRegistry:
 			return approval
 		self._open[approval.id] = approval
 		self._mark_session(cli_session_id)
+		await revive_member(
+			self._registry, self._sessions, self._backend, self._logger, cli_session_id, trigger="approval",
+		)
 		await self._logger.info(
 			f"approval_opened: id={approval.id} session={cli_session_id} agent={agent_id} tool={tool}"
 		)

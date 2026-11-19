@@ -222,3 +222,96 @@ async def test_a_session_whose_record_is_not_gone_is_never_timed_out_by_launch()
 	clock["t"] = 2901.0
 	assert await _sweep(registry, sessions, backend, _Log()) == []
 	assert registry.conversations[conv_id].members_active[sid].alive is True
+
+
+from server.member_lifecycle import close_revive_window, revive_member
+
+
+async def _lost_dormant():
+	registry, backend, conv_id, sid, sessions, clock = _bound_live_member()
+	await make_member_dormant(
+		registry, sid, reason=LOST_REASON, message_for=lambda m: lost_message(m.sender), now=_fixed_now, backend=backend,
+	)
+	await _pump()
+	backend.member_writes.clear()
+	backend.message_writes.clear()
+	return registry, backend, conv_id, sid, sessions
+
+
+@pytest.mark.asyncio
+async def test_revive_restores_the_member_and_the_binding():
+	registry, backend, conv_id, sid, sessions = await _lost_dormant()
+	log = _Log()
+	assert await revive_member(registry, sessions, backend, log, sid, trigger="poll", now=_fixed_now) is True
+	await _pump()
+	conv = registry.conversations[conv_id]
+	member = conv.members_active[sid]
+	assert member.alive is True and member.session_end_reason is None and member.session_ended_at is None
+	assert registry.session_to_conversation_id[sid] == conv_id
+	assert sid not in registry.lost_dormant
+	assert conv.messages[-1]["text"] == "Claude's session is back; member is alive again."
+	assert backend.member_writes == [(conv_id, member)]
+	assert log.infos == [f"member_revived: session={sid} conversation={conv_id} sender=Claude trigger=poll"]
+
+
+@pytest.mark.asyncio
+async def test_a_session_not_in_the_set_costs_no_scan():
+	registry, backend, conv_id, sid, sessions = await _lost_dormant()
+	registry.lost_dormant.clear()
+
+	class _NoScan(dict):
+		def values(self):
+			raise AssertionError("scanned conversations")
+
+	registry.conversations = _NoScan(registry.conversations)
+	assert await revive_member(registry, sessions, backend, _Log(), sid, trigger="poll") is False
+
+
+@pytest.mark.asyncio
+async def test_a_bound_session_is_not_touched_and_leaves_the_set():
+	registry, backend, conv_id, sid, sessions = await _lost_dormant()
+	registry.bind_session(sid, "conv-elsewhere")
+	assert await revive_member(registry, sessions, backend, _Log(), sid, trigger="status") is False
+	assert sid not in registry.lost_dormant
+	assert registry.conversations[conv_id].members_active[sid].alive is False
+
+
+@pytest.mark.asyncio
+async def test_an_ended_conversation_and_a_permanently_lost_member_are_not_candidates():
+	registry, backend, conv_id, sid, sessions = await _lost_dormant()
+	registry.conversations[conv_id].state = "ended"
+	assert await revive_member(registry, sessions, backend, _Log(), sid, trigger="poll") is False
+	registry, backend, conv_id, sid, sessions = await _lost_dormant()
+	registry.conversations[conv_id].members_active[sid].session_lost_permanently = True
+	assert await revive_member(registry, sessions, backend, _Log(), sid, trigger="poll") is False
+
+
+@pytest.mark.asyncio
+async def test_two_signs_of_life_at_once_revive_once():
+	registry, backend, conv_id, sid, sessions = await _lost_dormant()
+	conv = registry.conversations[conv_id]
+	before = len(conv.messages)
+	await conv.lock.acquire()
+	first = asyncio.create_task(revive_member(registry, sessions, backend, _Log(), sid, trigger="poll", now=_fixed_now))
+	second = asyncio.create_task(
+		revive_member(registry, sessions, backend, _Log(), sid, trigger="tool_call", now=_fixed_now)
+	)
+	for _ in range(5):
+		await asyncio.sleep(0)
+	assert not first.done() and not second.done()
+	conv.lock.release()
+	results = await asyncio.gather(first, second)
+	assert sorted(results) == [False, True]
+	assert len(conv.messages) == before + 1
+
+
+@pytest.mark.asyncio
+async def test_a_new_life_rewrites_the_reason_and_stops_any_revive():
+	registry, backend, conv_id, sid, sessions = await _lost_dormant()
+	assert await close_revive_window(registry, backend, _Log(), sid) is True
+	await _pump()
+	member = registry.conversations[conv_id].members_active[sid]
+	assert member.alive is False and member.session_end_reason == "restarted"
+	assert backend.member_writes == [(conv_id, member)]
+	assert await revive_member(registry, sessions, backend, _Log(), sid, trigger="tool_call") is False
+	assert sid not in registry.session_to_conversation_id

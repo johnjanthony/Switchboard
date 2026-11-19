@@ -179,3 +179,145 @@ async def test_healthz_returns_pending_listeners_and_dispatch_loops(tmp_path, mo
 	assert body["listeners"][0]["state"] == "live"
 	assert body["pending"]["count"] == 0
 	assert body["pending"]["parked"] == 0
+
+
+# -- a lost-dormant member returns with its session, or stays dormant on a new life --
+
+from unittest.mock import AsyncMock, MagicMock
+
+from starlette.applications import Starlette
+from starlette.testclient import TestClient
+
+from server.approvals import ApprovalRegistry
+from server.member_lifecycle import LOST_REASON, lost_message, make_member_dormant, sweep_lost_members
+from server.quota_store import QuotaStore
+from tests.test_cli_session_end import _fixed_now
+from tests.test_member_lifecycle import _Log, _bound_live_member, _pump
+
+
+async def _dormant_world(backend=None):
+	registry, fake, conv_id, sid, sessions, clock = _bound_live_member()
+	backend = backend or fake
+	await make_member_dormant(
+		registry, sid, reason=LOST_REASON, message_for=lambda m: lost_message(m.sender), now=_fixed_now, backend=backend,
+	)
+	await _pump()
+	return registry, backend, conv_id, sid, sessions
+
+
+def _assert_revived(registry, conv_id, sid):
+	member = registry.conversations[conv_id].members_active[sid]
+	assert member.alive is True
+	assert registry.session_to_conversation_id[sid] == conv_id
+
+
+@pytest.mark.asyncio
+async def test_an_inbox_poll_revives_a_lost_dormant_member():
+	from server.main import _build_inbox_route
+	registry, backend, conv_id, sid, sessions = await _dormant_world()
+	app = Starlette()
+	app.add_route("/sessions/{sid}/inbox", _build_inbox_route(registry, sessions, backend, _Log()), methods=["GET"])
+	assert TestClient(app).get(f"/sessions/{sid}/inbox").status_code == 200
+	_assert_revived(registry, conv_id, sid)
+
+
+@pytest.mark.asyncio
+async def test_a_status_post_revives():
+	from server.main import _build_agent_status_route
+	registry, backend, conv_id, sid, sessions = await _dormant_world()
+	handlers = MagicMock()
+	handlers.handle_agent_status = AsyncMock()
+	app = Starlette()
+	app.add_route(
+		"/agent_status",
+		_build_agent_status_route(handlers, sessions, registry=registry, backend=backend, logger=_Log()),
+		methods=["POST"],
+	)
+	resp = TestClient(app).post("/agent_status", json={"session_id": sid, "state": "thinking", "event": "UserPromptSubmit"})
+	assert resp.status_code == 200
+	_assert_revived(registry, conv_id, sid)
+
+
+@pytest.mark.asyncio
+async def test_a_telemetry_post_revives():
+	from server.main import _build_telemetry_route
+	registry, backend, conv_id, sid, sessions = await _dormant_world()
+	app = Starlette()
+	app.add_route(
+		"/sessions/{sid}/telemetry",
+		_build_telemetry_route(sessions, QuotaStore(), backend, _Log(), registry),
+		methods=["POST"],
+	)
+	resp = TestClient(app).post(f"/sessions/{sid}/telemetry", json={"model": "claude-opus-4-7"})
+	assert resp.status_code == 200
+	_assert_revived(registry, conv_id, sid)
+
+
+@pytest.mark.asyncio
+async def test_session_start_closes_the_window_and_does_not_revive():
+	from server.main import _build_session_start_route
+	registry, backend, conv_id, sid, sessions = await _dormant_world()
+	app = Starlette()
+	app.add_route(
+		"/session_start", _build_session_start_route(sessions, _Log(), registry=registry, backend=backend), methods=["POST"],
+	)
+	assert TestClient(app).post("/session_start", json={"session_id": sid, "cwd": "C:/X"}).status_code == 200
+	member = registry.conversations[conv_id].members_active[sid]
+	assert member.alive is False and member.session_end_reason == "restarted"
+	assert sid not in registry.session_to_conversation_id
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_that_beats_its_status_post_revives_and_does_not_mint(tmp_path):
+	from server.config import Config
+	from server.gateway import build_tool_handlers
+	from server.logging_jsonl import JsonlLogger
+	from tests.test_gateway_notify_human import RecordingBackend
+	backend = RecordingBackend()
+	registry, backend, conv_id, sid, sessions = await _dormant_world(backend)
+	registry.update_global_away_cache(True)
+	cfg = Config(host="127.0.0.1", port=9876, timeout_seconds=5.0, log_path=str(tmp_path / "log.jsonl"))
+	handlers = build_tool_handlers(cfg, registry, backend, JsonlLogger(cfg.log_path), session_registry=sessions)
+	before = len(registry.conversations)
+	await handlers.notify_human("hello again", "Claude", cli_session_id=sid, cwd="C:/X")
+	assert len(registry.conversations) == before
+	_assert_revived(registry, conv_id, sid)
+	assert any(m["channel_id"] == conv_id and m["content"] == "hello again" for m in backend.channel_messages)
+
+
+@pytest.mark.asyncio
+async def test_opening_an_approval_revives():
+	registry, backend, conv_id, sid, sessions = await _dormant_world()
+	logger = MagicMock()
+	logger.info = AsyncMock()
+	logger.surface_error = AsyncMock()
+
+	async def _resolve(_sid, _cwd):
+		return conv_id, "Claude"
+
+	approvals = ApprovalRegistry(registry, sessions, backend, logger, resolve_conversation=_resolve)
+	await approvals.open(cli_session_id=sid, agent_id=None, tool="Bash", tool_input={"command": "ls"}, cwd="C:/X")
+	_assert_revived(registry, conv_id, sid)
+
+
+@pytest.mark.asyncio
+async def test_the_round_trip_delivers_the_message_sent_while_dormant():
+	from server.inbound import deliver_human_message
+	from server.main import _build_inbox_route
+	from tests.test_gateway_notify_human import RecordingBackend
+	registry, _fake, conv_id, sid, sessions, clock = _bound_live_member()
+	backend = RecordingBackend()
+	sessions.get(sid).state = "lost"
+	clock["t"] = 1101.0
+	log = _Log()
+	assert await sweep_lost_members(
+		registry, sessions, backend, log, poll_lost_after_seconds=90, lost_after_seconds=900, now=_fixed_now,
+	) == [sid]
+	await _pump()
+	await deliver_human_message(registry, backend, sessions, log, conv_id, "are you there")
+	app = Starlette()
+	app.add_route("/sessions/{sid}/inbox", _build_inbox_route(registry, sessions, backend, log), methods=["GET"])
+	body = TestClient(app).get(f"/sessions/{sid}/inbox").json()
+	assert len(body["notices"]) == 1 and body["notices"][0].endswith("are you there")
+	_assert_revived(registry, conv_id, sid)
+	assert list(registry.conversations) == [conv_id]

@@ -25,6 +25,7 @@ from server.approval_card import hook_output
 from server.approvals import EXCLUDED_TOOLS, ApprovalRegistry, Outcome
 from server.build_info import mod_fingerprint, service_identity
 from server.cli_session_end import handle_session_end
+from server.member_lifecycle import close_revive_window, revive_member
 from server.clock import now_iso
 from server.config import Config, ConfigError, load_config
 from server.gateway import (
@@ -92,7 +93,7 @@ def _build_away_mode_route(registry: Registry, backend=None, logger=None):
 	return away_mode
 
 
-def _build_inbox_route(registry: Registry, session_registry):
+def _build_inbox_route(registry: Registry, session_registry, backend=None, logger=None):
 	"""GET /sessions/{sid}/inbox - the Claude Code mod's single read route,
 	polled every 2 s, and so the session's liveness heartbeat (note_poll). Pops
 	the session's queued notices and its stop, and reads away mode and the
@@ -101,6 +102,7 @@ def _build_inbox_route(registry: Registry, session_registry):
 	async def inbox(request: Request):
 		session_id = request.path_params["sid"]
 		session_registry.note_poll(session_id)
+		await revive_member(registry, session_registry, backend, logger, session_id, trigger="poll")
 		notices = session_registry.pop_notices(session_id)
 		stop = session_registry.take_stop(session_id)
 		pending_ask = False
@@ -264,6 +266,8 @@ def _build_telemetry_route(session_registry, quota_store, backend, logger, regis
 		if not report:
 			return JSONResponse({}, status_code=200)
 		rec = session_registry.apply_telemetry(session_id, report)
+		if registry is not None:
+			await revive_member(registry, session_registry, backend, logger, session_id, trigger="telemetry")
 		rate_limits = report.get("rate_limits")
 		received_at = now_iso()
 		changed = bool(rate_limits) and quota_store.apply(rate_limits, received_at)
@@ -292,7 +296,7 @@ class _DropInboxAccessLines(logging.Filter):
 		return "/inbox" not in record.getMessage()
 
 
-def _build_session_start_route(session_registry: SessionRegistry, logger):
+def _build_session_start_route(session_registry: SessionRegistry, logger, registry=None, backend=None):
 	"""POST /session_start — SessionStart hook ingest. Always 200 (hook contract)."""
 	async def session_start(request: Request):
 		try:
@@ -316,6 +320,8 @@ def _build_session_start_route(session_registry: SessionRegistry, logger):
 		session_registry.record_session_start(
 			session_id, cwd=cwd, start_source=source, interactive=interactive if isinstance(interactive, bool) else None,
 		)
+		if registry is not None:
+			await close_revive_window(registry, backend, logger, session_id)
 		return JSONResponse({}, status_code=200)
 	return session_start
 
@@ -364,7 +370,9 @@ def _build_sessions_route(session_registry: SessionRegistry):
 	return sessions
 
 
-def _build_agent_status_route(handlers, session_registry: SessionRegistry, approvals=None):
+def _build_agent_status_route(
+	handlers, session_registry: SessionRegistry, approvals=None, registry=None, backend=None, logger=None,
+):
 	"""POST /agent_status - hook-driven status writes. Returns 200 with an empty
 	body on malformed input, or {"notices": []} on success: it never pops a
 	session's notices, which the Claude Code mod takes from its
@@ -404,6 +412,8 @@ def _build_agent_status_route(handlers, session_registry: SessionRegistry, appro
 			)
 		else:
 			session_registry.touch_mcp(session_id, cwd=cwd or "")
+		if registry is not None:
+			await revive_member(registry, session_registry, backend, logger, session_id, trigger="status")
 		# A main-loop dialog cannot outlive its turn: a turn end releases any
 		# approval still held, should the mod's terminal-answer report be lost.
 		if approvals is not None and event == "Stop":
@@ -1176,7 +1186,8 @@ async def _run(config: Config) -> None:
 	app.add_route(
 		"/session_start",
 		_with_route_limit(
-			_build_session_start_route(session_registry, logger), route_limiter, "/session_start", logger,
+			_build_session_start_route(session_registry, logger, registry=registry, backend=backend),
+			route_limiter, "/session_start", logger,
 		),
 		methods=["POST"],
 	)
@@ -1189,7 +1200,11 @@ async def _run(config: Config) -> None:
 		methods=["POST"],
 	)
 	app.add_route("/sessions", _build_sessions_route(session_registry), methods=["GET"])
-	app.add_route("/sessions/{sid}/inbox", _build_inbox_route(registry, session_registry), methods=["GET"])
+	app.add_route(
+		"/sessions/{sid}/inbox",
+		_build_inbox_route(registry, session_registry, backend=backend, logger=logger),
+		methods=["GET"],
+	)
 	app.add_route(
 		"/sessions/{sid}/stop",
 		_with_route_limit(_build_stop_route(session_registry), route_limiter, "/sessions/stop", logger),
@@ -1218,7 +1233,9 @@ async def _run(config: Config) -> None:
 	app.add_route(
 		"/agent_status",
 		_with_route_limit(
-			_build_agent_status_route(handlers, session_registry, approvals=approvals),
+			_build_agent_status_route(
+				handlers, session_registry, approvals=approvals, registry=registry, backend=backend, logger=logger,
+			),
 			route_limiter, "/agent_status", logger,
 		),
 		methods=["POST"],
