@@ -222,3 +222,16 @@ No mod change is involved, so there is nothing to deploy to the cache copy or th
 - **A wrong lost verdict now has a visible effect:** a system message and woken peers, where before nothing happened. The revive undoes the state but not the message. Waiting for silence in every channel removes the once-a-minute flap; a session whose poller has died still goes dormant each time it sits idle for 90 s and comes back at its next status post. For such a session dormant is close to the truth, since it cannot receive anything from its inbox.
 - **Resuming a session that is alive but judged lost** launches a second process on the same session id. That risk exists today through the sessions board, which already offers Resume on a `lost` record.
 - **Deleting history.** The idle rule deletes conversations for good 72 hours after ending them. The dry run and the knob are the controls.
+
+## As built (2026-11-20)
+
+Shipped in `fc16eff..2b2af91` and deployed 2026-11-20. Where the build differs from the sections above:
+
+- **Section 3.** The repair runs only when the `sessions` read returned a non-empty node; a failed or empty read skips it (`hydration_member_repair_skipped: roster not hydrated`) and the sweep's 900 s rule catches those members instead. The lost-dormant set is rebuilt on every start either way.
+- **Section 4.** `handle_force_end`, which every end path uses, runs the session fallback only for sessions that are unbound or bound to the conversation being ended. A session bound to another conversation keeps its binding, and only a home pointer naming the ended conversation is cleared. Without this, idle-ending an old conversation pulled a live, hand-resumed session out of its current one.
+- **Section 5.** A conversation with any session bound to it is never an idle-end candidate (a phone spawn binds before its member exists), and the predicate is checked again for each conversation just before it is ended.
+- **Section 2.** A session end is authoritative over a lost-dormant member: a revive is refused once the session's roster record is `ended`, and a `/session_end` for an unbound lost-dormant session closes the window with the end's reason (permanently lost for `clear` and `compact`), as a `/session_start` does with `restarted`.
+- **Roster mirror.** A revive by poll fires two record writes back to back (the poll's, then the binding's), and the old fire-and-forget writes could land out of order and leave RTDB without the session's `conversation_id`. The roster mirror is now ordered and coalesced per session.
+- **Smoke.** The killed-session flow polls once after its conversation is bound, so its last sign of life follows its binding and dormancy follows the 90 s rule.
+- **Risks, added.** A mod hot reload also sends `/session_start`, so it closes the revive window for a lost-dormant session (T-301).
+- **First run.** 17 repaired and 36 ended, the same sets the dry run listed; the next restart hydrated 13 conversations instead of 48.
