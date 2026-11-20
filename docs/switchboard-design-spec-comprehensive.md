@@ -31,7 +31,7 @@ A `Conversation` is the persistence + routing unit, identified by a server-minte
 ### 2.1 Conversation states
 
 - **Active** — accepts members. Joining paths: `join_conversation` with a `ref` (rejoins a bound caller, or targets a named existing conversation), `join_conversation` without a `ref` (subject to the candidate rule in §2.4), `combine_conversations` (migrates a source conversation's members into this one), spawn-into-existing (a phone/Operator spawn command targeting an existing conversation instead of minting one), convene (§10's `convene_commands.target` schema note covers the lazy-mint mechanics; §7 covers convene wakes), and resume (a departed member's session relaunches into a new continuation conversation). A freshly spawned conversation can briefly be Active with zero members — `handle_fresh` binds the new session before its member record exists — so "at least one member" does not hold at every instant.
-- **Ended** — terminal. No active or dormant members. Persists in Firebase as history until pruned after `SWITCHBOARD_CONVERSATION_RETENTION_HOURS` (along with its messages and answers); not loaded into the in-memory registry on restart.
+- **Ended** — terminal. No active or dormant members. Every path that ends a conversation persists `meta.ended_at` with the state, and the conversation persists in Firebase as history until `SWITCHBOARD_CONVERSATION_RETENTION_HOURS` (72 by default) after that time, when it is pruned along with its messages and answers (one ended before `ended_at` was written is counted from `meta.last_activity_at`); not loaded into the in-memory registry on restart.
 
 A conversation transitions to Ended on any of:
 
@@ -39,6 +39,7 @@ A conversation transitions to Ended on any of:
 2. **Force-end.** John or Switchboard Operator force-ends the conversation from the phone (Page A swipe-right or long-press → End) or the dashboard; membership is cleared and the conversation ends immediately, regardless of how many members it still has.
 3. **Combine source.** `combine_conversations`'s source conversation always ends once its movable members have migrated to the target, even if it retains permanently-lost members left behind for visibility.
 4. **Emptied by migration.** A conversation ends if migrating a member out of it — via a bound caller's ref-form `join_conversation`, via convene, or via resume draining every remaining member into a new continuation conversation — leaves it with no members at all.
+5. **Idle end.** The hourly conversation sweep, which also runs a pass at service start, ends an Active conversation that nobody is in after `SWITCHBOARD_CONVERSATION_IDLE_END_DAYS` (default 14, `0` disables) days idle, counted from the later of its last activity and any member's dormancy time: no alive member, no session bound to it (a phone spawn binds before its member exists), no pending question and no live waiter. It posts `Conversation ended after <N> days with no live session.`, where N is the knob value, and logs `conversation_idle_ended` with the measured idle days.
 
 A sole-alive member's `message_and_await_agent` no longer ends the conversation on its own. The caller instead parks on the wait queue until a peer joins and replies, the wait times out, or John convenes the conversation — see §7 for the wait machinery.
 
@@ -48,16 +49,19 @@ Each `ConversationMember` carries `cli_session_id`, `sender` (agent-supplied dis
 
 - **Alive** — `alive=True`, `cli_session_id` bound in `_session_to_conversation_id`. The agent process is running.
 - **Dormant** — `alive=False`, `session_lost_permanently=False`. Reached when the CLI session ends cleanly (the mod's `session.end` POSTs `/session_end` with a resumable reason, §6), or when a combine/resume relaunch attempt fails and the rollback marks the member dormant directly. The member is retained in `members_active` for potential revival via resume or combine.
+- **Dormant (lost)** - dormant with `session_end_reason == "lost"`. Reached when the session goes silent in every channel (`server/member_lifecycle.py`): its roster record is lost and its last sign of life is older than the poll threshold (90 s, `session_poll_lost_after_seconds`), or the session never showed life after it was bound, its roster record is lost, ended or missing, and the launch threshold (900 s, `session_lost_after_seconds`) has passed. The session is unbound, a system message `<sender>'s session was lost (no heartbeat); member is now dormant.` is appended, and the conversation's waiters are woken; a wait owned by the member itself stays queued. Hydration reaches the same state for an alive member whose session the roster has as lost, ended or missing (`alive=False`, reason `lost`, `session_ended_at` from the roster record's last event, the member written back and `member_dormant_lost ... via=hydration` logged, with no system message and no waiter wake), but only when the roster read returned a non-empty `sessions` node (otherwise it logs `hydration_member_repair_skipped: roster not hydrated` and the launch rule catches the members); it rebuilds the set of lost-dormant sessions either way. A lost-dormant member still receives John's messages as queued session notices. Any sign of life from the same session, an inbox poll, a status or telemetry post, an approval the server holds or a tool call, makes the member alive again, rebinds the session and appends `<sender>'s session is back; member is alive again.`; a `/session_start` for that id is a new life, so it rewrites the reason to `restarted` and the member never revives.
 - **Permanently lost** — `alive=False`, `session_lost_permanently=True`. The session ended with reason `clear` or `compact` — Claude rewrote or reset the session, so the CLI session is unrecoverable. Member is retained for visibility only; resume and combine skip these members.
 
 ### 2.3 Session-fallback rule
 
 When a session is **removed** from a conversation (`leave_conversation`, force-end, or a stale-binding self-heal triggered from inside `ask_human` or a ref-less `join_conversation`; combine moves rather than removes), the session is not orphaned:
 
+A session the roster records as lost, ended or unknown is treated as dormant on every one of those paths and never gets a new conversation: `apply_fallback` unbinds it, clears its home pointer only when that names a missing or Ended conversation, and neither rebinds nor mints, whatever the away mode. For every other session:
+
 - **If `global_away_mode == True`** — the session re-binds to its **home conversation**, set on first switchboard contact and persisted in `_session_home_conversation_id`. If the home is still Active, only the session's routing rebinds to it — membership itself is healed lazily the next time the session makes a tool call, not recreated here. If the home is Ended, the server mints a fresh Active conversation and updates the session's home pointer.
 - **If `global_away_mode == False`** — the session becomes unbound. Subsequent `ask_human` / `notify_human` calls fall through to the at-desk redirect (§8.1); the agent's output reaches the developer via the terminal.
 
-Combine is exempted from session-fallback — it migrates members from source to target rather than removing them.
+Combine is exempted from session-fallback — it migrates members from source to target rather than removing them. Ending a conversation (force-end by hand or the idle end) applies the rule only to sessions that are unbound or bound to the conversation being ended: a session bound to another conversation keeps its binding, and only a home pointer naming the ended conversation is cleared.
 
 ### 2.4 Ref-less join candidate rule
 
@@ -98,7 +102,7 @@ Two features share one mechanism: John's free-form messages into a live conversa
 2. **A `wait_queue` entry** is woken, carrying the message in its normal delta payload. A human message wakes **every** waiting live member (`_wake_all_from` in `server/conversation_ops.py`), because it addresses the room; a background *answer* wakes only its own session's entry, because it is session-directed.
 3. **Otherwise** a session notice is queued (`session_registry.queue_notice`) framed `John (from phone): <text>`, delivered by the mod's inbox poll: as the session's next prompt when it is idle, otherwise with the next main-loop tool result, a typed prompt or the turn-end prompt (§6).
 
-Dormant and lost members get nothing live; the message is in history and reaches them on resume or re-join. The whole ladder and every conversation mutation run under `conv.lock`, with Firebase cancels issued after the lock is released.
+A member dormant for any reason other than lost gets nothing live, so the message is in history and reaches it on resume or re-join; a member dormant as lost (§2.2) still gets a session notice queued, which its session pops if it comes back. The whole ladder and every conversation mutation run under `conv.lock`, with Firebase cancels issued after the lock is released.
 
 **Idle sessions wake.** Since the Claude Code mod (2026-10-03), an idle interactive session (and, since T-288, an idle desktop-app session) receives a queued notice within about 2 s: its inbox poll submits the notice as the session's next prompt, at the desk or away. At the desk a draft in the prompt box defers delivery, and the notice rides the prompt John is typing. Headless (`claude -p`) runs do not poll, so for them a notice still waits for the session's next prompt.
 
@@ -696,7 +700,7 @@ The session sweep (`dispatch_session_sweep`, every 60 s) judges each non-termina
 - **Exemptions.** A never-polled `awaiting_human` or `awaiting_agent` session backed by a live ask or wait is not marked lost. A polled session has no exemption: a blocked tool call does not pause the mod's poll, so its poll alone decides.
 - **Parking a lost session's ask.** After each sweep, every live blocking ask whose session is now `lost` and has polled since the server started (`SessionRegistry.has_polled`) is parked in place (§7): the blocked call returns `{"status":"parked"}`, the card and its `pending_questions` record stay answerable, and a restart parks the question again. An ask whose question write has not returned (`msg_id` still `None`) waits for a later tick, and a session lost by the silence rule keeps its ask.
 
-Marking a Claude Code session lost leaves its conversation member as it is (§15.1).
+Marking a Claude Code session lost does not by itself change its conversation member; the session sweep then makes the member dormant, outside its grace period (§2.2, §15.1).
 
 A desktop-app session polls like a terminal one once the app attaches as a surface (`session.attach`), so the 90 s poll rule judges it; a `-p` run never polls and stays on the silence rule.
 
@@ -712,8 +716,9 @@ On startup, `server/hydration.py:hydrate_from_firebase` rebuilds the in-memory r
 4. **Session roster** — the whole `sessions/` node is hydrated into `SessionRegistry`, including terminal (`ended`/`lost`) records, because the retention sweeper can only prune RTDB entries it holds in memory.
 5. **Session home pointers** — `cli_sessions/<session_id>/home_conversation_id`, skipping any pointer whose home isn't in the hydrated set (avoids re-binding to Ended homes).
 6. **Duplicate-alive-member reconciliation** — if one `cli_session_id` turns up alive in two hydrated Active conversations, the later `joined_at` wins (ties broken by the larger conversation id string); the loser is demoted to `members_history`, both in memory and back to Firebase, and the demotion is logged loudly.
-7. **Session-to-conversation bindings** — derived from each Active conversation's members: only ALIVE members are re-bound. Dormant members are deliberately left unbound (the steady-state invariant is "dormant = unbound"); resume re-binds and flips a member alive only when it actually relaunches. Re-binding dormant members at hydration previously broke phone Resume permanently after a restart.
-8. **Plan usage** — the `quota` node is read back into `QuotaStore` (§10.5), so the reading and its `received_at` survive a restart.
+7. **Member repair** - every alive member of an Active conversation whose session the roster has as lost, ended or missing is made dormant (reason `lost`, §2.2), but only when the roster read returned a non-empty `sessions` node; otherwise the repair is skipped with a logged `hydration_member_repair_skipped`. The set of lost-dormant sessions is rebuilt from the stored members either way.
+8. **Session-to-conversation bindings** — derived from each Active conversation's members: only ALIVE members are re-bound. Dormant members are deliberately left unbound (the steady-state invariant is "dormant = unbound"); resume re-binds and flips a member alive only when it actually relaunches. Re-binding dormant members at hydration previously broke phone Resume permanently after a restart.
+9. **Plan usage** — the `quota` node is read back into `QuotaStore` (§10.5), so the reading and its `received_at` survive a restart.
 
 Two more startup actions run unconditionally, before hydration, deleting retired schema nodes rather than rebuilding anything: `delete_legacy_away_mode_node()` removes the retired top-level `away_mode` node (superseded by `global_settings/away_mode`), and `delete_open_conversation_node()` removes `global_settings/open_conversation_id` (the retired open-marker singleton, §16). Both are migration residue, not architecture, and neither touches the away flag itself.
 
@@ -864,7 +869,8 @@ Every variable below is read by `server/config.py` unless noted otherwise.
 | `SWITCHBOARD_SESSION_LOST_AFTER_SECONDS` | No | `900` | Silence threshold for sessions that have never polled (`claude -p` runs, and records hydrated after a restart until they poll): after this long with no hook or MCP activity the sweep marks the session lost (§10.6). |
 | `SWITCHBOARD_SESSION_POLL_LOST_AFTER_SECONDS` | No | `90` | Poll threshold: a session that has polled its inbox since the server started is marked lost after this long without a poll (§10.6). Keep it above the mod's 30 s poll backoff cap. |
 | `SWITCHBOARD_SESSION_RETENTION_HOURS` | No | `72` | How long a terminal (ended/lost) session record, and a parked pending question (§7), survive before the sweeper prunes them. |
-| `SWITCHBOARD_CONVERSATION_RETENTION_HOURS` | No | `72` | How long an Ended conversation (index card, messages, answers, Storage blobs) survives before the conversation sweep deletes it. |
+| `SWITCHBOARD_CONVERSATION_RETENTION_HOURS` | No | `72` | How long an Ended conversation (index card, messages, answers, Storage blobs) survives, counted from `meta.ended_at`, before the conversation sweep deletes it. |
+| `SWITCHBOARD_CONVERSATION_IDLE_END_DAYS` | No | `14` | Days an Active conversation with no alive member, bound session, pending question or live waiter may sit idle before the conversation sweep ends it. `0` disables. |
 | `SWITCHBOARD_ADMIN_NOTIFICATION_RETENTION_HOURS` | No | `168` | How long an `admin_notifications` entry survives the hourly sweep. |
 
 **Not a `config.py` field, but named here for completeness:** `SWITCHBOARD_WSL_HOME` (read directly by `server/main.py`'s `resolve_wsl_home`, not by `Config`) short-circuits the WSL-home probe — first-priority source, used when the NSSM service runs in Session 0 where the `wsl.exe` probe fails (§9.2). One more is client-side only, read by the mod rather than the server: `SWITCHBOARD_BASE_URL` (§13.3).
@@ -876,7 +882,7 @@ Every variable below is read by `server/config.py` unless noted otherwise.
 ### 15.1 Reliability
 
 - **Restart loses in-flight wait queues, but not the questions.** A `wait_queue` entry (`message_and_await_agent`'s only — `post_agent_message` never enqueues one) does not survive restart — the caller times out on its next call or is cancelled. An outstanding `ask_human` question is different: hydration rebuilds it as a parked pending (§11), so John's eventual reply still resolves it after a restart.
-- **Dead sessions leave the roster within minutes.** A Claude Code session that stops polling (hard kill, crash, network loss) is marked `lost` 90 to 150 s after its last poll (§10.6), and a later poll revives it. Its conversation member is left alone: member dormancy still needs the `session.end` POST or a force-end (§2.2).
+- **Dead sessions leave the roster within minutes.** A Claude Code session that stops polling (hard kill, crash, network loss) is marked `lost` 90 to 150 s after its last poll (§10.6), and a later poll revives it. Its conversation member goes dormant as lost once the session is silent in every channel, and comes back with a later sign of life (§2.2).
 - **Best-effort session end.** The mod's `session.end` POST is awaited inside Claude Code's 1.5 s exit bound, so orderly exits land; abrupt deaths are caught by the poll rule above.
 
 ### 15.2 Scope
