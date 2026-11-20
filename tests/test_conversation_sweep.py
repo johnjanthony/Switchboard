@@ -8,8 +8,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from server.gateway.dispatch import _conversation_sweep_once, dispatch_conversation_sweep, _prune_admin_notifications_once
-from server.registry import Registry, Conversation
+from server.gateway.dispatch import (
+	_conversation_sweep_once, dispatch_conversation_sweep, _prune_admin_notifications_once, _idle_end_once,
+)
+from server.registry import Registry, Conversation, ConversationMember
 from tests.conftest import _make_loop_supervisor
 from tests.test_hydration import make_logger
 
@@ -169,3 +171,202 @@ async def test_retention_counts_from_the_end_not_from_the_last_activity():
 	})
 	deleted = await _conversation_sweep_once(Registry(), backend, make_logger(), retention_hours=72)
 	assert deleted == ["conv-ended-long-ago"]
+
+
+DAY = 86400.0
+NOW = 1_800_000_000.0
+
+
+class _IdleBackend(_SweepBackend):
+	"""A sweep backend that records the writes a force-end makes and reflects them in its meta."""
+
+	def __init__(self, metas=None, admin=None):
+		super().__init__(metas if metas is not None else {}, admin)
+		self.states: list[tuple] = []
+		self.messages: list[tuple] = []
+		self.removed: list[tuple] = []
+		self.homes: list[tuple] = []
+
+	async def set_conversation_state(self, conv_id, state, *, ended_at=None):
+		self.states.append((conv_id, state, ended_at))
+		meta = self._metas.setdefault(conv_id, {})
+		meta["state"] = state
+		if ended_at is not None:
+			meta["ended_at"] = ended_at
+
+	async def write_conversation_message(self, conv_id, message):
+		self.messages.append((conv_id, message))
+
+	async def remove_conversation_member(self, conv_id, sender):
+		self.removed.append((conv_id, sender))
+
+	async def set_session_home(self, *args, **kwargs):
+		self.homes.append((args, kwargs))
+
+	async def send_text(self, *args, **kwargs):
+		raise AssertionError("an idle end must not push")
+
+
+def _idle_registry():
+	registry = Registry()
+	conv = Conversation(id="conv-1", title="t", created_at=NOW - 40 * DAY, last_activity_at=NOW - 20 * DAY)
+	member = ConversationMember(cli_session_id="s", sender="Claude", cwd="", surface="windows", joined_at=0.0, alive=False)
+	conv.members_active["s"] = member
+	registry.conversations["conv-1"] = conv
+	registry.lost_dormant.add("s")
+	return registry, conv
+
+
+async def _pump():
+	for _ in range(5):
+		await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_idle_end_ends_the_conversation_with_its_own_message_and_no_push():
+	registry, conv = _idle_registry()
+	backend = _IdleBackend()
+	logger = make_logger()
+	ended = await _idle_end_once(registry, backend, logger, idle_days=14, now_ts=NOW)
+	await _pump()
+	assert ended == ["conv-1"]
+	assert conv.state == "ended" and conv.ended_at
+	assert backend.states == [("conv-1", "ended", conv.ended_at)]
+	[(_, message)] = backend.messages
+	assert message["text"] == "Conversation ended after 14 days with no live session."
+	assert "conversation_idle_ended: conv-1 idle_days=20.0" in [c.args[0] for c in logger.info.call_args_list]
+
+
+@pytest.mark.asyncio
+async def test_idle_end_leaves_the_lost_set_clean():
+	registry, conv = _idle_registry()
+	assert "s" in registry.lost_dormant
+	await _idle_end_once(registry, _IdleBackend(), make_logger(), idle_days=14, now_ts=NOW)
+	await _pump()
+	assert "s" not in registry.lost_dormant
+
+
+@pytest.mark.asyncio
+async def test_one_tick_never_ends_and_deletes_the_same_conversation():
+	registry, conv = _idle_registry()
+	conv.last_activity_at = time.time() - 20 * DAY
+
+	class _NoEndedAtBackend(_IdleBackend):
+		"""Meta keeps the old last_activity_at and gains no ended_at, so only the pass order protects the conversation."""
+
+		async def set_conversation_state(self, conv_id, state, *, ended_at=None):
+			self.states.append((conv_id, state, ended_at))
+			self._metas[conv_id]["state"] = state
+
+		async def get_conversation_meta(self, conv_id):
+			# The spawned state write may not have landed yet; reflect it as RTDB would once it has.
+			return {**self._metas[conv_id], "state": registry.conversations[conv_id].state}
+
+	backend = _NoEndedAtBackend({"conv-1": {"state": "active", "last_activity_at": conv.last_activity_at}})
+	logger = make_logger()
+	supervisor = _make_loop_supervisor(None, logger, "dispatch_conversation_sweep")
+	task = asyncio.create_task(dispatch_conversation_sweep(
+		registry, backend, logger, supervisor,
+		retention_hours=72, admin_retention_hours=168, interval=10.0, idle_end_days=14,
+	))
+	for _ in range(8):
+		await asyncio.sleep(0)
+	assert conv.state == "ended"
+	assert backend.deleted == []
+	task.cancel()
+	with pytest.raises(asyncio.CancelledError):
+		await task
+
+
+@pytest.mark.asyncio
+async def test_a_failing_idle_pass_records_a_crash_and_the_other_passes_still_run(monkeypatch):
+	async def boom(*args, **kwargs):
+		raise RuntimeError("idle pass broke")
+
+	monkeypatch.setattr("server.gateway.dispatch._idle_end_once", boom)
+	backend = _IdleBackend(admin={"k_old": {"timestamp": _iso(time.time() - 8 * 24 * 3600)}})
+	logger = make_logger()
+	supervisor = _make_loop_supervisor(None, logger, "dispatch_conversation_sweep")
+	supervisor._backoff = 0.0  # record_crash sleeps the backoff before the next pass
+	task = asyncio.create_task(dispatch_conversation_sweep(
+		Registry(), backend, logger, supervisor,
+		retention_hours=72, admin_retention_hours=168, interval=10.0, idle_end_days=14,
+	))
+	for _ in range(30):
+		await asyncio.sleep(0)
+	assert backend.admin_deleted == ["k_old"]
+	assert supervisor._crash_count == 1
+	task.cancel()
+	with pytest.raises(asyncio.CancelledError):
+		await task
+
+
+def _bound_elsewhere_registry(away: bool):
+	registry = Registry()
+	registry._global_away = away
+	now = time.time()
+	a = Conversation(id="conv-A", title="old", created_at=now - 40 * DAY, last_activity_at=now - 20 * DAY)
+	a.members_active["S"] = ConversationMember(cli_session_id="S", sender="Claude", cwd="", surface="windows", joined_at=0.0, alive=False)
+	b = Conversation(id="conv-B", title="current", created_at=now - DAY, last_activity_at=now)
+	b.members_active["S"] = ConversationMember(cli_session_id="S", sender="Claude", cwd="", surface="windows", joined_at=now, alive=True)
+	registry.conversations["conv-A"] = a
+	registry.conversations["conv-B"] = b
+	registry.bind_session("S", "conv-B")
+	registry.set_session_home("S", "conv-A")
+	return registry
+
+
+class _ForceEndBackend(_IdleBackend):
+	async def write_conversation_meta(self, *args, **kwargs):
+		pass
+
+	async def write_conversation_member(self, *args, **kwargs):
+		pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("away", [True, False])
+async def test_ending_a_conversation_leaves_a_session_bound_elsewhere_alone(away):
+	registry = _bound_elsewhere_registry(away)
+	backend = _ForceEndBackend()
+	ended = await _idle_end_once(registry, backend, make_logger(), idle_days=14)
+	await _pump()
+	assert ended == ["conv-A"]
+	assert registry.session_to_conversation_id.get("S") == "conv-B"
+	assert sorted(registry.conversations) == ["conv-A", "conv-B"]
+	assert "S" not in registry.session_home_conversation_id
+	assert (("S", None), {}) in backend.homes
+
+
+@pytest.mark.asyncio
+async def test_a_lost_session_still_lost_in_another_active_conversation_stays_in_the_lost_set():
+	registry, conv = _idle_registry()
+	conv.members_active["s"].session_end_reason = "lost"
+	other = Conversation(id="conv-2", title="t", created_at=NOW, last_activity_at=NOW)
+	other.members_active["s"] = ConversationMember(
+		cli_session_id="s", sender="Claude", cwd="", surface="windows", joined_at=0.0, alive=False,
+	)
+	other.members_active["s"].session_end_reason = "lost"
+	registry.conversations["conv-2"] = other
+	from server.gateway.dispatch import handle_force_end
+	await handle_force_end(registry, "conv-1", _IdleBackend(), make_logger())
+	await _pump()
+	assert "s" in registry.lost_dormant
+
+
+@pytest.mark.asyncio
+async def test_a_candidate_that_stops_qualifying_during_the_pass_is_skipped(monkeypatch):
+	registry, conv = _idle_registry()
+	second = Conversation(id="conv-2", title="t", created_at=NOW - 40 * DAY, last_activity_at=NOW - 20 * DAY)
+	registry.conversations["conv-2"] = second
+	import server.gateway.dispatch as dispatch
+	real = dispatch.handle_force_end
+
+	async def ending_then_binding(registry, conversation_id, *args, **kwargs):
+		await real(registry, conversation_id, *args, **kwargs)
+		registry.bind_session("late", "conv-2")
+
+	monkeypatch.setattr(dispatch, "handle_force_end", ending_then_binding)
+	ended = await _idle_end_once(registry, _IdleBackend(), make_logger(), idle_days=14, now_ts=NOW)
+	assert ended == ["conv-1"]
+	assert second.state == "active"

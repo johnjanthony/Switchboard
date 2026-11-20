@@ -352,3 +352,85 @@ def test_repair_rebuilds_the_set_from_a_stored_lost_member_without_reporting_it(
 	member.alive, member.session_end_reason = False, "lost"
 	assert repair_members(registry, sessions) == []
 	assert sid in registry.lost_dormant
+
+
+from server.member_lifecycle import idle_end_candidates, idle_since
+from server.registry import Conversation, Registry
+
+DAY = 86400.0
+NOW = 1_800_000_000.0
+
+
+def _dead_conversation(last_activity_days_ago=20.0, ended_iso=None):
+	registry = Registry()
+	conv = Conversation(id="conv-1", title="t", created_at=NOW - 40 * DAY, last_activity_at=NOW - last_activity_days_ago * DAY)
+	member = ConversationMember(cli_session_id="s", sender="Claude", cwd="", surface="windows", joined_at=0.0, alive=False)
+	member.session_ended_at = ended_iso
+	conv.members_active["s"] = member
+	registry.conversations["conv-1"] = conv
+	return registry, conv, member
+
+
+def _ids(registry, days=14):
+	return [c.id for c, _ in idle_end_candidates(registry, idle_days=days, now_ts=NOW)]
+
+
+def test_a_dead_conversation_idle_past_the_knob_is_a_candidate():
+	registry, conv, member = _dead_conversation()
+	[(found, days)] = idle_end_candidates(registry, idle_days=14, now_ts=NOW)
+	assert found is conv and round(days) == 20
+
+
+@pytest.mark.asyncio
+async def test_each_condition_blocks_on_its_own():
+	registry, conv, member = _dead_conversation()
+	member.alive = True
+	assert _ids(registry) == []
+
+	registry, conv, member = _dead_conversation()
+	registry.add("conv-1", "s", "Claude", "req-1")
+	registry.find_by_request_id("conv-1", "req-1").future = None
+	assert _ids(registry) == []
+
+	registry, conv, member = _dead_conversation()
+	conv.wait_queue.append({"future": asyncio.get_running_loop().create_future(), "member": member})
+	assert _ids(registry) == []
+
+	registry, conv, member = _dead_conversation(last_activity_days_ago=13.0)
+	assert _ids(registry) == []
+
+
+def test_the_clock_runs_from_the_later_of_activity_and_last_dormancy():
+	from datetime import datetime, timezone
+	recent = datetime.fromtimestamp(NOW - 3600, tz=timezone.utc).isoformat()
+	registry, conv, member = _dead_conversation(last_activity_days_ago=30.0, ended_iso=recent)
+	assert _ids(registry) == []
+
+
+def test_zero_disables_and_a_hidden_or_memberless_conversation_counts():
+	registry, conv, member = _dead_conversation()
+	assert _ids(registry, days=0) == []
+	conv.hidden = True
+	assert _ids(registry) == ["conv-1"]
+	conv.members_active.clear()
+	assert _ids(registry) == ["conv-1"]
+
+
+def test_a_conversation_with_no_usable_timestamp_is_never_a_candidate():
+	registry, conv, member = _dead_conversation(ended_iso="not a date")
+	conv.last_activity_at = 0.0
+	conv.created_at = 0.0
+	assert idle_since(conv) is None
+	assert _ids(registry) == []
+
+
+def test_an_ended_conversation_is_not_a_candidate():
+	registry, conv, member = _dead_conversation()
+	conv.state = "ended"
+	assert _ids(registry) == []
+
+
+def test_a_conversation_with_a_session_bound_to_it_is_not_a_candidate():
+	registry, conv, member = _dead_conversation()
+	registry.bind_session("fresh-spawn", "conv-1")
+	assert _ids(registry) == []

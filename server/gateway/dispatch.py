@@ -117,7 +117,9 @@ async def dispatch_responses(
 		except Exception as exc:
 			await supervisor.record_crash(exc)
 
-async def handle_force_end(registry, conversation_id: str, backend=None, logger=None) -> None:
+async def handle_force_end(
+	registry, conversation_id: str, backend=None, logger=None, reason_text: str | None = None,
+) -> None:
 	"""Force-end a conversation: resolve all waiters with sentinel, clear members,
 	apply session-fallback for each session.
 
@@ -125,10 +127,12 @@ async def handle_force_end(registry, conversation_id: str, backend=None, logger=
 
 	backend: optional ConversationStore — if provided, Firebase writes are issued
 	for member removal, state change, and a force-end system message.
+	reason_text: replaces the default force-end message text.
 	"""
 	import time as _time
 	from datetime import datetime, timezone
 	from server.session_fallback import apply_fallback
+	from server.member_lifecycle import LOST_REASON
 
 	conv = registry.conversations.get(conversation_id)
 	if not conv or conv.state == "ended":
@@ -161,6 +165,16 @@ async def handle_force_end(registry, conversation_id: str, backend=None, logger=
 		# Collect member senders for Firebase removal
 		member_senders = [m.sender for m in conv.members_active.values()]
 
+		for member in conv.members_active.values():
+			sid = member.cli_session_id
+			still_lost_elsewhere = any(
+				other.id != conversation_id and other.state == "active"
+				and (m := other.members_active.get(sid)) is not None
+				and not m.alive and m.session_end_reason == LOST_REASON
+				for other in registry.conversations.values()
+			)
+			if not still_lost_elsewhere:
+				registry.lost_dormant.discard(sid)
 		# Clear active membership
 		conv.members_active.clear()
 
@@ -174,7 +188,7 @@ async def handle_force_end(registry, conversation_id: str, backend=None, logger=
 				"seq": len(conv.messages),
 				"sender": "<system>",
 				"type": "system",
-				"text": "Conversation force-ended.",
+				"text": reason_text or "Conversation force-ended.",
 				"timestamp": now_iso,
 			}
 			conv.messages.append(force_end_msg)
@@ -208,7 +222,19 @@ async def handle_force_end(registry, conversation_id: str, backend=None, logger=
 	# Apply session-fallback for each member's session (alive AND dormant).
 	# apply_fallback dispatches internally based on binding state.
 	for sid in session_ids:
-		apply_fallback(registry, sid, backend=backend)
+		bound_to = registry.session_to_conversation_id.get(sid)
+		if bound_to is None or bound_to == conversation_id:
+			apply_fallback(registry, sid, backend=backend)
+			continue
+		# Bound to another conversation: leave that binding alone and only drop
+		# a home pointer that names the conversation that just ended.
+		if registry.session_home_conversation_id.get(sid) == conversation_id:
+			registry.session_home_conversation_id.pop(sid, None)
+			if backend is not None:
+				_spawn_bg(
+					backend.set_session_home(sid, None),
+					label=f"fb_clear_session_home:{sid}",
+				)
 
 
 async def _report_command_failure(backend, logger, supervisor, exc, *, kind: str, notice: str) -> None:
@@ -768,6 +794,25 @@ async def _conversation_sweep_once(registry, backend, logger, *, retention_hours
 	return deleted
 
 
+async def _idle_end_once(registry, backend, logger, *, idle_days: int, now_ts=None) -> list[str]:
+	"""One idle tick: end every Active conversation nobody is in and nothing waits on, idle past the knob."""
+	import time as _time
+	from server.member_lifecycle import idle_end_candidates, idle_end_days_of
+	now = now_ts if now_ts is not None else _time.time()
+	ended: list[str] = []
+	for conv, days in idle_end_candidates(registry, idle_days=idle_days, now_ts=now):
+		# State can change across the awaits of earlier ends; re-check this one.
+		if idle_end_days_of(registry, conv, idle_days=idle_days, now_ts=now) is None:
+			continue
+		await handle_force_end(
+			registry, conv.id, backend, logger,
+			reason_text=f"Conversation ended after {idle_days} days with no live session.",
+		)
+		await logger.info(f"conversation_idle_ended: {conv.id} idle_days={days:.1f}")
+		ended.append(conv.id)
+	return ended
+
+
 def _parse_iso_to_epoch(ts):
 	"""Best-effort ISO-8601 -> epoch seconds. Returns None on anything
 	unparseable (the caller skips those entries rather than crashing the sweep).
@@ -809,12 +854,15 @@ async def _prune_admin_notifications_once(backend, logger, *, retention_hours, n
 
 async def dispatch_conversation_sweep(
 	registry, backend, logger, supervisor, *,
-	retention_hours, admin_retention_hours, interval: float = 3600.0,
+	retention_hours, admin_retention_hours, interval: float = 3600.0, idle_end_days: int = 0,
 ):
 	"""Hourly retention judge: delete ended conversations past their horizon
-	(and their Storage blobs), then prune admin_notifications past their own
+	(and their Storage blobs), end Active conversations nobody has been in for
+	idle_end_days (0 disables), then prune admin_notifications past their own
 	window. Runs a pass immediately at startup, then hourly. Each pass is
-	isolated - a failure in one records a crash but does not skip the other."""
+	isolated - a failure in one records a crash but does not skip the others.
+	The idle pass runs after the deletion pass so one tick never ends and
+	deletes the same conversation."""
 	while True:
 		ok = True
 		try:
@@ -823,6 +871,15 @@ async def dispatch_conversation_sweep(
 			)
 			if deleted:
 				await logger.info(f"conversation_sweep_deleted: {deleted}")
+		except asyncio.CancelledError:
+			raise
+		except Exception as exc:
+			ok = False
+			await supervisor.record_crash(exc)
+		try:
+			idle_ended = await _idle_end_once(registry, backend, logger, idle_days=idle_end_days)
+			if idle_ended:
+				await logger.info(f"conversation_sweep_idle_ended: {idle_ended}")
 		except asyncio.CancelledError:
 			raise
 		except Exception as exc:

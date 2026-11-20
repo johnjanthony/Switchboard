@@ -24,6 +24,7 @@ def _clear_env(monkeypatch):
 		"SWITCHBOARD_TOKEN",
 		"SWITCHBOARD_ROUTE_RATE_LIMIT",
 		"SWITCHBOARD_ADMIN_NOTIFICATION_RETENTION_HOURS",
+		"SWITCHBOARD_CONVERSATION_IDLE_END_DAYS",
 	]:
 		monkeypatch.delenv(key, raising=False)
 
@@ -242,3 +243,10 @@ def test_loopback_hosts_do_not_require_token(monkeypatch, tmp_path, host):
 	monkeypatch.setenv("SWITCHBOARD_HOST", host)
 	cfg = load_config(dotenv_path=tmp_path / "does-not-exist.env")
 	assert cfg.auth_token is None
+
+
+def test_conversation_idle_end_days_defaults_to_14_and_zero_disables(monkeypatch, tmp_path):
+	_clear_env(monkeypatch)
+	assert load_config(dotenv_path=tmp_path / "no.env").conversation_idle_end_days == 14
+	monkeypatch.setenv("SWITCHBOARD_CONVERSATION_IDLE_END_DAYS", "0")
+	assert load_config(dotenv_path=tmp_path / "no.env").conversation_idle_end_days == 0

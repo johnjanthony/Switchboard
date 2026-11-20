@@ -75,6 +75,9 @@ class Config:
 	# /answers nodes) survives before the conversation sweep deletes it.
 	# Env: SWITCHBOARD_CONVERSATION_RETENTION_HOURS, default 72.
 	conversation_retention_hours: int = 72
+	# Days an Active conversation with no live member, open question or waiter idles before it ends by itself; 0 disables.
+	# Env: SWITCHBOARD_CONVERSATION_IDLE_END_DAYS, default 14.
+	conversation_idle_end_days: int = 14
 	# How long a system admin_notifications entry survives before the sweep
 	# prunes it. Env: SWITCHBOARD_ADMIN_NOTIFICATION_RETENTION_HOURS, default
 	# 168 (7 days). Separate from conversation retention on purpose - admin
@@ -116,6 +119,7 @@ def load_config(dotenv_path: str | Path | None = None) -> Config:
 		session_poll_lost_after_seconds=int(os.environ.get("SWITCHBOARD_SESSION_POLL_LOST_AFTER_SECONDS", "90")),
 		session_retention_hours=int(os.environ.get("SWITCHBOARD_SESSION_RETENTION_HOURS", "72")),
 		conversation_retention_hours=int(os.environ.get("SWITCHBOARD_CONVERSATION_RETENTION_HOURS", "72")),
+		conversation_idle_end_days=int(os.environ.get("SWITCHBOARD_CONVERSATION_IDLE_END_DAYS", "14")),
 		admin_notification_retention_hours=int(os.environ.get("SWITCHBOARD_ADMIN_NOTIFICATION_RETENTION_HOURS", "168")),
 	)
 	require_token_for_nonloopback(cfg.host, cfg.auth_token)

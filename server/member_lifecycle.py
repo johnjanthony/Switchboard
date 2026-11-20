@@ -292,3 +292,46 @@ def repair_members(registry, session_registry) -> list[tuple[str, ConversationMe
 			changed.append((conv_id, member))
 	rebuild_lost_dormant(registry)
 	return changed
+
+
+def idle_since(conv) -> float | None:
+	"""The latest sign of life: last activity or any member's dormancy time; the creation time if neither is usable."""
+	from datetime import datetime
+	stamps = [conv.last_activity_at]
+	for member in conv.members_active.values():
+		try:
+			stamps.append(datetime.fromisoformat(member.session_ended_at).timestamp())
+		except (TypeError, ValueError):
+			pass
+	usable = [t for t in stamps if isinstance(t, (int, float)) and t > 0]
+	if usable:
+		return max(usable)
+	return conv.created_at if conv.created_at > 0 else None
+
+
+def idle_end_days_of(registry, conv, *, idle_days: float, now_ts: float) -> float | None:
+	"""The conversation's idle days if it qualifies to end by itself now, else None."""
+	if idle_days <= 0 or conv.state != "active":
+		return None
+	if conv.id in registry.session_to_conversation_id.values():
+		return None
+	if any(m.alive for m in conv.members_active.values()):
+		return None
+	if registry.pending_for_conversation(conv.id):
+		return None
+	if any(not entry["future"].done() for entry in conv.wait_queue):
+		return None
+	since = idle_since(conv)
+	if since is None or now_ts - since <= idle_days * 86400:
+		return None
+	return (now_ts - since) / 86400
+
+
+def idle_end_candidates(registry, *, idle_days: float, now_ts: float) -> list[tuple[Conversation, float]]:
+	"""Active conversations nobody is in and nothing is waiting on, idle past the knob, with their idle days."""
+	found = []
+	for conv in registry.conversations.values():
+		days = idle_end_days_of(registry, conv, idle_days=idle_days, now_ts=now_ts)
+		if days is not None:
+			found.append((conv, days))
+	return found

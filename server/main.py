@@ -1312,6 +1312,7 @@ async def _run(config: Config) -> None:
 			registry, backend, logger, loop_sups["dispatch_conversation_sweep"],
 			retention_hours=config.conversation_retention_hours,
 			admin_retention_hours=config.admin_notification_retention_hours,
+			idle_end_days=config.conversation_idle_end_days,
 		)
 	)
 	presence_task = asyncio.create_task(dispatch_presence(backend, loop_sups["dispatch_presence"]))
