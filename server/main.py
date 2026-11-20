@@ -321,7 +321,12 @@ def _build_session_start_route(session_registry: SessionRegistry, logger, regist
 			session_id, cwd=cwd, start_source=source, interactive=interactive if isinstance(interactive, bool) else None,
 		)
 		if registry is not None:
-			await close_revive_window(registry, backend, logger, session_id)
+			# The mod's session.start also fires after a hot reload inside the same
+			# process; that is the same life showing itself, not a new one.
+			if body.get("reload") is True:
+				await revive_member(registry, session_registry, backend, logger, session_id, trigger="reload")
+			else:
+				await close_revive_window(registry, backend, logger, session_id)
 		return JSONResponse({}, status_code=200)
 	return session_start
 

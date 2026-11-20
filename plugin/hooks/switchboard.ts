@@ -35,6 +35,9 @@ const turnId = atom({ plugin: 'switchboard', key: 'turnId' } as const, null as s
 const warned401 = atom({ plugin: 'switchboard', key: 'warned401' } as const, false)
 // Bare redirects the turn-end check has submitted since the session's last real input.
 const redirects = atom({ plugin: 'switchboard', key: 'redirects' } as const, 0)
+// The session id this process last saw a session.start for: a later start of the
+// same id is a hot reload of the mod, not a new process.
+const startedId = atom({ plugin: 'switchboard', key: 'startedId' } as const, null as string | null)
 
 // -- server client -----------------------------------------------------------
 
@@ -488,7 +491,13 @@ export const register: Register = on => {
 			// permission dialog was verified to draw at once and race the PermissionRequest
 			// hook; a -p or SDK run, a desktop or VS Code session reports false.
 			const interactive = e.isInteractive && e.surface === 'terminal'
-			await postJson($, '/session_start', { session_id: await $.session.id(), cwd: e.cwd, interactive })
+			// The event cannot tell a reload from a new process; $.state can, since it
+			// survives a reload and a new process starts without it. The server keeps
+			// a reloaded session's revive window open.
+			const sessionId = await $.session.id()
+			const reload = (await read($, startedId)) === sessionId
+			if (!reload) await update($, startedId, () => sessionId)
+			await postJson($, '/session_start', { session_id: sessionId, cwd: e.cwd, interactive, reload })
 		} catch (error) {
 			$.ui.log(`switchboard: session start post failed: ${String(error)}`, { to: 'debug' })
 		}

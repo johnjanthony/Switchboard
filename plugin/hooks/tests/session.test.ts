@@ -8,7 +8,7 @@ test('session start posts the session to the server', async ($, on) => {
 	const sent = postsTo(w, '/session_start')
 	expect(sent).toHaveLength(1)
 	expect(sent[0]?.url).toBe('http://127.0.0.1:9876/session_start')
-	expect(sent[0]?.body).toEqual({ session_id: 'S1', cwd: 'C:/Work/X', interactive: true })
+	expect(sent[0]?.body).toEqual({ session_id: 'S1', cwd: 'C:/Work/X', interactive: true, reload: false })
 	expect(sent[0]?.headers).toEqual({ 'Content-Type': 'application/json' })
 })
 
@@ -19,6 +19,16 @@ test('session start reports whether the session is a terminal REPL', async ($, o
 	await $.session.start({ cwd: 'C:/Work/X', surface: 'desktop', isInteractive: true })
 	const sent = postsTo(w, '/session_start')
 	expect(sent.map(s => (s.body as { interactive?: boolean }).interactive)).toEqual([true, false, false])
+})
+
+test('a second start of the same session is a hot reload; a start of another id is not', async ($, on) => {
+	const w = world(on)
+	await $.session.start({ cwd: 'C:/Work/X', surface: 'terminal', isInteractive: true })
+	await $.session.start({ cwd: 'C:/Work/X', surface: 'terminal', isInteractive: true })
+	w.sessionId = 'S2'
+	await $.session.start({ cwd: 'C:/Work/X', surface: 'terminal', isInteractive: true })
+	const sent = postsTo(w, '/session_start')
+	expect(sent.map(s => (s.body as { reload?: boolean }).reload)).toEqual([false, true, false])
 })
 
 test('a headless run posts its start too', async ($, on) => {

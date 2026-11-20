@@ -268,6 +268,19 @@ async def test_session_start_closes_the_window_and_does_not_revive():
 
 
 @pytest.mark.asyncio
+async def test_a_mod_reload_start_revives_instead_of_closing_the_window():
+	from server.main import _build_session_start_route
+	registry, backend, conv_id, sid, sessions = await _dormant_world()
+	app = Starlette()
+	app.add_route(
+		"/session_start", _build_session_start_route(sessions, _Log(), registry=registry, backend=backend), methods=["POST"],
+	)
+	resp = TestClient(app).post("/session_start", json={"session_id": sid, "cwd": "C:/X", "reload": True})
+	assert resp.status_code == 200
+	_assert_revived(registry, conv_id, sid)
+
+
+@pytest.mark.asyncio
 async def test_a_tool_call_that_beats_its_status_post_revives_and_does_not_mint(tmp_path):
 	from server.config import Config
 	from server.gateway import build_tool_handlers
