@@ -434,3 +434,17 @@ def test_a_conversation_with_a_session_bound_to_it_is_not_a_candidate():
 	registry, conv, member = _dead_conversation()
 	registry.bind_session("fresh-spawn", "conv-1")
 	assert _ids(registry) == []
+
+
+@pytest.mark.asyncio
+async def test_revive_is_refused_for_a_session_the_roster_records_as_ended():
+	registry, backend, conv_id, sid, sessions = await _lost_dormant()
+	sessions.record_session_end(sid, reason="logout", ended_at=_fixed_now())
+	log = _Log()
+	conv = registry.conversations[conv_id]
+	before = len(conv.messages)
+	assert await revive_member(registry, sessions, backend, log, sid, trigger="poll", now=_fixed_now) is False
+	await _pump()
+	member = conv.members_active[sid]
+	assert member.alive is False and sid not in registry.session_to_conversation_id
+	assert len(conv.messages) == before and log.infos == []

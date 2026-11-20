@@ -13,7 +13,7 @@ reason values:
 from __future__ import annotations
 from typing import Callable
 
-from server.member_lifecycle import make_member_dormant
+from server.member_lifecycle import close_revive_window, make_member_dormant
 
 PERMANENTLY_LOST_REASONS = {"clear", "compact"}
 
@@ -47,6 +47,11 @@ async def handle_session_end(
 		message_for=lambda m: f"{m.sender}'s session ended ({reason}); member is now dormant.",
 		now=now, backend=backend, permanent=reason in PERMANENTLY_LOST_REASONS,
 	)
+	if status == "no_binding":
+		# A lost-dormant session has no binding; an explicit end is final, so it closes the revive window.
+		await close_revive_window(
+			registry, backend, logger, session_id, reason=reason, permanent=reason in PERMANENTLY_LOST_REASONS,
+		)
 	if status != "ok":
 		if logger is not None:
 			if status == "no_binding":

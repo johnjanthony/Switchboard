@@ -119,7 +119,7 @@ async def sweep_lost_members(
 
 	A session that lived since it was bound goes dormant once its record is lost and its last sign of
 	life is older than the poll threshold; one that never showed life since it was bound goes dormant
-	after the launch threshold, whatever its record says.
+	after the launch threshold, provided its record is lost, ended or missing.
 	"""
 	dormant: list[str] = []
 	for sid, conv_id in list(registry.session_to_conversation_id.items()):
@@ -181,11 +181,16 @@ async def revive_member(
 ) -> bool:
 	"""Bring back the member of a session made dormant as lost once it shows a sign of life.
 
-	Costs one set lookup for any session that was not lost. Returns True when a member was revived
-	and the session rebound to its conversation.
+	Costs one set lookup for any session that was not lost. A session the roster records as ended is
+	never revived: an explicit end is authoritative, and only a session start begins a new life.
+	Returns True when a member was revived and the session rebound to its conversation.
 	"""
 	if session_id not in registry.lost_dormant:
 		return False
+	if session_registry is not None:
+		rec = session_registry.get(session_id)
+		if rec is not None and rec.state == "ended":
+			return False
 	if session_id in registry.session_to_conversation_id:
 		registry.lost_dormant.discard(session_id)
 		return False
@@ -237,8 +242,14 @@ async def revive_member(
 	return True
 
 
-async def close_revive_window(registry, backend, logger, session_id: str) -> bool:
-	"""A new session start for a lost-dormant session is a new life: rewrite its reason so it never revives."""
+async def close_revive_window(
+	registry, backend, logger, session_id: str, *, reason: str = RESTARTED_REASON, permanent: bool = False,
+) -> bool:
+	"""Close a lost-dormant session's revive window: rewrite its reason so it never revives.
+
+	A new session start rewrites it to "restarted"; an explicit session end passes its own reason and,
+	for a reason that can never be resumed, permanent=True.
+	"""
 	if session_id not in registry.lost_dormant:
 		return False
 	registry.lost_dormant.discard(session_id)
@@ -249,11 +260,13 @@ async def close_revive_window(registry, backend, logger, session_id: str) -> boo
 			conv.state == "active" and member is not None and member.alive is False
 			and member.session_end_reason == LOST_REASON
 		):
-			member.session_end_reason = RESTARTED_REASON
+			member.session_end_reason = reason
+			if permanent:
+				member.session_lost_permanently = True
 			if backend is not None:
 				_spawn_bg(
 					backend.write_conversation_member(conv.id, member),
-					label=f"fb_write_member_restarted:{conv.id}:{member.sender}",
+					label=f"fb_write_member_{reason}:{conv.id}:{member.sender}",
 				)
 	return True
 

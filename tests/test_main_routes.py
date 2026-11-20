@@ -321,3 +321,17 @@ async def test_the_round_trip_delivers_the_message_sent_while_dormant():
 	assert len(body["notices"]) == 1 and body["notices"][0].endswith("are you there")
 	_assert_revived(registry, conv_id, sid)
 	assert list(registry.conversations) == [conv_id]
+
+
+@pytest.mark.asyncio
+async def test_a_poll_after_session_end_does_not_revive():
+	from server.main import _build_inbox_route
+	registry, backend, conv_id, sid, sessions = await _dormant_world()
+	sessions.get(sid).state = "lost"
+	sessions.record_session_end(sid, reason="logout", ended_at=_fixed_now())
+	app = Starlette()
+	app.add_route("/sessions/{sid}/inbox", _build_inbox_route(registry, sessions, backend, _Log()), methods=["GET"])
+	assert TestClient(app).get(f"/sessions/{sid}/inbox").status_code == 200
+	member = registry.conversations[conv_id].members_active[sid]
+	assert member.alive is False
+	assert sid not in registry.session_to_conversation_id

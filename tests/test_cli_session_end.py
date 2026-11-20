@@ -276,3 +276,23 @@ async def test_unbound_session_end_logs_no_binding_on_the_info_channel():
 		"session_end_no_binding: session sess-X not bound to any conversation (reason=logout)"
 	]
 	assert logger.errors == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason,permanent", [("logout", False), ("clear", True)])
+async def test_ending_a_lost_dormant_session_closes_its_revive_window(reason, permanent):
+	from server.member_lifecycle import LOST_REASON, lost_message, make_member_dormant
+	from tests.test_member_lifecycle import _bound_live_member, _pump
+	registry, backend, conv_id, sid, sessions, clock = _bound_live_member()
+	await make_member_dormant(
+		registry, sid, reason=LOST_REASON, message_for=lambda m: lost_message(m.sender), now=_fixed_now, backend=backend,
+	)
+	await _pump()
+	backend.member_writes.clear()
+	await handle_session_end(registry, sid, reason, _fixed_now, backend=backend, session_registry=sessions)
+	await _pump()
+	member = registry.conversations[conv_id].members_active[sid]
+	assert member.session_end_reason == reason
+	assert member.session_lost_permanently is permanent
+	assert sid not in registry.lost_dormant
+	assert backend.member_writes == [(conv_id, member)]

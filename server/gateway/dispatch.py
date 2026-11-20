@@ -149,10 +149,12 @@ async def handle_force_end(
 		# Collect session_ids for fallback (before clearing members).
 		# Both alive and dormant member sessions go through apply_fallback so
 		# their home-pointer state stays consistent with the conv's lifecycle.
-		# apply_fallback detects dormant sessions internally (binding already
-		# cleared by cli_session_end) and performs cleanup-only: it clears the
-		# home pointer if it referenced this (now-Ended) conversation, without
-		# creating a new conversation or trying to unbind again.
+		# apply_fallback detects dormant sessions internally - a cleared binding,
+		# or a roster record that is lost, ended or missing - and performs
+		# cleanup-only: it clears the home pointer if it referenced this
+		# (now-Ended) conversation, without creating a new conversation or
+		# trying to unbind again. A session bound to another conversation is
+		# skipped by the loop below and keeps that binding.
 		session_ids = list(conv.members_active.keys())
 		# Also sweep sessions BOUND to this conversation without a member yet -
 		# the fresh-spawn window (REV-103). Force-end must not leave them bound
