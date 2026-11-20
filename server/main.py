@@ -1004,6 +1004,42 @@ class SwitchboardServer(uvicorn.Server):
 		self.should_exit = True
 
 
+class SessionMirrorWriter:
+	"""Writes each session's record to RTDB one at a time, latest payload wins.
+
+	Independent spawned writes for one session can land out of order, leaving the
+	older record in RTDB with nothing to rewrite it (the registry dedupes by
+	payload). So a session has at most one write in flight, and a change that
+	arrives meanwhile replaces the pending payload (None means delete)."""
+
+	def __init__(self, get_backend, logger):
+		self._get_backend = get_backend
+		self._logger = logger
+		self._pending: dict[str, dict | None] = {}
+		self._draining: set[str] = set()
+
+	def submit(self, sid: str, payload: dict | None) -> None:
+		self._pending[sid] = payload
+		if sid not in self._draining:
+			self._draining.add(sid)
+			_spawn_bg(self._drain(sid), label=f"fb_session_mirror:{sid}")
+
+	async def _drain(self, sid: str) -> None:
+		try:
+			while sid in self._pending:
+				payload = self._pending.pop(sid)
+				backend = self._get_backend()
+				try:
+					if payload is None:
+						await backend.delete_session_record(sid)
+					else:
+						await backend.write_session_record(sid, payload)
+				except Exception as exc:
+					await self._logger.surface_error(f"session_mirror_write_failed: {sid} {exc!r}")
+		finally:
+			self._draining.discard(sid)
+
+
 async def _run(config: Config) -> None:
 	# Captured first, before anything else loads: /healthz reports what this
 	# process is running so the smoke harness can refuse a stale service.
@@ -1027,12 +1063,8 @@ async def _run(config: Config) -> None:
 	registry.sessions = session_registry
 	quota_store = QuotaStore()
 
-	def _session_mirror(sid: str, payload: dict | None) -> None:
-		if payload is None:
-			_spawn_bg(backend.delete_session_record(sid), label=f"fb_session_delete:{sid}")
-		else:
-			_spawn_bg(backend.write_session_record(sid, payload), label=f"fb_session_write:{sid}")
-	session_registry.set_mirror(_session_mirror)
+	# backend is built below; the writer looks it up at write time.
+	session_registry.set_mirror(SessionMirrorWriter(lambda: backend, logger).submit)
 
 	# Resolve WSL home at startup so downstream code can compute WSL paths
 	# without spawning subprocesses per-request. Config is frozen; use replace().
