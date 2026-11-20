@@ -444,11 +444,22 @@ async def flow_killed_session_parks(ctx, rep, args):
 	if not msg_id:
 		raise SmokeFailure("the killed identity's pending_questions record has no msgId")
 
+	# The mod's poll keeps running while an ask blocks; this one stands in for it, so the
+	# session's latest sign of life postdates its binding to the conversation.
+	http_get_json(inbox)
 	# The poll stops here. The sweep judges the session after 90 s without one, on
 	# its next 60 s tick (later only if the host slept, which restarts the grace).
 	def _lost():
 		return True if rtdb(ctx, f"sessions/{killed.cli_session_id}/state").get() == "lost" else None
 	await poll_until("the silent session marked lost by the sweep", _lost, 300, interval=5.0)
+	member_path = f"conversations/{killed.conversation_id}/members_active/{killed.sender}"
+
+	def _dormant():
+		return True if rtdb(ctx, f"{member_path}/alive").get() is False else None
+	await poll_until("the lost session's member made dormant", _dormant, 30)
+	end_reason = rtdb(ctx, f"{member_path}/session_end_reason").get()
+	if end_reason != "lost":
+		raise SmokeFailure(f"expected session_end_reason 'lost' on the dormant member, got {end_reason!r}")
 	envelope = await await_task("the blocked ask to return the parked envelope", task, 30)
 	try:
 		parked_status = json.loads(envelope).get("status")
@@ -478,6 +489,13 @@ async def flow_killed_session_parks(ctx, rep, args):
 				return notice
 		return None
 	await poll_until("the parked answer's notice in the killed identity's inbox", _find_notice, 15)
+
+	def _alive():
+		return True if rtdb(ctx, f"{member_path}/alive").get() is True else None
+	await poll_until("the member alive again after the session showed life", _alive, 15)
+	bound = rtdb(ctx, f"sessions/{killed.cli_session_id}/conversation_id").get()
+	if bound != killed.conversation_id:
+		raise SmokeFailure(f"expected the session bound to {killed.conversation_id}, got {bound!r}")
 
 
 FLOWS: list[tuple[str, callable]] = [
