@@ -159,3 +159,23 @@ async def test_wrapper_notify_human_with_valid_session_routes_to_handler(cfg, tm
 	assert text == "ERROR: John is at his desk (notification delivered to phone anyway).", f"Expected at-desk sentinel, got: {text!r}"
 	assert len(backend.channel_messages) == 1, "notification must still be written even when at desk"
 	assert backend.channel_messages[0]["content"] == "status update"
+
+
+@pytest.mark.asyncio
+async def test_wrapper_send_document_human_passes_content_the_mod_read(mcp_instance):
+	"""A WSL session's mod adds content_base64 and content_path to the call; the
+	wrapper must forward both, or the server would read the WSL path itself."""
+	import base64
+	mcp, _registry, backend = mcp_instance
+	result = await mcp.call_tool("send_document_human", {
+		"path": "notes/report.md",
+		"sender": "agent-x",
+		"cli_session_id": "sess-wrapper-doc",
+		"cwd": "/home/janthony/work/rpdm",
+		"content_base64": base64.b64encode(b"# hi\n").decode("ascii"),
+		"content_path": "/home/janthony/work/rpdm/notes/report.md",
+	})
+	assert _extract_text(result) == "ok"
+	doc_msg = next(m for m in backend.channel_messages if m["message_type"] == "document")
+	assert doc_msg["content_bytes"] == b"# hi\n"
+	assert doc_msg["filename"] == "report.md"

@@ -99,6 +99,55 @@ async def test_document_upload_stores_storage_path(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_document_content_uploads_the_bytes_under_its_filename(monkeypatch):
+	"""A WSL session's document arrives as bytes the mod read (no local path the
+	service can open): they are uploaded as they are, named by the filename."""
+	import asyncio as _asyncio
+	loop = _asyncio.get_running_loop()
+	be = _make_backend(monkeypatch, loop, bucket="my-bucket")
+	from server import firebase as fb_module
+
+	uploads = []
+
+	class _FakeBlob:
+		def __init__(self, name):
+			self.name = name
+		def upload_from_filename(self, _path):
+			raise AssertionError("content must not be read from a path")
+		def upload_from_string(self, data, content_type=None):
+			uploads.append((self.name, data, content_type))
+		def generate_signed_url(self, **_kw):
+			return "https://storage.googleapis.com/my-bucket/" + self.name
+
+	class _FakeBucket:
+		def blob(self, name):
+			return _FakeBlob(name)
+
+	fake_storage = MagicMock()
+	fake_storage.bucket.return_value = _FakeBucket()
+	monkeypatch.setattr(fb_module, "storage", fake_storage)
+
+	async def _noop_fcm(*a, **k):
+		return None
+	be._send_fcm = _noop_fcm
+
+	await be.write_conversation_message(
+		"conv-1", "Claude", "document", "cap",
+		filename="report.md", content=b"# from wsl\n",
+	)
+
+	assert len(uploads) == 1
+	blob_name, data, content_type = uploads[0]
+	assert blob_name.startswith("documents/") and blob_name.endswith("/report.md")
+	assert data == b"# from wsl\n"
+	assert content_type == "text/markdown"
+	payload = fb_module.db.reference.return_value.push.return_value.set.call_args[0][0]
+	assert payload["storage_path"] == blob_name
+	assert payload["filename"] == "report.md"
+	assert payload["url"] == "https://storage.googleapis.com/my-bucket/" + blob_name
+
+
+@pytest.mark.asyncio
 async def test_read_document_downloads_by_storage_path(monkeypatch):
 	import asyncio as _asyncio
 	loop = _asyncio.get_running_loop()

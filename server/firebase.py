@@ -536,6 +536,21 @@ class FirebaseBackend(
 
 		return await asyncio.to_thread(_do_upload)
 
+	async def _upload_bytes(self, filename: str, data: bytes) -> tuple[str, str]:
+		from server.gateway.document import guess_content_type
+		if not self._storage_bucket:
+			raise ValueError("Firebase Storage not configured (missing FIREBASE_STORAGE_BUCKET)")
+
+		def _do_upload():
+			bucket = storage.bucket(self._storage_bucket)
+			blob_name = f"documents/{_uuid.uuid4().hex}/{filename}"
+			blob = bucket.blob(blob_name)
+			blob.upload_from_string(data, content_type=guess_content_type(filename))
+			url = blob.generate_signed_url(version="v4", expiration=7 * 24 * 60 * 60)
+			return url, blob_name
+
+		return await asyncio.to_thread(_do_upload)
+
 	async def send_timeout_followup(
 		self,
 		request_id: str,
@@ -805,6 +820,7 @@ class FirebaseBackend(
 		rejected: bool = False,
 		suppress_push: bool = False,
 		command_id: str | None = None,
+		content: bytes | None = None,
 	):
 		"""Append a message to /messages/<conv_id>.
 
@@ -838,11 +854,22 @@ class FirebaseBackend(
 		if message_type is None or text is None:
 			raise TypeError("write_conversation_message: message_type and text are required when sender is a str")
 
-		# Document upload: if url is a local path, upload to Firebase Storage first
+		# Document upload: if url is a local path, or the bytes came with the call
+		# (read in the session, as a WSL session's are), upload to Firebase Storage first
 		effective_url = url
 		effective_filename = filename
 		storage_path = None
-		if message_type == "document" and url and not (url.startswith("http://") or url.startswith("https://")):
+		if message_type == "document" and content is not None:
+			try:
+				effective_url, storage_path = await self._upload_bytes(filename, content)
+				if self._logger:
+					await self._logger.info(f"firebase_upload_success: {effective_url}")
+			except Exception as exc:
+				# Fail loudly, as a path upload does below.
+				if self._logger:
+					await self._logger.surface_error(f"firebase_upload_failed: {exc}")
+				raise
+		elif message_type == "document" and url and not (url.startswith("http://") or url.startswith("https://")):
 			try:
 				from pathlib import Path as _Path
 				path = _Path(url)

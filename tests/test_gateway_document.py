@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
@@ -360,6 +361,107 @@ async def test_send_document_human_title_passthrough(cfg, logger, tmp_path):
 	assert doc_msg["title"] == "My Session"
 
 
+# ── send_document_human: content the mod read (WSL sessions) ──────────────────
+# The LocalSystem service cannot see a WSL session's files, so the mod resolves
+# and reads the file inside the session and passes its bytes; the server reads
+# nothing from disk for such a call.
+
+WSL_CWD = "/home/janthony/work/rpdm"
+
+
+def _b64(data: bytes) -> str:
+	return base64.b64encode(data).decode("ascii")
+
+
+@pytest.mark.asyncio
+async def test_send_document_human_uploads_content_the_mod_read(cfg, logger, tmp_path):
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, Registry(), backend, logger)
+	result = await handlers.send_document_human(
+		"notes/report.md",
+		"Claude",
+		caption="from WSL",
+		cli_session_id="s-doc-wsl-001",
+		cwd=WSL_CWD,
+		content_base64=_b64(b"# hello from wsl\n"),
+		content_path=f"{WSL_CWD}/notes/report.md",
+	)
+	assert result == "ok"
+	doc_msg = next(m for m in backend.channel_messages if m["message_type"] == "document")
+	assert doc_msg["filename"] == "report.md"
+	assert doc_msg["content_bytes"] == b"# hello from wsl\n"
+	assert doc_msg["url"] is None
+	assert doc_msg["content"] == "from WSL"
+	events = [json.loads(line) for line in (tmp_path / "log.jsonl").read_text().splitlines() if line]
+	sent = [ev for ev in events if ev.get("event") == "document_sent"]
+	assert len(sent) == 1
+	assert sent[0]["path"] == f"{WSL_CWD}/notes/report.md"
+	assert sent[0]["size_bytes"] == len(b"# hello from wsl\n")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name, fragment", [
+	(".env", "deny list"),
+	("api-token.md", "restricted pattern"),
+	("deploy.sh", "not on the shareable allowlist"),
+	("README", "not on the shareable allowlist"),
+])
+async def test_send_document_human_content_runs_the_name_checks(cfg, logger, name, fragment):
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, Registry(), backend, logger)
+	result = await handlers.send_document_human(
+		name,
+		"Claude",
+		cli_session_id="s-doc-wsl-names",
+		cwd=WSL_CWD,
+		content_base64=_b64(b"x"),
+		content_path=f"{WSL_CWD}/{name}",
+	)
+	assert result.startswith("ERROR:")
+	assert fragment in result
+	assert backend.sent_documents == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("over", [1, 4])  # 1 encodes to the cap's own length; 4 is refused before decoding
+async def test_send_document_human_content_over_the_size_cap_is_refused(cfg, logger, over):
+	from server.gateway.document import _MAX_DOCUMENT_BYTES
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, Registry(), backend, logger)
+	result = await handlers.send_document_human(
+		"big.log",
+		"Claude",
+		cli_session_id="s-doc-wsl-big",
+		cwd=WSL_CWD,
+		content_base64=_b64(b"x" * (_MAX_DOCUMENT_BYTES + over)),
+		content_path=f"{WSL_CWD}/big.log",
+	)
+	assert result.startswith("ERROR: File too large")
+	assert backend.sent_documents == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content_base64, content_path, expected", [
+	# Without strict decoding the junk would be dropped and "hello" sent.
+	("aGVsbG8=!!", f"{WSL_CWD}/x.md", "ERROR: content_base64 is not valid base64"),
+	(_b64(b"hello"), None, "ERROR: content_base64 needs content_path"),
+	(_b64(b"hello"), "", "ERROR: content_base64 needs content_path"),
+])
+async def test_send_document_human_malformed_content_is_refused(cfg, logger, content_base64, content_path, expected):
+	backend = RecordingBackend()
+	handlers = build_tool_handlers(cfg, Registry(), backend, logger)
+	result = await handlers.send_document_human(
+		"x.md",
+		"Claude",
+		cli_session_id="s-doc-wsl-malformed",
+		cwd=WSL_CWD,
+		content_base64=content_base64,
+		content_path=content_path,
+	)
+	assert result == expected
+	assert backend.sent_documents == []
+
+
 # ── content-type + blob-path helpers ──────────────────────────────────────────
 
 from server.gateway.document import guess_content_type, _blob_path_from_url
@@ -387,3 +489,17 @@ def test_blob_path_from_url_handles_encoded_and_missing():
 	assert _blob_path_from_url("https://storage.googleapis.com/b/documents/x/a%20b.md?sig=1") == "documents/x/a b.md"
 	assert _blob_path_from_url(None) is None
 	assert _blob_path_from_url("https://example.com/not-a-doc/file.md") is None
+
+
+def test_mod_size_cap_matches_the_server():
+	"""The mod refuses a too-large WSL file before reading it, by its own copy of
+	the cap (plugin/hooks/document.ts); the two must agree."""
+	import re
+	from server.gateway.document import _MAX_DOCUMENT_BYTES
+	source = (Path(__file__).resolve().parent.parent / "plugin" / "hooks" / "document.ts").read_text(encoding="utf-8")
+	match = re.search(r"export const MAX_DOCUMENT_BYTES = ([0-9* ]+)\n", source)
+	assert match, "MAX_DOCUMENT_BYTES not found in plugin/hooks/document.ts"
+	value = 1
+	for factor in match.group(1).split("*"):
+		value *= int(factor)
+	assert value == _MAX_DOCUMENT_BYTES

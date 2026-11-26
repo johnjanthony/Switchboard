@@ -10,6 +10,8 @@ export type Sent = { url: string; method: string; headers: Record<string, string
 export type World = {
 	clock: ReturnType<typeof mock.clock>
 	sessionId: string
+	// What $.session.cwd() answers: a WSL session's is a POSIX path.
+	cwd: string
 	surfaces: Array<'terminal' | 'desktop' | 'mobile' | 'vscode'>
 	draft: string
 	inbox: Array<Record<string, unknown>>
@@ -34,6 +36,12 @@ export type World = {
 	toolInputs: Array<Record<string, unknown>>
 	dirs: string[]
 	files: Record<string, string>
+	// Folders $.fs.stat finds, by full path.
+	folders: string[]
+	// Symbolic links: a path and where it lands.
+	links: Record<string, string>
+	// Sizes $.fs.stat reports in place of a file's own (a file that changes after its stat).
+	statSizes: Record<string, number>
 	modFiles: Record<string, string>
 	readError: string | null
 	reads: string[]
@@ -48,6 +56,7 @@ export function world(on: On, env: Record<string, string> = {}): World {
 	const w: World = {
 		clock: mock.clock(on),
 		sessionId: 'S1',
+		cwd: 'C:/Work/X',
 		surfaces: [],
 		draft: '',
 		inbox: [],
@@ -69,6 +78,9 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		toolInputs: [],
 		dirs: [],
 		files: {},
+		folders: [],
+		links: {},
+		statSizes: {},
 		modFiles: {},
 		readError: null,
 		reads: [],
@@ -82,7 +94,7 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		w.sessionIdReads += 1
 		return { value: w.sessionId }
 	})
-	on('session.cwd', () => ({ value: 'C:/Work/X' }))
+	on('session.cwd', () => ({ value: w.cwd }))
 	on('session.surfaces', () => ({ value: w.surfaces }))
 	on('session.attach', (_$, e) => ({ clientId: e.clientId }))
 	on('session.start', (_$, e) => ({ cwd: e.cwd }))
@@ -144,7 +156,12 @@ export function world(on: On, env: Record<string, string> = {}): World {
 	})
 	// The engine hands fs handlers native paths (backslashes on Windows); the
 	// world keys files by the forward-slash paths the mod builds.
-	const slashed = (path: string): string => path.replaceAll('\\', '/')
+	// The kit, running on Windows, also puts a POSIX path on the current drive;
+	// a WSL world (a POSIX cwd) keys by the POSIX path, as the engine on Linux leaves it.
+	const slashed = (path: string): string => {
+		const forward = path.replaceAll('\\', '/')
+		return w.cwd.startsWith('/') ? forward.replace(/^[A-Za-z]:(?=\/)/, '') : forward
+	}
 	// The mod lists and reads its own hooks folder (under $.plugin.root, the
 	// real plugin folder even in tests) for its fingerprint; modFiles answers
 	// any path ending /hooks, so tests need not know the root.
@@ -155,6 +172,16 @@ export function world(on: On, env: Record<string, string> = {}): World {
 		return { value: w.dirs.map(name => ({ name, kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false })) }
 	})
 	on('fs.exists', (_$, e) => ({ value: slashed(e.path) in w.files }))
+	on('fs.stat', (_$, e) => {
+		const path = slashed(e.path)
+		const real = w.links[path] ?? path
+		const isLink = path in w.links
+		const realPath = e.resolve ? real : undefined
+		if (w.folders.includes(real)) return { value: { kind: 'dir' as const, size: 0, mtimeMs: 0, isLink, realPath } }
+		const text = w.files[real]
+		if (text === undefined) return { deny: `ENOENT: no such file or directory, stat '${path}'` }
+		return { value: { kind: 'file' as const, size: w.statSizes[real] ?? text.length, mtimeMs: 0, isLink, realPath } }
+	})
 	on('fs.read', (_$, e) => {
 		const path = slashed(e.path)
 		w.reads.push(path)
@@ -163,8 +190,17 @@ export function world(on: On, env: Record<string, string> = {}): World {
 			const name = path.slice(path.lastIndexOf('/') + 1)
 			const mod = w.modFiles[name]
 			if (e.as === 'bytes' && path.endsWith(`/hooks/${name}`) && mod !== undefined) return { value: { base64: btoa(mod) } }
-			const text = w.files[path]
-			return text === undefined ? { deny: `no such file: ${path}` } : { value: text }
+			const text = w.files[w.links[path] ?? path]
+			if (text === undefined) return { deny: `no such file: ${path}` }
+			// Test files hold ASCII text, so a character stands for a byte.
+			if (e.as === 'bytes') {
+				const offset = e.offset ?? 0
+				const bytes = text.slice(offset, e.length === undefined ? undefined : offset + e.length)
+				// The engine refuses a read over 4 MiB.
+				if (bytes.length > 4 * 1024 * 1024) return { deny: `${path} is over 4 MiB: read it by ranges` }
+				return { value: { base64: btoa(bytes) } }
+			}
+			return { value: text }
 		}
 		// A gated read waits for the test to open the gate, holding a scan mid-read.
 		return w.readGate === null ? answer() : w.readGate.then(answer)

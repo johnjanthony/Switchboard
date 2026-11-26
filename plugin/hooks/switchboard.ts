@@ -1,4 +1,4 @@
-import type { EngineInterface, HttpInit, HttpResponse, McpToolResult, Register, Timer, ToolCallResult } from 'claude-code'
+import type { EngineInterface, FsStat, HttpInit, HttpResponse, McpToolResult, Register, Timer, ToolCallResult } from 'claude-code'
 import { atom, read, update } from 'claude-code'
 
 import type { AskQuestion } from './ask'
@@ -7,6 +7,7 @@ import type { InFlight, SettledBody } from './approval'
 import { inFlightCall, predictsDialog, REPORTED_TOOL, settledBody } from './approval'
 import type { InboxAnswer, StatusBody } from './client'
 import { DEFAULT_BASE_URL, FETCH_TIMEOUT_MS, parseInboxBody, requestHeaders } from './client'
+import { absolutePosix, escapesText, isInside, MAX_DOCUMENT_BYTES, notFileText, notFoundText, readRanges, readsInSession, SEND_DOCUMENT_TOOL, tooLargeText, unreadableText } from './document'
 import type { ModFile } from './fingerprint'
 import { fromBase64, modFingerprint } from './fingerprint'
 import { backoffMs, POLL_MS } from './inbox'
@@ -425,6 +426,33 @@ async function answerIfAway($: EngineInterface, questions: readonly AskQuestion[
 	return away ? askFromPhone($, questions, signal) : undefined
 }
 
+// -- send_document_human from WSL ----------------------------------------------
+// The server cannot open a WSL session's files, so the session reads the file
+// and the call carries its bytes; the server checks the name and size and
+// uploads them. Answers the fields to add to the call, or a refusal.
+
+async function documentFromSession($: EngineInterface, path: string, cwd: string): Promise<{ deny: string } | { fields: Record<string, string> }> {
+	const target = absolutePosix(cwd, path)
+	const root = absolutePosix(cwd, '.')
+	if (!isInside(root, target)) return { deny: escapesText(path) }
+	let stat: FsStat
+	try {
+		stat = await $.fs.stat(target, { resolve: true })
+	} catch {
+		return { deny: notFoundText(path) }
+	}
+	const real = stat.realPath
+	if (real === undefined) return { deny: notFoundText(path) }
+	// Held again where links lead, each side resolved the same way.
+	const realRoot = (await $.fs.stat(root, { resolve: true })).realPath
+	if (realRoot === undefined || !isInside(realRoot, real)) return { deny: escapesText(path) }
+	if (stat.kind !== 'file') return { deny: notFileText(path) }
+	if (stat.size > MAX_DOCUMENT_BYTES) return { deny: tooLargeText(stat.size) }
+	let base64 = ''
+	for (const range of readRanges(stat.size)) base64 += (await $.fs.read(real, { as: 'bytes', ...range })).base64
+	return { fields: { content_base64: base64, content_path: real } }
+}
+
 // -- turn end ------------------------------------------------------------------
 // The Python Stop hook's job. The org's security plugin bypasses a user mod's
 // classic.* hooks, so instead of blocking the stop this runs after the turn and
@@ -531,8 +559,15 @@ export const register: Register = on => {
 		const own = isOwnCall(next.origin)
 		const reports = !own || (await read($, turnId)) !== null
 		if (reports) postStatus($, { session_id: sessionId, cwd, event: 'PreToolUse', ...preToolState(tool, input as Record<string, unknown>) })
-		const call = SWITCHBOARD_TOOL.test(tool) ? ({ ...e, cli_session_id: sessionId, cwd } as typeof e) : e
-		const answered = e.tool === 'AskUserQuestion' ? await answerIfAway($, e.questions, next.signal) : undefined
+		let call = SWITCHBOARD_TOOL.test(tool) ? ({ ...e, cli_session_id: sessionId, cwd } as typeof e) : e
+		let answered = e.tool === 'AskUserQuestion' ? await answerIfAway($, e.questions, next.signal) : undefined
+		const docPath = (input as Record<string, unknown>).path
+		if (tool === SEND_DOCUMENT_TOOL && typeof docPath === 'string' && readsInSession(await $.env.get('WSL_DISTRO_NAME'), cwd)) {
+			// A hook that throws is skipped whole, and the call would go out without its session id.
+			const doc = await documentFromSession($, docPath, cwd).catch((error: unknown) => ({ deny: unreadableText(docPath, error) }))
+			if ('deny' in doc) answered = doc
+			else call = { ...call, ...doc.fields } as typeof e
+		}
 		let ran = answered
 		if (ran === undefined) {
 			let tracked: InFlight | undefined

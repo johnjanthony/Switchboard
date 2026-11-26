@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import fnmatch
 import hashlib
 import asyncio
 import mimetypes
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse, unquote
 
 _MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
@@ -57,23 +59,46 @@ def _validate_path(path_str: str, cwd: Path | None = None) -> Path:
 	if size > _MAX_DOCUMENT_BYTES:
 		raise ValueError(f"File too large ({size} bytes, max {_MAX_DOCUMENT_BYTES})")
 
-	name_lower = resolved.name.lower()
+	_check_name(resolved.name)
+	return resolved
+
+def _check_name(name: str) -> None:
+	"""Raise ValueError unless a file of this name may be shared."""
+	name_lower = name.lower()
 	if name_lower in _DENYLIST_EXACT:
-		raise ValueError(f"File is on the deny list: {resolved.name}")
+		raise ValueError(f"File is on the deny list: {name}")
 	for pattern in _DENYLIST_GLOBS:
 		if fnmatch.fnmatch(name_lower, pattern):
 			raise ValueError(
-				f"File matches restricted pattern '{pattern}': {resolved.name}"
+				f"File matches restricted pattern '{pattern}': {name}"
 			)
 
-	ext = resolved.suffix.lower()
+	ext = PurePosixPath(name_lower).suffix
 	if ext not in _ALLOWED_EXTENSIONS:
 		allowed = ", ".join(sorted(_ALLOWED_EXTENSIONS))
 		raise ValueError(
-			f"File type '{ext or '(no extension)'}' is not on the shareable allowlist ({allowed}): {resolved.name}"
+			f"File type '{ext or '(no extension)'}' is not on the shareable allowlist ({allowed}): {name}"
 		)
 
-	return resolved
+def _validate_content(content_path: str | None, content_base64: str) -> tuple[str, bytes]:
+	"""Return (file name, bytes) for a file the switchboard mod read inside the
+	session; raise ValueError otherwise. The mod has already held the path to
+	the session's cwd, which this server cannot see (a WSL path)."""
+	if not content_path:
+		raise ValueError("content_base64 needs content_path")
+	name = PurePosixPath(content_path).name
+	_check_name(name)
+	# Judged on the encoded length first, so an oversized payload is never decoded.
+	if len(content_base64) > 4 * -(-_MAX_DOCUMENT_BYTES // 3):
+		raise ValueError(f"File too large (over {_MAX_DOCUMENT_BYTES} bytes, max {_MAX_DOCUMENT_BYTES})")
+	try:
+		data = base64.b64decode(content_base64, validate=True)
+	except binascii.Error:
+		raise ValueError("content_base64 is not valid base64") from None
+	if len(data) > _MAX_DOCUMENT_BYTES:
+		raise ValueError(f"File too large ({len(data)} bytes, max {_MAX_DOCUMENT_BYTES})")
+	return name, data
+
 
 # mimetypes is incomplete/peculiar across platforms; pin the types we care about.
 _CONTENT_TYPE_OVERRIDES = {

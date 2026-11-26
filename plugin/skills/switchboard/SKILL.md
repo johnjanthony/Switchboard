@@ -172,6 +172,7 @@ Use this to deliver generated reports, diffs, logs, or spec documents to John's 
 **Constraints enforced by the gateway (violations return `"ERROR: ..."`):**
 
 - `path` may be **absolute** or **relative**. Relative paths are resolved against your cwd; absolute paths must also resolve inside your project root. Anything that escapes the project root is rejected.
+- **In a WSL session** the same rule holds in Linux terms: pass a path relative to your cwd, or an absolute WSL path inside it (`/home/<you>/work/<repo>/report.md`). The Windows gateway cannot open WSL files, so the switchboard mod resolves the path and reads the file inside your session, following symbolic links: a link that leads out of your cwd is refused like `..`. A file outside your cwd, `/mnt/c/...` included, is refused; copy it in first. Never pass a Windows path (`C:\...`) or a `\\wsl.localhost\...` path from WSL. The mod also adds `content_base64` and `content_path` to the call; never pass those yourself.
 - Maximum file size: **5 MB**.
 - **Extension allowlist** - only these types are deliverable: `.md .markdown .txt .log .csv .tsv .diff .patch .pdf .png .jpg .jpeg .gif .webp`. Everything else (source files, archives, HTML, JSON, key material, extensionless files) is refused; convert content to one of the allowed types first (e.g. write a `.md` report).
 - Known-secret names are refused regardless of extension: `.env`, `service-account.json`, `credentials.json` (exact match), and anything matching `*token*`, `*secret*`, `*.pem`, `*.key`, `.env*`, `*.env` (case-insensitive glob).

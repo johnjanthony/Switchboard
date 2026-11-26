@@ -766,14 +766,19 @@ def _build_fastmcp(handlers, host: str = "127.0.0.1") -> FastMCP:
 		caption: str | None = None,
 		cli_session_id: str | None = None,
 		cwd: str | None = None,
+		content_base64: str | None = None,
+		content_path: str | None = None,
 	) -> str:
 		"""Deliver a file to John. Non-blocking. path is relative to cwd. Max 5 MB.
 
 		cli_session_id and cwd identify your session. The switchboard mod
-		injects both automatically; do not pass them."""
+		injects both automatically; do not pass them. In a WSL session the mod
+		also reads the file and adds content_base64 and content_path; do not
+		pass those either."""
 		return await handlers.send_document_human(
 			path, sender, title=title, caption=caption,
 			cli_session_id=cli_session_id, cwd=cwd,
+			content_base64=content_base64, content_path=content_path,
 		)
 
 	@mcp.tool()

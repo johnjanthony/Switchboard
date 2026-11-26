@@ -59,6 +59,7 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, Conversati
 		rejected=False,
 		attached_to_msg_id=None,
 		suppress_push=False,
+		content=None,
 	):
 		"""Record conversation-message writes. Handles both the legacy dict form
 		and the expanded positional form so all migrated callers are captured."""
@@ -102,6 +103,7 @@ class RecordingBackend(MessageWriter, ResponsePoller, AwayModeMirror, Conversati
 			"msg_id": msg_id,
 			"rejected": rejected,
 			"attached_to_msg_id": attached_to_msg_id,
+			"content_bytes": content,
 		}
 		self.channel_messages.append(data)
 		self.push_suppressed.append(suppress_push)

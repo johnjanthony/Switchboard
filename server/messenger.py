@@ -263,12 +263,16 @@ class ConversationStore:
 		rejected: bool = False,
 		suppress_push: bool = False,
 		command_id: str | None = None,
+		content: bytes | None = None,
 	):
 		"""Append a message to /messages/<id>.
 
 		Two call forms:
 		- Legacy dict form: write_conversation_message(conv_id, message_dict) -> str push key
 		- Expanded form: write_conversation_message(conv_id, sender, type, text, ...) -> (conv_id, msg_id)
+
+		A document message carries either url (a local path the backend uploads)
+		or content (its bytes, read in the session, as a WSL session's are).
 
 		No-op by default; FirebaseBackend overrides with the full implementation."""
 		if isinstance(sender_or_message, dict):

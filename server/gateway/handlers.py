@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 import uuid
@@ -18,7 +19,7 @@ from server.logging_jsonl import JsonlLogger
 from server.messenger import MessageWriter, ConversationStore
 from server.rate_limiter import RateLimiter
 from server.registry import PARKED_SENTINEL, Registry, SUPERSEDED_SENTINEL
-from server.gateway.document import _validate_path, _sha256_hex
+from server.gateway.document import _validate_content, _validate_path, _sha256_hex
 from server.gateway.bg_tasks import _spawn_bg
 from server.member_lifecycle import revive_member
 from server.gateway.pending_lifecycle import terminate_pending
@@ -578,6 +579,8 @@ def build_tool_handlers(
 		*,
 		cli_session_id: str,
 		cwd: str,
+		content_base64: str | None = None,
+		content_path: str | None = None,
 		_cwd_path: Path | None = None,
 	) -> str:
 		if err := _validate_sender(sender):
@@ -587,10 +590,19 @@ def build_tool_handlers(
 			registry, cli_session_id, cwd, sender, backend=backend,
 		)
 		sender = _canonical_sender(registry, conversation_id, cli_session_id, sender)
-		# Path validation: resolve against the agent's actual filesystem cwd.
-		cwd_path = _cwd_path if _cwd_path is not None else Path(cwd)
+		resolved: Path | None = None
+		content: bytes | None = None
 		try:
-			resolved = _validate_path(path, cwd=cwd_path)
+			if content_base64 is None:
+				# Path validation: resolve against the agent's actual filesystem cwd.
+				resolved = _validate_path(path, cwd=_cwd_path if _cwd_path is not None else Path(cwd))
+				name, source = resolved.name, str(resolved)
+			else:
+				# The mod resolved and read the file inside the session (a WSL
+				# session's files are invisible to this LocalSystem service), so
+				# nothing is read from disk here.
+				name, content = _validate_content(content_path, content_base64)
+				source = content_path
 		except ValueError as exc:
 			await logger.tool_error(None, conversation_id, str(exc))
 			return f"ERROR: {exc}"
@@ -600,24 +612,29 @@ def build_tool_handlers(
 			return _rate_limit_error()
 
 		try:
-			size_bytes = resolved.stat().st_size
-			sha256 = await _sha256_hex(resolved)
+			if resolved is not None:
+				size_bytes = resolved.stat().st_size
+				sha256 = await _sha256_hex(resolved)
+			else:
+				size_bytes = len(content)
+				sha256 = hashlib.sha256(content).hexdigest()
 			await backend.write_conversation_message(
 				conversation_id, sender, "document",
-				caption or resolved.name,
-				url=str(resolved),
-				filename=resolved.name,
+				caption or name,
+				url=str(resolved) if resolved is not None else None,
+				filename=name,
 				title=title,
+				content=content,
 			)
 		except Exception as exc:
 			await logger.tool_error(None, conversation_id, str(exc))
 			return f"ERROR: {exc}"
 
 		try:
-			await logger.document_sent(conversation_id, str(resolved), size_bytes, sha256, caption)
+			await logger.document_sent(conversation_id, source, size_bytes, sha256, caption)
 		except Exception as exc:
 			await logger.surface_error(f"document_audit_failed: {exc}")
-		entry = f"[document: {resolved.name}] {caption}" if caption else f"[document: {resolved.name}]"
+		entry = f"[document: {name}] {caption}" if caption else f"[document: {name}]"
 		await _append_session_log(config.log_path, conversation_id, "→", entry, logger)
 		return "ok"
 
