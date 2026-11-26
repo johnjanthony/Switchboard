@@ -52,7 +52,7 @@ server/
   gateway/             Tool handlers + dispatch loops
     handlers.py          ask_human, notify_human, send_document_human, message_and_await_agent, post_agent_message, join_conversation, combine_conversations, lookup_conversation_ids, leave_conversation, set_away_mode tool closures; JSON status envelopes (_envelope/_terminal_envelope/_wrap_wait_result)
     dispatch.py          dispatch_responses, dispatch_combine_commands, dispatch_force_end_commands, dispatch_spawn_commands, dispatch_away_mode_commands, dispatch_message_commands, dispatch_status_request_commands, dispatch_session_sweep, dispatch_conversation_sweep, dispatch_presence, handle_force_end
-    document.py          _validate_path + extension allowlist + secret-name denylist + sha256 helpers
+    document.py          _validate_path / _validate_content (bytes a WSL session's mod read) + extension allowlist + secret-name denylist + sha256 helpers
     bulk_respond.py      _apply_bulk_respond_decision (used by exit_global to drain pending questions)
     parked.py            finish_parked_resolve - bookkeeping for resolving a future-less parked pending (record cleanup + session notices)
     pending_lifecycle.py terminate_pending - single terminal-path owner for pending ask_humans (pop + future settlement + Firebase cancel + benign-replay memory); ask arms, force-end, combine, session-end, spawn cleanup, and the TTL sweep all route through it; also park_pending, the one non-terminal transition (the session sweep swaps a lost polling session's live ask for a parked record)
